@@ -1,0 +1,60 @@
+# Build output
+/target
+crates/*/target
+crates/ai-subtitle-engine/target
+crates/video-engine/target
+
+# Archive crate — vendored reference copies, not part of the active build
+crates/archive_for_reference/
+
+# Local proxy and thumbnail cache generated at runtime
+.proxy/
+.thumbnails/
+
+# Exported media output
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.m4a
+*.mp3
+*.wav
+
+# Compiled ACP binary in assets (rebuilt by cargo)
+assets/bin/anica-acp
+
+# User-provided local fonts (not committed)
+assets/fonts/*
+!assets/fonts/.gitkeep
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.*
+
+# Local assistant folders
+**/.claude/
+**/.codex/
+
+# Temporary files
+*.tmp
+*.bak
+
+# Local diagnostic binaries (not part of project source)
+host_warn_cfg
+host_warn_match
+
+# Local AI subtitle model packs (very large binary assets, not committed)
+crates/ai-subtitle-engine/src/model/onnx/
+
+# Auto-downloaded pinned runtime cache
+tools/runtime/current/

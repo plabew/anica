@@ -1,0 +1,9 @@
+[package]
+name = "gpu-effect-export-engine"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+pollster = "0.4.0"
+wgpu = "25.0.1"

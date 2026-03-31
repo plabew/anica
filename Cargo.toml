@@ -1,0 +1,71 @@
+[package]
+name = "anica"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+default-run = "anica"
+
+[dependencies]
+anyhow = "1.0.100"
+env_logger = "0.11.8"
+gpui = "=0.2.2"
+video-engine = { path = "crates/video-engine" }
+gpui-video-renderer = { path = "crates/gpui-video-renderer" }
+motionloom = { path = "crates/motionloom" }
+media_gen_protocol = { path = "crates/media_gen_protocol" }
+gpu-effect-export-engine = { path = "crates/gpu-effect-export-engine" }
+
+url = "2.5.7"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7.16", features = ["compat"] }
+async-trait = "0.1.89"
+gpui-component = "0.5.0"
+smol = "2.0.2"
+regex = "1.12.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.133"
+thiserror = "2.0.17"
+gstreamer-editing-services = "0.24.4"
+image = "0.25.9"
+smallvec = "1.15.1"
+cosmic-text = { version = "0.14.2", features = ["swash"] }
+ureq = "2.12.1"
+fontdb = { version = "0.16.2", features = ["fs"] }
+log = "0.4.29"
+agent-client-protocol = "0.9.4"
+base64 = "0.22.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-video = { version = "0.4", features = ["metal"] }
+core-foundation = "0.10"
+
+
+[workspace]
+members = [
+    ".",
+    "crates/video-engine",
+    "crates/gpui-video-renderer",
+    "crates/ai-subtitle-engine",
+    "crates/motionloom",
+    "crates/media_gen_protocol",
+    "crates/gpu-effect-export-engine",
+
+]
+# Use forked gpui anica edition with 420v zero-copy surface support in Metal renderer
+# Public/reproducible default: use forked gpui anica-edition from git.
+# Local development override should be done in ~/.cargo/config.toml (do not commit path patches).
+[patch.crates-io]
+# gpui = { path = "../zed-anica-fork/crates/gpui" }
+gpui = { git = "https://github.com/LOVELYZOMBIEYHO/zed.git", branch = "anica-edition" }
+
+[package.metadata.bundle]
+name = "Anica Editor"
+identifier = "com.lovelyzombieyho.anica"
+# icon = ["assets/icon.icns"]
+version = "0.1.0"
+copyright = "Copyright © 2026 Anica contributors. All rights reserved."
+category = "public.app-category.video"
+short_description = "An agentic AI video editor that automates the editing process."
+long_description = """
+An experimental video editor built with Rust and GPUI.
+"""

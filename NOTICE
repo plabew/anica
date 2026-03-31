@@ -1,0 +1,53 @@
+Anica - Third-Party Notices
+===========================
+
+This project is distributed under the Apache License 2.0.
+
+This software uses third-party components that are licensed separately.
+You must comply with each third-party license when distributing binaries
+or bundled runtimes.
+
+Default runtime acquisition model (current project setup)
+- Anica source code is Apache-2.0.
+- FFmpeg/FFprobe and GStreamer are not relicensed by Apache-2.0.
+- By default, FFmpeg/FFprobe and GStreamer are installed by the end user
+  (for example via project setup scripts) on the end user's machine.
+- Their licenses apply separately from Anica's Apache-2.0 license.
+- If you only distribute Anica source code and do not redistribute runtime
+  binaries yourself, runtime-binary distribution obligations are generally
+  tied to the party distributing those binaries.
+
+1) Rust crates (Cargo dependencies)
+- Rust dependencies are pulled from crates.io and local workspace crates.
+- Their licenses are defined in each crate's metadata and source.
+- Please review `Cargo.lock` and each dependency license before release.
+
+2) GStreamer runtime
+- Anica uses GStreamer libraries at runtime via Rust bindings.
+- Rust bindings (such as `gstreamer` / `gstreamer-*` crates) are separate
+  from the GStreamer runtime/library licenses.
+- GStreamer core libraries are generally LGPL-2.1-or-later.
+- Some plugins may have different licenses (including GPL).
+- If you redistribute GStreamer binaries/plugins, include their license
+  texts and comply with their terms.
+
+3) FFmpeg / FFprobe
+- By default, Anica expects FFmpeg and FFprobe to be installed externally
+  by the user (not bundled by default).
+- FFmpeg/FFprobe are licensed separately from Anica.
+- If you distribute FFmpeg binaries with your app, you must provide the
+  required notices and comply with FFmpeg license obligations.
+
+4) Redistribution boundary reminder
+- Source-only distribution (no bundled FFmpeg/GStreamer binaries):
+  keep this NOTICE and project license files in the repository/distribution.
+- Bundled app/runtime distribution (you ship FFmpeg/GStreamer binaries):
+  include all required third-party license texts/notices and satisfy the
+  license obligations of the exact binaries/plugins you ship.
+
+References
+- GStreamer licensing: https://gstreamer.freedesktop.org/
+- FFmpeg licensing: https://ffmpeg.org/legal.html
+
+Project note
+- This NOTICE file is informational and does not replace legal review.

@@ -1,0 +1,16 @@
+{
+  "acp.empty_prompt": "Anica ACP の準備が完了しました。空のプロンプトを受信しました。",
+  "acp.codex_error": "Anica ACP / Codex エラー: {error}",
+  "acp.cancelled": "[キャンセル済み]",
+  "acp.status.router_turn": "ルーターのターン {turn}/{max_turns}。",
+  "acp.status.router_confidence": "ルーター信頼度: {confidence}。",
+  "acp.status.model_non_json": "ルーターが非 JSON を返したため、生の回答を使用します。",
+  "acp.status.model_requested_tool": "モデルがツール `{tool}` を要求しました。",
+  "acp.status.router_reason": "ルーター理由: {reason}",
+  "acp.status.router_next_step": "ルーター次の手順: {next_step}",
+  "acp.status.calling_tool": "ツール `{tool}` を呼び出しています...",
+  "acp.status.tool_args": "ツール引数 `{tool}`: {args}",
+  "acp.status.tool_done": "ツール `{tool}` が完了しました。",
+  "acp.status.tool_result_summary": "ツール結果: {summary}",
+  "acp.status.router_max_turns": "ルーターが最大ターン数 ({max_turns}) に到達したため、最新のモデル出力を返します。"
+}

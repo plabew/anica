@@ -1,0 +1,16 @@
+{
+  "acp.empty_prompt": "Anica ACP est prêt. Invite vide reçue.",
+  "acp.codex_error": "Erreur Anica ACP / Codex : {error}",
+  "acp.cancelled": "[annulé]",
+  "acp.status.router_turn": "Tour du routeur {turn}/{max_turns}.",
+  "acp.status.router_confidence": "Confiance du routeur : {confidence}.",
+  "acp.status.model_non_json": "Le routeur a renvoyé une sortie non JSON ; réponse brute utilisée.",
+  "acp.status.model_requested_tool": "Le modèle a demandé l'outil `{tool}`.",
+  "acp.status.router_reason": "Raison du routeur : {reason}",
+  "acp.status.router_next_step": "Étape suivante du routeur : {next_step}",
+  "acp.status.calling_tool": "Appel de l'outil `{tool}`...",
+  "acp.status.tool_args": "Arguments de l'outil `{tool}` : {args}",
+  "acp.status.tool_done": "Outil `{tool}` terminé.",
+  "acp.status.tool_result_summary": "Résultat de l'outil : {summary}",
+  "acp.status.router_max_turns": "Le routeur a atteint le nombre maximal de tours ({max_turns}) ; dernière sortie du modèle renvoyée."
+}

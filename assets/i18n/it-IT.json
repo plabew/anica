@@ -1,0 +1,16 @@
+{
+  "acp.empty_prompt": "Anica ACP è pronto. Prompt vuoto ricevuto.",
+  "acp.codex_error": "Errore Anica ACP / Codex: {error}",
+  "acp.cancelled": "[annullato]",
+  "acp.status.router_turn": "Turno router {turn}/{max_turns}.",
+  "acp.status.router_confidence": "Confidenza router: {confidence}.",
+  "acp.status.model_non_json": "Il router ha restituito output non JSON; uso della risposta grezza.",
+  "acp.status.model_requested_tool": "Il modello ha richiesto lo strumento `{tool}`.",
+  "acp.status.router_reason": "Motivo del router: {reason}",
+  "acp.status.router_next_step": "Prossimo passo del router: {next_step}",
+  "acp.status.calling_tool": "Chiamata allo strumento `{tool}`...",
+  "acp.status.tool_args": "Argomenti strumento `{tool}`: {args}",
+  "acp.status.tool_done": "Strumento `{tool}` completato.",
+  "acp.status.tool_result_summary": "Risultato strumento: {summary}",
+  "acp.status.router_max_turns": "Il router ha raggiunto il numero massimo di turni ({max_turns}); restituisco l'ultimo output del modello."
+}

@@ -1,0 +1,5 @@
+[toolchain]
+# Pin to Rust 1.90.0 so the workspace stays aligned with the current dependency set.
+# This also keeps edition 2024 support and transitive dependency requirements stable.
+channel = "1.90.0"
+components = ["rustfmt", "clippy"]

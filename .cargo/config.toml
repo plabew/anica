@@ -1,0 +1,9 @@
+[target.'cfg(target_os = "macos")']
+runner = "scripts/cargo_run_with_acp_check.sh"
+
+[target.'cfg(target_os = "linux")']
+runner = "scripts/cargo_run_with_acp_check.sh"
+
+[env]
+CFLAGS = { value = "-Wno-deprecated-declarations", force = false }
+CXXFLAGS = { value = "-Wno-deprecated-declarations", force = false }

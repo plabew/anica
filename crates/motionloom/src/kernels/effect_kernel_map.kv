@@ -1,0 +1,59 @@
+# MotionLoom effect -> default kernel map
+# format: effect=kernel_file
+
+# Legacy runtime helper
+invert_mix=invert_mix.wgsl
+
+# Transform & Camera
+transform_affine=transform_camera_affine.wgsl
+transform_camera.affine_uv=transform_camera_affine.wgsl
+
+# Color & Tone
+exposure_contrast=color_core.wgsl
+saturation=color_core.wgsl
+curves=color_core.wgsl
+lut=color_core.wgsl
+hsla_overlay=color_core.wgsl
+hsla=color_core.wgsl
+color_tone.hsla_overlay=color_core.wgsl
+color_tone.exposure_contrast=color_core.wgsl
+
+# Stylize & Look
+vignette=color_core.wgsl
+film_look=color_core.wgsl
+black_white=color_core.wgsl
+posterize=stylize_look_posterize.wgsl
+stylize_look.posterize=stylize_look_posterize.wgsl
+
+# Blur, Sharpen & Detail
+gaussian_blur=blur_sharpen_detail_gaussian.wgsl
+sharpen=blur_sharpen_detail_gaussian.wgsl
+gaussian_5tap_h=blur_sharpen_detail_gaussian.wgsl
+gaussian_5tap_v=blur_sharpen_detail_gaussian.wgsl
+box=blur_sharpen_detail_gaussian.wgsl
+unsharp=blur_sharpen_detail_gaussian.wgsl
+blur_sharpen_detail.gaussian=blur_sharpen_detail_gaussian.wgsl
+
+# Keying, Matte & Mask
+luma_key=keying_matte_mask_luma_key.wgsl
+keying_matte_mask.luma_key=keying_matte_mask_luma_key.wgsl
+
+# Light & Atmosphere
+glow_bloom=color_core.wgsl
+bloom_prefilter=light_atmosphere_bloom_prefilter.wgsl
+light_atmosphere.bloom_prefilter=light_atmosphere_bloom_prefilter.wgsl
+
+# Noise / Grain + Opacity / Fade
+noise_grain=color_core.wgsl
+opacity=composite_core.wgsl
+composite.opacity=composite_core.wgsl
+
+# Distortion & Warp
+heat_haze_uv=distortion_warp_heat_haze.wgsl
+distortion_warp.heat_haze_uv=distortion_warp_heat_haze.wgsl
+
+# Transition core family
+fade_in=transition_core.wgsl
+fade_out=transition_core.wgsl
+dip=transition_core.wgsl
+dissolve=transition_core.wgsl

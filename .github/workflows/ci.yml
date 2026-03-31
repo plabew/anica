@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# Cancel in-progress runs for the same branch when a new push arrives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------
+  # Primary CI job — macOS only, because the renderer depends on
+  # Metal and core-video which are not available on Linux/Windows.
+  # ---------------------------------------------------------------
+  check:
+    name: Check (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        # rust-toolchain.toml is picked up automatically by rustup.
+        run: rustup show
+
+      - name: Install GStreamer
+        run: |
+          brew install \
+            gstreamer \
+            gst-plugins-base \
+            gst-plugins-good \
+            gst-plugins-bad \
+            gst-plugins-ugly \
+            gst-editing-services
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Cargo check (workspace)
+        run: cargo check --workspace
+
+      - name: Clippy (workspace, correctness+suspicious strict, perf warn)
+        run: cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -W clippy::perf
+
+      - name: Tests
+        run: cargo test --workspace

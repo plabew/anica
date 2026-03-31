@@ -1,0 +1,28 @@
+<svg width="200" height="200" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="loomGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#007CF0" />
+      <stop offset="100%" stop-color="#00DFD8" />
+    </linearGradient>
+  </defs>
+
+  <path
+    d="M25 70 C 25 40, 45 20, 50 50 C 55 80, 75 60, 75 30"
+    stroke="url(#loomGradient)"
+    stroke-width="8"
+    stroke-linecap="round"
+    fill="none"
+  />
+
+  <path
+    d="M25 55 C 25 25, 45 45, 50 50 C 55 55, 75 75, 75 45"
+    stroke="url(#loomGradient)"
+    stroke-width="8"
+    stroke-linecap="round"
+    stroke-opacity="0.6"
+    fill="none"
+  />
+
+  <circle cx="25" cy="70" r="4" fill="#007CF0" />
+  <circle cx="75" cy="30" r="4" fill="#00DFD8" />
+</svg>

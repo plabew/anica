@@ -1,0 +1,16 @@
+{
+  "acp.empty_prompt": "Anica ACP 준비 완료. 빈 프롬프트를 받았습니다.",
+  "acp.codex_error": "Anica ACP / Codex 오류: {error}",
+  "acp.cancelled": "[취소됨]",
+  "acp.status.router_turn": "라우터 턴 {turn}/{max_turns}.",
+  "acp.status.router_confidence": "라우터 신뢰도: {confidence}.",
+  "acp.status.model_non_json": "라우터가 JSON 이 아닌 출력을 반환하여 원본 답변을 사용합니다.",
+  "acp.status.model_requested_tool": "모델이 도구 `{tool}` 을 요청했습니다.",
+  "acp.status.router_reason": "라우터 이유: {reason}",
+  "acp.status.router_next_step": "라우터 다음 단계: {next_step}",
+  "acp.status.calling_tool": "도구 `{tool}` 호출 중...",
+  "acp.status.tool_args": "도구 인자 `{tool}`: {args}",
+  "acp.status.tool_done": "도구 `{tool}` 완료.",
+  "acp.status.tool_result_summary": "도구 결과: {summary}",
+  "acp.status.router_max_turns": "라우터가 최대 턴 수 ({max_turns}) 에 도달하여 최신 모델 출력을 반환합니다."
+}

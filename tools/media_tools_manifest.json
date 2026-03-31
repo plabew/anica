@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "generated_note": "Pinned media tool versions for local bootstrap scripts.",
+  "ffmpeg": {
+    "version": "8.0.1",
+    "license_target": "LGPL-only",
+    "source_tarball": "https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz",
+    "configure": {
+      "common": [
+        "--disable-gpl",
+        "--disable-nonfree",
+        "--enable-shared",
+        "--disable-static",
+        "--disable-debug",
+        "--disable-doc",
+        "--disable-ffplay",
+        "--enable-pthreads",
+        "--enable-version3"
+      ],
+      "macos_extra": ["--enable-videotoolbox", "--enable-audiotoolbox"],
+      "linux_extra": []
+    }
+  },
+  "gstreamer": {
+    "target_series": "1.24.x",
+    "macos_brew_packages": [
+      "gstreamer",
+      "gst-plugins-base",
+      "gst-plugins-good",
+      "gst-editing-services"
+    ],
+    "ubuntu_packages": [
+      "libgstreamer1.0-dev",
+      "libgstreamer-plugins-base1.0-dev",
+      "gstreamer1.0-plugins-base",
+      "gstreamer1.0-plugins-good",
+      "gstreamer1.0-editing-services",
+      "libges-1.0-dev"
+    ],
+    "windows_download": "https://gstreamer.freedesktop.org/download/",
+    "windows_winget_candidates": ["GStreamer.GStreamer"]
+  },
+  "windows": {
+    "ffmpeg_winget_candidates": ["Gyan.FFmpeg", "BtbN.FFmpeg"],
+    "ffmpeg_local_lgpl_policy": "Reject builds containing --enable-gpl or --enable-nonfree."
+  }
+}

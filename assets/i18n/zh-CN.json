@@ -1,0 +1,16 @@
+{
+  "acp.empty_prompt": "Anica ACP 已就绪，收到空白提示。",
+  "acp.codex_error": "Anica ACP / Codex 错误：{error}",
+  "acp.cancelled": "[已取消]",
+  "acp.status.router_turn": "路由回合 {turn}/{max_turns}。",
+  "acp.status.router_confidence": "路由置信度：{confidence}。",
+  "acp.status.model_non_json": "路由返回非 JSON，改用原始回复。",
+  "acp.status.model_requested_tool": "模型请求工具 `{tool}`。",
+  "acp.status.router_reason": "路由原因：{reason}",
+  "acp.status.router_next_step": "路由下一步：{next_step}",
+  "acp.status.calling_tool": "正在调用工具 `{tool}`...",
+  "acp.status.tool_args": "工具参数 `{tool}`：{args}",
+  "acp.status.tool_done": "工具 `{tool}` 已完成。",
+  "acp.status.tool_result_summary": "工具结果：{summary}",
+  "acp.status.router_max_turns": "路由已达到最大回合数（{max_turns}），将返回最后模型输出。"
+}

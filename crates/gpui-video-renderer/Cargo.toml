@@ -1,0 +1,22 @@
+[package]
+name = "gpui-video-renderer"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+gpui = "=0.2.2"
+# Local engine crate used by the GPUI renderer bridge.
+video-engine = { path = "../video-engine" }
+
+# Used to move pixel buffers into GPUI-friendly image data.
+image = { version = "0.25", default-features = false }
+smallvec = "1"
+log = "0.4"
+pollster = "0.4"
+wgpu = "25.0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-video = { version = "0.4", features = ["metal"] }
+core-foundation = "0.10"
+metal = "0.29"

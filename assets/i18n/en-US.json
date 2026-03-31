@@ -1,0 +1,16 @@
+{
+  "acp.empty_prompt": "Anica ACP ready. Empty prompt received.",
+  "acp.codex_error": "Anica ACP / Codex error: {error}",
+  "acp.cancelled": "[cancelled]",
+  "acp.status.router_turn": "Router turn {turn}/{max_turns}.",
+  "acp.status.router_confidence": "Router confidence: {confidence}.",
+  "acp.status.model_non_json": "Router returned non-JSON output; using raw answer.",
+  "acp.status.model_requested_tool": "Model requested tool `{tool}`.",
+  "acp.status.router_reason": "Router reason: {reason}",
+  "acp.status.router_next_step": "Router next step: {next_step}",
+  "acp.status.calling_tool": "Calling tool `{tool}`...",
+  "acp.status.tool_args": "Tool args `{tool}`: {args}",
+  "acp.status.tool_done": "Tool `{tool}` completed.",
+  "acp.status.tool_result_summary": "Tool result: {summary}",
+  "acp.status.router_max_turns": "Router reached max turns ({max_turns}); returning latest model output."
+}

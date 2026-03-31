@@ -1,0 +1,26 @@
+[package]
+name = "video-engine"
+version = "0.1.0"
+edition = "2024"
+# authors = ["LOVELYZOMBIEYHO <email@example.com>"]
+authors = ["LOVELYZOMBIEYHO"]
+description = "A headless video decoding engine built on top of GStreamer."
+license = "Apache-2.0"
+
+[dependencies]
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+gstreamer-base = "0.23"
+gstreamer-video = "0.23"
+glib = "0.20"
+log = "0.4"
+thiserror = "2"
+url = "2"
+parking_lot = "0.12"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-video = "0.4"
+core-foundation = "0.10"
+
+[dev-dependencies]
+env_logger = "0.11"
