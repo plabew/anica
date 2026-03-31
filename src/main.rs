@@ -1,20 +1,3 @@
-// ============================================
-// ===========================================
-// use gpui::{px, size, App, Application, prelude::*};
-
-// mod app;
-// mod core;
-// mod ui;
-
-// fn main() {
-//     env_logger::init();
-
-//     Application::new().run(|cx: &mut App| {
-//         gpui_component::init(cx);
-
-//         app::editor_window::open_editor_window(cx);
-//     });
-// }
 // =========================================
 // =========================================
 // src/main.rs
