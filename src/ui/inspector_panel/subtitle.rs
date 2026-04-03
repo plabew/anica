@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_paths;
 
 pub(super) struct SubtitleRenderState {
     pub has_subtitle_group: bool,
@@ -427,46 +428,47 @@ impl InspectorPanel {
     pub(super) fn load_subtitle_fonts() -> Vec<SubtitleFont> {
         let mut fonts = Vec::new();
         let mut seen = HashSet::new();
-        let font_dir = PathBuf::from("assets/fonts");
-        if !font_dir.exists() {
-            return fonts;
-        }
-
         let mut db = fontdb::Database::new();
-        let entries = match fs::read_dir(&font_dir) {
-            Ok(entries) => entries,
-            Err(_) => return fonts,
-        };
+        for font_dir in runtime_paths::candidate_font_dirs() {
+            if !font_dir.exists() {
+                continue;
+            }
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-                continue;
+            let entries = match fs::read_dir(&font_dir) {
+                Ok(entries) => entries,
+                Err(_) => continue,
             };
-            let ext = ext.to_ascii_lowercase();
-            if ext != "otf" && ext != "ttf" && ext != "ttc" {
-                continue;
-            }
-            let before = db.faces().count();
-            let _ = db.load_font_file(&path);
-            let faces: Vec<_> = db.faces().skip(before).collect();
-            for face in faces {
-                let Some((family, _)) = face.families.first() else {
-                    continue;
-                };
-                let key = format!("{}:{}", path.display(), family);
-                if !seen.insert(key) {
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
                     continue;
                 }
-                let label = family.clone();
-                fonts.push(SubtitleFont {
-                    label,
-                    family: family.clone(),
-                    path: path.to_string_lossy().to_string(),
-                });
+                let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                    continue;
+                };
+                let ext = ext.to_ascii_lowercase();
+                if ext != "otf" && ext != "ttf" && ext != "ttc" {
+                    continue;
+                }
+                let before = db.faces().count();
+                let _ = db.load_font_file(&path);
+                let faces: Vec<_> = db.faces().skip(before).collect();
+                for face in faces {
+                    let Some((family, _)) = face.families.first() else {
+                        continue;
+                    };
+                    let key = format!("{}:{}", path.display(), family);
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    let label = family.clone();
+                    fonts.push(SubtitleFont {
+                        label,
+                        family: family.clone(),
+                        path: path.to_string_lossy().to_string(),
+                    });
+                }
             }
         }
 

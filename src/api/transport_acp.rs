@@ -25,6 +25,7 @@ use crate::api::timeline::{
     TranscriptLowConfidenceMapResponse,
 };
 use crate::core::global_state::MediaPoolItem;
+use crate::runtime_paths;
 use agent_client_protocol::{
     Agent, AuthenticateRequest, CancelNotification, Client, ClientCapabilities,
     ClientSideConnection, ContentBlock, ContentChunk, Error as AcpError, ExtRequest, ExtResponse,
@@ -302,31 +303,7 @@ fn docs_path_candidates(rel: &Path) -> Vec<PathBuf> {
 }
 
 fn candidate_docs_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-
-    if let Some(from_env) = std::env::var_os("ANICA_DOCS_DIR")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-    {
-        roots.push(from_env);
-    }
-
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd.join("docs"));
-        if let Some(parent) = cwd.parent() {
-            roots.push(parent.join("docs"));
-        }
-    }
-
-    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs"));
-
-    let mut unique = Vec::new();
-    for root in roots {
-        if !unique.iter().any(|p| p == &root) {
-            unique.push(root);
-        }
-    }
-    unique
+    runtime_paths::candidate_docs_roots()
 }
 
 fn resolve_docs_root() -> Result<PathBuf, AcpInternalError> {

@@ -72,8 +72,10 @@ Current macOS builds use host/Homebrew GStreamer.
 Install it with:
 
 ```bash
-brew install gstreamer gst-plugins-base gst-plugins-good gst-editing-services
+brew install gstreamer
 ```
+
+On current Homebrew/macOS setups, the common `gst-*` plugin sets are bundled into the `gstreamer` formula.
 
 Anica checks common host locations such as:
 

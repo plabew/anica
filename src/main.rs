@@ -10,9 +10,13 @@ use std::path::PathBuf;
 mod api;
 mod app;
 mod core;
+mod runtime_paths;
 mod ui;
 
-use crate::core::media_tools::{detect_gstreamer_cli, detect_or_bootstrap_media_dependencies};
+use crate::core::media_tools::{
+    configure_bundled_media_runtime_environment, detect_gstreamer_cli,
+    detect_or_bootstrap_media_dependencies,
+};
 
 /// Install a panic hook so unexpected crashes always print stack traces to terminal logs.
 fn install_panic_logging() {
@@ -38,6 +42,7 @@ fn check_gstreamer() -> Option<String> {
 fn main() {
     install_panic_logging();
     env_logger::init();
+    configure_bundled_media_runtime_environment();
 
     println!("--- Starting Anica Editor ---");
 
@@ -65,7 +70,7 @@ fn main() {
 
     Application::new()
         .with_assets(Assets {
-            base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
+            base: runtime_paths::resolve_asset_root(),
         })
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
@@ -108,14 +113,8 @@ impl AssetSource for Assets {
 }
 
 fn load_asset_fonts(cx: &mut App) {
-    let mut dirs = Vec::new();
-    if let Ok(dir) = std::env::var("ANICA_FONTS_DIR") {
-        dirs.push(PathBuf::from(dir));
-    }
-    dirs.push(PathBuf::from("assets/fonts"));
-
     let mut fonts: Vec<Cow<'static, [u8]>> = Vec::new();
-    for dir in dirs {
+    for dir in runtime_paths::candidate_font_dirs() {
         if !dir.exists() {
             continue;
         }

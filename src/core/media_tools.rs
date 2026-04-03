@@ -6,6 +6,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
+use crate::runtime_paths;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPlatform {
     MacOS,
@@ -129,15 +131,26 @@ fn bundle_tool_candidate(tool_name: &str) -> Option<String> {
     if !cfg!(target_os = "macos") {
         return None;
     }
-    let exe_path = std::env::current_exe().ok()?;
-    let macos_dir = exe_path.parent()?;
-    let contents_dir = macos_dir.parent()?;
-    let candidate = contents_dir.join("Resources").join(tool_name);
-    if candidate.is_file() {
-        Some(candidate.to_string_lossy().to_string())
-    } else {
-        None
+
+    let resources_dir = runtime_paths::bundle_resources_dir()?;
+    let runtime_root = runtime_paths::bundle_runtime_root();
+    let candidates = [
+        resources_dir.join(tool_name),
+        runtime_root
+            .as_ref()
+            .map(|root| root.join("ffmpeg").join("bin").join(tool_name))
+            .unwrap_or_default(),
+        runtime_root
+            .as_ref()
+            .map(|root| root.join("gstreamer").join("bin").join(tool_name))
+            .unwrap_or_default(),
+    ];
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
     }
+    None
 }
 
 fn ffmpeg_binary_name() -> &'static str {
@@ -288,6 +301,161 @@ fn workspace_runtime_current_home() -> PathBuf {
         .join("runtime")
         .join("current")
         .join(os)
+}
+
+fn prepend_env_path_var(name: &str, path: PathBuf) {
+    if !path.is_dir() {
+        return;
+    }
+    let mut values = vec![path.to_string_lossy().to_string()];
+    if let Some(existing) = std::env::var_os(name)
+        && !existing.is_empty()
+    {
+        values.push(existing.to_string_lossy().to_string());
+    }
+    // SAFETY: This is called during process startup on the main thread before
+    // media runtime initialization, so mutating process env is safe here.
+    unsafe {
+        std::env::set_var(name, values.join(":"));
+    }
+}
+
+fn set_env_if_missing(name: &str, value: &str) {
+    if std::env::var_os(name).is_some() {
+        return;
+    }
+    // SAFETY: Startup-only env mutation before worker threads/media init.
+    unsafe {
+        std::env::set_var(name, value);
+    }
+}
+
+pub fn configure_bundled_media_runtime_environment() {
+    let Some(runtime_root) = runtime_paths::bundle_runtime_root() else {
+        return;
+    };
+
+    let ffmpeg_root = [
+        runtime_root.join("ffmpeg").join("current"),
+        runtime_root.join("ffmpeg"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.join("bin").join(ffmpeg_binary_name()).is_file())
+    .unwrap_or_else(|| runtime_root.join("ffmpeg"));
+    let ffmpeg_bin = ffmpeg_root.join("bin").join(ffmpeg_binary_name());
+    let ffprobe_bin = ffmpeg_root
+        .join("bin")
+        .join(if cfg!(target_os = "windows") {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        });
+    let ffmpeg_lib = ffmpeg_root.join("lib");
+    let gst_bin = runtime_root.join("gstreamer").join("bin");
+    let gst_lib = runtime_root.join("gstreamer").join("lib");
+    let gst_plugins = gst_lib.join("gstreamer-1.0");
+    let gst_typelib = gst_lib.join("girepository-1.0");
+    let gst_scanner = runtime_root
+        .join("gstreamer")
+        .join("libexec")
+        .join("gstreamer-1.0")
+        .join("gst-plugin-scanner");
+
+    set_env_if_missing("ANICA_MEDIA_RUNTIME_STRICT", "1");
+    set_env_if_missing("ANICA_ALLOW_SYSTEM_MEDIA", "0");
+    // Keep ANICA_TOOLS_HOME aligned with the runtime root layout used elsewhere.
+    // SAFETY: Startup-only env mutation before media initialization.
+    unsafe {
+        std::env::set_var("ANICA_TOOLS_HOME", &runtime_root);
+    }
+
+    if ffmpeg_bin.is_file() {
+        // SAFETY: Startup-only env mutation before media initialization.
+        unsafe {
+            std::env::set_var("ANICA_FFMPEG_PATH", &ffmpeg_bin);
+            if ffprobe_bin.is_file() {
+                std::env::set_var("ANICA_FFPROBE_PATH", &ffprobe_bin);
+            }
+        }
+        prepend_env_path_var(
+            "PATH",
+            ffmpeg_bin.parent().unwrap_or(&ffmpeg_root).to_path_buf(),
+        );
+        if ffprobe_bin.is_file() {
+            prepend_env_path_var(
+                "PATH",
+                ffprobe_bin.parent().unwrap_or(&ffmpeg_root).to_path_buf(),
+            );
+        }
+    }
+
+    if gst_bin.is_dir() {
+        prepend_env_path_var("PATH", gst_bin.clone());
+    }
+    let gst_launch = gst_bin.join(gst_launch_binary_name());
+    if gst_launch.is_file() {
+        // SAFETY: Startup-only env mutation before media initialization.
+        unsafe {
+            std::env::set_var("ANICA_GSTREAMER_PATH", &gst_launch);
+        }
+    }
+
+    if gst_plugins.is_dir() {
+        let plugin_path = gst_plugins.to_string_lossy().to_string();
+        for name in [
+            "GST_PLUGIN_PATH",
+            "GST_PLUGIN_PATH_1_0",
+            "GST_PLUGIN_SYSTEM_PATH_1_0",
+            "GST_PLUGIN_SYSTEM_PATH",
+        ] {
+            // SAFETY: Startup-only env mutation before media initialization.
+            unsafe {
+                std::env::set_var(name, &plugin_path);
+            }
+        }
+    }
+
+    if gst_scanner.is_file() {
+        // SAFETY: Startup-only env mutation before media initialization.
+        unsafe {
+            std::env::set_var("GST_PLUGIN_SCANNER", &gst_scanner);
+            std::env::set_var("GST_PLUGIN_SCANNER_1_0", &gst_scanner);
+        }
+    }
+
+    if gst_typelib.is_dir() {
+        prepend_env_path_var("GI_TYPELIB_PATH", gst_typelib);
+    }
+
+    if runtime_root.join("gstreamer").is_dir() {
+        let cache_dir = runtime_root.join("gstreamer").join("cache");
+        let _ = std::fs::create_dir_all(&cache_dir);
+        // SAFETY: Startup-only env mutation before media initialization.
+        unsafe {
+            std::env::set_var("GST_REGISTRY_1_0", cache_dir.join("registry.bin"));
+        }
+    }
+
+    if cfg!(target_os = "macos") {
+        let mut dyld_values = Vec::new();
+        if gst_lib.is_dir() {
+            dyld_values.push(gst_lib.to_string_lossy().to_string());
+        }
+        if ffmpeg_lib.is_dir() {
+            dyld_values.push(ffmpeg_lib.to_string_lossy().to_string());
+        }
+        if let Some(existing) = std::env::var_os("DYLD_FALLBACK_LIBRARY_PATH")
+            && !existing.is_empty()
+        {
+            dyld_values.push(existing.to_string_lossy().to_string());
+        }
+        if !dyld_values.is_empty() {
+            // SAFETY: Startup-only env mutation before media initialization.
+            unsafe {
+                std::env::set_var("DYLD_FALLBACK_LIBRARY_PATH", dyld_values.join(":"));
+            }
+        }
+    }
 }
 
 fn probe_tool_version(command: &str) -> Option<String> {
@@ -549,6 +717,9 @@ pub fn detect_media_dependencies(preferred_ffmpeg: Option<&str>) -> MediaDepende
     }
 
     let mut ffprobe_candidates = Vec::new();
+    if let Ok(env_ffprobe) = std::env::var("ANICA_FFPROBE_PATH") {
+        push_unique(&mut ffprobe_candidates, env_ffprobe);
+    }
     if status.ffmpeg_available {
         let ffprobe_from_selected = ffprobe_from_ffmpeg(&status.ffmpeg_command);
         push_unique(&mut ffprobe_candidates, ffprobe_from_selected);

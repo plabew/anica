@@ -27,6 +27,7 @@ use crate::core::global_state::{
     AudioTrack, Clip, ExportColorMode, LayerEffectClip, LocalMaskLayer, ScalarKeyframe,
     SubtitleGroupTransform, SubtitleTrack, VideoEffect, VideoTrack,
 };
+use crate::core::media_tools::ffprobe_from_ffmpeg;
 use crate::core::subtitle_renderer::{
     RenderedSubtitle, SubtitleRenderError, SubtitleRenderOutput, render_subtitle_pngs,
 };
@@ -4801,7 +4802,8 @@ pub fn has_audio_stream(path: &str) -> bool {
     if is_image_ext(path) {
         return false;
     }
-    let out = Command::new("ffprobe")
+    let ffprobe_bin = resolved_ffprobe_command();
+    let out = Command::new(&ffprobe_bin)
         .args([
             "-v",
             "error",
@@ -4818,6 +4820,20 @@ pub fn has_audio_stream(path: &str) -> bool {
         Ok(o) => !o.stdout.is_empty(),
         Err(_) => false,
     }
+}
+
+fn resolved_ffprobe_command() -> String {
+    if let Ok(ffprobe_bin) = std::env::var("ANICA_FFPROBE_PATH")
+        && !ffprobe_bin.trim().is_empty()
+    {
+        return ffprobe_bin;
+    }
+    if let Ok(ffmpeg_bin) = std::env::var("ANICA_FFMPEG_PATH")
+        && !ffmpeg_bin.trim().is_empty()
+    {
+        return ffprobe_from_ffmpeg(&ffmpeg_bin);
+    }
+    "ffprobe".to_string()
 }
 
 pub fn is_supported_media_path(path: &str) -> bool {
@@ -4862,7 +4878,8 @@ pub fn get_media_duration(path: &str) -> Duration {
     if is_image_ext(path) {
         return Duration::from_secs(5);
     }
-    let output = Command::new("ffprobe")
+    let ffprobe_bin = resolved_ffprobe_command();
+    let output = Command::new(&ffprobe_bin)
         .args([
             "-v",
             "error",

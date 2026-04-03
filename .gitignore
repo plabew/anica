@@ -1,5 +1,6 @@
 # Build output
 /target
+dist/
 crates/*/target
 crates/ai-subtitle-engine/target
 crates/video-engine/target

@@ -124,6 +124,7 @@ cargo build --release --bins
 ```
 
 > Detailed platform setup: [docs/INSTALL.md](docs/INSTALL.md)
+> macOS app bundling: [docs/MACOS_APP_BUNDLE.md](docs/MACOS_APP_BUNDLE.md)
 
 ### Build Requirements
 
@@ -158,7 +159,7 @@ If this is your first time running Anica on macOS, install the required host too
 ```bash
 xcode-select -p >/dev/null 2>&1 || xcode-select --install
 command -v brew >/dev/null 2>&1 || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install git gstreamer gst-plugins-base gst-plugins-good gst-editing-services
+brew install git gstreamer
 git clone https://github.com/LOVELYZOMBIEYHO/anica.git
 cd anica
 cargo run
@@ -171,8 +172,10 @@ On macOS, `cargo run` attempts to bootstrap FFmpeg locally when needed.
 ### Install GStreamer (macOS)
 
 ```bash
-brew install gstreamer gst-plugins-base gst-plugins-good gst-editing-services
+brew install gstreamer
 ```
+
+Homebrew now bundles the common `gst-*` plugin sets inside the `gstreamer` formula on macOS, so separate `gst-plugins-base`, `gst-plugins-good`, and `gst-editing-services` installs are not required there.
 
 ### Runtime Notes
 

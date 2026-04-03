@@ -21,6 +21,9 @@ use tokio::task::LocalSet;
 use tokio::time::sleep;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+#[path = "../runtime_paths.rs"]
+mod runtime_paths;
+
 #[derive(Debug)]
 struct SessionState {
     cwd: PathBuf,
@@ -247,24 +250,14 @@ fn candidate_acp_doc_roots() -> Vec<PathBuf> {
         roots.push(dir);
     }
 
-    roots.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("docs")
-            .join("acp"),
-    );
-
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd.join("docs").join("acp"));
-        roots.push(cwd.join("anica").join("docs").join("acp"));
-    }
-
-    let mut unique: Vec<PathBuf> = Vec::new();
-    for root in roots {
-        if !unique.iter().any(|p| p == &root) {
-            unique.push(root);
+    for root in runtime_paths::candidate_docs_roots() {
+        let acp_root = root.join("acp");
+        if !roots.iter().any(|existing| existing == &acp_root) {
+            roots.push(acp_root);
         }
     }
-    unique
+
+    roots
 }
 
 fn read_acp_doc_text(relative_path: &str) -> Option<String> {

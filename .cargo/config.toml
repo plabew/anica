@@ -1,5 +1,5 @@
 [target.'cfg(target_os = "macos")']
-runner = "scripts/cargo_run_with_acp_check.sh"
+runner = "scripts/cargo_run_macos_with_acp_check.sh"
 
 [target.'cfg(target_os = "linux")']
 runner = "scripts/cargo_run_with_acp_check.sh"

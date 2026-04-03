@@ -32,15 +32,13 @@ The repository includes `rust-toolchain.toml` which pins the required Rust versi
 xcode-select --install
 
 # GStreamer (video pipeline)
-brew install \
-  gstreamer \
-  gst-plugins-base \
-  gst-plugins-good \
-  gst-editing-services
+brew install gstreamer
 
 # FFmpeg (export encoding)
 brew install ffmpeg
 ```
+
+On current Homebrew/macOS setups, the common `gst-*` plugin sets are bundled into the `gstreamer` formula.
 
 ### Ubuntu / Debian
 

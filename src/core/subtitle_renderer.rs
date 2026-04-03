@@ -14,6 +14,7 @@ use image::{DynamicImage, Rgba, RgbaImage, imageops::FilterType};
 use thiserror::Error;
 
 use crate::core::global_state::{SubtitleClip, SubtitleGroupTransform, SubtitleTrack};
+use crate::runtime_paths;
 
 #[derive(Debug, Error)]
 pub enum SubtitleRenderError {
@@ -110,16 +111,7 @@ fn create_temp_dir() -> Result<PathBuf, SubtitleRenderError> {
 }
 
 fn load_extra_fonts(font_system: &mut FontSystem) {
-    let mut search_dirs = Vec::new();
-    if let Ok(dir) = std::env::var("ANICA_FONTS_DIR") {
-        search_dirs.push(PathBuf::from(dir));
-    }
-    search_dirs.push(PathBuf::from("assets/fonts"));
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        search_dirs.push(PathBuf::from(manifest).join("assets/fonts"));
-    }
-
-    for dir in search_dirs {
+    for dir in runtime_paths::candidate_font_dirs() {
         if !dir.exists() {
             continue;
         }
@@ -368,16 +360,7 @@ fn load_twemoji_image(
 }
 
 fn twemoji_search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(dir) = std::env::var("ANICA_TWEMOJI_DIR") {
-        dirs.push(PathBuf::from(dir));
-    }
-    dirs.push(PathBuf::from("assets/twemoji/72x72"));
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        dirs.push(PathBuf::from(manifest).join("assets/twemoji/72x72"));
-    }
-    dirs.push(std::env::temp_dir().join("anica_twemoji/72x72"));
-    dirs
+    runtime_paths::candidate_twemoji_dirs()
 }
 
 fn download_twemoji(code: &str) -> Option<DynamicImage> {

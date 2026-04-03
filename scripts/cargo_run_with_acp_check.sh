@@ -15,6 +15,26 @@ exe_path="$1"
 shift || true
 ANICA_RESOLVED_RUNTIME_ROOT=""
 
+configure_curated_host_gstreamer_plugins() {
+  local plugin_dir="$1"
+  local registry_path="$2"
+
+  [[ -d "${plugin_dir}" ]] || return 1
+
+  export GST_PLUGIN_PATH="${plugin_dir}"
+  export GST_PLUGIN_PATH_1_0="${plugin_dir}"
+  export GST_PLUGIN_SYSTEM_PATH_1_0="${plugin_dir}"
+  export GST_PLUGIN_SYSTEM_PATH="${plugin_dir}"
+
+  if [[ -n "${registry_path}" ]]; then
+    mkdir -p "$(dirname "${registry_path}")" 2>/dev/null || true
+    export GST_REGISTRY_1_0="${registry_path}"
+    echo "[anica-runner] Using isolated host gstreamer registry: ${GST_REGISTRY_1_0}" >&2
+  fi
+
+  echo "[anica-runner] Using curated host GStreamer plugins: ${plugin_dir}" >&2
+}
+
 rewrite_macos_macho_links_to_runtime() {
   local target_bin="$1"
   local runtime_lib="$2"
@@ -300,6 +320,11 @@ setup_repo_media_runtime() {
     # Ensure no vendored runtime vars leak into a host-linked process.
     unset GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_SYSTEM_PATH
     unset GST_PLUGIN_SCANNER GST_PLUGIN_SCANNER_1_0 GI_TYPELIB_PATH GST_REGISTRY_1_0
+    if [[ "${os}" == "macos" ]]; then
+      configure_curated_host_gstreamer_plugins \
+        "${ANICA_HOST_GSTREAMER_PLUGIN_DIR:-}" \
+        "${ANICA_HOST_GSTREAMER_REGISTRY:-}" || true
+    fi
   else
     if [[ -d "${gst_bin}" ]]; then
       export PATH="${gst_bin}:${PATH}"
@@ -416,7 +441,8 @@ if [[ "${ANICA_ACP_AUTO_BUILD:-1}" != "0" ]]; then
 fi
 
 run_main_binary_with_lc_rpath_autorepair() {
-  local script_dir repo_root stderr_log first_status os_name fallback_tools_home tools_home
+  local script_dir repo_root stderr_log stderr_pipe_dir stderr_pipe tee_pid
+  local first_status os_name fallback_tools_home tools_home
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   repo_root="$(cd "${script_dir}/.." && pwd)"
   os_name="$(uname -s)"
@@ -429,11 +455,19 @@ run_main_binary_with_lc_rpath_autorepair() {
   fallback_tools_home="${repo_root}/tools/runtime/current/${os_name}"
   tools_home="${ANICA_RESOLVED_RUNTIME_ROOT:-${fallback_tools_home}}"
   stderr_log="$(mktemp "${TMPDIR:-/tmp}/anica-runner-stderr.XXXXXX")"
+  stderr_pipe_dir="$(mktemp -d "${TMPDIR:-/tmp}/anica-runner-stderr-pipe.XXXXXX")"
+  stderr_pipe="${stderr_pipe_dir}/stderr.pipe"
+  mkfifo "${stderr_pipe}"
+  tee "${stderr_log}" < "${stderr_pipe}" >&2 &
+  tee_pid=$!
 
   set +e
-  "${exe_path}" "$@" 2> >(tee "${stderr_log}" >&2)
+  "${exe_path}" "$@" 2> "${stderr_pipe}"
   first_status=$?
   set -e
+  wait "${tee_pid}" || true
+  rm -f "${stderr_pipe}" 2>/dev/null || true
+  rmdir "${stderr_pipe_dir}" 2>/dev/null || true
 
   if [[ "${first_status}" -ne 0 ]] && rg -q "Reason: no LC_RPATH's found" "${stderr_log}"; then
     echo "[anica-runner] Detected missing LC_RPATH runtime link; running ./scripts/setup_media_tools.sh (FFmpeg-only) and retrying once..." >&2
