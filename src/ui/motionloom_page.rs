@@ -2,37 +2,82 @@
 // =========================================
 // src/ui/motionloom_page.rs — MotionLoom VFX Studio page with graph preview and template picker
 
+use std::any::Any;
+use std::collections::hash_map::DefaultHasher;
+use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Context, Element, Entity, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    MouseButton, PathPromptOptions, Render, RenderImage, Style, Subscription, Window, div,
-    prelude::*, px, rgb, rgba,
+    ClipboardItem, Context, Element, Entity, GlobalElementId, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, PathPromptOptions, Render, RenderImage,
+    ScrollWheelEvent, Style, Subscription, Window, div, prelude::*, px, rgb, rgba,
 };
 use gpui_component::{
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
     white,
 };
-use gpui_video_renderer::VideoElement;
 use image::{ImageBuffer, Rgba};
-use motionloom::{RuntimeProgram, compile_runtime_program, is_graph_script, parse_graph_script};
+use motionloom::{
+    GraphScope, RuntimeProgram, SceneRenderProfile, SceneRenderProgress, compile_runtime_program,
+    is_graph_script, next_scene_output_path_for_profile, parse_graph_script,
+    render_scene_graph_frame, render_scene_graph_to_video_with_progress,
+};
 use smallvec::SmallVec;
 use thiserror::Error;
 use url::Url;
 use video_engine::{Position, Video, VideoOptions};
 
 use crate::core::export::get_media_duration;
-use crate::core::global_state::GlobalState;
+use crate::core::global_state::{GlobalState, MediaPoolUiEvent};
 use crate::core::thumbnail;
 use crate::ui::motionloom_templates;
 use crate::ui::motionloom_templates::LayerEffectTemplateKind;
 
 const THUMB_MAX_DIM: u32 = 640;
-const PREVIEW_BOX_W: f32 = 880.0;
-const PREVIEW_BOX_H: f32 = 520.0;
+const SCENE_RENDER_PROGRESS_EVERY_FRAMES: u32 = 10;
+const SCENE_RENDER_PROGRESS_POLL_MS: u64 = 120;
+const DEFAULT_SCENE_LIVE_NODE_ID: &str = "iris_outer_soft";
+const DEFAULT_SCENE_LIVE_ATTR: &str = "x";
+
+fn panic_payload_to_string(payload: Box<dyn Any + Send + 'static>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "non-string panic payload".to_string()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SceneRenderMode {
+    CompatibilityCpu,
+    GpuNativeH264,
+    GpuNativeProRes,
+}
+
+impl SceneRenderMode {
+    const fn label(self) -> &'static str {
+        match self {
+            SceneRenderMode::CompatibilityCpu => "Compatibility Render (CPU)",
+            SceneRenderMode::GpuNativeH264 => "GPU Render",
+            SceneRenderMode::GpuNativeProRes => "GPU Render (ProRes)",
+        }
+    }
+
+    const fn profile(self) -> SceneRenderProfile {
+        match self {
+            SceneRenderMode::CompatibilityCpu => SceneRenderProfile::Cpu,
+            SceneRenderMode::GpuNativeH264 => SceneRenderProfile::Gpu,
+            SceneRenderMode::GpuNativeProRes => SceneRenderProfile::GpuProRes,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ImportedClipKind {
@@ -65,6 +110,30 @@ struct ImportedClip {
     duration: Duration,
     preview: Option<LoadedPreview>,
     error: Option<String>,
+}
+
+#[derive(Clone)]
+struct VfxAssetItem {
+    name: String,
+    path: String,
+    kind: ImportedClipKind,
+    duration: Duration,
+    preview: Option<LoadedPreview>,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+struct VfxAssetContextMenu {
+    path: String,
+    x: f32,
+    y: f32,
+}
+
+#[derive(Clone, Debug)]
+struct SceneLiveTarget {
+    id: String,
+    tag: String,
+    attrs: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -205,9 +274,18 @@ pub struct MotionLoomPage {
     script_text: String,
     script_input: Option<Entity<InputState>>,
     script_input_sub: Option<Subscription>,
+    motionloom_script_revision: u64,
+    motionloom_apply_revision: u64,
+    motionloom_render_revision: u64,
     graph_runtime: Option<RuntimeProgram>,
     runtime_preview_cache_key: Option<(usize, u32, i32, i32, i32, i32, i32, i32, u32, u32)>,
     runtime_preview_cache_image: Option<Arc<RenderImage>>,
+    scene_live_preview_cache_key: Option<(u64, u32)>,
+    scene_live_preview_cache_image: Option<(Arc<RenderImage>, u32, u32)>,
+    scene_live_knob_node_id: String,
+    scene_live_knob_attr: String,
+    scene_live_target_offset: usize,
+    scene_live_groups_only: bool,
     preview_playing: bool,
     preview_play_token: u64,
     preview_last_tick: Option<Instant>,
@@ -215,6 +293,12 @@ pub struct MotionLoomPage {
     video_preview_player: Option<Video>,
     video_preview_player_path: Option<String>,
     video_preview_last_seek_frame: Option<u32>,
+    import_modal_open: bool,
+    asset_modal_open: bool,
+    asset_folder: Option<PathBuf>,
+    asset_items: Vec<VfxAssetItem>,
+    asset_selected_idx: Option<usize>,
+    asset_context_menu: Option<VfxAssetContextMenu>,
     // Template picker state
     template_modal_open: bool,
     template_selected: Vec<LayerEffectTemplateKind>,
@@ -229,6 +313,28 @@ impl MotionLoomPage {
         })
         .detach();
 
+        let (mut initial_script, mut script_revision, apply_revision, render_revision) = {
+            let gs = global.read(cx);
+            (
+                gs.motionloom_scene_script().to_string(),
+                gs.motionloom_scene_script_revision(),
+                gs.motionloom_scene_apply_revision(),
+                gs.motionloom_scene_render_revision(),
+            )
+        };
+
+        if initial_script.trim().is_empty() {
+            initial_script = motionloom_templates::DEFAULT_GRAPH_SCRIPT.to_string();
+            let (new_script_revision, _new_apply_revision) = global.update(cx, |gs, _cx| {
+                gs.set_motionloom_scene_script(initial_script.clone(), false);
+                (
+                    gs.motionloom_scene_script_revision(),
+                    gs.motionloom_scene_apply_revision(),
+                )
+            });
+            script_revision = new_script_revision;
+        }
+
         Self {
             global,
             clips: Vec::new(),
@@ -236,12 +342,21 @@ impl MotionLoomPage {
             preview_frame: 0,
             status_line: "Import a video or still to start building a MotionLoom graph."
                 .to_string(),
-            script_text: motionloom_templates::DEFAULT_GRAPH_SCRIPT.to_string(),
+            script_text: initial_script,
             script_input: None,
             script_input_sub: None,
+            motionloom_script_revision: script_revision,
+            motionloom_apply_revision: apply_revision,
+            motionloom_render_revision: render_revision,
             graph_runtime: None,
             runtime_preview_cache_key: None,
             runtime_preview_cache_image: None,
+            scene_live_preview_cache_key: None,
+            scene_live_preview_cache_image: None,
+            scene_live_knob_node_id: DEFAULT_SCENE_LIVE_NODE_ID.to_string(),
+            scene_live_knob_attr: DEFAULT_SCENE_LIVE_ATTR.to_string(),
+            scene_live_target_offset: 0,
+            scene_live_groups_only: false,
             preview_playing: false,
             preview_play_token: 0,
             preview_last_tick: None,
@@ -249,6 +364,12 @@ impl MotionLoomPage {
             video_preview_player: None,
             video_preview_player_path: None,
             video_preview_last_seek_frame: None,
+            import_modal_open: false,
+            asset_modal_open: false,
+            asset_folder: None,
+            asset_items: Vec::new(),
+            asset_selected_idx: None,
+            asset_context_menu: None,
             template_modal_open: false,
             template_selected: Vec::new(),
             template_add_time_parameter: false,
@@ -322,6 +443,525 @@ impl MotionLoomPage {
         Ok(Arc::new(RenderImage::new(frames)))
     }
 
+    fn script_hash(script: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        script.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn scene_live_preview_image(
+        &mut self,
+        frame: u32,
+    ) -> Result<Option<(Arc<RenderImage>, u32, u32)>, String> {
+        let raw = self.script_text.clone();
+        if raw.trim().is_empty() {
+            return Ok(None);
+        }
+        if !is_graph_script(&raw) {
+            return Err(
+                "Scene live preview requires a <Graph ...> MotionLoom DSL block.".to_string(),
+            );
+        }
+
+        let script_hash = Self::script_hash(&raw);
+        let key = (script_hash, frame);
+        if self.scene_live_preview_cache_key == Some(key)
+            && let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref()
+        {
+            return Ok(Some((image.clone(), *w, *h)));
+        }
+
+        let graph = parse_graph_script(&raw).map_err(|err| {
+            format!(
+                "Scene live parse error at line {}: {}",
+                err.line, err.message
+            )
+        })?;
+        if graph.scope != GraphScope::Scene {
+            return Err("Scene live preview requires <Graph scope=\"scene\" ...>.".to_string());
+        }
+        if !graph.has_scene_nodes() {
+            return Err("Scene live preview needs at least one scene node.".to_string());
+        }
+
+        let rgba = render_scene_graph_frame(&graph, frame, SceneRenderProfile::Cpu)
+            .map_err(|err| format!("Scene live render error: {err}"))?;
+        let (w, h) = rgba.dimensions();
+        let mut bgra = rgba.into_raw();
+        for px in bgra.chunks_mut(4) {
+            px.swap(0, 2);
+        }
+        let image = Self::render_image_from_bgra(w, h, bgra).map_err(|err| err.to_string())?;
+        self.scene_live_preview_cache_key = Some(key);
+        self.scene_live_preview_cache_image = Some((image.clone(), w, h));
+        Ok(Some((image, w, h)))
+    }
+
+    fn format_live_number(value: f32) -> String {
+        let mut text = format!("{value:.2}");
+        while text.contains('.') && text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.pop();
+        }
+        if text == "-0" { "0".to_string() } else { text }
+    }
+
+    fn parse_live_number(raw: &str) -> Option<f32> {
+        let mut text = raw.trim();
+        if let Some(inner) = text.strip_prefix('{').and_then(|v| v.strip_suffix('}')) {
+            text = inner.trim();
+        }
+        text.parse::<f32>().ok()
+    }
+
+    fn is_attr_ident_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b':'
+    }
+
+    fn find_scene_tag_range_by_id(script: &str, node_id: &str) -> Option<(usize, usize)> {
+        let id_patterns = [
+            format!("id=\"{node_id}\""),
+            format!("id='{node_id}'"),
+            format!("id={node_id}"),
+        ];
+        let id_pos = id_patterns
+            .iter()
+            .filter_map(|pattern| script.find(pattern))
+            .min()?;
+        let tag_start = script[..id_pos].rfind('<')?;
+        let tag_end = id_pos + script[id_pos..].find('>')? + 1;
+        Some((tag_start, tag_end))
+    }
+
+    fn find_attr_value_range_in_tag(tag: &str, attr: &str) -> Option<(usize, usize)> {
+        let bytes = tag.as_bytes();
+        let mut search_from = 0;
+        while search_from < tag.len() {
+            let rel = tag[search_from..].find(attr)?;
+            let attr_start = search_from + rel;
+            let attr_end = attr_start + attr.len();
+            if attr_start > 0 && Self::is_attr_ident_byte(bytes[attr_start - 1]) {
+                search_from = attr_end;
+                continue;
+            }
+            if attr_end < bytes.len() && Self::is_attr_ident_byte(bytes[attr_end]) {
+                search_from = attr_end;
+                continue;
+            }
+
+            let mut i = attr_end;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= bytes.len() || bytes[i] != b'=' {
+                search_from = attr_end;
+                continue;
+            }
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                return None;
+            }
+            if bytes[i] == b'"' || bytes[i] == b'\'' {
+                let quote = bytes[i];
+                let value_start = i + 1;
+                let value_end = tag[value_start..]
+                    .bytes()
+                    .position(|byte| byte == quote)
+                    .map(|pos| value_start + pos)?;
+                return Some((value_start, value_end));
+            }
+
+            let value_start = i;
+            while i < bytes.len()
+                && !bytes[i].is_ascii_whitespace()
+                && bytes[i] != b'>'
+                && bytes[i] != b'/'
+            {
+                i += 1;
+            }
+            return Some((value_start, i));
+        }
+        None
+    }
+
+    fn tag_name(tag: &str) -> Option<String> {
+        let tag = tag.trim_start();
+        let body = tag.strip_prefix('<')?.trim_start();
+        if body.starts_with('/') || body.starts_with('!') || body.starts_with('?') {
+            return None;
+        }
+        let end = body
+            .find(|ch: char| ch.is_ascii_whitespace() || ch == '/' || ch == '>')
+            .unwrap_or(body.len());
+        if end == 0 {
+            None
+        } else {
+            Some(body[..end].to_string())
+        }
+    }
+
+    fn is_scene_live_target_tag(tag: &str) -> bool {
+        matches!(
+            tag,
+            "Character"
+                | "Group"
+                | "Camera"
+                | "Mask"
+                | "Circle"
+                | "Rect"
+                | "Path"
+                | "FaceJaw"
+                | "Line"
+                | "Polyline"
+                | "Text"
+                | "Image"
+                | "Svg"
+        )
+    }
+
+    fn push_scene_live_attr(attrs: &mut Vec<String>, attr: &str) {
+        if !attrs.iter().any(|existing| existing == attr) {
+            attrs.push(attr.to_string());
+        }
+    }
+
+    fn scene_live_attrs_for_tag(tag_name: &str, tag: &str) -> Vec<String> {
+        let mut attrs = Vec::new();
+        match tag_name {
+            "Character" | "Group" | "Camera" | "Mask" => {
+                for attr in ["x", "y", "rotation", "scale", "opacity"] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "Circle" => {
+                for attr in ["x", "y", "radius", "opacity", "strokeWidth"] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "Rect" | "Image" | "Svg" | "Text" => {
+                for attr in ["x", "y", "width", "height", "rotation", "scale", "opacity"] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "Line" => {
+                for attr in ["x1", "y1", "x2", "y2", "strokeWidth", "opacity"] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "Path" | "Polyline" => {
+                for attr in ["strokeWidth", "opacity", "feather"] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "FaceJaw" => {
+                for attr in [
+                    "x",
+                    "y",
+                    "width",
+                    "height",
+                    "cheekWidth",
+                    "chinWidth",
+                    "chinSharpness",
+                    "jawEase",
+                    "scale",
+                    "strokeWidth",
+                    "opacity",
+                ] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            _ => {}
+        }
+
+        for attr in [
+            "x",
+            "y",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "radius",
+            "width",
+            "height",
+            "cheekWidth",
+            "chinWidth",
+            "chinSharpness",
+            "jawEase",
+            "rotation",
+            "scale",
+            "opacity",
+            "strokeWidth",
+            "feather",
+        ] {
+            if Self::find_attr_value_range_in_tag(tag, attr).is_some() {
+                Self::push_scene_live_attr(&mut attrs, attr);
+            }
+        }
+        attrs
+    }
+
+    fn extract_scene_live_targets(script: &str) -> Vec<SceneLiveTarget> {
+        let mut out = Vec::new();
+        let mut search_from = 0;
+        while let Some(rel_start) = script[search_from..].find('<') {
+            let tag_start = search_from + rel_start;
+            let Some(rel_end) = script[tag_start..].find('>') else {
+                break;
+            };
+            let tag_end = tag_start + rel_end + 1;
+            let tag = &script[tag_start..tag_end];
+            if let Some(tag_name) = Self::tag_name(tag)
+                && Self::is_scene_live_target_tag(&tag_name)
+                && let Some((id_start, id_end)) = Self::find_attr_value_range_in_tag(tag, "id")
+            {
+                let id = tag[id_start..id_end].trim().to_string();
+                if !id.is_empty() && !out.iter().any(|target: &SceneLiveTarget| target.id == id) {
+                    let attrs = Self::scene_live_attrs_for_tag(&tag_name, tag);
+                    if !attrs.is_empty() {
+                        out.push(SceneLiveTarget {
+                            id,
+                            tag: tag_name,
+                            attrs,
+                        });
+                    }
+                }
+            }
+            search_from = tag_end;
+        }
+        out
+    }
+
+    fn default_scene_live_attr(attrs: &[String]) -> String {
+        for preferred in [
+            "x",
+            "y",
+            "radius",
+            "rotation",
+            "scale",
+            "opacity",
+            "strokeWidth",
+        ] {
+            if attrs.iter().any(|attr| attr == preferred) {
+                return preferred.to_string();
+            }
+        }
+        attrs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_SCENE_LIVE_ATTR.to_string())
+    }
+
+    fn overall_scene_live_target<'a>(
+        targets: &'a [SceneLiveTarget],
+    ) -> Option<&'a SceneLiveTarget> {
+        targets
+            .iter()
+            .find(|target| target.tag == "Character" || target.tag == "Group")
+            .or_else(|| {
+                targets
+                    .iter()
+                    .find(|target| target.tag == "Camera" || target.tag == "Mask")
+            })
+            .or_else(|| targets.first())
+    }
+
+    fn ensure_scene_live_selection(&mut self, targets: &[SceneLiveTarget]) {
+        let Some(mut target) = targets
+            .iter()
+            .find(|target| target.id == self.scene_live_knob_node_id)
+        else {
+            if let Some(next) = Self::overall_scene_live_target(targets) {
+                self.scene_live_knob_node_id = next.id.clone();
+                self.scene_live_knob_attr = Self::default_scene_live_attr(&next.attrs);
+            }
+            return;
+        };
+
+        if !target
+            .attrs
+            .iter()
+            .any(|attr| attr == &self.scene_live_knob_attr)
+        {
+            self.scene_live_knob_attr = Self::default_scene_live_attr(&target.attrs);
+            target = targets
+                .iter()
+                .find(|target| target.id == self.scene_live_knob_node_id)
+                .unwrap_or(target);
+        }
+
+        if target.attrs.is_empty() {
+            self.scene_live_knob_attr = DEFAULT_SCENE_LIVE_ATTR.to_string();
+        }
+    }
+
+    fn select_scene_live_target(&mut self, id: String, attrs: Vec<String>) {
+        self.scene_live_knob_node_id = id;
+        if !attrs.iter().any(|attr| attr == &self.scene_live_knob_attr) {
+            self.scene_live_knob_attr = Self::default_scene_live_attr(&attrs);
+        }
+        self.status_line = format!(
+            "Live target selected: {}.{}.",
+            self.scene_live_knob_node_id, self.scene_live_knob_attr
+        );
+    }
+
+    fn select_scene_live_attr(&mut self, attr: String) {
+        self.scene_live_knob_attr = attr;
+        self.status_line = format!(
+            "Live attribute selected: {}.{}.",
+            self.scene_live_knob_node_id, self.scene_live_knob_attr
+        );
+    }
+
+    fn find_scene_tag_attr_number(script: &str, node_id: &str, attr: &str) -> Option<f32> {
+        let (tag_start, tag_end) = Self::find_scene_tag_range_by_id(script, node_id)?;
+        let tag = &script[tag_start..tag_end];
+        let (value_start, value_end) = Self::find_attr_value_range_in_tag(tag, attr)?;
+        Self::parse_live_number(&tag[value_start..value_end])
+    }
+
+    fn patch_scene_tag_attr_number(
+        script: &str,
+        node_id: &str,
+        attr: &str,
+        value: f32,
+    ) -> Result<String, String> {
+        let (tag_start, tag_end) = Self::find_scene_tag_range_by_id(script, node_id)
+            .ok_or_else(|| format!("Live knob target id=\"{node_id}\" was not found."))?;
+        let tag = &script[tag_start..tag_end];
+        let value_text = Self::format_live_number(value);
+
+        if let Some((value_start, value_end)) = Self::find_attr_value_range_in_tag(tag, attr) {
+            let abs_start = tag_start + value_start;
+            let abs_end = tag_start + value_end;
+            let mut out = String::with_capacity(script.len() + value_text.len());
+            out.push_str(&script[..abs_start]);
+            out.push_str(&value_text);
+            out.push_str(&script[abs_end..]);
+            return Ok(out);
+        }
+
+        let insert_at = tag
+            .rfind("/>")
+            .map(|rel| tag_start + rel)
+            .unwrap_or(tag_end.saturating_sub(1));
+        let mut out = String::with_capacity(script.len() + attr.len() + value_text.len() + 4);
+        out.push_str(&script[..insert_at]);
+        out.push(' ');
+        out.push_str(attr);
+        out.push_str("=\"");
+        out.push_str(&value_text);
+        out.push('"');
+        out.push_str(&script[insert_at..]);
+        Ok(out)
+    }
+
+    fn scene_live_knob_current_value(&self) -> Option<f32> {
+        Self::find_scene_tag_attr_number(
+            &self.script_text,
+            &self.scene_live_knob_node_id,
+            &self.scene_live_knob_attr,
+        )
+    }
+
+    fn scene_live_attr_default_value(attr: &str) -> f32 {
+        match attr {
+            "scale" | "opacity" => 1.0,
+            _ => 0.0,
+        }
+    }
+
+    fn clamp_scene_live_attr_value(attr: &str, value: f32) -> f32 {
+        match attr {
+            "scale" => value.clamp(0.01, 20.0),
+            "opacity" => value.clamp(0.0, 1.0),
+            "chinSharpness" | "jawEase" => value.clamp(0.0, 1.0),
+            "radius" | "width" | "height" | "cheekWidth" | "chinWidth" | "strokeWidth"
+            | "feather" => value.max(0.0),
+            _ => value,
+        }
+    }
+
+    fn scene_live_attr_base_step(attr: &str) -> f32 {
+        match attr {
+            "scale" | "opacity" => 0.05,
+            "chinSharpness" | "jawEase" => 0.02,
+            _ => 1.0,
+        }
+    }
+
+    fn nudge_scene_live_knob(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self
+            .scene_live_knob_current_value()
+            .unwrap_or_else(|| Self::scene_live_attr_default_value(&self.scene_live_knob_attr));
+        let next = Self::clamp_scene_live_attr_value(&self.scene_live_knob_attr, current + delta);
+        match Self::patch_scene_tag_attr_number(
+            &self.script_text,
+            &self.scene_live_knob_node_id,
+            &self.scene_live_knob_attr,
+            next,
+        ) {
+            Ok(script) => {
+                self.set_script_text(script, window, cx);
+                self.scene_live_preview_cache_key = None;
+                self.scene_live_preview_cache_image = None;
+                self.status_line = format!(
+                    "Updated selected group attr: {}.{} = {}.",
+                    self.scene_live_knob_node_id,
+                    self.scene_live_knob_attr,
+                    Self::format_live_number(next)
+                );
+            }
+            Err(message) => {
+                self.status_line = message;
+            }
+        }
+    }
+
+    fn scene_live_scroll_delta(evt: &ScrollWheelEvent, attr: &str) -> f32 {
+        let delta_y = evt.delta.pixel_delta(px(10.0)).y / px(1.0);
+        if delta_y.abs() <= f32::EPSILON {
+            return 0.0;
+        }
+        let base_step = Self::scene_live_attr_base_step(attr);
+        let step = if evt.modifiers.shift {
+            base_step * 0.1
+        } else if evt.modifiers.alt {
+            base_step * 10.0
+        } else {
+            base_step
+        };
+        if delta_y < 0.0 { step } else { -step }
+    }
+
+    fn scene_live_step_labels(attr: &str) -> (f32, f32, String, String, String, String) {
+        let small = Self::scene_live_attr_base_step(attr);
+        let large = small * 10.0;
+        (
+            small,
+            large,
+            format!("-{}", Self::format_live_number(large)),
+            format!("-{}", Self::format_live_number(small)),
+            format!("+{}", Self::format_live_number(small)),
+            format!("+{}", Self::format_live_number(large)),
+        )
+    }
+
+    fn scene_live_scroll_hint(attr: &str) -> String {
+        let base_step = Self::scene_live_attr_base_step(attr);
+        format!(
+            "Scroll the selected value: normal = {}, Shift = {}, Option/Alt = {}. This edits the DSL immediately.",
+            Self::format_live_number(base_step),
+            Self::format_live_number(base_step * 0.1),
+            Self::format_live_number(base_step * 10.0)
+        )
+    }
+
     // Nearest-neighbor resize for CPU preview rendering.
     fn resize_bgra_nearest(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
         if src_w == dst_w && src_h == dst_h {
@@ -384,7 +1024,10 @@ impl MotionLoomPage {
             preview_fps: Some(fps),
             appsink_max_buffers: Some(2),
             #[cfg(target_os = "macos")]
-            prefer_surface: true,
+            // VFX Stage favors decode compatibility over NV12 surface fast-path.
+            // Scene renders may be ProRes/yuv422p10le and can fail to produce stable
+            // surface frames in this panel if NV12 is forced too early.
+            prefer_surface: false,
             #[cfg(target_os = "macos")]
             strict_surface_proxy_nv12: false,
             benchmark_raw_appsink: VideoOptions::benchmark_raw_appsink_from_env(),
@@ -416,33 +1059,6 @@ impl MotionLoomPage {
             self.video_preview_last_seek_frame = Some(frame);
         }
         true
-    }
-
-    // Provide the video player handle for the stage preview, managing
-    // play/pause transport depending on whether live playback is active.
-    fn video_preview_player_for_stage(
-        &mut self,
-        path: &str,
-        frame: u32,
-        use_live_playback: bool,
-    ) -> Option<Video> {
-        if self.ensure_video_preview_player(path).is_err() {
-            return None;
-        }
-        let player = self.video_preview_player.as_ref()?;
-        if use_live_playback {
-            player.set_paused(false);
-            self.video_preview_last_seek_frame = None;
-        } else {
-            player.set_paused(true);
-            if self.video_preview_last_seek_frame != Some(frame) {
-                let fps = self.playback_fps().max(1.0);
-                let seek_t = Duration::from_secs_f64(frame as f64 / fps as f64);
-                let _ = player.seek(Position::Time(seek_t), false);
-                self.video_preview_last_seek_frame = Some(frame);
-            }
-        }
-        self.video_preview_player.clone()
     }
 
     fn video_preview_frame_bgra(&mut self, path: &str, frame: u32) -> Option<(Vec<u8>, u32, u32)> {
@@ -501,7 +1117,27 @@ impl MotionLoomPage {
             if step > 0 {
                 this.preview_frame_accum -= step as f32;
                 let frame_count = this.playback_frame_count();
-                this.preview_frame = (this.preview_frame + step) % frame_count;
+                let stop_on_end = this
+                    .graph_runtime
+                    .as_ref()
+                    .map(|runtime| runtime.graph().scope == GraphScope::Scene)
+                    .unwrap_or(false);
+                if stop_on_end {
+                    let last_frame = frame_count.saturating_sub(1);
+                    let next = this.preview_frame.saturating_add(step);
+                    if next >= frame_count {
+                        this.preview_frame = last_frame;
+                        this.preview_playing = false;
+                        this.preview_last_tick = None;
+                        this.preview_frame_accum = 0.0;
+                        this.status_line =
+                            format!("Scene preview reached end at frame {}.", this.preview_frame);
+                    } else {
+                        this.preview_frame = next;
+                    }
+                } else {
+                    this.preview_frame = (this.preview_frame + step) % frame_count;
+                }
                 cx.notify();
             }
 
@@ -775,9 +1411,224 @@ impl MotionLoomPage {
         }
     }
 
+    fn build_vfx_asset_item(
+        path: &str,
+        ffmpeg_path: &str,
+        cache_root: &Path,
+        can_generate_video_thumbnail: bool,
+    ) -> VfxAssetItem {
+        let pb = PathBuf::from(path);
+        let name = pb
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(path)
+            .to_string();
+        let kind = if Self::is_image_path(path) {
+            ImportedClipKind::Image
+        } else {
+            ImportedClipKind::Video
+        };
+        let duration = if kind == ImportedClipKind::Video {
+            get_media_duration(path)
+        } else {
+            Duration::ZERO
+        };
+
+        if kind == ImportedClipKind::Image {
+            return match Self::load_render_image(&pb) {
+                Ok(preview) => VfxAssetItem {
+                    name,
+                    path: path.to_string(),
+                    kind,
+                    duration,
+                    preview: Some(preview),
+                    error: None,
+                },
+                Err(err) => VfxAssetItem {
+                    name,
+                    path: path.to_string(),
+                    kind,
+                    duration,
+                    preview: None,
+                    error: Some(err.to_string()),
+                },
+            };
+        }
+
+        let preview = if can_generate_video_thumbnail {
+            let thumb_path = thumbnail::thumbnail_path_for_in(cache_root, &pb, THUMB_MAX_DIM);
+            thumbnail::run_thumbnail_job(ffmpeg_path, &pb, &thumb_path, THUMB_MAX_DIM)
+                .map_err(MotionLoomPageError::from)
+                .and_then(|_| Self::load_render_image(&thumb_path))
+                .ok()
+        } else {
+            None
+        };
+
+        VfxAssetItem {
+            name,
+            path: path.to_string(),
+            kind,
+            duration,
+            preview,
+            error: None,
+        }
+    }
+
+    fn load_vfx_asset_folder(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        let (ffmpeg_path, cache_root, can_generate_video_thumbnail) = {
+            let gs = self.global.read(cx);
+            (
+                gs.ffmpeg_path.clone(),
+                gs.cache_root_dir(),
+                gs.media_tools_ready_for_preview_gen(),
+            )
+        };
+
+        let mut paths = match fs::read_dir(&folder) {
+            Ok(entries) => entries
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.is_file())
+                .filter(|path| {
+                    path.to_str()
+                        .map(Self::is_supported_clip_path)
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<_>>(),
+            Err(err) => {
+                self.status_line = format!("VFX Assets folder error: {err}");
+                return;
+            }
+        };
+        paths.sort_by_key(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default()
+        });
+
+        self.asset_items = paths
+            .iter()
+            .filter_map(|path| path.to_str())
+            .map(|path| {
+                Self::build_vfx_asset_item(
+                    path,
+                    &ffmpeg_path,
+                    &cache_root,
+                    can_generate_video_thumbnail,
+                )
+            })
+            .collect();
+        self.asset_folder = Some(folder.clone());
+        self.asset_selected_idx = if self.asset_items.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+        self.asset_context_menu = None;
+        self.status_line = if self.asset_items.is_empty() {
+            format!(
+                "VFX Assets loaded 0 item(s) from {}. No supported files found in this folder root.",
+                folder.to_string_lossy()
+            )
+        } else {
+            format!(
+                "VFX Assets loaded {} item(s) from {}.",
+                self.asset_items.len(),
+                folder.to_string_lossy()
+            )
+        };
+    }
+
+    fn refresh_vfx_asset_folder(&mut self, cx: &mut Context<Self>) {
+        let Some(folder) = self.asset_folder.clone() else {
+            self.status_line = "Open a folder before refreshing VFX Assets.".to_string();
+            return;
+        };
+        self.load_vfx_asset_folder(folder, cx);
+    }
+
     fn current_clip(&self) -> Option<&ImportedClip> {
         let idx = self.selected_idx?;
         self.clips.get(idx)
+    }
+
+    fn sync_script_to_global(&mut self, cx: &mut Context<Self>, apply_now: bool) {
+        let text = self.script_text.clone();
+        let (script_revision, apply_revision) = self.global.update(cx, |gs, _cx| {
+            gs.set_motionloom_scene_script(text, apply_now);
+            (
+                gs.motionloom_scene_script_revision(),
+                gs.motionloom_scene_apply_revision(),
+            )
+        });
+        self.motionloom_script_revision = script_revision;
+        self.motionloom_apply_revision = apply_revision;
+    }
+
+    fn sync_script_from_global(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (global_script, script_revision, apply_revision) = {
+            let gs = self.global.read(cx);
+            (
+                gs.motionloom_scene_script().to_string(),
+                gs.motionloom_scene_script_revision(),
+                gs.motionloom_scene_apply_revision(),
+            )
+        };
+
+        if script_revision != self.motionloom_script_revision {
+            self.motionloom_script_revision = script_revision;
+            if global_script != self.script_text {
+                self.set_script_text(global_script.clone(), window, cx);
+            }
+        }
+
+        if apply_revision != self.motionloom_apply_revision {
+            self.motionloom_apply_revision = apply_revision;
+            if global_script != self.script_text {
+                self.set_script_text(global_script, window, cx);
+            }
+            self.apply_script_command(cx);
+        }
+    }
+
+    fn parse_scene_render_mode_token(token: &str) -> Option<SceneRenderMode> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "gpu" | "gpu_render" | "gpu_h264" | "gpu_native_h264" => {
+                Some(SceneRenderMode::GpuNativeH264)
+            }
+            "gpu_prores" | "gpu-prores" | "prores_gpu" => Some(SceneRenderMode::GpuNativeProRes),
+            "compatibility_cpu" | "compatibility-cpu" | "cpu" | "cpu_render" => {
+                Some(SceneRenderMode::CompatibilityCpu)
+            }
+            _ => None,
+        }
+    }
+
+    fn sync_render_request_from_global(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (render_revision, render_mode) = {
+            let gs = self.global.read(cx);
+            (
+                gs.motionloom_scene_render_revision(),
+                gs.motionloom_scene_render_mode().map(ToString::to_string),
+            )
+        };
+
+        if render_revision == self.motionloom_render_revision {
+            return;
+        }
+        self.motionloom_render_revision = render_revision;
+
+        let Some(mode_token) = render_mode else {
+            return;
+        };
+        let Some(mode) = Self::parse_scene_render_mode_token(&mode_token) else {
+            self.status_line = format!(
+                "Unsupported MotionLoom render mode token from ACP: {}",
+                mode_token
+            );
+            return;
+        };
+        self.render_scene_to_media_pool(mode, window, cx);
     }
 
     fn ensure_script_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -799,9 +1650,15 @@ impl MotionLoomPage {
         let sub = cx.subscribe(&input, |this, input, ev, cx| match ev {
             InputEvent::Change => {
                 this.script_text = input.read(cx).value().to_string();
+                this.scene_live_preview_cache_key = None;
+                this.scene_live_preview_cache_image = None;
+                this.sync_script_to_global(cx, false);
             }
             InputEvent::PressEnter { secondary } => {
                 this.script_text = input.read(cx).value().to_string();
+                this.scene_live_preview_cache_key = None;
+                this.scene_live_preview_cache_image = None;
+                this.sync_script_to_global(cx, false);
                 if *secondary {
                     this.apply_script_command(cx);
                     cx.notify();
@@ -849,6 +1706,8 @@ impl MotionLoomPage {
                     self.preview_frame_accum = 0.0;
                     self.runtime_preview_cache_key = None;
                     self.runtime_preview_cache_image = None;
+                    self.scene_live_preview_cache_key = None;
+                    self.scene_live_preview_cache_image = None;
                     self.video_preview_last_seek_frame = None;
                     self.status_line =
                         format!("Runtime ACTIVE | {} | {}", graph_summary, runtime_summary);
@@ -866,19 +1725,205 @@ impl MotionLoomPage {
         }
     }
 
+    fn render_scene_to_media_pool(
+        &mut self,
+        mode: SceneRenderMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let raw = self.script_text.clone();
+        let graph = match parse_graph_script(&raw) {
+            Ok(graph) => graph,
+            Err(err) => {
+                self.status_line = format!(
+                    "Scene graph parse error at line {}: {}",
+                    err.line, err.message
+                );
+                return;
+            }
+        };
+        if graph.scope != GraphScope::Scene {
+            self.status_line = "Scene render requires <Graph scope=\"scene\" ...>.".to_string();
+            return;
+        }
+        if !graph.has_scene_nodes() {
+            self.status_line =
+                "Scene graph needs at least one scene node: <Scene>, <Solid>, <Text>, <Image>, <Svg>, <Rect>, <Circle>, <Line>, <Polyline>, <Path>, <Camera>, or <Group>."
+                    .to_string();
+            return;
+        }
+
+        let (ffmpeg_path, output_dir, cache_root, can_generate_video_thumbnail) = {
+            let gs = self.global.read(cx);
+            if !gs.media_tools_ready_for_preview_gen() {
+                self.status_line =
+                    "MISSING_FFMPEG: MotionLoom scene render requires FFmpeg.".to_string();
+                return;
+            }
+            (
+                gs.ffmpeg_path.clone(),
+                gs.generated_media_root_dir().join("motionloom_generated"),
+                gs.cache_root_dir(),
+                gs.media_tools_ready_for_preview_gen(),
+            )
+        };
+        let profile = mode.profile();
+        let output_path = match next_scene_output_path_for_profile(&output_dir, profile) {
+            Ok(path) => path,
+            Err(err) => {
+                self.status_line = format!("Scene output path error: {err}");
+                return;
+            }
+        };
+        let duration = Duration::from_millis(graph.duration_ms);
+        let global = self.global.clone();
+        let ffmpeg_for_render = ffmpeg_path.clone();
+        let ffmpeg_for_import = ffmpeg_path.clone();
+        let cache_root_for_import = cache_root.clone();
+
+        self.status_line = format!(
+            "{} started: {}...",
+            mode.label(),
+            output_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("motionloom_scene.mov")
+        );
+        cx.notify();
+
+        enum SceneRenderEvent {
+            Progress(SceneRenderProgress),
+            Finished(Result<PathBuf, String>),
+        }
+
+        let (tx, rx) = mpsc::channel::<SceneRenderEvent>();
+        let output_path_for_thread = output_path.clone();
+        std::thread::spawn(move || {
+            let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let tx_progress = tx.clone();
+                render_scene_graph_to_video_with_progress(
+                    &ffmpeg_for_render,
+                    &graph,
+                    &output_path_for_thread,
+                    profile,
+                    SCENE_RENDER_PROGRESS_EVERY_FRAMES,
+                    move |progress| {
+                        let _ = tx_progress.send(SceneRenderEvent::Progress(progress));
+                    },
+                )
+                .map(|_| output_path_for_thread.clone())
+                .map_err(|err| err.to_string())
+            }))
+            .unwrap_or_else(|payload| {
+                Err(format!(
+                    "Scene render worker panicked: {}",
+                    panic_payload_to_string(payload)
+                ))
+            });
+            let _ = tx.send(SceneRenderEvent::Finished(render_result));
+        });
+
+        cx.spawn_in(window, async move |view, window| {
+            loop {
+                gpui::Timer::after(Duration::from_millis(SCENE_RENDER_PROGRESS_POLL_MS)).await;
+
+                let mut latest_progress: Option<SceneRenderProgress> = None;
+                let mut finished: Option<Result<PathBuf, String>> = None;
+                loop {
+                    match rx.try_recv() {
+                        Ok(SceneRenderEvent::Progress(progress)) => {
+                            latest_progress = Some(progress);
+                        }
+                        Ok(SceneRenderEvent::Finished(result)) => {
+                            finished = Some(result);
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            finished = Some(Err("Scene render worker disconnected.".to_string()));
+                            break;
+                        }
+                    }
+                }
+
+                let has_finished = finished.is_some();
+                let _ = view.update_in(window, |this, _window, cx| {
+                    if let Some(progress) = latest_progress {
+                        let pct = ((progress.rendered_frames as f32 / progress.total_frames as f32)
+                            * 100.0)
+                            .round()
+                            .clamp(0.0, 100.0) as u32;
+                        this.status_line = format!(
+                            "{}: {}% ({}/{})",
+                            mode.label(),
+                            pct,
+                            progress.rendered_frames,
+                            progress.total_frames
+                        );
+                    }
+
+                    if let Some(result) = finished {
+                        match result {
+                            Ok(path) => {
+                                let path_str = path.to_string_lossy().to_string();
+                                global.update(cx, |gs, cx| {
+                                    gs.add_media_pool_item(path.clone(), duration);
+                                    gs.ui_notice = Some(format!(
+                                        "MotionLoom scene added to Media Pool: {path_str}"
+                                    ));
+                                    cx.emit(MediaPoolUiEvent::StateChanged);
+                                    cx.notify();
+                                });
+
+                                let clip = Self::build_imported_clip(
+                                    &path_str,
+                                    &ffmpeg_for_import,
+                                    &cache_root_for_import,
+                                    can_generate_video_thumbnail,
+                                );
+                                this.clips.push(clip);
+                                this.selected_idx = Some(this.clips.len().saturating_sub(1));
+                                this.status_line = format!(
+                                    "{} done: {}",
+                                    mode.label(),
+                                    path.file_name()
+                                        .and_then(|name| name.to_str())
+                                        .unwrap_or("motionloom_scene.mov")
+                                );
+                            }
+                            Err(err) => {
+                                this.status_line = format!("{} failed: {err}", mode.label());
+                            }
+                        }
+                    }
+                    cx.notify();
+                });
+
+                if has_finished {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     // Set the script text and sync into the input widget.
     fn set_script_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.script_text = text.clone();
+        self.scene_live_preview_cache_key = None;
+        self.scene_live_preview_cache_image = None;
         if let Some(input) = self.script_input.as_ref() {
             input.update(cx, |this, cx| {
                 this.set_value(text, window, cx);
             });
         }
+        self.sync_script_to_global(cx, false);
     }
 
     fn control_button(label: &'static str) -> gpui::Div {
         div()
             .h(px(28.0))
+            .flex_shrink_0()
             .px_2()
             .rounded_md()
             .border_1()
@@ -892,6 +1937,96 @@ impl MotionLoomPage {
             .items_center()
             .justify_center()
             .child(label)
+    }
+
+    fn scene_live_chip(label: String, active: bool) -> gpui::Div {
+        let border = if active {
+            rgba(0x79c7ffcc)
+        } else {
+            rgba(0xffffff24)
+        };
+        let bg = if active {
+            rgba(0x1f5c85aa)
+        } else {
+            rgba(0xffffff0e)
+        };
+        div()
+            .h(px(26.0))
+            .flex_shrink_0()
+            .px_2()
+            .rounded_md()
+            .border_1()
+            .border_color(border)
+            .bg(bg)
+            .hover(|s| s.bg(white().opacity(0.11)))
+            .cursor_pointer()
+            .text_xs()
+            .text_color(white().opacity(if active { 0.96 } else { 0.78 }))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(label)
+    }
+
+    fn scene_live_checkbox(label: &'static str, checked: bool) -> gpui::Div {
+        let border = if checked {
+            rgba(0x79c7ffcc)
+        } else {
+            rgba(0xffffff28)
+        };
+        let bg = if checked {
+            rgba(0x1f5c85aa)
+        } else {
+            rgba(0xffffff0c)
+        };
+        div()
+            .h(px(28.0))
+            .flex_shrink_0()
+            .px_2()
+            .rounded_md()
+            .border_1()
+            .border_color(border)
+            .bg(bg)
+            .hover(|s| s.bg(white().opacity(0.11)))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(if checked {
+                        rgba(0x9bd8ffdd)
+                    } else {
+                        rgba(0xffffff45)
+                    })
+                    .bg(if checked {
+                        rgba(0x2b78aacc)
+                    } else {
+                        rgba(0xffffff08)
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(if checked {
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(white().opacity(0.95))
+                            .child("x")
+                    } else {
+                        div()
+                    }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(if checked { 0.95 } else { 0.76 }))
+                    .child(label),
+            )
     }
 
     // --- Template picker logic (ported from inspector_panel) ---
@@ -982,9 +2117,702 @@ impl MotionLoomPage {
     }
 
     fn open_template_modal(&mut self) {
+        self.import_modal_open = false;
+        self.asset_modal_open = false;
         self.template_modal_open = true;
         self.template_selected.clear();
         self.status_line = "Template picker opened.".to_string();
+    }
+
+    fn open_import_modal(&mut self) {
+        self.template_modal_open = false;
+        self.asset_modal_open = false;
+        self.import_modal_open = true;
+        self.status_line = "Source/import panel opened.".to_string();
+    }
+
+    fn open_asset_modal(&mut self) {
+        self.template_modal_open = false;
+        self.import_modal_open = false;
+        self.asset_modal_open = true;
+        self.asset_context_menu = None;
+        self.status_line = "VFX Assets browser opened.".to_string();
+    }
+
+    fn render_vfx_asset_modal_overlay(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let viewport_w = window.viewport_size().width / px(1.0);
+        let viewport_h = window.viewport_size().height / px(1.0);
+        let modal_w = (viewport_w - 96.0).clamp(760.0, 1180.0);
+        let modal_h = (viewport_h - 88.0).clamp(520.0, 820.0);
+        let folder_label = self
+            .asset_folder
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| "No folder opened.".to_string());
+        let selected_asset = self
+            .asset_selected_idx
+            .and_then(|idx| self.asset_items.get(idx))
+            .cloned();
+
+        let open_folder_button = Self::control_button("Open Folder").on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|_this, _, win, cx| {
+                let rx = cx.prompt_for_paths(PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt: Some("Open VFX asset folder".into()),
+                });
+                cx.spawn_in(win, async move |view, window| {
+                    let Ok(result) = rx.await else {
+                        return;
+                    };
+                    let Some(paths) = result.ok().flatten() else {
+                        return;
+                    };
+                    let Some(folder) = paths.into_iter().next() else {
+                        return;
+                    };
+                    let _ = view.update_in(window, |this, _window, cx| {
+                        this.load_vfx_asset_folder(folder, cx);
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }),
+        );
+        let refresh_button = Self::control_button("Refresh").on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                this.refresh_vfx_asset_folder(cx);
+                cx.notify();
+            }),
+        );
+
+        let context_menu = self.asset_context_menu.clone().map(|menu| {
+            let menu_w = 220.0;
+            let menu_h = 40.0;
+            let menu_x = menu.x.clamp(8.0, (viewport_w - menu_w - 8.0).max(8.0));
+            let menu_y = menu.y.clamp(8.0, (viewport_h - menu_h - 8.0).max(8.0));
+            let copy_path = menu.path.clone();
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.asset_context_menu = None;
+                        cx.notify();
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, _, _, cx| {
+                        this.asset_context_menu = None;
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(menu_x))
+                        .top(px(menu_y))
+                        .w(px(menu_w))
+                        .rounded_md()
+                        .bg(rgb(0x1f1f23))
+                        .border_1()
+                        .border_color(white().opacity(0.16))
+                        .p_1()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_, _, _, cx| {
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .h(px(28.0))
+                                .rounded_sm()
+                                .px_2()
+                                .flex()
+                                .items_center()
+                                .text_sm()
+                                .text_color(white().opacity(0.92))
+                                .bg(white().opacity(0.04))
+                                .hover(|style| style.bg(white().opacity(0.10)))
+                                .cursor_pointer()
+                                .child("Copy Path")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_path.clone(),
+                                        ));
+                                        this.asset_context_menu = None;
+                                        this.status_line =
+                                            format!("Copied VFX asset path: {}", copy_path);
+                                        cx.notify();
+                                    }),
+                                ),
+                        ),
+                )
+                .into_any_element()
+        });
+
+        let asset_rows = self.asset_items.iter().enumerate().map(|(idx, item)| {
+            let active = self.asset_selected_idx == Some(idx);
+            let idx_for_select = idx;
+            let item_path_for_menu = item.path.clone();
+            let duration_label = if item.duration > Duration::ZERO {
+                format!("{:.2}s", item.duration.as_secs_f32())
+            } else {
+                "Still".to_string()
+            };
+            let thumb = item
+                .preview
+                .as_ref()
+                .map(|preview| (preview.image.clone(), preview.width, preview.height));
+            let mut row = div()
+                .rounded_md()
+                .border_1()
+                .border_color(white().opacity(if active { 0.35 } else { 0.12 }))
+                .bg(if active { rgb(0x1f2937) } else { rgb(0x111827) })
+                .p_2()
+                .flex()
+                .items_center()
+                .gap_2()
+                .cursor_pointer()
+                .hover(|s| s.bg(white().opacity(0.09)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.asset_selected_idx = Some(idx_for_select);
+                        this.asset_context_menu = None;
+                        cx.notify();
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, evt: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.asset_selected_idx = Some(idx_for_select);
+                        this.asset_context_menu = Some(VfxAssetContextMenu {
+                            path: item_path_for_menu.clone(),
+                            x: evt.position.x / px(1.0),
+                            y: evt.position.y / px(1.0),
+                        });
+                        cx.notify();
+                    }),
+                );
+            row = row.child(
+                div()
+                    .w(px(72.0))
+                    .h(px(44.0))
+                    .flex_shrink_0()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(white().opacity(0.10))
+                    .bg(rgb(0x05070c))
+                    .overflow_hidden()
+                    .when_some(thumb, |el, (image, width, height)| {
+                        el.child(FitPreviewImageElement::new(image, width, height))
+                    }),
+            );
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(white().opacity(0.92))
+                            .truncate()
+                            .child(item.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.58))
+                            .truncate()
+                            .child(format!("{} · {}", item.kind.label(), duration_label)),
+                    ),
+            )
+        });
+
+        let preview_panel = if let Some(asset) = selected_asset {
+            let preview = asset.preview.as_ref().map(|preview| {
+                (
+                    preview.image.clone(),
+                    preview.width,
+                    preview.height,
+                    preview.width,
+                    preview.height,
+                )
+            });
+            div()
+                .w(px(330.0))
+                .flex_shrink_0()
+                .min_h_0()
+                .rounded_md()
+                .border_1()
+                .border_color(white().opacity(0.12))
+                .bg(rgb(0x101722))
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .h(px(210.0))
+                        .w_full()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(white().opacity(0.12))
+                        .bg(rgb(0x05070c))
+                        .overflow_hidden()
+                        .when_some(preview, |el, (image, width, height, _, _)| {
+                            el.child(FitPreviewImageElement::new(image, width, height))
+                        }),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(white().opacity(0.94))
+                        .truncate()
+                        .child(asset.name),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(white().opacity(0.62))
+                        .child(format!(
+                            "{} · {}",
+                            asset.kind.label(),
+                            if asset.duration > Duration::ZERO {
+                                format!("{:.2}s", asset.duration.as_secs_f32())
+                            } else {
+                                "Still".to_string()
+                            }
+                        )),
+                )
+                .child(
+                    div().w_full().min_w_0().overflow_x_scrollbar().child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.58))
+                            .whitespace_nowrap()
+                            .child(asset.path),
+                    ),
+                )
+                .when_some(asset.error, |el, error| {
+                    el.child(div().text_xs().text_color(rgba(0xff8a80cc)).child(error))
+                })
+                .into_any_element()
+        } else {
+            div()
+                .w(px(330.0))
+                .flex_shrink_0()
+                .min_h_0()
+                .rounded_md()
+                .border_1()
+                .border_color(white().opacity(0.12))
+                .bg(rgb(0x101722))
+                .p_3()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_sm()
+                .text_color(white().opacity(0.58))
+                .child("Open a folder to browse VFX assets.")
+                .into_any_element()
+        };
+
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .bg(gpui_component::black().opacity(0.55))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.asset_modal_open = false;
+                    this.asset_context_menu = None;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(modal_w))
+                    .h(px(modal_h))
+                    .rounded_md()
+                    .bg(rgb(0x1a202c))
+                    .border_1()
+                    .border_color(white().opacity(0.16))
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.asset_context_menu = None;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|_, _, _, cx| {
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(white().opacity(0.9))
+                                    .child("VFX ASSETS"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(open_folder_button)
+                                    .child(refresh_button)
+                                    .child(Self::control_button("Close").on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.asset_modal_open = false;
+                                            this.asset_context_menu = None;
+                                            cx.notify();
+                                        }),
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div().w_full().min_w_0().overflow_x_scrollbar().child(
+                            div()
+                                .text_xs()
+                                .text_color(white().opacity(0.58))
+                                .whitespace_nowrap()
+                                .child(folder_label),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_hidden()
+                            .flex()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .min_h_0()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(white().opacity(0.12))
+                                    .bg(rgb(0x111827))
+                                    .p_2()
+                                    .overflow_y_scrollbar()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .when(self.asset_items.is_empty(), |el| {
+                                        el.child(
+                                            div()
+                                                .h_full()
+                                                .w_full()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_sm()
+                                                .text_color(white().opacity(0.55))
+                                                .child("No supported image/video files in this folder."),
+                                        )
+                                    })
+                                    .children(asset_rows),
+                            )
+                            .child(preview_panel),
+                    ),
+            )
+            .when_some(context_menu, |el, menu| el.child(menu))
+            .into_any_element()
+    }
+
+    fn render_import_modal_overlay(
+        &mut self,
+        selected_name: String,
+        selected_kind_label: String,
+        selected_duration_label: String,
+        selected_path_label: String,
+        imported_count: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let import_button = Self::control_button("Import Clip").on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |_this, _, win, cx| {
+                let rx = cx.prompt_for_paths(PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: true,
+                    prompt: Some("Import clips into MotionLoom".into()),
+                });
+                cx.spawn_in(win, async move |view, window| {
+                    let Ok(result) = rx.await else {
+                        return;
+                    };
+                    let Some(paths) = result.ok().flatten() else {
+                        return;
+                    };
+
+                    let _ = view.update_in(window, |this, _window, cx| {
+                        let (ffmpeg_path, cache_root, can_generate_video_thumbnail) = {
+                            let gs = this.global.read(cx);
+                            (
+                                gs.ffmpeg_path.clone(),
+                                gs.cache_root_dir(),
+                                gs.media_tools_ready_for_preview_gen(),
+                            )
+                        };
+
+                        let mut imported = 0usize;
+                        for path in paths {
+                            let path_str = path.to_string_lossy().to_string();
+                            if !Self::is_supported_clip_path(&path_str) {
+                                continue;
+                            }
+                            if this.clips.iter().any(|item| item.path == path_str) {
+                                continue;
+                            }
+                            let clip = Self::build_imported_clip(
+                                &path_str,
+                                &ffmpeg_path,
+                                &cache_root,
+                                can_generate_video_thumbnail,
+                            );
+                            this.clips.push(clip);
+                            imported += 1;
+                        }
+
+                        if imported > 0 {
+                            this.selected_idx = Some(this.clips.len().saturating_sub(1));
+                            this.status_line =
+                                format!("Imported {} clip(s) into MotionLoom Studio.", imported);
+                        } else {
+                            this.status_line =
+                                "No new supported image/video clip was imported.".to_string();
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }),
+        );
+
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .bg(gpui_component::black().opacity(0.55))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.import_modal_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(900.0))
+                    .h(px(580.0))
+                    .rounded_md()
+                    .bg(rgb(0x1a202c))
+                    .border_1()
+                    .border_color(white().opacity(0.16))
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| {
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(white().opacity(0.9))
+                                    .child("SOURCE / IMPORT PANEL"),
+                            )
+                            .child(Self::control_button("Close").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.import_modal_open = false;
+                                    cx.notify();
+                                }),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.65))
+                            .child("Import clips, then click a clip to use it in VFX Stage."),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(import_button)
+                            .child(
+                                div()
+                                    .h(px(28.0))
+                                    .px_2()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(white().opacity(0.14))
+                                    .bg(white().opacity(0.05))
+                                    .text_xs()
+                                    .text_color(white().opacity(0.78))
+                                    .flex()
+                                    .items_center()
+                                    .child(format!("{imported_count} imported")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(white().opacity(0.1))
+                            .bg(rgb(0x0f1726))
+                            .p_2()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.58))
+                                    .child("Current source"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(white().opacity(0.94))
+                                    .truncate()
+                                    .child(selected_name),
+                            )
+                            .child(div().text_xs().text_color(white().opacity(0.6)).child(
+                                format!(
+                                    "{} · {} · {} imported",
+                                    selected_kind_label, selected_duration_label, imported_count
+                                ),
+                            )),
+                    )
+                    .child(
+                        div().w_full().min_w_0().overflow_x_scrollbar().child(
+                            div()
+                                .text_xs()
+                                .text_color(white().opacity(0.56))
+                                .whitespace_nowrap()
+                                .child(selected_path_label),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(white().opacity(0.12))
+                            .bg(rgb(0x131722))
+                            .p_2()
+                            .overflow_y_scrollbar()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .children(self.clips.iter().enumerate().map(|(idx, clip)| {
+                                let active = self.selected_idx == Some(idx);
+                                let idx_for_select = idx;
+                                let duration_label = if clip.duration > Duration::ZERO {
+                                    format!("{:.2}s", clip.duration.as_secs_f32())
+                                } else {
+                                    "Still".to_string()
+                                };
+                                div()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(white().opacity(if active { 0.35 } else { 0.14 }))
+                                    .bg(if active { rgb(0x1f2937) } else { rgb(0x111827) })
+                                    .px_2()
+                                    .py_2()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(white().opacity(0.09)))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(white().opacity(0.6))
+                                            .child(clip.kind.label()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(white().opacity(0.93))
+                                            .truncate()
+                                            .child(clip.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(white().opacity(0.6))
+                                            .truncate()
+                                            .child(duration_label),
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.selected_idx = Some(idx_for_select);
+                                            cx.notify();
+                                        }),
+                                    )
+                            })),
+                    ),
+            )
+            .into_any_element()
     }
 
     // Render a single selectable template tile in the picker modal.
@@ -1287,6 +3115,8 @@ impl MotionLoomPage {
 
 impl Render for MotionLoomPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_script_from_global(window, cx);
+        self.sync_render_request_from_global(window, cx);
         self.ensure_script_input(window, cx);
         let selected_idx = self.selected_idx;
         let selected = self.current_clip().cloned();
@@ -1314,6 +3144,35 @@ impl Render for MotionLoomPage {
             .as_ref()
             .map(|clip| clip.path.clone())
             .unwrap_or_else(|| "Import an image or video clip to begin previewing.".to_string());
+        let viewport_w = window.viewport_size().width / px(1.0);
+        let viewport_h = window.viewport_size().height / px(1.0);
+        let content_max_w = if viewport_w >= 1800.0 {
+            1560.0
+        } else if viewport_w >= 1500.0 {
+            1360.0
+        } else if viewport_w >= 1280.0 {
+            1180.0
+        } else if viewport_w >= 1080.0 {
+            980.0
+        } else {
+            860.0
+        };
+        // VFX preview should be the first visual priority on this page.
+        // Scale panel heights continuously with viewport height.
+        let stage_panel_h = if viewport_w < 1080.0 {
+            (viewport_h * 0.36).clamp(220.0, 420.0)
+        } else if viewport_w < 1320.0 {
+            (viewport_h * 0.42).clamp(240.0, 520.0)
+        } else {
+            (viewport_h * 0.48).clamp(260.0, 620.0)
+        };
+        let preview_min_h = (stage_panel_h - 120.0).clamp(150.0, 420.0);
+        let scene_live_preview_h = if viewport_w < 1080.0 {
+            (viewport_h * 0.30).clamp(180.0, 320.0)
+        } else {
+            (viewport_h * 0.36).clamp(220.0, 430.0)
+        };
+        let scene_live_panel_min_h = (scene_live_preview_h + 180.0).clamp(360.0, 640.0);
 
         // Evaluate graph runtime output for current frame
         let runtime_output = self
@@ -1335,43 +3194,17 @@ impl Render for MotionLoomPage {
             .unwrap_or(0.0);
         let runtime_opacity = 1.0_f32;
 
-        // When any runtime effect is active, fall back to CPU rendering path
-        // because VideoElement hardware path does not apply CPU-side effects.
-        let has_active_effects = runtime_mix.abs() > 0.0001
-            || runtime_brightness.abs() > 0.0001
-            || (runtime_contrast - 1.0).abs() > 0.0001
-            || (runtime_saturation - 1.0).abs() > 0.0001
-            || runtime_blur.abs() > 0.05
-            || (runtime_opacity - 1.0).abs() > 0.0001;
-        let selected_prefers_video_element = selected
-            .as_ref()
-            .map(|clip| clip.kind == ImportedClipKind::Video && !has_active_effects)
-            .unwrap_or(false);
-        let selected_video_player = selected.as_ref().and_then(|clip| {
-            if clip.kind != ImportedClipKind::Video || !selected_prefers_video_element {
-                return None;
-            }
-            self.video_preview_player_for_stage(
-                &clip.path,
-                self.preview_frame,
-                self.preview_playing,
-            )
-        });
-        let selected_video_waiting_for_first_frame = selected_video_player
-            .as_ref()
-            .map(|player| player.last_frame_pts_ns() == 0)
-            .unwrap_or(false);
-        if let Some(player) = selected_video_player.as_ref()
-            && (player.last_frame_pts_ns() == 0 || player.peek_frame_ready())
-        {
-            window.request_animation_frame();
-        }
+        // MotionLoom previews need deterministic CPU-side frames for graph effects and
+        // ProRes scene renders. Avoid the app-wide VideoElement fast path here; it can
+        // stay blank for sources that do not produce a stable surface frame.
+        let selected_video_waiting_for_first_frame = false;
 
-        // Build the script editor element (compact height to avoid page scroll)
+        // Build script editor element (expands in left column)
         let script_input_elem = if let Some(input) = self.script_input.as_ref() {
             div()
                 .w_full()
-                .h(px(160.0))
+                .flex_1()
+                .min_h(px(0.0))
                 .rounded_md()
                 .border_1()
                 .border_color(white().opacity(0.18))
@@ -1381,294 +3214,15 @@ impl Render for MotionLoomPage {
                 .into_any_element()
         } else {
             div()
-                .h(px(160.0))
+                .flex_1()
+                .min_h(px(0.0))
                 .w_full()
                 .rounded_sm()
                 .bg(white().opacity(0.05))
                 .into_any_element()
         };
 
-        // Import clip button
-        let import_button = Self::control_button("Import Clip").on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |_this, _, win, cx| {
-                let rx = cx.prompt_for_paths(PathPromptOptions {
-                    files: true,
-                    directories: false,
-                    multiple: true,
-                    prompt: Some("Import clips into MotionLoom".into()),
-                });
-                cx.spawn_in(win, async move |view, window| {
-                    let Ok(result) = rx.await else {
-                        return;
-                    };
-                    let Some(paths) = result.ok().flatten() else {
-                        return;
-                    };
-
-                    let _ = view.update_in(window, |this, _window, cx| {
-                        let (ffmpeg_path, cache_root, can_generate_video_thumbnail) = {
-                            let gs = this.global.read(cx);
-                            (
-                                gs.ffmpeg_path.clone(),
-                                gs.cache_root_dir(),
-                                gs.media_tools_ready_for_preview_gen(),
-                            )
-                        };
-
-                        let mut imported = 0usize;
-                        for path in paths {
-                            let path_str = path.to_string_lossy().to_string();
-                            if !Self::is_supported_clip_path(&path_str) {
-                                continue;
-                            }
-                            if this.clips.iter().any(|item| item.path == path_str) {
-                                continue;
-                            }
-                            let clip = Self::build_imported_clip(
-                                &path_str,
-                                &ffmpeg_path,
-                                &cache_root,
-                                can_generate_video_thumbnail,
-                            );
-                            this.clips.push(clip);
-                            imported += 1;
-                        }
-
-                        if imported > 0 {
-                            this.selected_idx = Some(this.clips.len().saturating_sub(1));
-                            this.status_line =
-                                format!("Imported {} clip(s) into MotionLoom Studio.", imported);
-                        } else {
-                            this.status_line =
-                                "No new supported image/video clip was imported.".to_string();
-                        }
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }),
-        );
-
-        // --- Left panel: source info, clip list ---
-        let left_panel = div()
-            .w(px(360.0))
-            .flex_shrink_0()
-            .h_full()
-            .border_r_1()
-            .border_color(white().opacity(0.12))
-            .bg(rgb(0x090b12))
-            .p_3()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(white().opacity(0.14))
-                    .bg(rgb(0x0d1320))
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_lg()
-                            .text_color(white().opacity(0.96))
-                            .child("MotionLoom · VFX Studio(Under Development)"),
-                    )
-                    .child(
-                        div().text_xs().text_color(white().opacity(0.72)).child(
-                            "Preview the source and edit the MotionLoom graph side by side.",
-                        ),
-                    ),
-            )
-            .child(
-                div()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(white().opacity(0.12))
-                    .bg(rgb(0x0c111b))
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(white().opacity(0.92))
-                            .child("Source"),
-                    )
-                    .child(
-                        div().text_xs().text_color(white().opacity(0.68)).child(
-                            "Import a still or video clip, then pick the active source below.",
-                        ),
-                    )
-                    .child(import_button)
-                    .child(
-                        div()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(white().opacity(0.1))
-                            .bg(rgb(0x0f1726))
-                            .p_2()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(white().opacity(0.58))
-                                    .child("Current source"),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(white().opacity(0.94))
-                                    .truncate()
-                                    .child(selected_name.clone()),
-                            )
-                            .child(div().text_xs().text_color(white().opacity(0.6)).child(
-                                format!(
-                                    "{} · {} · {} imported",
-                                    selected_kind_label, selected_duration_label, imported_count
-                                ),
-                            )),
-                    ),
-            )
-            .child(
-                // Imported clips list with selection
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(white().opacity(0.12))
-                    .bg(rgb(0x0c111b))
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(white().opacity(0.92))
-                            .child("Imported Clips"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(white().opacity(0.66))
-                            .child("Pick the clip to send into the stage and code preview."),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(white().opacity(0.54))
-                            .truncate()
-                            .child(selected_path_label.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scrollbar()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .children(self.clips.iter().enumerate().map(|(idx, clip)| {
-                                let active = self.selected_idx == Some(idx);
-                                let idx_for_select = idx;
-                                let duration_label = if clip.duration > Duration::ZERO {
-                                    format!("{:.2}s", clip.duration.as_secs_f32())
-                                } else {
-                                    "Still".to_string()
-                                };
-                                div()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(white().opacity(if active { 0.35 } else { 0.14 }))
-                                    .bg(if active { rgb(0x1f2937) } else { rgb(0x111827) })
-                                    .px_2()
-                                    .py_2()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(white().opacity(0.09)))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(white().opacity(0.6))
-                                            .child(clip.kind.label()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(white().opacity(0.93))
-                                            .truncate()
-                                            .child(clip.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(white().opacity(0.6))
-                                            .truncate()
-                                            .child(duration_label),
-                                    )
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.selected_idx = Some(idx_for_select);
-                                            cx.notify();
-                                        }),
-                                    )
-                            })),
-                    ),
-            );
-
-        // --- Preview card: VideoElement for video clips without effects, CPU path for effects ---
-        let video_element_preview = if let Some(clip) = selected.as_ref() {
-            if clip.kind == ImportedClipKind::Video && !has_active_effects {
-                if let Some(player) = selected_video_player.clone() {
-                    let video_element = VideoElement::new(player)
-                        .preview_transform(1.0, 0.0, 0.0, PREVIEW_BOX_W, PREVIEW_BOX_H)
-                        .color_balance(runtime_brightness, runtime_contrast, runtime_saturation)
-                        .blur_sigma(runtime_blur)
-                        .opacity({
-                            #[cfg(target_os = "macos")]
-                            {
-                                1.0
-                            }
-                            #[cfg(not(target_os = "macos"))]
-                            {
-                                runtime_opacity
-                            }
-                        });
-                    Some(
-                        div()
-                            .w_full()
-                            .flex_1()
-                            .min_h_0()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(white().opacity(0.14))
-                            .bg(rgb(0x05070c))
-                            .overflow_hidden()
-                            .child(video_element)
-                            .into_any_element(),
-                    )
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let preview_card = if let Some(preview) = video_element_preview {
-            preview
-        } else if let Some(clip) = selected {
+        let preview_card = if let Some(clip) = selected {
             if let Some(preview) = clip.preview {
                 let mut source_w = preview.width;
                 let mut source_h = preview.height;
@@ -1710,7 +3264,7 @@ impl Render for MotionLoomPage {
                 div()
                     .w_full()
                     .flex_1()
-                    .min_h_0()
+                    .min_h(px(preview_min_h))
                     .rounded_lg()
                     .border_1()
                     .border_color(white().opacity(0.14))
@@ -1757,7 +3311,7 @@ impl Render for MotionLoomPage {
                 div()
                     .w_full()
                     .flex_1()
-                    .min_h_0()
+                    .min_h(px(preview_min_h))
                     .rounded_lg()
                     .border_1()
                     .border_color(white().opacity(0.14))
@@ -1781,7 +3335,7 @@ impl Render for MotionLoomPage {
                 div()
                     .w_full()
                     .flex_1()
-                    .min_h_0()
+                    .min_h(px(preview_min_h))
                     .rounded_lg()
                     .border_1()
                     .border_color(white().opacity(0.14))
@@ -1801,7 +3355,7 @@ impl Render for MotionLoomPage {
             div()
                 .w_full()
                 .flex_1()
-                .min_h_0()
+                .min_h(px(preview_min_h))
                 .rounded_lg()
                 .border_1()
                 .border_color(white().opacity(0.14))
@@ -1818,61 +3372,652 @@ impl Render for MotionLoomPage {
                 .into_any_element()
         };
 
-        // --- Graph Lab panel: script editor + Apply/Template buttons ---
+        let mut scene_live_targets = Self::extract_scene_live_targets(&self.script_text);
+        if self.scene_live_groups_only {
+            scene_live_targets.retain(|target| target.tag == "Group");
+        }
+        self.ensure_scene_live_selection(&scene_live_targets);
+        let scene_live_attrs = scene_live_targets
+            .iter()
+            .find(|target| target.id == self.scene_live_knob_node_id)
+            .map(|target| target.attrs.clone())
+            .unwrap_or_else(|| vec![self.scene_live_knob_attr.clone()]);
+
+        let mut scene_live_target_entries = Vec::<(String, String, Vec<String>, bool)>::new();
+        if !self.scene_live_groups_only
+            && let Some(overall) = Self::overall_scene_live_target(&scene_live_targets)
+        {
+            scene_live_target_entries.push((
+                format!("Overall · {}", overall.id),
+                overall.id.clone(),
+                overall.attrs.clone(),
+                self.scene_live_knob_node_id == overall.id,
+            ));
+        }
+        for target in scene_live_targets.iter() {
+            scene_live_target_entries.push((
+                format!("{} · {}", target.tag, target.id),
+                target.id.clone(),
+                target.attrs.clone(),
+                self.scene_live_knob_node_id == target.id,
+            ));
+        }
+        let scene_live_target_visible_count = if viewport_w < 1080.0 {
+            4_usize
+        } else if viewport_w < 1500.0 {
+            6_usize
+        } else {
+            8_usize
+        };
+        let scene_live_target_total = scene_live_target_entries.len();
+        let scene_live_target_max_offset =
+            scene_live_target_total.saturating_sub(scene_live_target_visible_count);
+        self.scene_live_target_offset = self
+            .scene_live_target_offset
+            .min(scene_live_target_max_offset);
+        let scene_live_target_offset = self.scene_live_target_offset;
+        let scene_live_target_chips = scene_live_target_entries
+            .iter()
+            .skip(scene_live_target_offset)
+            .take(scene_live_target_visible_count)
+            .map(|(label, id, attrs, active)| {
+                let id = id.clone();
+                let attrs = attrs.clone();
+                Self::scene_live_chip(label.clone(), *active).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.select_scene_live_target(id.clone(), attrs.clone());
+                        cx.notify();
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let scene_live_attr_chips = scene_live_attrs
+            .iter()
+            .map(|attr| {
+                let attr_value = attr.clone();
+                Self::scene_live_chip(
+                    attr.clone(),
+                    self.scene_live_knob_attr.as_str() == attr.as_str(),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.select_scene_live_attr(attr_value.clone());
+                        cx.notify();
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let scene_live_selector_panel = div()
+            .w_full()
+            .overflow_hidden()
+            .rounded_md()
+            .border_1()
+            .border_color(white().opacity(0.1))
+            .bg(white().opacity(0.025))
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(48.0))
+                            .text_xs()
+                            .text_color(white().opacity(0.52))
+                            .child("Target"),
+                    )
+                    .child(Self::scene_live_chip("<".to_string(), false).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.scene_live_target_offset =
+                                this.scene_live_target_offset.saturating_sub(1);
+                            cx.notify();
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .on_scroll_wheel(cx.listener(
+                                move |this, evt: &ScrollWheelEvent, _window, cx| {
+                                    let delta_y = evt.delta.pixel_delta(px(10.0)).y / px(1.0);
+                                    if delta_y.abs() <= f32::EPSILON {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    let max_offset = scene_live_target_total
+                                        .saturating_sub(scene_live_target_visible_count);
+                                    if delta_y > 0.0 {
+                                        this.scene_live_target_offset =
+                                            (this.scene_live_target_offset + 1).min(max_offset);
+                                    } else {
+                                        this.scene_live_target_offset =
+                                            this.scene_live_target_offset.saturating_sub(1);
+                                    }
+                                    cx.notify();
+                                },
+                            ))
+                            .children(scene_live_target_chips),
+                    )
+                    .child(Self::scene_live_chip(">".to_string(), false).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            let max_offset = scene_live_target_total
+                                .saturating_sub(scene_live_target_visible_count);
+                            this.scene_live_target_offset =
+                                (this.scene_live_target_offset + 1).min(max_offset);
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(48.0))
+                            .text_xs()
+                            .text_color(white().opacity(0.52))
+                            .child("Attr"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .children(scene_live_attr_chips),
+                    ),
+            );
+
+        let scene_live_preview_card =
+            match self.scene_live_preview_image(self.preview_frame) {
+                Ok(Some((image, w, h))) => div()
+                    .w_full()
+                    .h(px(scene_live_preview_h))
+                    .flex_shrink_0()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(white().opacity(0.14))
+                    .bg(rgb(0x05070c))
+                    .overflow_hidden()
+                    .child(FitPreviewImageElement::new(image, w, h))
+                    .into_any_element(),
+                Ok(None) => div()
+                    .w_full()
+                    .h(px(scene_live_preview_h))
+                    .flex_shrink_0()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(white().opacity(0.14))
+                    .bg(rgb(0x05070c))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(div().text_sm().text_color(white().opacity(0.62)).child(
+                        "Scene Live Preview renders the current <Graph scope=\"scene\"> frame.",
+                    ))
+                    .into_any_element(),
+                Err(message) => div()
+                    .w_full()
+                    .h(px(scene_live_preview_h))
+                    .flex_shrink_0()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgba(0xff6655cc))
+                    .bg(rgb(0x12080a))
+                    .p_3()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(white().opacity(0.78))
+                            .child(message),
+                    )
+                    .into_any_element(),
+            };
+
+        let scene_live_knob_target = format!(
+            "{}.{}",
+            self.scene_live_knob_node_id, self.scene_live_knob_attr
+        );
+        let scene_live_knob_value = self
+            .scene_live_knob_current_value()
+            .map(Self::format_live_number)
+            .unwrap_or_else(|| {
+                format!(
+                    "{}*",
+                    Self::format_live_number(Self::scene_live_attr_default_value(
+                        &self.scene_live_knob_attr
+                    ))
+                )
+            });
+        let scene_live_knob_scroll_label = format!("Scroll {}", self.scene_live_knob_attr);
+        let scene_live_scroll_attr = self.scene_live_knob_attr.clone();
+        let (
+            scene_live_small_step,
+            scene_live_large_step,
+            scene_live_neg_large_label,
+            scene_live_neg_small_label,
+            scene_live_pos_small_label,
+            scene_live_pos_large_label,
+        ) = Self::scene_live_step_labels(&self.scene_live_knob_attr);
+        let scene_live_scroll_hint = Self::scene_live_scroll_hint(&self.scene_live_knob_attr);
+        let scene_live_knob_scroll = div()
+            .h(px(28.0))
+            .min_w(px(148.0))
+            .px_2()
+            .rounded_md()
+            .border_1()
+            .border_color(white().opacity(0.18))
+            .bg(white().opacity(0.055))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .on_scroll_wheel(
+                cx.listener(move |this, evt: &ScrollWheelEvent, window, cx| {
+                    let delta = Self::scene_live_scroll_delta(evt, &scene_live_scroll_attr);
+                    if delta.abs() <= f32::EPSILON {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    this.nudge_scene_live_knob(delta, window, cx);
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.58))
+                    .child(scene_live_knob_scroll_label),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.94))
+                    .child(scene_live_knob_value),
+            );
+        let scene_live_controls_row = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(
+                Self::scene_live_checkbox("Group tags", self.scene_live_groups_only).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.scene_live_groups_only = !this.scene_live_groups_only;
+                        this.scene_live_target_offset = 0;
+                        this.status_line = if this.scene_live_groups_only {
+                            "Scene live target filter: showing Group tags only.".to_string()
+                        } else {
+                            "Scene live target filter: showing all target tags.".to_string()
+                        };
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(Self::control_button("Frame 0").on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.preview_playing = false;
+                    this.preview_last_tick = None;
+                    this.preview_frame_accum = 0.0;
+                    this.preview_frame = 0;
+                    cx.notify();
+                }),
+            ))
+            .child(Self::control_button("F-1").on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.step_preview_frame(-1);
+                    cx.notify();
+                }),
+            ))
+            .child(Self::control_button("F+1").on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.step_preview_frame(1);
+                    cx.notify();
+                }),
+            ))
+            .child(
+                Self::scene_live_chip(scene_live_neg_large_label, false).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.nudge_scene_live_knob(-scene_live_large_step, window, cx);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
+                Self::scene_live_chip(scene_live_neg_small_label, false).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.nudge_scene_live_knob(-scene_live_small_step, window, cx);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(scene_live_knob_scroll)
+            .child(
+                Self::scene_live_chip(scene_live_pos_small_label, false).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.nudge_scene_live_knob(scene_live_small_step, window, cx);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
+                Self::scene_live_chip(scene_live_pos_large_label, false).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.nudge_scene_live_knob(scene_live_large_step, window, cx);
+                        cx.notify();
+                    }),
+                ),
+            );
+
+        let source_button = Self::control_button("Source / Import").on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.open_import_modal();
+                cx.notify();
+            }),
+        );
+        let assets_button = Self::control_button("Assets").on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.open_asset_modal();
+                cx.notify();
+            }),
+        );
+
+        // --- Left column: Graph Lab (code) ---
         let graph_lab_panel = div()
             .w_full()
+            .flex_1()
+            .min_w_0()
+            .min_h(px(260.0))
+            .rounded_lg()
+            .border_1()
+            .border_color(white().opacity(0.12))
+            .bg(rgb(0x0c111b))
+            .p_3()
             .flex()
             .flex_col()
             .gap_3()
             .child(
                 div()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(white().opacity(0.12))
-                    .bg(rgb(0x0c111b))
-                    .p_3()
                     .flex()
-                    .flex_col()
-                    .gap_3()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(white().opacity(0.94))
+                            .child("Graph Lab"),
+                    )
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
-                            .justify_between()
+                            .gap_2()
+                            .child(source_button)
+                            .child(assets_button)
+                            .child(Self::control_button("Scene Template").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.set_script_text(
+                                        motionloom_templates::DEFAULT_SCENE_SCRIPT.to_string(),
+                                        window,
+                                        cx,
+                                    );
+                                    this.status_line =
+                                        "Loaded MotionLoom scene template.".to_string();
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(Self::control_button("Template Picker").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.open_template_modal();
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(Self::control_button("Apply Effect").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.apply_script_command(cx);
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(
+                                Self::control_button("Compatibility Render (CPU)").on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.render_scene_to_media_pool(
+                                            SceneRenderMode::CompatibilityCpu,
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                                ),
+                            )
+                            .child(Self::control_button("GPU Render").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.render_scene_to_media_pool(
+                                        SceneRenderMode::GpuNativeH264,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            ))
+                            .child(Self::control_button("GPU Render (ProRes)").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.render_scene_to_media_pool(
+                                        SceneRenderMode::GpuNativeProRes,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            )),
+                    ),
+            )
+            .child(div().text_xs().text_color(white().opacity(0.68)).child(
+                "VFX stage on top, graph editor below. Use Source / Import to open clip manager.",
+            ))
+            .child(script_input_elem);
+
+        // --- Right column: VFX Stage (video) ---
+        let mut stage_panel = div()
+            .w_full()
+            .h(px(stage_panel_h))
+            .flex_shrink_0()
+            .min_h(px(220.0))
+            .rounded_lg()
+            .border_1()
+            .border_color(white().opacity(0.12))
+            .bg(rgb(0x0c111b))
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .items_center()
+                            .gap_3()
                             .child(
                                 div()
                                     .text_sm()
-                                    .text_color(white().opacity(0.94))
-                                    .child("Graph Lab"),
+                                    .text_color(white().opacity(0.95))
+                                    .child("VFX Stage"),
                             )
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(Self::control_button("Template Picker").on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.open_template_modal();
-                                            cx.notify();
-                                        }),
-                                    ))
-                                    .child(Self::control_button("Apply Effect").on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.apply_script_command(cx);
-                                            cx.notify();
-                                        }),
+                                    .text_xs()
+                                    .text_color(white().opacity(0.55))
+                                    .truncate()
+                                    .child(format!(
+                                        "{} · {} · {}",
+                                        selected_name, selected_kind_label, selected_duration_label
                                     )),
                             ),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(white().opacity(0.68))
-                            .child("Edit the MotionLoom graph here and run it directly on the current stage preview."),
-                    )
-                    .child(script_input_elem),
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.75))
+                                    .child("Frame"),
+                            )
+                            .child(
+                                Self::control_button(if self.preview_playing {
+                                    "Pause"
+                                } else {
+                                    "Play"
+                                })
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.toggle_preview_playback(window, cx);
+                                    }),
+                                ),
+                            )
+                            .child(Self::control_button("-1").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.step_preview_frame(-1);
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.9))
+                                    .child(format!("{}", self.preview_frame)),
+                            )
+                            .child(Self::control_button("+1").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.step_preview_frame(1);
+                                    cx.notify();
+                                }),
+                            )),
+                    ),
+            );
+
+        stage_panel = stage_panel.child(preview_card).child(
+            div().w_full().min_w_0().overflow_x_scrollbar().child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.66))
+                    .whitespace_nowrap()
+                    .child(self.status_line.clone()),
+            ),
+        );
+
+        // --- Scene Live Preview: direct single-frame scene raster, no FFmpeg ---
+        let scene_live_panel = div()
+            .w_full()
+            .h_auto()
+            .flex_shrink_0()
+            .min_h(px(scene_live_panel_min_h))
+            .rounded_lg()
+            .border_1()
+            .border_color(white().opacity(0.12))
+            .bg(rgb(0x0c111b))
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(white().opacity(0.95))
+                                    .child("Scene Live Preview"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.56))
+                                    .truncate()
+                                    .child(format!(
+                                        "Direct frame {} · no FFmpeg · target {}",
+                                        self.preview_frame, scene_live_knob_target
+                                    )),
+                            ),
+                    ),
+            )
+            .child(scene_live_selector_panel)
+            .child(scene_live_controls_row)
+            .child(scene_live_preview_card)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.58))
+                    .child(scene_live_scroll_hint),
             );
 
         // --- Template picker modal overlay (rendered on top when open) ---
@@ -1882,122 +4027,108 @@ impl Render for MotionLoomPage {
             None
         };
 
-        // --- Main layout: left panel + right content (no scroll, fit to window) ---
+        // --- Import/source modal overlay ---
+        let import_modal = if self.import_modal_open {
+            Some(self.render_import_modal_overlay(
+                selected_name.clone(),
+                selected_kind_label.clone(),
+                selected_duration_label.clone(),
+                selected_path_label.clone(),
+                imported_count,
+                cx,
+            ))
+        } else {
+            None
+        };
+        let asset_modal = if self.asset_modal_open {
+            Some(self.render_vfx_asset_modal_overlay(window, cx))
+        } else {
+            None
+        };
+
+        let source_summary_line = format!(
+            "Current source: {} · {} · {} · {} imported · {}",
+            selected_name,
+            selected_kind_label,
+            selected_duration_label,
+            imported_count,
+            selected_path_label
+        );
+
         div()
             .size_full()
             .bg(rgb(0x080a10))
             .flex()
-            .child(left_panel)
+            .flex_col()
+            .overflow_hidden()
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .p_4()
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(white().opacity(0.12))
+                    .bg(rgb(0x090b12))
+                    .px_3()
+                    .py_2()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    // VFX Stage: preview fills remaining vertical space
                     .child(
                         div()
-                            .flex_1()
-                            .min_h_0()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(white().opacity(0.12))
-                            .bg(rgb(0x0c111b))
-                            .p_3()
                             .flex()
-                            .flex_col()
+                            .flex_wrap()
+                            .items_center()
+                            .justify_between()
                             .gap_2()
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_3()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .text_color(white().opacity(0.95))
-                                                    .child("VFX Stage"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(white().opacity(0.55))
-                                                    .child(format!(
-                                                        "{} · {} · {}",
-                                                        selected_name,
-                                                        selected_kind_label,
-                                                        selected_duration_label
-                                                    )),
-                                            ),
-                                    )
-                                    // Playback controls inline with VFX Stage header
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(white().opacity(0.75))
-                                                    .child("Frame"),
-                                            )
-                                            .child(
-                                                Self::control_button(if self.preview_playing {
-                                                    "Pause"
-                                                } else {
-                                                    "Play"
-                                                })
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener(move |this, _, window, cx| {
-                                                        this.toggle_preview_playback(window, cx);
-                                                    }),
-                                                ),
-                                            )
-                                            .child(Self::control_button("-1").on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(move |this, _, _, cx| {
-                                                    this.step_preview_frame(-1);
-                                                    cx.notify();
-                                                }),
-                                            ))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(white().opacity(0.9))
-                                                    .child(format!("{}", self.preview_frame)),
-                                            )
-                                            .child(Self::control_button("+1").on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(move |this, _, _, cx| {
-                                                    this.step_preview_frame(1);
-                                                    cx.notify();
-                                                }),
-                                            )),
-                                    ),
+                                    .text_lg()
+                                    .text_color(white().opacity(0.96))
+                                    .child("MotionLoom · VFX Studio (UI Simplified)"),
                             )
-                            // Preview fills remaining space in the VFX Stage card
-                            .child(preview_card)
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(white().opacity(0.66))
                                     .truncate()
-                                    .child(self.status_line.clone()),
+                                    .child("Import panel is now modal. Main view is fixed two columns."),
                             ),
                     )
-                    // Graph Lab: fixed-height section at bottom
-                    .child(graph_lab_panel),
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.56))
+                                    .whitespace_normal()
+                                    .child(source_summary_line),
+                            ),
+                    ),
             )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_y_scrollbar()
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(content_max_w))
+                            .mx_auto()
+                            .p_3()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(stage_panel)
+                            .child(scene_live_panel)
+                            .child(graph_lab_panel),
+                    ),
+            )
+            .when(self.import_modal_open, |el| el.child(import_modal.unwrap()))
+            .when(self.asset_modal_open, |el| el.child(asset_modal.unwrap()))
             .when(self.template_modal_open, |el| {
                 el.child(template_modal.unwrap())
             })

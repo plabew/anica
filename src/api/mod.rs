@@ -2,6 +2,7 @@ pub mod ai;
 pub mod export;
 pub mod llm;
 pub mod media_pool;
+pub mod motionloom;
 pub mod preview;
 pub mod project;
 pub mod proxy;

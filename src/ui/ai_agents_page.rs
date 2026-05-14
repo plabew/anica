@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -17,6 +18,8 @@ use gpui_component::{
     text::TextView,
     white,
 };
+use motionloom::{GraphScope, compile_runtime_program, is_graph_script, parse_graph_script};
+use regex::Regex;
 use serde_json::Value;
 
 use crate::api::export::{
@@ -24,6 +27,10 @@ use crate::api::export::{
 };
 use crate::api::llm::llm_decision_making_srt_similar_serach;
 use crate::api::media_pool::{clear_media_pool, remove_media_pool_by_id};
+use crate::api::motionloom::{
+    AcpMotionLoomGetSceneScriptResponse, AcpMotionLoomRenderSceneResponse,
+    AcpMotionLoomSetSceneScriptResponse,
+};
 use crate::api::timeline::{
     apply_edit_plan, build_audio_silence_cut_plan, build_autonomous_edit_plan,
     build_subtitle_gap_cut_plan, build_transcript_low_confidence_cut_plan, get_audio_silence_map,
@@ -33,7 +40,7 @@ use crate::api::timeline::{
 use crate::api::transport_acp::{AcpToolBridgeRequest, AcpUiEvent, AcpWorker};
 use crate::core::export::{FfmpegExporter, is_cancelled_export_error};
 use crate::core::global_state::{
-    AiChatMessage, AiChatRole, GlobalState, MediaPoolItem, MediaPoolUiEvent,
+    AiChatMessage, AiChatRole, AppPage, GlobalState, MediaPoolItem, MediaPoolUiEvent,
     SilencePreviewCandidate, SilencePreviewModalState,
 };
 use crate::core::user_settings::{
@@ -81,6 +88,25 @@ impl AcpAgentProvider {
 }
 
 const AI_CHAT_MAX_CONVERSATION_MESSAGES: usize = 1000;
+
+#[derive(Debug, Default)]
+struct MotionLoomScriptNormalization {
+    script: String,
+    patched_fps: bool,
+    patched_size: bool,
+    patched_duration: bool,
+    patched_text_value: Vec<String>,
+    patched_animate_opacity: Vec<String>,
+}
+
+#[derive(Debug)]
+struct AnimateOpacityCompat {
+    target_id: String,
+    from: f64,
+    to: f64,
+    start_ms: f64,
+    end_ms: f64,
+}
 
 fn is_counted_ai_chat_role(role: AiChatRole) -> bool {
     !matches!(role, AiChatRole::System)
@@ -843,6 +869,347 @@ fn normalize_agent_command_for_ui(command: String) -> String {
     trimmed.to_string()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProviderModelOption {
+    slug: String,
+    label: String,
+}
+
+fn provider_model_option(slug: impl Into<String>, label: impl Into<String>) -> ProviderModelOption {
+    ProviderModelOption {
+        slug: slug.into(),
+        label: label.into(),
+    }
+}
+
+fn fallback_codex_model_options() -> Vec<ProviderModelOption> {
+    [
+        ("gpt-5.5", "GPT-5.5"),
+        ("gpt-5.4", "gpt-5.4"),
+        ("gpt-5.4-mini", "GPT-5.4-Mini"),
+        ("gpt-5.3-codex", "gpt-5.3-codex"),
+        ("gpt-5.2", "gpt-5.2"),
+    ]
+    .into_iter()
+    .map(|(slug, label)| provider_model_option(slug, label))
+    .collect()
+}
+
+fn fallback_gemini_model_options() -> Vec<ProviderModelOption> {
+    [
+        ("auto", "Auto"),
+        ("pro", "Pro"),
+        ("flash", "Flash"),
+        ("flash-lite", "Flash Lite"),
+        ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
+        ("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
+        ("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
+        ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+        ("gemini-2.5-flash", "Gemini 2.5 Flash"),
+        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
+    ]
+    .into_iter()
+    .map(|(slug, label)| provider_model_option(slug, label))
+    .collect()
+}
+
+fn fallback_claude_model_options() -> Vec<ProviderModelOption> {
+    [
+        ("sonnet", "Sonnet"),
+        ("opus", "Opus"),
+        ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+    ]
+    .into_iter()
+    .map(|(slug, label)| provider_model_option(slug, label))
+    .collect()
+}
+
+fn codex_config_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".codex"))
+}
+
+fn codex_models_cache_path() -> Option<PathBuf> {
+    codex_config_dir().map(|dir| dir.join("models_cache.json"))
+}
+
+fn read_codex_config_model() -> Option<String> {
+    let path = codex_config_dir()?.join("config.toml");
+    let raw = fs::read_to_string(path).ok()?;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "model" {
+            continue;
+        }
+        let model = value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim()
+            .to_string();
+        if !model.is_empty() {
+            return Some(model);
+        }
+    }
+    None
+}
+
+fn load_codex_model_options() -> (Vec<ProviderModelOption>, String) {
+    let Some(path) = codex_models_cache_path() else {
+        return (
+            fallback_codex_model_options(),
+            "fallback list (no HOME detected)".to_string(),
+        );
+    };
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return (
+            fallback_codex_model_options(),
+            format!("fallback list (missing {})", path.display()),
+        );
+    };
+    let Ok(json) = serde_json::from_str::<Value>(&raw) else {
+        return (
+            fallback_codex_model_options(),
+            format!("fallback list (invalid {})", path.display()),
+        );
+    };
+
+    let mut options = Vec::<ProviderModelOption>::new();
+    if let Some(models) = json.get("models").and_then(Value::as_array) {
+        for item in models {
+            let Some(slug) = item.get("slug").and_then(Value::as_str) else {
+                continue;
+            };
+            if slug.trim().is_empty() || slug == "codex-auto-review" {
+                continue;
+            }
+            if item
+                .get("visibility")
+                .and_then(Value::as_str)
+                .is_some_and(|visibility| visibility != "list")
+            {
+                continue;
+            }
+            if options.iter().any(|option| option.slug == slug) {
+                continue;
+            }
+            let label = item
+                .get("display_name")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(slug);
+            options.push(ProviderModelOption {
+                slug: slug.to_string(),
+                label: label.to_string(),
+            });
+        }
+    }
+
+    if options.is_empty() {
+        return (
+            fallback_codex_model_options(),
+            format!("fallback list (empty {})", path.display()),
+        );
+    }
+
+    (options, format!("Codex cache: {}", path.display()))
+}
+
+fn choose_codex_model(options: &mut Vec<ProviderModelOption>, preferred: Option<&str>) -> String {
+    let selected = preferred
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(read_codex_config_model)
+        .or_else(|| options.first().map(|option| option.slug.clone()))
+        .unwrap_or_else(|| "gpt-5.5".to_string());
+
+    if !options.iter().any(|option| option.slug == selected) {
+        options.insert(
+            0,
+            ProviderModelOption {
+                slug: selected.clone(),
+                label: selected.clone(),
+            },
+        );
+    }
+
+    selected
+}
+
+fn choose_provider_model(
+    options: &mut Vec<ProviderModelOption>,
+    preferred: Option<&str>,
+    fallback: &str,
+) -> String {
+    let selected = preferred
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| options.first().map(|option| option.slug.clone()))
+        .unwrap_or_else(|| fallback.to_string());
+
+    if !options.iter().any(|option| option.slug == selected) {
+        options.insert(0, provider_model_option(selected.clone(), selected.clone()));
+    }
+
+    selected
+}
+
+fn read_gemini_settings_model() -> Option<String> {
+    let path = env::var_os("HOME")
+        .map(PathBuf::from)?
+        .join(".gemini")
+        .join("settings.json");
+    let raw = fs::read_to_string(path).ok()?;
+    let json = serde_json::from_str::<Value>(&raw).ok()?;
+    json.get("model")
+        .and_then(|model| model.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            json.get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+}
+
+fn gemini_cli_models_path(gemini_cli_bin: &str) -> Option<PathBuf> {
+    let cli_path = resolve_cli_bin_for_ui(gemini_cli_bin, "ANICA_GEMINI_CLI_BIN", "gemini")?;
+    let canonical = fs::canonicalize(&cli_path).unwrap_or(cli_path);
+    for parent in canonical.ancestors() {
+        let candidate = parent
+            .join("..")
+            .join("node_modules")
+            .join("@google")
+            .join("gemini-cli-core")
+            .join("dist")
+            .join("src")
+            .join("config")
+            .join("models.js");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn js_exported_const_string(raw: &str, name: &str) -> Option<String> {
+    let prefix = format!("export const {name} = ");
+    raw.lines().find_map(|line| {
+        let value = line.trim().strip_prefix(&prefix)?.trim();
+        value
+            .strip_prefix('\'')
+            .and_then(|rest| rest.split_once('\'').map(|(value, _)| value.to_string()))
+            .or_else(|| {
+                value
+                    .strip_prefix('"')
+                    .and_then(|rest| rest.split_once('"').map(|(value, _)| value.to_string()))
+            })
+    })
+}
+
+fn gemini_model_label(slug: &str) -> String {
+    match slug {
+        "auto" => "Auto".to_string(),
+        "pro" => "Pro".to_string(),
+        "flash" => "Flash".to_string(),
+        "flash-lite" => "Flash Lite".to_string(),
+        "auto-gemini-3" => "Auto (Gemini 3)".to_string(),
+        "auto-gemini-2.5" => "Auto (Gemini 2.5)".to_string(),
+        "gemini-3.1-pro-preview" => "Gemini 3.1 Pro Preview".to_string(),
+        "gemini-3-pro-preview" => "Gemini 3 Pro Preview".to_string(),
+        "gemini-3-flash-preview" => "Gemini 3 Flash Preview".to_string(),
+        "gemini-2.5-pro" => "Gemini 2.5 Pro".to_string(),
+        "gemini-2.5-flash" => "Gemini 2.5 Flash".to_string(),
+        "gemini-2.5-flash-lite" => "Gemini 2.5 Flash Lite".to_string(),
+        _ => slug.to_string(),
+    }
+}
+
+fn load_gemini_model_options(gemini_cli_bin: &str) -> (Vec<ProviderModelOption>, String) {
+    let Some(path) = gemini_cli_models_path(gemini_cli_bin) else {
+        return (
+            fallback_gemini_model_options(),
+            "fallback list (Gemini CLI model constants not found)".to_string(),
+        );
+    };
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return (
+            fallback_gemini_model_options(),
+            format!("fallback list (failed to read {})", path.display()),
+        );
+    };
+
+    let mut options = Vec::<ProviderModelOption>::new();
+    for const_name in [
+        "GEMINI_MODEL_ALIAS_AUTO",
+        "GEMINI_MODEL_ALIAS_PRO",
+        "GEMINI_MODEL_ALIAS_FLASH",
+        "GEMINI_MODEL_ALIAS_FLASH_LITE",
+        "PREVIEW_GEMINI_MODEL_AUTO",
+        "DEFAULT_GEMINI_MODEL_AUTO",
+        "PREVIEW_GEMINI_3_1_MODEL",
+        "PREVIEW_GEMINI_MODEL",
+        "PREVIEW_GEMINI_FLASH_MODEL",
+        "DEFAULT_GEMINI_MODEL",
+        "DEFAULT_GEMINI_FLASH_MODEL",
+        "DEFAULT_GEMINI_FLASH_LITE_MODEL",
+    ] {
+        let Some(slug) = js_exported_const_string(&raw, const_name) else {
+            continue;
+        };
+        if options.iter().any(|option| option.slug == slug) {
+            continue;
+        }
+        options.push(provider_model_option(
+            slug.clone(),
+            gemini_model_label(&slug),
+        ));
+    }
+
+    if options.is_empty() {
+        return (
+            fallback_gemini_model_options(),
+            format!("fallback list (empty {})", path.display()),
+        );
+    }
+    (options, format!("Gemini CLI constants: {}", path.display()))
+}
+
+fn read_claude_settings_model() -> Option<String> {
+    let path = env::var_os("HOME")
+        .map(PathBuf::from)?
+        .join(".claude")
+        .join("settings.json");
+    let raw = fs::read_to_string(path).ok()?;
+    let json = serde_json::from_str::<Value>(&raw).ok()?;
+    ["model", "modelName", "defaultModel"]
+        .iter()
+        .find_map(|key| json.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn load_claude_model_options(_claude_cli_bin: &str) -> (Vec<ProviderModelOption>, String) {
+    (
+        fallback_claude_model_options(),
+        "Claude CLI aliases/full model names".to_string(),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CodexReasoningMode {
     Low,
@@ -893,6 +1260,15 @@ pub struct AiAgentsPage {
     // Tracks which provider is actually connected, so the UI can highlight it.
     connected_provider: Option<AcpAgentProvider>,
     busy: bool,
+    codex_model: String,
+    codex_model_options: Vec<ProviderModelOption>,
+    codex_models_source: String,
+    gemini_model: String,
+    gemini_model_options: Vec<ProviderModelOption>,
+    gemini_models_source: String,
+    claude_model: String,
+    claude_model_options: Vec<ProviderModelOption>,
+    claude_models_source: String,
     codex_reasoning_mode: CodexReasoningMode,
     auto_connect_enabled: bool,
     auto_connect_scope: SettingsScope,
@@ -932,6 +1308,57 @@ pub struct AiAgentsPage {
 }
 
 impl AiAgentsPage {
+    fn reload_codex_model_options(&mut self, preserve_current: bool) {
+        let preferred = if preserve_current {
+            Some(self.codex_model.as_str())
+        } else {
+            None
+        };
+        let (mut options, source) = load_codex_model_options();
+        let selected = choose_codex_model(&mut options, preferred);
+        self.codex_model = selected;
+        self.codex_model_options = options;
+        self.codex_models_source = source;
+    }
+
+    fn reload_gemini_model_options(&mut self, preserve_current: bool) {
+        let preferred_owned = if preserve_current {
+            None
+        } else {
+            env::var("GEMINI_MODEL")
+                .ok()
+                .or_else(read_gemini_settings_model)
+        };
+        let preferred = if preserve_current {
+            Some(self.gemini_model.as_str())
+        } else {
+            preferred_owned.as_deref()
+        };
+        let (mut options, source) = load_gemini_model_options(&self.gemini_cli_bin);
+        let selected = choose_provider_model(&mut options, preferred, "auto");
+        self.gemini_model = selected;
+        self.gemini_model_options = options;
+        self.gemini_models_source = source;
+    }
+
+    fn reload_claude_model_options(&mut self, preserve_current: bool) {
+        let preferred_owned = if preserve_current {
+            None
+        } else {
+            read_claude_settings_model()
+        };
+        let preferred = if preserve_current {
+            Some(self.claude_model.as_str())
+        } else {
+            preferred_owned.as_deref()
+        };
+        let (mut options, source) = load_claude_model_options(&self.claude_cli_bin);
+        let selected = choose_provider_model(&mut options, preferred, "sonnet");
+        self.claude_model = selected;
+        self.claude_model_options = options;
+        self.claude_models_source = source;
+    }
+
     fn refresh_agent_status(&mut self) {
         self.agent_status = match self.agent_provider {
             AcpAgentProvider::Codex => detect_codex_login_status_with_override(&self.codex_cli_bin),
@@ -993,6 +1420,11 @@ impl AiAgentsPage {
         self.agent_command = default_command.clone();
         self.rebuild_command_input(window, cx);
         self.set_agent_command_value(default_command, window, cx);
+        match provider {
+            AcpAgentProvider::Codex => self.reload_codex_model_options(true),
+            AcpAgentProvider::Gemini => self.reload_gemini_model_options(true),
+            AcpAgentProvider::Claude => self.reload_claude_model_options(true),
+        }
         self.pending_input_resync = true;
         self.refresh_agent_status();
         self.push_system_message(
@@ -1026,6 +1458,8 @@ impl AiAgentsPage {
             .as_deref()
             .and_then(CodexReasoningMode::from_setting_value)
             .unwrap_or(CodexReasoningMode::Medium);
+        let (mut codex_model_options, codex_models_source) = load_codex_model_options();
+        let codex_model = choose_codex_model(&mut codex_model_options, None);
         let auto_connect_enabled = loaded_settings.effective.acp_auto_connect;
         let auto_connect_scope = loaded_settings.auto_connect_source.preferred_scope();
         let gemini_api_key = env::var("GEMINI_API_KEY")
@@ -1047,6 +1481,24 @@ impl AiAgentsPage {
             .acp_claude_cli_bin
             .clone()
             .unwrap_or_default();
+        let gemini_preferred_model = env::var("GEMINI_MODEL")
+            .ok()
+            .or_else(read_gemini_settings_model);
+        let (mut gemini_model_options, gemini_models_source) =
+            load_gemini_model_options(&gemini_cli_bin);
+        let gemini_model = choose_provider_model(
+            &mut gemini_model_options,
+            gemini_preferred_model.as_deref(),
+            "auto",
+        );
+        let claude_preferred_model = read_claude_settings_model();
+        let (mut claude_model_options, claude_models_source) =
+            load_claude_model_options(&claude_cli_bin);
+        let claude_model = choose_provider_model(
+            &mut claude_model_options,
+            claude_preferred_model.as_deref(),
+            "sonnet",
+        );
 
         cx.observe(&global, |this, _global, cx| {
             this.sync_worker_media_pool_snapshot(cx);
@@ -1070,6 +1522,15 @@ impl AiAgentsPage {
             connected: false,
             connected_provider: None,
             busy: false,
+            codex_model,
+            codex_model_options,
+            codex_models_source,
+            gemini_model,
+            gemini_model_options,
+            gemini_models_source,
+            claude_model,
+            claude_model_options,
+            claude_models_source,
             codex_reasoning_mode: reasoning_mode,
             auto_connect_enabled,
             auto_connect_scope,
@@ -1155,6 +1616,342 @@ impl AiAgentsPage {
             .items_center()
             .justify_center()
             .child(label.into())
+    }
+
+    fn normalize_motionloom_scene_script(script: &str) -> MotionLoomScriptNormalization {
+        let (script, patched_fps, patched_size) = Self::ensure_motionloom_graph_defaults(script);
+        let (script, patched_duration) = Self::ensure_motionloom_graph_duration(&script);
+        let (script, patched_text_value) = Self::rewrite_text_value_compat(&script);
+        let (script, patched_animate_opacity) = Self::rewrite_animate_opacity_compat(&script);
+        MotionLoomScriptNormalization {
+            script,
+            patched_fps,
+            patched_size,
+            patched_duration,
+            patched_text_value,
+            patched_animate_opacity,
+        }
+    }
+
+    fn ensure_motionloom_graph_defaults(script: &str) -> (String, bool, bool) {
+        let Some(graph_start) = script.find("<Graph") else {
+            return (script.to_string(), false, false);
+        };
+        let after = &script[graph_start..];
+        let Some(rel_end) = after.find('>') else {
+            return (script.to_string(), false, false);
+        };
+        let graph_end = graph_start + rel_end;
+        let open_tag = &script[graph_start..=graph_end];
+        let has_fps = open_tag.contains("fps=");
+        let has_size = open_tag.contains("size=");
+        if has_fps && has_size {
+            return (script.to_string(), false, false);
+        }
+
+        let mut attrs = String::new();
+        if !has_fps {
+            attrs.push_str(" fps={60}");
+        }
+        if !has_size {
+            attrs.push_str(" size={[1920,1080]}");
+        }
+
+        let patched_open = if let Some(prefix) = open_tag.strip_suffix("/>") {
+            format!("{prefix}{attrs}/>")
+        } else if let Some(prefix) = open_tag.strip_suffix('>') {
+            format!("{prefix}{attrs}>")
+        } else {
+            return (script.to_string(), false, false);
+        };
+
+        let mut out = String::with_capacity(script.len() + attrs.len());
+        out.push_str(&script[..graph_start]);
+        out.push_str(&patched_open);
+        out.push_str(&script[graph_end + 1..]);
+        (out, !has_fps, !has_size)
+    }
+
+    fn find_tag_attr(block: &str, attr: &str) -> Option<String> {
+        let pattern = [
+            "(?is)\\b",
+            &regex::escape(attr),
+            "\\s*=\\s*(?:\"([^\"]*)\"|\\{([^}]*)\\}|([^\\s/>]+))",
+        ]
+        .concat();
+        let re = Regex::new(&pattern).ok()?;
+        let caps = re.captures(block)?;
+        caps.get(1)
+            .or_else(|| caps.get(2))
+            .or_else(|| caps.get(3))
+            .map(|m| m.as_str().trim().to_string())
+    }
+
+    fn remove_tag_attr(block: &str, attr: &str) -> String {
+        let pattern = [
+            "(?is)\\s",
+            &regex::escape(attr),
+            "\\s*=\\s*(?:\"[^\"]*\"|\\{[^}]*\\}|[^\\s/>]+)",
+        ]
+        .concat();
+        match Regex::new(&pattern) {
+            Ok(re) => re.replace_all(block, "").into_owned(),
+            Err(_) => block.to_string(),
+        }
+    }
+
+    fn format_motionloom_text_value_attr(value: &str) -> String {
+        if !value.contains('"') {
+            format!(r#""{value}""#)
+        } else if !value.contains('}') && !value.contains('\n') {
+            format!("{{{value}}}")
+        } else {
+            format!(r#""{}""#, value.replace('"', "'").replace('\n', " "))
+        }
+    }
+
+    fn text_value_alias(block: &str) -> Option<String> {
+        ["text", "content", "children", "label"]
+            .iter()
+            .find_map(|attr| Self::find_tag_attr(block, attr))
+            .filter(|value| !value.trim().is_empty())
+    }
+
+    fn text_patch_label(tag: &str) -> String {
+        Self::find_tag_attr(tag, "id")
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| "Text".to_string())
+    }
+
+    fn rewrite_text_tag_value(tag: &str, fallback_value: Option<&str>) -> Option<String> {
+        if Self::find_tag_attr(tag, "value").is_some() {
+            return None;
+        }
+        let value = Self::text_value_alias(tag).or_else(|| {
+            fallback_value
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })?;
+        let value_attr = Self::format_motionloom_text_value_attr(&value);
+        if let Some(close_ix) = tag.rfind("/>") {
+            let head = tag[..close_ix].trim_end();
+            Some(format!("{head} value={value_attr} />"))
+        } else if let Some(close_ix) = tag.rfind('>') {
+            let head = tag[..close_ix].trim_end();
+            Some(format!("{head} value={value_attr} />"))
+        } else {
+            None
+        }
+    }
+
+    fn rewrite_text_value_compat(script: &str) -> (String, Vec<String>) {
+        let mut patched = Vec::<String>::new();
+        let paired_re = match Regex::new(r#"(?is)<Text\b([^>]*)>(.*?)</Text>"#) {
+            Ok(re) => re,
+            Err(_) => return (script.to_string(), patched),
+        };
+        let paired_rewritten = paired_re
+            .replace_all(script, |caps: &regex::Captures<'_>| {
+                let full = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
+                let attrs = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+                let body = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
+                let tag = format!("<Text{attrs}>");
+                if let Some(rewritten) = Self::rewrite_text_tag_value(&tag, Some(body)) {
+                    patched.push(Self::text_patch_label(&tag));
+                    rewritten
+                } else if Self::find_tag_attr(&tag, "value").is_some() {
+                    format!("<Text{attrs} />")
+                } else {
+                    full.to_string()
+                }
+            })
+            .into_owned();
+
+        let self_closing_re = match Regex::new(r#"(?is)<Text\b[^>]*\/>"#) {
+            Ok(re) => re,
+            Err(_) => return (paired_rewritten, patched),
+        };
+        let rewritten = self_closing_re
+            .replace_all(&paired_rewritten, |caps: &regex::Captures<'_>| {
+                let full = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
+                if let Some(rewritten) = Self::rewrite_text_tag_value(full, None) {
+                    patched.push(Self::text_patch_label(full));
+                    rewritten
+                } else {
+                    full.to_string()
+                }
+            })
+            .into_owned();
+        patched.sort();
+        patched.dedup();
+        (rewritten, patched)
+    }
+
+    fn ensure_motionloom_graph_duration(script: &str) -> (String, bool) {
+        let Some(graph_start) = script.find("<Graph") else {
+            return (script.to_string(), false);
+        };
+        let after = &script[graph_start..];
+        let Some(rel_end) = after.find('>') else {
+            return (script.to_string(), false);
+        };
+        let graph_end = graph_start + rel_end;
+        let open_tag = &script[graph_start..=graph_end];
+        if open_tag.contains("duration=") {
+            return (script.to_string(), false);
+        }
+
+        let present_re = match Regex::new(r#"(?is)<Present\b([^>]*)\/>"#) {
+            Ok(re) => re,
+            Err(_) => return (script.to_string(), false),
+        };
+        let Some(caps) = present_re.captures(script) else {
+            return (script.to_string(), false);
+        };
+        let attrs = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        let Some(duration_raw) = Self::find_tag_attr(attrs, "duration_ms") else {
+            return (script.to_string(), false);
+        };
+        let Ok(duration_ms) = duration_raw.parse::<f64>() else {
+            return (script.to_string(), false);
+        };
+        let duration_ms = duration_ms.max(1.0).round() as u64;
+        let patched_open = if let Some(prefix) = open_tag.strip_suffix("/>") {
+            format!(r#"{prefix} duration="{duration_ms}ms"/>"#)
+        } else if let Some(prefix) = open_tag.strip_suffix('>') {
+            format!(r#"{prefix} duration="{duration_ms}ms">"#)
+        } else {
+            return (script.to_string(), false);
+        };
+
+        let mut out = String::with_capacity(script.len() + 24);
+        out.push_str(&script[..graph_start]);
+        out.push_str(&patched_open);
+        out.push_str(&script[graph_end + 1..]);
+        (out, true)
+    }
+
+    fn parse_animate_opacity_compat(attrs: &str) -> Option<AnimateOpacityCompat> {
+        let target = Self::find_tag_attr(attrs, "target")?;
+        let target_id = target.strip_suffix(".opacity")?.trim().to_string();
+        if target_id.is_empty() {
+            return None;
+        }
+        let from = Self::find_tag_attr(attrs, "from")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let to = Self::find_tag_attr(attrs, "to")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(1.0);
+        let start_ms = Self::find_tag_attr(attrs, "start_ms")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let end_ms = Self::find_tag_attr(attrs, "end_ms")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or((start_ms + 1000.0).max(1.0));
+        Some(AnimateOpacityCompat {
+            target_id,
+            from,
+            to,
+            start_ms,
+            end_ms,
+        })
+    }
+
+    fn build_fade_expr_from_animate(spec: &AnimateOpacityCompat) -> String {
+        let start_sec = (spec.start_ms / 1000.0).max(0.0);
+        let duration_sec = ((spec.end_ms - spec.start_ms).abs() / 1000.0).max(0.001);
+        format!(
+            "{:.6}+({:.6}-{:.6})*min(max(($time.sec-{:.6})/{:.6},0),1)",
+            spec.from, spec.to, spec.from, start_sec, duration_sec
+        )
+    }
+
+    fn rewrite_tag_opacity(tag: &str, opacity_expr: &str) -> String {
+        let cleaned = Self::remove_tag_attr(tag, "opacity");
+        if let Some(close_ix) = cleaned.rfind("/>") {
+            let head = cleaned[..close_ix].trim_end();
+            return format!(r#"{head} opacity="{opacity_expr}" />"#);
+        }
+        cleaned
+    }
+
+    fn rewrite_animate_opacity_compat(script: &str) -> (String, Vec<String>) {
+        let animate_re = match Regex::new(r#"(?is)<Animate\b([^>]*)\/>"#) {
+            Ok(re) => re,
+            Err(_) => return (script.to_string(), Vec::new()),
+        };
+        let mut opacity_by_id = HashMap::<String, String>::new();
+        for caps in animate_re.captures_iter(script) {
+            let attrs = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            if let Some(spec) = Self::parse_animate_opacity_compat(attrs) {
+                opacity_by_id.insert(
+                    spec.target_id.clone(),
+                    Self::build_fade_expr_from_animate(&spec),
+                );
+            }
+        }
+        if opacity_by_id.is_empty() {
+            return (script.to_string(), Vec::new());
+        }
+
+        let script_without_animate = animate_re.replace_all(script, "").into_owned();
+        let node_re = match Regex::new(r#"(?is)<(Text|Image|Svg|SVG)\b[^>]*\/>"#) {
+            Ok(re) => re,
+            Err(_) => return (script_without_animate, Vec::new()),
+        };
+        let mut patched_ids = Vec::<String>::new();
+        let rewritten = node_re
+            .replace_all(&script_without_animate, |caps: &regex::Captures<'_>| {
+                let full = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
+                let Some(id) = Self::find_tag_attr(full, "id") else {
+                    return full.to_string();
+                };
+                let Some(expr) = opacity_by_id.get(&id) else {
+                    return full.to_string();
+                };
+                patched_ids.push(id);
+                Self::rewrite_tag_opacity(full, expr)
+            })
+            .into_owned();
+        patched_ids.sort();
+        patched_ids.dedup();
+        (rewritten, patched_ids)
+    }
+
+    fn append_motionloom_normalization_message(
+        mut base: String,
+        normalization: &MotionLoomScriptNormalization,
+    ) -> String {
+        let mut parts = Vec::<String>::new();
+        if normalization.patched_fps {
+            parts.push("fps=60".to_string());
+        }
+        if normalization.patched_size {
+            parts.push("size=[1920,1080]".to_string());
+        }
+        if normalization.patched_duration {
+            parts.push("duration from Present.duration_ms".to_string());
+        }
+        if !normalization.patched_text_value.is_empty() {
+            parts.push(format!(
+                "Text value for {}",
+                normalization.patched_text_value.join(",")
+            ));
+        }
+        if !normalization.patched_animate_opacity.is_empty() {
+            parts.push(format!(
+                "Animate->opacity for {}",
+                normalization.patched_animate_opacity.join(",")
+            ));
+        }
+        if !parts.is_empty() {
+            base.push_str(" Auto-normalized: ");
+            base.push_str(&parts.join(", "));
+            base.push('.');
+        }
+        base
     }
 
     fn media_pool_signature(
@@ -2103,6 +2900,185 @@ impl AiAgentsPage {
                             self.sync_worker_media_pool_snapshot(cx);
                         }
                     }
+                    AcpToolBridgeRequest::GetMotionLoomSceneScript { request, reply_tx } => {
+                        let _ = request;
+                        let response = {
+                            let gs = self.global.read(cx);
+                            let script = gs.motionloom_scene_script().to_string();
+                            AcpMotionLoomGetSceneScriptResponse {
+                                ok: true,
+                                script_length: script.chars().count(),
+                                script,
+                                script_revision: gs.motionloom_scene_script_revision(),
+                                apply_revision: gs.motionloom_scene_apply_revision(),
+                                message: "Fetched MotionLoom scene script.".to_string(),
+                            }
+                        };
+                        let _ = reply_tx.send(Ok(response));
+                    }
+                    AcpToolBridgeRequest::SetMotionLoomSceneScript { request, reply_tx } => {
+                        let script = request.script;
+                        let apply_now = request.apply_now;
+                        let focus_vfx_page = request.focus_vfx_page;
+                        let normalization = Self::normalize_motionloom_scene_script(&script);
+                        let trimmed = normalization.script.trim().to_string();
+                        if trimmed.is_empty() {
+                            let _ = reply_tx.send(Err(
+                                "motionloom/set_scene_script requires a non-empty <Graph ...> script."
+                                    .to_string(),
+                            ));
+                            continue;
+                        }
+                        if !is_graph_script(&trimmed) {
+                            let _ = reply_tx.send(Err(
+                                "motionloom/set_scene_script expects MotionLoom Graph DSL (<Graph ...>...</Graph>)."
+                                    .to_string(),
+                            ));
+                            continue;
+                        }
+                        let graph = match parse_graph_script(&trimmed) {
+                            Ok(graph) => graph,
+                            Err(err) => {
+                                let _ = reply_tx.send(Err(format!(
+                                    "motionloom/set_scene_script parse error at line {}: {}",
+                                    err.line, err.message
+                                )));
+                                continue;
+                            }
+                        };
+                        let runtime = match compile_runtime_program(graph.clone()) {
+                            Ok(runtime) => runtime,
+                            Err(err) => {
+                                let _ = reply_tx.send(Err(format!(
+                                    "motionloom/set_scene_script compile error: {}",
+                                    err.message
+                                )));
+                                continue;
+                            }
+                        };
+                        if !runtime.unsupported_kernels().is_empty() {
+                            let _ = reply_tx.send(Err(format!(
+                                "motionloom/set_scene_script unsupported kernel(s): {}",
+                                runtime.unsupported_kernels().join(", ")
+                            )));
+                            continue;
+                        }
+
+                        let response = self.global.update(cx, |gs, cx| {
+                            let script_length = trimmed.chars().count();
+                            let (updated, apply_requested) =
+                                gs.set_motionloom_scene_script(trimmed.clone(), apply_now);
+                            if focus_vfx_page {
+                                gs.active_page = AppPage::MotionLoom;
+                            }
+                            cx.notify();
+                            AcpMotionLoomSetSceneScriptResponse {
+                                ok: true,
+                                updated,
+                                apply_requested,
+                                focus_vfx_page,
+                                script_length,
+                                script_revision: gs.motionloom_scene_script_revision(),
+                                apply_revision: gs.motionloom_scene_apply_revision(),
+                                message: if updated {
+                                    if apply_requested {
+                                        let base = format!(
+                                            "MotionLoom script updated, validated (scope={:?}), and apply requested.",
+                                            graph.scope
+                                        );
+                                        Self::append_motionloom_normalization_message(
+                                            base,
+                                            &normalization,
+                                        )
+                                    } else {
+                                        let base = format!(
+                                            "MotionLoom script updated and validated (scope={:?}).",
+                                            graph.scope
+                                        );
+                                        Self::append_motionloom_normalization_message(
+                                            base,
+                                            &normalization,
+                                        )
+                                    }
+                                } else if apply_requested {
+                                    "MotionLoom script unchanged, apply requested (validated)."
+                                        .to_string()
+                                } else {
+                                    "MotionLoom script unchanged (validated).".to_string()
+                                },
+                            }
+                        });
+                        let _ = reply_tx.send(Ok(response));
+                    }
+                    AcpToolBridgeRequest::RenderMotionLoomScene { request, reply_tx } => {
+                        let mode = request.mode.trim().to_ascii_lowercase();
+                        let focus_vfx_page = request.focus_vfx_page;
+
+                        let current_script = {
+                            let gs = self.global.read(cx);
+                            gs.motionloom_scene_script().to_string()
+                        };
+                        if current_script.trim().is_empty() {
+                            let _ = reply_tx.send(Err(
+                                "motionloom/render_scene requires a scene script. Set script first."
+                                    .to_string(),
+                            ));
+                            continue;
+                        }
+                        let graph = match parse_graph_script(&current_script) {
+                            Ok(graph) => graph,
+                            Err(err) => {
+                                let _ = reply_tx.send(Err(format!(
+                                    "motionloom/render_scene parse error at line {}: {}",
+                                    err.line, err.message
+                                )));
+                                continue;
+                            }
+                        };
+                        if graph.scope != GraphScope::Scene {
+                            let _ = reply_tx.send(Err(
+                                "motionloom/render_scene requires <Graph scope=\"scene\" ...>."
+                                    .to_string(),
+                            ));
+                            continue;
+                        }
+                        if !graph.has_scene_nodes() {
+                            let _ = reply_tx.send(Err(
+                                "motionloom/render_scene requires at least one scene node: <Scene>, <Solid>, <Text>, <Image>, <Svg>, <Rect>, <Circle>, <Line>, <Polyline>, <Path>, <Camera>, or <Group>."
+                                    .to_string(),
+                            ));
+                            continue;
+                        }
+
+                        let response = match self.global.update(cx, |gs, cx| {
+                            let revision = gs.request_motionloom_scene_render(&mode)?;
+                            if focus_vfx_page {
+                                gs.active_page = AppPage::MotionLoom;
+                            }
+                            cx.notify();
+                            Ok::<AcpMotionLoomRenderSceneResponse, String>(
+                                AcpMotionLoomRenderSceneResponse {
+                                    ok: true,
+                                    queued: true,
+                                    mode: gs
+                                        .motionloom_scene_render_mode()
+                                        .unwrap_or("gpu")
+                                        .to_string(),
+                                    focus_vfx_page,
+                                    render_revision: revision,
+                                    message: "MotionLoom render queued. VFX page will execute matching render button flow."
+                                        .to_string(),
+                                },
+                            )
+                        }) {
+                            Ok(response) => response,
+                            Err(err) => {
+                                let _ = reply_tx.send(Err(err));
+                                continue;
+                            }
+                        };
+                        let _ = reply_tx.send(Ok(response));
+                    }
                 },
             }
         }
@@ -2178,10 +3154,19 @@ impl AiAgentsPage {
             .to_string(),
         )];
         if self.agent_provider == AcpAgentProvider::Codex {
+            if !self.codex_model.trim().is_empty() {
+                acp_env.push(("ANICA_CODEX_MODEL".to_string(), self.codex_model.clone()));
+            }
             acp_env.push((
                 "ANICA_CODEX_REASONING_EFFORT".to_string(),
                 self.codex_reasoning_mode.env_value().to_string(),
             ));
+        }
+        if self.agent_provider == AcpAgentProvider::Gemini && !self.gemini_model.trim().is_empty() {
+            acp_env.push(("ANICA_GEMINI_MODEL".to_string(), self.gemini_model.clone()));
+        }
+        if self.agent_provider == AcpAgentProvider::Claude && !self.claude_model.trim().is_empty() {
+            acp_env.push(("ANICA_CLAUDE_MODEL".to_string(), self.claude_model.clone()));
         }
         if let Some(path) = normalize_cli_override(&self.codex_cli_bin) {
             acp_env.push(("ANICA_CODEX_CLI_BIN".to_string(), path));
@@ -2207,15 +3192,19 @@ impl AiAgentsPage {
         self.worker
             .connect(resolved_cmd.clone(), Some(runtime_cwd.clone()), acp_env);
         self.busy = true;
+        let provider_detail = match self.agent_provider {
+            AcpAgentProvider::Codex => format!(
+                " (model: {}, thinking: {})",
+                self.codex_model,
+                self.codex_reasoning_mode.label()
+            ),
+            AcpAgentProvider::Gemini => format!(" (model: {})", self.gemini_model),
+            AcpAgentProvider::Claude => format!(" (model: {})", self.claude_model),
+        };
         self.push_system_message(
             format!(
-                "Connecting {} ACP agent: {resolved_cmd}{}",
+                "Connecting {} ACP agent: {resolved_cmd}{provider_detail}",
                 self.agent_provider.label(),
-                if self.agent_provider == AcpAgentProvider::Codex {
-                    format!(" (thinking: {})", self.codex_reasoning_mode.label())
-                } else {
-                    String::new()
-                }
             ),
             cx,
         );
@@ -2475,6 +3464,54 @@ impl Render for AiAgentsPage {
                 }),
             )
         };
+        let model_button =
+            |provider: AcpAgentProvider, option: ProviderModelOption, active: bool| {
+                let slug = option.slug.clone();
+                let display_label: SharedString = option.label.into();
+                let mut chip = div()
+                    .h(px(28.0))
+                    .px_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if active {
+                        gpui::Hsla::from(rgb(0x3b82f6)).opacity(0.55)
+                    } else {
+                        white().opacity(0.14)
+                    })
+                    .bg(if active {
+                        gpui::Hsla::from(rgb(0x1e3a8a)).opacity(0.35)
+                    } else {
+                        white().opacity(0.05)
+                    })
+                    .text_xs()
+                    .text_color(white().opacity(if active { 0.95 } else { 0.75 }))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(div().max_w(px(150.0)).truncate().child(display_label));
+                if !active {
+                    chip = chip.hover(|s| s.bg(white().opacity(0.1))).cursor_pointer();
+                }
+                chip.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        match provider {
+                            AcpAgentProvider::Codex => this.codex_model = slug.clone(),
+                            AcpAgentProvider::Gemini => this.gemini_model = slug.clone(),
+                            AcpAgentProvider::Claude => this.claude_model = slug.clone(),
+                        }
+                        this.push_system_message(
+                            format!(
+                                "{} model set to {} (applies on next connect).",
+                                provider.label(),
+                                slug
+                            ),
+                            cx,
+                        );
+                        cx.notify();
+                    }),
+                )
+            };
         let connected_prov = self.connected_provider;
         let provider_button = |label: &'static str, provider: AcpAgentProvider, active: bool| {
             let is_connected = connected_prov == Some(provider);
@@ -2532,7 +3569,62 @@ impl Render for AiAgentsPage {
             .flex_col()
             .gap_2();
         if self.agent_provider == AcpAgentProvider::Codex {
+            let mut codex_model_buttons = div().flex().flex_wrap().gap_2();
+            for option in self.codex_model_options.iter().cloned() {
+                let active = self.codex_model == option.slug;
+                codex_model_buttons = codex_model_buttons.child(model_button(
+                    AcpAgentProvider::Codex,
+                    option,
+                    active,
+                ));
+            }
+            let refresh_models_button = Self::action_button("Refresh Models")
+                .h(px(26.0))
+                .text_xs()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.reload_codex_model_options(true);
+                        this.push_system_message(
+                            format!(
+                                "Codex models refreshed. Selected: {}. Source: {}",
+                                this.codex_model, this.codex_models_source
+                            ),
+                            cx,
+                        );
+                        cx.notify();
+                    }),
+                );
             provider_specific_help = provider_specific_help
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(white().opacity(0.55))
+                                        .child("Codex Model"),
+                                )
+                                .child(refresh_models_button),
+                        )
+                        .child(codex_model_buttons)
+                        .child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_xs()
+                                .text_color(white().opacity(0.45))
+                                .child(self.codex_models_source.clone()),
+                        ),
+                )
                 .child(
                     div()
                         .flex()
@@ -2581,11 +3673,66 @@ impl Render for AiAgentsPage {
                         .text_xs()
                         .text_color(white().opacity(0.5))
                         .child(
-                            "Thinking mode is passed as ANICA_CODEX_REASONING_EFFORT to anica-acp at connect time.",
+                            "Model and thinking mode are passed to anica-acp at connect time.",
                         ),
                 );
         } else if self.agent_provider == AcpAgentProvider::Gemini {
+            let mut gemini_model_buttons = div().flex().flex_wrap().gap_2();
+            for option in self.gemini_model_options.iter().cloned() {
+                let active = self.gemini_model == option.slug;
+                gemini_model_buttons = gemini_model_buttons.child(model_button(
+                    AcpAgentProvider::Gemini,
+                    option,
+                    active,
+                ));
+            }
+            let refresh_models_button = Self::action_button("Refresh Models")
+                .h(px(26.0))
+                .text_xs()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.reload_gemini_model_options(true);
+                        this.push_system_message(
+                            format!(
+                                "Gemini models refreshed. Selected: {}. Source: {}",
+                                this.gemini_model, this.gemini_models_source
+                            ),
+                            cx,
+                        );
+                        cx.notify();
+                    }),
+                );
             provider_specific_help = provider_specific_help
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(white().opacity(0.55))
+                                        .child("Gemini Model"),
+                                )
+                                .child(refresh_models_button),
+                        )
+                        .child(gemini_model_buttons)
+                        .child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_xs()
+                                .text_color(white().opacity(0.45))
+                                .child(self.gemini_models_source.clone()),
+                        ),
+                )
                 .child(
                     div()
                         .text_xs()
@@ -2603,7 +3750,62 @@ impl Render for AiAgentsPage {
                         ),
                 );
         } else {
+            let mut claude_model_buttons = div().flex().flex_wrap().gap_2();
+            for option in self.claude_model_options.iter().cloned() {
+                let active = self.claude_model == option.slug;
+                claude_model_buttons = claude_model_buttons.child(model_button(
+                    AcpAgentProvider::Claude,
+                    option,
+                    active,
+                ));
+            }
+            let refresh_models_button = Self::action_button("Refresh Models")
+                .h(px(26.0))
+                .text_xs()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.reload_claude_model_options(true);
+                        this.push_system_message(
+                            format!(
+                                "Claude models refreshed. Selected: {}. Source: {}",
+                                this.claude_model, this.claude_models_source
+                            ),
+                            cx,
+                        );
+                        cx.notify();
+                    }),
+                );
             provider_specific_help = provider_specific_help
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(white().opacity(0.55))
+                                        .child("Claude Model"),
+                                )
+                                .child(refresh_models_button),
+                        )
+                        .child(claude_model_buttons)
+                        .child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_xs()
+                                .text_color(white().opacity(0.45))
+                                .child(self.claude_models_source.clone()),
+                        ),
+                )
                 .child(
                     div()
                         .text_xs()
@@ -2902,8 +4104,9 @@ impl Render for AiAgentsPage {
 
 #[cfg(test)]
 mod tests {
-    use super::{AI_CHAT_MAX_CONVERSATION_MESSAGES, prune_ai_chat_history};
+    use super::{AI_CHAT_MAX_CONVERSATION_MESSAGES, AiAgentsPage, prune_ai_chat_history};
     use crate::core::global_state::{AiChatMessage, AiChatRole};
+    use motionloom::parse_graph_script;
 
     fn msg(role: AiChatRole, text: &str) -> AiChatMessage {
         AiChatMessage {
@@ -2948,5 +4151,73 @@ mod tests {
             AI_CHAT_MAX_CONVERSATION_MESSAGES
         );
         assert_eq!(messages.first().map(|msg| msg.text.as_str()), Some("u1"));
+    }
+
+    #[test]
+    fn normalize_motionloom_scene_defaults_fps_and_size() {
+        let input = r##"
+<Graph scope="scene" duration="3s">
+  <Solid color="#000000" />
+  <Present from="scene" />
+</Graph>
+"##;
+        let out = AiAgentsPage::normalize_motionloom_scene_script(input);
+        assert!(out.patched_fps);
+        assert!(out.patched_size);
+        assert!(out.script.contains("fps={60}"));
+        assert!(out.script.contains("size={[1920,1080]}"));
+        parse_graph_script(&out.script).expect("normalized graph should parse");
+    }
+
+    #[test]
+    fn normalize_motionloom_scene_rewrites_animate_opacity_and_duration_ms() {
+        let input = r##"
+<Graph scope="scene" fps={60} size={[1920,1080]}>
+  <Solid color="#000000" />
+  <Text id="title" value="HELLO WORLD" color="#FFFFFF" fontSize={120} x={960} y={540} opacity={0} />
+  <Animate target="title.opacity" from={0} to={1} start_ms={0} end_ms={1200} />
+  <Present from="scene" duration_ms={3000} />
+</Graph>
+"##;
+        let out = AiAgentsPage::normalize_motionloom_scene_script(input);
+        assert!(out.patched_duration);
+        assert_eq!(out.patched_animate_opacity, vec!["title".to_string()]);
+        assert!(out.script.contains(r#"duration="3000ms""#));
+        assert!(out.script.contains(
+            r#"opacity="0.000000+(1.000000-0.000000)*min(max(($time.sec-0.000000)/1.200000,0),1)""#
+        ));
+        assert!(!out.script.contains("<Animate"));
+        parse_graph_script(&out.script).expect("normalized graph should parse");
+    }
+
+    #[test]
+    fn normalize_motionloom_scene_rewrites_text_alias_to_value() {
+        let input = r##"
+<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Solid color="#000000" />
+  <Text id="title" text="HELLO WORLD" color="#FFFFFF" fontSize={120} x="center" y="center" opacity="1" />
+  <Present from="scene" />
+</Graph>
+"##;
+        let out = AiAgentsPage::normalize_motionloom_scene_script(input);
+        assert_eq!(out.patched_text_value, vec!["title".to_string()]);
+        assert!(out.script.contains(r#"value="HELLO WORLD""#));
+        parse_graph_script(&out.script).expect("normalized graph should parse");
+    }
+
+    #[test]
+    fn normalize_motionloom_scene_rewrites_text_body_to_value() {
+        let input = r##"
+<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Solid color="#000000" />
+  <Text id="title" color="#FFFFFF" fontSize={120} x="center" y="center" opacity="1">HELLO WORLD</Text>
+  <Present from="scene" />
+</Graph>
+"##;
+        let out = AiAgentsPage::normalize_motionloom_scene_script(input);
+        assert_eq!(out.patched_text_value, vec!["title".to_string()]);
+        assert!(out.script.contains(r#"value="HELLO WORLD""#));
+        assert!(!out.script.contains("</Text>"));
+        parse_graph_script(&out.script).expect("normalized graph should parse");
     }
 }

@@ -14,6 +14,11 @@ use crate::api::media_pool::{
     ClearMediaPoolRequest, ClearMediaPoolResponse, ListMediaPoolMetadataRequest,
     RemoveMediaPoolByIdRequest, RemoveMediaPoolByIdResponse, list_media_metadata_from_pool_items,
 };
+use crate::api::motionloom::{
+    AcpMotionLoomGetSceneScriptRequest, AcpMotionLoomGetSceneScriptResponse,
+    AcpMotionLoomRenderSceneRequest, AcpMotionLoomRenderSceneResponse,
+    AcpMotionLoomSetSceneScriptRequest, AcpMotionLoomSetSceneScriptResponse,
+};
 use crate::api::timeline::{
     AudioSilenceCutPlanRequest, AudioSilenceCutPlanResponse, AudioSilenceMapRequest,
     AudioSilenceMapResponse, AutonomousEditPlanRequest, AutonomousEditPlanResponse,
@@ -125,6 +130,18 @@ pub enum AcpToolBridgeRequest {
     ClearMediaPool {
         request: ClearMediaPoolRequest,
         reply_tx: Sender<Result<ClearMediaPoolResponse, String>>,
+    },
+    GetMotionLoomSceneScript {
+        request: AcpMotionLoomGetSceneScriptRequest,
+        reply_tx: Sender<Result<AcpMotionLoomGetSceneScriptResponse, String>>,
+    },
+    SetMotionLoomSceneScript {
+        request: AcpMotionLoomSetSceneScriptRequest,
+        reply_tx: Sender<Result<AcpMotionLoomSetSceneScriptResponse, String>>,
+    },
+    RenderMotionLoomScene {
+        request: AcpMotionLoomRenderSceneRequest,
+        reply_tx: Sender<Result<AcpMotionLoomRenderSceneResponse, String>>,
     },
 }
 
@@ -1216,6 +1233,65 @@ impl Client for AcpClientHandler {
                     })?;
                 let response = read_docs_file(request)
                     .map_err(|err| AcpError::internal_error().data(err.to_string()))?;
+                let raw = json_raw_from_value(&response)?;
+                Ok(ExtResponse::new(raw))
+            }
+            "anica.motionloom/get_scene_script" => {
+                let request =
+                    serde_json::from_str::<AcpMotionLoomGetSceneScriptRequest>(args.params.get())
+                        .map_err(|err| {
+                        AcpError::invalid_params().data(format!(
+                            "invalid motionloom/get_scene_script request: {err}"
+                        ))
+                    })?;
+                let response = call_tool_bridge(
+                    &self.evt_tx,
+                    8,
+                    "motionloom/get_scene_script",
+                    move |reply_tx| AcpToolBridgeRequest::GetMotionLoomSceneScript {
+                        request,
+                        reply_tx,
+                    },
+                )?;
+                let raw = json_raw_from_value(&response)?;
+                Ok(ExtResponse::new(raw))
+            }
+            "anica.motionloom/set_scene_script" => {
+                let request =
+                    serde_json::from_str::<AcpMotionLoomSetSceneScriptRequest>(args.params.get())
+                        .map_err(|err| {
+                        AcpError::invalid_params().data(format!(
+                            "invalid motionloom/set_scene_script request: {err}"
+                        ))
+                    })?;
+                let response = call_tool_bridge(
+                    &self.evt_tx,
+                    12,
+                    "motionloom/set_scene_script",
+                    move |reply_tx| AcpToolBridgeRequest::SetMotionLoomSceneScript {
+                        request,
+                        reply_tx,
+                    },
+                )?;
+                let raw = json_raw_from_value(&response)?;
+                Ok(ExtResponse::new(raw))
+            }
+            "anica.motionloom/render_scene" => {
+                let request =
+                    serde_json::from_str::<AcpMotionLoomRenderSceneRequest>(args.params.get())
+                        .map_err(|err| {
+                            AcpError::invalid_params()
+                                .data(format!("invalid motionloom/render_scene request: {err}"))
+                        })?;
+                let response = call_tool_bridge(
+                    &self.evt_tx,
+                    12,
+                    "motionloom/render_scene",
+                    move |reply_tx| AcpToolBridgeRequest::RenderMotionLoomScene {
+                        request,
+                        reply_tx,
+                    },
+                )?;
                 let raw = json_raw_from_value(&response)?;
                 Ok(ExtResponse::new(raw))
             }

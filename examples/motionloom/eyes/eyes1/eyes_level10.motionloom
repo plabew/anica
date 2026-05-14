@@ -1,0 +1,655 @@
+<Graph scope="scene" fps={60} duration="1s" size={[1520,260]}>
+  <Scene id="high_detail_bishoujo_eye_big_pupil_star_grouped">
+    <Solid color="#f6efe9" />
+
+    <Defs>
+      <LinearGradient id="skin_soft" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#fff8f1, 0.55:#f7eee7, 1:#eadbd4" />
+
+      <LinearGradient id="sclera_grad" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#dfe7f3, 0.26:#f8fbff, 0.74:#ffffff, 1:#edf6ff" />
+
+      <RadialGradient id="iris_base" cx="0.50" cy="0.36" r="0.88"
+                      stops="0:#122848, 0.18:#234f84, 0.42:#3e95cf, 0.68:#91def7, 0.90:#d8f7ff, 1:#f6fdff" />
+
+      <RadialGradient id="iris_core" cx="0.50" cy="0.44" r="0.62"
+                      stops="0:#050b18, 0.28:#0c2242, 0.62:#2a7bb0, 1:#ffffff00" />
+
+      <RadialGradient id="pupil_grad" cx="0.50" cy="0.45" r="0.72"
+                      stops="0:#000000, 0.62:#030914, 1:#081528" />
+
+      <LinearGradient id="iris_lower_glow" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#ffffff00, 0.36:#b8f8ff44, 0.68:#ecffffcc, 1:#ffffffee" />
+
+      <LinearGradient id="upper_lid_shadow" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#1d1228d0, 0.38:#49557592, 1:#ffffff00" />
+    </Defs>
+
+    <Rect x="0" y="0" width="520" height="260" color="url(#skin_soft)" />
+
+    <Character id="eye_detail" x="252" y="128" rotation="-4" opacity="1">
+
+      <!-- 眼白 -->
+      <Path id="eye_white"
+            d="M -188 -4
+               C -160 -96 -52 -126 62 -110
+               C 146 -98 202 -46 216 8
+               C 184 82 86 108 -20 100
+               C -112 92 -170 48 -188 -4 Z"
+            fill="url(#sclera_grad)"
+            stroke="#4c3145"
+            strokeWidth="3" />
+
+      <!-- 虹膜 Group：已放大 5% -->
+      <Group id="iris_group" x="0" y="-18" opacity="1" scale="1.35">
+
+        <!-- 大虹膜 -->
+        <Circle id="iris_outer_soft" x="4" y="6" radius="88"
+                color="#16263a" />
+
+        <Circle id="iris" x="4" y="6" radius="81"
+                fill="url(#iris_base)"
+                stroke="#2f2943"
+                strokeWidth="5" />
+
+        <Circle id="iris_inner" x="4" y="8" radius="60"
+                fill="url(#iris_core)"
+                blend="multiply"
+                opacity="0.62" />
+
+        <!-- 大瞳孔 -->
+        <Circle id="pupil" x="4" y="10" radius="39"
+                fill="url(#pupil_grad)" />
+
+        <Circle id="pupil_soft_ring" x="4" y="10" radius="52"
+                color="#0a183080"
+                blend="multiply" />
+
+        <!-- 下方玻璃感 -->
+        <Path id="iris_lower_glass"
+              d="M -44 32
+                 C -24 78 38 86 82 40
+                 C 70 84 38 104 -2 106
+                 C -38 104 -66 76 -72 38 Z"
+              fill="url(#iris_lower_glow)"
+              stroke="none"
+              blend="screen"
+              opacity="0.94" />
+
+        <!-- 虹膜放射紋 -->
+        <Path id="iris_ray_01" d="M 4 8 L 4 -78" stroke="#eaffff60" strokeWidth="2.2" lineCap="round" fill="none" blend="screen" opacity="0.75" />
+        <Path id="iris_ray_02" d="M 4 8 L 55 -62" stroke="#dcf8ff55" strokeWidth="2.1" lineCap="round" fill="none" blend="screen" opacity="0.66" />
+        <Path id="iris_ray_03" d="M 4 8 L 82 -18" stroke="#ffffff46" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.58" />
+        <Path id="iris_ray_04" d="M 4 8 L 70 46" stroke="#d2fbff58" strokeWidth="2.1" lineCap="round" fill="none" blend="screen" opacity="0.64" />
+        <Path id="iris_ray_05" d="M 4 8 L 36 80" stroke="#f6ffff74" strokeWidth="2.1" lineCap="round" fill="none" blend="screen" opacity="0.72" />
+        <Path id="iris_ray_06" d="M 4 8 L -18 78" stroke="#cbf8ff58" strokeWidth="2.1" lineCap="round" fill="none" blend="screen" opacity="0.62" />
+        <Path id="iris_ray_07" d="M 4 8 L -56 46" stroke="#edffff4a" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.57" />
+        <Path id="iris_ray_08" d="M 4 8 L -72 -16" stroke="#ffffff40" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.54" />
+        <Path id="iris_ray_09" d="M 4 8 L -38 -66" stroke="#d5f8ff54" strokeWidth="2.1" lineCap="round" fill="none" blend="screen" opacity="0.66" />
+
+        <!-- 主高光 -->
+        <Path id="main_highlight_a"
+              d="M -40 -66
+                 C -14 -92 28 -90 50 -56
+                 C 40 -28 10 -18 -20 -28
+                 C -38 -40 -48 -54 -40 -66 Z"
+              fill="#ffffff"
+              stroke="none"
+              blend="screen"
+              opacity="0.98" />
+
+        <Path id="main_highlight_b"
+              d="M 34 -58
+                 C 54 -70 74 -58 74 -38
+                 C 62 -24 42 -24 34 -38
+                 C 31 -44 31 -52 34 -58 Z"
+              fill="#f6ffffee"
+              stroke="none"
+              blend="screen"
+              opacity="0.95" />
+
+        <!-- 圓形小高光 -->
+        <Circle id="micro_highlight_01" x="-34" y="16" radius="7"
+                color="#e6fcffdd" blend="screen" />
+        <Circle id="micro_highlight_02" x="34" y="-12" radius="6.5"
+                color="#ffffffee" blend="screen" />
+        <Circle id="micro_highlight_03" x="54" y="34" radius="5.5"
+                color="#f0ffffcc" blend="screen" />
+        <Circle id="micro_highlight_04" x="0" y="68" radius="5.5"
+                color="#d6fbffbb" blend="screen" />
+        <Circle id="micro_highlight_05" x="-6" y="44" radius="3.5"
+                color="#ffffffcc" blend="screen" />
+        <Circle id="micro_highlight_06" x="20" y="26" radius="3.2"
+                color="#eafcffbb" blend="screen" />
+        <Circle id="micro_highlight_07" x="-24" y="-4" radius="3.8"
+                color="#f7ffffcc" blend="screen" />
+
+        <!-- 菱形高光 -->
+        <Path id="diamond_highlight_01"
+              d="M -18 -6 L -3 -18 L 12 -6 L -3 6 Z"
+              fill="#ffffff"
+              blend="screen"
+              opacity="0.88" />
+
+        <Path id="diamond_highlight_02"
+              d="M 18 12 L 30 2 L 42 12 L 30 22 Z"
+              fill="#f7ffff"
+              blend="screen"
+              opacity="0.72" />
+
+        <Path id="diamond_highlight_03"
+              d="M -2 34 L 8 26 L 18 34 L 8 42 Z"
+              fill="#ecffff"
+              blend="screen"
+              opacity="0.62" />
+
+        <!-- 星星高光 -->
+        <Path id="star_highlight_01"
+              d="M 0 20
+                 L 4 10
+                 L 8 20
+                 L 18 24
+                 L 8 28
+                 L 4 38
+                 L 0 28
+                 L -10 24 Z"
+              fill="#ffffff"
+              blend="screen"
+              opacity="0.72" />
+
+        <Path id="star_highlight_02"
+              d="M 42 42
+                 L 45 35
+                 L 48 42
+                 L 55 45
+                 L 48 48
+                 L 45 55
+                 L 42 48
+                 L 35 45 Z"
+              fill="#efffff"
+              blend="screen"
+              opacity="0.60" />
+
+        <Path id="star_highlight_03"
+              d="M -28 30
+                 L -25 24
+                 L -22 30
+                 L -16 33
+                 L -22 36
+                 L -25 42
+                 L -28 36
+                 L -34 33 Z"
+              fill="#f8ffff"
+              blend="screen"
+              opacity="0.54" />
+
+        <!-- 十字閃光 -->
+        <Path id="sparkle_cross_01_v"
+              d="M 4 -4 L 4 52"
+              stroke="#ffffffcc"
+              strokeWidth="2.2"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.64" />
+        <Path id="sparkle_cross_01_h"
+              d="M -24 24 L 32 24"
+              stroke="#ffffffcc"
+              strokeWidth="2.2"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.64" />
+        <Path id="sparkle_cross_01_d1"
+              d="M -14 6 L 22 42"
+              stroke="#e6fbff99"
+              strokeWidth="1.8"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.54" />
+        <Path id="sparkle_cross_01_d2"
+              d="M 22 6 L -14 42"
+              stroke="#e6fbff99"
+              strokeWidth="1.8"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.54" />
+
+        <Path id="sparkle_cross_02_v"
+              d="M -18 40 L -18 70"
+              stroke="#ffffffaa"
+              strokeWidth="1.7"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.42" />
+        <Path id="sparkle_cross_02_h"
+              d="M -33 55 L -3 55"
+              stroke="#ffffffaa"
+              strokeWidth="1.7"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.42" />
+      </Group>
+
+      <!-- 上眼瞼陰影 -->
+      <Path id="upper_shadow"
+            d="M -176 -12
+               C -126 -78 -34 -96 60 -84
+               C 132 -74 186 -34 205 6
+               C 144 -18 74 -30 4 -30
+               C -66 -30 -128 -22 -176 -12 Z"
+            fill="url(#upper_lid_shadow)"
+            stroke="none"
+            blend="multiply"
+            opacity="0.96" />
+
+      <!-- 上眼線：保持薄弧線，重量集中在外眼尾 L 型折角 -->
+      <Path id="upper_lash_mass"
+            d="M -210 -10
+               C -154 -102 -42 -132 78 -114
+               C 158 -102 211 -45 226 12
+               C 219 17 211 13 204 3
+               C 174 -38 126 -64 64 -72
+               C -40 -86 -139 -58 -198 -3
+               C -206 5 -216 1 -210 -10 Z"
+            fill="#160c22"
+            stroke="none" />
+
+      <Path id="upper_lash_velvet_edge"
+            d="M -206 -10
+               C -154 -102 -42 -132 78 -114
+               C 160 -102 214 -42 228 16"
+            stroke="#1b1024"
+            strokeWidth="5.8"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.22"
+            taperEnd="0.18"
+            fill="none" />
+
+      <Path id="upper_lash_inner_edge"
+            d="M -172 -4
+               C -112 -39 -32 -52 54 -48
+               C 120 -44 174 -25 205 5"
+            stroke="#7a6073"
+            strokeWidth="1.8"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.20"
+            taperEnd="0.30"
+            fill="none"
+            opacity="0.58" />
+
+      <Path id="upper_lash_lower_cut"
+            d="M -160 4
+               C -98 -26 -22 -35 58 -31
+               C 116 -28 166 -12 195 14"
+            stroke="#3d2a3d"
+            strokeWidth="1.4"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.22"
+            taperEnd="0.28"
+            fill="none"
+            opacity="0.48" />
+
+      <!-- 外眼尾 -->
+
+      <Path id="outer_l_shape_tip"
+            d="M 190 18
+               C 225 44 260 86 287 134"
+            stroke="#15091d"
+            strokeWidth="9.5"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.08"
+            taperEnd="0.50"
+            fill="none" />
+
+      <Path id="outer_upper_flick"
+            d="M 203 -2
+               C 232 2 258 18 276 44"
+            stroke="#1c1024"
+            strokeWidth="5.2"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.10"
+            taperEnd="0.42"
+            fill="none"
+            opacity="0.88" />
+
+      <Path id="outer_middle_flick"
+            d="M 210 24
+               C 244 43 271 75 292 112"
+            stroke="#180b20"
+            strokeWidth="5.8"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.12"
+            taperEnd="0.50"
+            fill="none"
+            opacity="0.82" />
+
+      <Path id="outer_lower_hook"
+            d="M 218 54
+               C 246 82 269 118 280 154"
+            stroke="#15091d"
+            strokeWidth="4.8"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.12"
+            taperEnd="0.50"
+            fill="none"
+            opacity="0.72" />
+
+      <!-- 外眼尾向上複製：三層扇形，根部重、尾端散、避免刷子感 -->
+      <Group id="outer_tail_repeat_group_rot_0" x="104" y="56" rotation="-22" scale="0.50" opacity="0.86">
+        <Repeat id="outer_tail_repeat_rot_0"
+                count="22"
+                x="0"
+                y="-4"
+                xStep="1.2"
+                yStep="-7.2"
+                rotation="2"
+                rotationStep="-0.16"
+                scale="1"
+                scaleStep="-0.006"
+                opacity="0.62"
+                opacityStep="-0.024">
+          <Path id="outer_tip_repeat_rot_0"
+                d="M 184 16 C 220 40 256 80 284 130"
+                stroke="#15091d"
+                strokeWidth="5.6"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.10"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_upper_repeat_rot_0"
+                d="M 198 -4 C 232 2 264 20 296 54"
+                stroke="#1c1024"
+                strokeWidth="3.1"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.16"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_middle_repeat_rot_0"
+                d="M 204 24 C 238 43 266 76 292 118"
+                stroke="#180b20"
+                strokeWidth="3.5"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.12"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_core_repeat_rot_0"
+                d="M 180 8 C 218 29 254 67 292 126"
+                stroke="#110818"
+                strokeWidth="3.4"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.08"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_lower_repeat_rot_0"
+                d="M 214 48 C 244 82 268 122 284 160"
+                stroke="#1a0d21"
+                strokeWidth="2.5"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.14"
+                taperEnd="0.50"
+                fill="none" />
+        </Repeat>
+      </Group>
+
+      <Group id="outer_tail_repeat_group_rot_neg10" x="122" y="36" rotation="-36" scale="0.38" opacity="0.55">
+        <Repeat id="outer_tail_repeat_rot_neg10"
+                count="22"
+                x="0"
+                y="-2"
+                xStep="2.2"
+                yStep="-6.8"
+                rotation="-6"
+                rotationStep="-0.24"
+                scale="1"
+                scaleStep="-0.008"
+                opacity="0.50"
+                opacityStep="-0.018">
+          <Path id="outer_tip_repeat_rot_neg10"
+                d="M 190 10 C 226 18 266 44 306 84"
+                stroke="#15091d"
+                strokeWidth="4.4"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.14"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_upper_repeat_rot_neg10"
+                d="M 200 -8 C 238 -4 278 15 318 50"
+                stroke="#1c1024"
+                strokeWidth="2.7"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.18"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_middle_repeat_rot_neg10"
+                d="M 204 18 C 244 35 276 67 306 108"
+                stroke="#180b20"
+                strokeWidth="3.0"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.16"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_core_repeat_rot_neg10"
+                d="M 186 2 C 224 20 260 55 296 110"
+                stroke="#110818"
+                strokeWidth="2.8"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.12"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_lower_repeat_rot_neg10"
+                d="M 216 40 C 248 70 272 108 288 150"
+                stroke="#1a0d21"
+                strokeWidth="2.1"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.16"
+                taperEnd="0.50"
+                fill="none" />
+        </Repeat>
+      </Group>
+
+      <Group id="outer_tail_repeat_group_rot_neg15" x="126" y="108" rotation="-12" scale="0.42" opacity="0.42">
+        <Repeat id="outer_tail_repeat_rot_neg15"
+                count="22"
+                x="0"
+                y="-6"
+                xStep="1.0"
+                yStep="-7.6"
+                rotation="-16"
+                rotationStep="-0.12"
+                scale="1"
+                scaleStep="-0.007"
+                opacity="0.40"
+                opacityStep="-0.014">
+          <Path id="outer_tip_repeat_rot_neg15"
+                d="M 190 18 C 224 48 258 90 284 146"
+                stroke="#15091d"
+                strokeWidth="4.0"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.12"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_upper_repeat_rot_neg15"
+                d="M 204 4 C 238 14 270 40 300 80"
+                stroke="#1c1024"
+                strokeWidth="2.4"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.18"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_middle_repeat_rot_neg15"
+                d="M 210 28 C 244 54 270 92 292 138"
+                stroke="#180b20"
+                strokeWidth="2.7"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.16"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_core_repeat_rot_neg15"
+                d="M 186 12 C 220 38 252 78 286 136"
+                stroke="#110818"
+                strokeWidth="2.5"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.12"
+                taperEnd="0.50"
+                fill="none" />
+          <Path id="outer_lower_repeat_rot_neg15"
+                d="M 218 58 C 248 94 270 134 282 174"
+                stroke="#1a0d21"
+                strokeWidth="2.0"
+                lineCap="round"
+                lineJoin="round"
+                taperStart="0.16"
+                taperEnd="0.50"
+                fill="none" />
+        </Repeat>
+      </Group>
+
+      <!-- 內眼角 -->
+      <Path id="inner_liner_hook"
+            d="M -189 -2
+               C -209 11 -219 31 -220 58"
+            stroke="#4b2b3f"
+            strokeWidth="4.8"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.08"
+            taperEnd="0.36"
+            fill="none"
+            opacity="0.82" />
+
+      <Path id="inner_corner_wetline"
+            d="M -184 5
+               C -199 19 -205 35 -205 50"
+            stroke="#9b7484"
+            strokeWidth="1.4"
+            lineCap="round"
+            taperStart="0.20"
+            taperEnd="0.30"
+            fill="none"
+            opacity="0.42" />
+
+      <!-- 下眼瞼 -->
+      <Path id="lower_lid_main"
+            d="M -154 52
+               C -108 86 -36 102 36 96
+               C 88 92 126 76 154 54"
+            stroke="#674d63"
+            strokeWidth="3.2"
+            lineCap="round"
+            fill="none"
+            opacity="0.48" />
+
+      <Path id="lower_inner_line"
+            d="M -106 66
+               C -48 82 34 84 96 62"
+            stroke="#8a7488"
+            strokeWidth="2.4"
+            lineCap="round"
+            fill="none"
+            opacity="0.34" />
+
+      <Path id="lower_soft_shadow"
+            d="M -102 88
+               C -34 110 58 108 122 72"
+            stroke="#d7a9b1"
+            strokeWidth="7"
+            lineCap="round"
+            fill="none"
+            opacity="0.34" />
+
+      <!-- 下睫毛 -->
+      <Path id="lower_lash_01"
+            d="M -23 96 C -17 111 -3 116 13 111"
+            stroke="#3f2a3e"
+            strokeWidth="2.8"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.10"
+            taperEnd="0.45"
+            fill="none"
+            opacity="0.78" />
+      <Path id="lower_lash_02"
+            d="M 4 98 C 12 111 25 116 40 111"
+            stroke="#3f2a3e"
+            strokeWidth="2.6"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.10"
+            taperEnd="0.45"
+            fill="none"
+            opacity="0.72" />
+      <Path id="lower_lash_03"
+            d="M 31 94 C 39 104 50 108 61 104"
+            stroke="#3f2a3e"
+            strokeWidth="2.2"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.10"
+            taperEnd="0.44"
+            fill="none"
+            opacity="0.62" />
+
+      <!-- 腮紅 / 眼下粉感 -->
+      <Path d="M -84 96 C -46 86 -2 92 32 104"
+            stroke="#ff98af66"
+            strokeWidth="11"
+            lineCap="round"
+            fill="none"
+            opacity="0.46" />
+
+      <Path d="M 46 94 C 74 84 106 90 132 104"
+            stroke="#ff9cb066"
+            strokeWidth="9"
+            lineCap="round"
+            fill="none"
+            opacity="0.30" />
+
+      <Path d="M -92 102 L -50 110"
+            stroke="#bc9aa899"
+            strokeWidth="3"
+            lineCap="round"
+            fill="none"
+            opacity="0.28" />
+      <Path d="M -22 110 L 18 116"
+            stroke="#bc9aa888"
+            strokeWidth="3"
+            lineCap="round"
+            fill="none"
+            opacity="0.22" />
+      <Path d="M 72 94 L 100 100"
+            stroke="#bc9aa888"
+            strokeWidth="3"
+            lineCap="round"
+            fill="none"
+            opacity="0.18" />
+    </Character>
+  </Scene>
+
+  <Present from="high_detail_bishoujo_eye_big_pupil_star_grouped" />
+</Graph>

@@ -1,0 +1,78 @@
+<Graph scope="scene" fps={60} duration="1s" size={[360,220]}>
+  <Scene id="high_quality_eye">
+    <Solid color="#101621" />
+    <Defs>
+      <LinearGradient id="sclera_grad" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#d9e8f7, 0.42:#ffffff, 1:#f8fbff" />
+      <RadialGradient id="iris_grad" cx="0.48" cy="0.42" r="0.72"
+                      stops="0:#10284a, 0.28:#245f96, 0.62:#49b9e6, 1:#b7f2ff" />
+      <LinearGradient id="lower_glow" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#ffffff00, 0.45:#90e4ff42, 1:#ffffffb8" />
+      <LinearGradient id="lid_shadow" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#050814b8, 1:#31446900" />
+    </Defs>
+
+    <Character id="eye" x="180" y="112" opacity="1">
+      <Path id="sclera"
+            d="M -132 -16 C -98 -76 -28 -88 34 -76 C 92 -65 126 -30 138 0 C 104 44 46 65 -18 58 C -80 51 -120 24 -132 -16 Z"
+            fill="url(#sclera_grad)"
+            stroke="#11192b"
+            strokeWidth="3" />
+
+      <Circle id="iris" x="6" y="-6" radius="48"
+              fill="url(#iris_grad)"
+              stroke="#081323"
+              strokeWidth="4" />
+      <Circle id="pupil" x="5" y="-5" radius="16"
+              color="#06101f" />
+
+      <Path id="iris_lower_refraction"
+            d="M -34 13 C -18 42 24 45 44 16 C 36 37 18 51 -6 52 C -27 51 -43 36 -48 19 Z"
+            fill="url(#lower_glow)"
+            stroke="none"
+            blend="screen"
+            opacity="0.86" />
+
+      <Path id="upper_lid_shadow"
+            d="M -124 -18 C -80 -61 -18 -70 40 -62 C 88 -55 119 -29 132 -3 C 89 -20 47 -27 2 -27 C -48 -27 -88 -20 -124 -18 Z"
+            fill="url(#lid_shadow)"
+            stroke="none"
+            blend="multiply"
+            opacity="0.88" />
+
+      <Path id="main_highlight"
+            d="M -24 -46 C -8 -58 11 -54 20 -38 C 8 -25 -12 -25 -24 -46 Z"
+            fill="#ffffff"
+            stroke="none"
+            blend="screen"
+            opacity="0.96" />
+      <Circle id="secondary_highlight" x="32" y="-28" radius="7"
+              color="#ffffffcc"
+              blend="screen" />
+      <Circle id="micro_highlight" x="-20" y="-4" radius="4"
+              color="#d7fbffb8"
+              blend="screen" />
+
+      <Path id="upper_lash"
+            d="M -145 -21 C -92 -84 -18 -101 48 -88 C 105 -77 139 -40 153 -6"
+            stroke="#090b16"
+            strokeWidth="13"
+            lineCap="round"
+            fill="none" />
+      <Path id="lower_lash"
+            d="M -110 30 C -58 66 30 75 96 31"
+            stroke="#26324b"
+            strokeWidth="4"
+            lineCap="round"
+            fill="none"
+            opacity="0.55" />
+      <Path id="outer_corner"
+            d="M 132 -2 C 152 5 160 17 164 28"
+            stroke="#090b16"
+            strokeWidth="8"
+            lineCap="round"
+            fill="none" />
+    </Character>
+  </Scene>
+  <Present from="high_quality_eye" />
+</Graph>

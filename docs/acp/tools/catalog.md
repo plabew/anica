@@ -16,6 +16,7 @@ Use this catalog when users ask what ACP can call, how to call it, or why a tool
 | TOOL-0002 | Media pool tools | User asks clip metadata, codec/fps/resolution, counts, media listing, or remove/clear media pool entries. | `media pool`, `metadata`, `codec`, `fps`, `resolution`, `duration`, `remove`, `clear all` | `anica/docs/acp/tools/TOOL-0002.md` |
 | TOOL-0003 | Timeline analysis/edit-plan tools | User asks timeline snapshot, silence/subtitle gaps, or any validate/apply edit operation. | `timeline`, `silence`, `subtitle`, `audio_silence_cut_plan`, `subtitle_gap_cut_plan`, `validate`, `apply`, `track_ops`, `clip_ops`, `subtitle_ops`, `effect_ops`, `transition_ops` | `anica/docs/acp/tools/TOOL-0003.md` |
 | TOOL-0004 | Export run tool | User asks to actually run export/render via ACP. | `export`, `run`, `render`, `smart_universal`, `keep_source_copy`, `preset_reencode` | `anica/docs/acp/tools/TOOL-0004.md` |
+| TOOL-0005 | MotionLoom VFX tools | User asks to read/update MotionLoom DSL in VFX page, apply script, or trigger GPU/CPU/ProRes scene render. | `motionloom`, `vfx`, `dsl`, `set scene script`, `apply effect`, `gpu render`, `prores`, `compatibility cpu` | `anica/docs/acp/tools/TOOL-0005.md` |
 
 ## Authoring Rules
 - Keep one tool group per file.

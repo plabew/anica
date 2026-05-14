@@ -26,6 +26,34 @@ Rules:
 - Subtitle-gap cut-plan (operations) can be built by `anica.timeline/build_subtitle_gap_cut_plan`.
 - Subtitle translation (non-destructive, add new subtitle track) must use `anica.timeline/translate_subtitles_to_new_track`.
 - Similar/repeated subtitle detection must use LLM-only analysis flow (snapshot + LLM analysis prompt tool). Do not call `anica.timeline/get_subtitle_semantic_repeats`.
+- MotionLoom DSL read must use `anica.motionloom/get_scene_script`.
+- MotionLoom DSL edit must use `anica.motionloom/set_scene_script`.
+- MotionLoom scene render trigger must use `anica.motionloom/render_scene`.
+- For MotionLoom `scene` DSL generation (text/image/svg/motion-graphics scene), use scene-node style:
+  - Preferred skeleton: `<Graph scope="scene" ...>`, `<Scene id="scene0">...</Scene>`, `<Present from="scene0" />`.
+  - Simple direct scene nodes remain valid (`<Solid>`, `<Text>`, `<Image>`, `<Svg>`, `<Present from="scene" />`), but prefer `<Scene id="scene0">` for new scripts.
+  - `<Scene>` children may include `<Solid>`, `<Text>`, `<Image>`, `<Svg>`, `<Group>`, `<Mask>`, `<Character>`, `<Camera>`, `<Rect>`, `<Circle>`, `<Line>`, `<Polyline>`, `<Path>`, and `<Shadow>`.
+  - Use `<Group x="..." y="..." rotation="..." scale="..." opacity="...">...</Group>` for card/layout transforms.
+  - Use `<Character x="..." y="..." rotation="..." scale="..." opacity="...">...</Character>` for dense vector character/face/hair rigs; inside it, prefer `<Group>`, `<Mask>`, `<Path>`, `<Polyline>`, `<Line>`, `<Circle>`, `<Rect>`, and `<Text>`.
+  - Use `<Mask shape="circle" x="..." y="..." radius="...">...</Mask>` or `<Mask shape="rect" x="..." y="..." width="..." height="..." radius="...">...</Mask>` to clip child nodes.
+  - Use `<Camera mode="2d" x="..." y="..." zoom="..." anchorX="0.5" anchorY="0.5">...</Camera>` only when the scene needs pan/zoom/follow-style world framing.
+  - Camera target can be explicit (`targetX`, `targetY`) or follow a child node id (`follow="marker"`). Use `worldBounds="0,0,2400,1400"` to clamp camera movement and `viewport="100,80,1720,920"` for a sub-frame camera viewport.
+  - Use `<Shadow ... />` immediately before `<Rect>` or `<Circle>` to apply a drop shadow to that shape.
+  - Use `<Text value="..." width="..." fontSize="..." lineHeight="..." ... />` for wrapped UI/caption text.
+  - Use `<Polyline points="x,y x,y ..." trimStart="..." trimEnd="..." />` for animated chart/route lines.
+  - Use `<Path d="M ... C ..." fill="#..." stroke="#..." strokeWidth="..." lineCap="round" lineJoin="round" taperStart="0.15" taperEnd="0.15" />` for filled/stroked Bezier shapes.
+  - For post-process, use `<Scene id="scene0">...</Scene>` -> `<Tex from="scene:scene0" />` -> `<Pass effect="..." />` -> `<Present from="out" />`.
+  - Text content must use `<Text value="..." ... />`; do not use `text=`, `content=`, `children=`, or body text for MotionLoom Text.
+  - Colors may use HEX (`#ffffff`) or BGRA arrays (`[1,1,1,1]` normalized, `[255,255,255,255]` byte range). BGRA array order is blue, green, red, alpha.
+  - Do **not** use legacy/pass pipeline syntax such as `kind="raster"` or `effect="text_overlay"` for simple scene text overlays.
+  - Do **not** output `<Animate ... />`; scene runtime does not execute that node.
+  - For fade/motion, encode directly in node expressions (for example `opacity="min(max($time.sec/1.2,0),1)"`).
+  - Put total duration on `<Graph duration="...">`; do not rely on `<Present duration_ms=...>`.
+- `anica.motionloom/set_scene_script` performs parser/runtime validation. If tool returns parse/compile error, regenerate valid DSL and retry instead of claiming completion.
+- If user did not specify scene fps/size, default to `fps={60}` and `size={[1920,1080]}`.
+- When user asks "create X seconds video via VFX", default workflow:
+  1) `anica.motionloom/set_scene_script` with `apply_now=true`,
+  2) `anica.motionloom/render_scene` with `mode="gpu"` unless user explicitly asks CPU or ProRes.
 - Documentation facts must come from `anica.docs/list_files` and `anica.docs/read_file`.
 - For limitation questions, always use catalog-first lookup:
   1) `anica.docs/read_file` for `acp/limitation/catalog.md`,
@@ -190,6 +218,9 @@ Tool decision examples:
 {"intent":"query_docs","use_tool":"anica.docs/read_file","arguments":{"path":"acp/limitation/catalog.md","max_chars":60000},"confidence":0.86,"reason":"Need known limitation lookup before diagnosing.","next_step":"Open matching LIM doc and explain expected behavior."}
 {"intent":"remove_media_pool_item","use_tool":"anica.media_pool/remove_by_id","arguments":{"id":"/abs/path/clip.mp4"},"confidence":0.90,"reason":"User asked to remove one media-pool item by id.","next_step":"Report removed status and remaining count."}
 {"intent":"clear_media_pool","use_tool":"anica.media_pool/clear_all","arguments":{},"confidence":0.89,"reason":"User asked to clear all media-pool items.","next_step":"Report removed_count and remaining items."}
+{"intent":"query_motionloom_script","use_tool":"anica.motionloom/get_scene_script","arguments":{},"confidence":0.90,"reason":"Need current VFX DSL before editing.","next_step":"Read script then produce patch update."}
+{"intent":"set_motionloom_scene_script","use_tool":"anica.motionloom/set_scene_script","arguments":{"script":"<Graph ...>...</Graph>","apply_now":true,"focus_vfx_page":true},"confidence":0.91,"reason":"User asked to update VFX MotionLoom DSL.","next_step":"Set script in VFX editor and optionally trigger apply preview."}
+{"intent":"render_motionloom_scene","use_tool":"anica.motionloom/render_scene","arguments":{"mode":"gpu","focus_vfx_page":true},"confidence":0.90,"reason":"User asked to render scene output from VFX.","next_step":"Queue GPU render action in MotionLoom page and report render status."}
 {"intent":"run_export","use_tool":"anica.export/run","arguments":{"mode":"smart_universal","preset":"h264_mp4","target_resolution":"1080x1920","range_start_sec":0.0,"range_end_sec":10.0},"confidence":0.85,"reason":"User requested actual render execution.","next_step":"Return export path, resolution, and execution outcome."}
 
 2) Final answer:

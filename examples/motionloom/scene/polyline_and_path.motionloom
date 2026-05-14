@@ -1,0 +1,47 @@
+<Graph scope="scene" fps={60} duration="6s" size={[1920,1080]}>
+  <Scene id="scene0">
+    <Solid color="#101418" />
+
+    <Text value="Animated Path / Polyline"
+          x="center"
+          y="80"
+          fontSize="54"
+          color="#ffffff"
+          opacity="min($time.sec/0.8,1)" />
+
+    <Polyline points="260,820 520,620 780,700 1040,420 1320,500 1660,260"
+              stroke="#2f83ff"
+              strokeWidth="9"
+              opacity="0.45"
+              trimStart="0"
+              trimEnd="smoothstep(0.10,0.72,$time.norm)" />
+
+    <Path d="M 180 760 C 520 420 900 360 1220 540 C 1420 650 1600 440 1740 300"
+          stroke="#ff7a2f"
+          strokeWidth="12"
+          opacity="1"
+          trimStart="0"
+          trimEnd="smoothstep(0.20,0.88,$time.norm)" />
+
+    <Circle x="180" y="760" radius="18" color="#ff7a2f"
+            opacity="smoothstep(0.10,0.18,$time.norm)" />
+    <Circle x="1740" y="300" radius="24" color="#ff7a2f"
+            opacity="smoothstep(0.82,0.95,$time.norm)" />
+
+    <Text value="Polyline: chart route"
+          x="260"
+          y="870"
+          fontSize="32"
+          color="#7fb5ff"
+          opacity="smoothstep(0.35,0.55,$time.norm)" />
+
+    <Text value="Path: Bezier route stroke"
+          x="1180"
+          y="600"
+          fontSize="36"
+          color="#ffd0b2"
+          opacity="smoothstep(0.55,0.80,$time.norm)" />
+  </Scene>
+
+  <Present from="scene0" />
+</Graph>

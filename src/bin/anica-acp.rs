@@ -2783,6 +2783,9 @@ impl AnicaAcpAgent {
             }
 
             let mut cmd = TokioCommand::new(&gemini_bin);
+            if let Some(model) = resolve_model_env("ANICA_GEMINI_MODEL")? {
+                cmd.arg("--model").arg(model);
+            }
             cmd.arg("--prompt")
                 .arg(prompt)
                 .current_dir(cwd)
@@ -2839,6 +2842,9 @@ impl AnicaAcpAgent {
             }
 
             let mut cmd = TokioCommand::new(&claude_bin);
+            if let Some(model) = resolve_model_env("ANICA_CLAUDE_MODEL")? {
+                cmd.arg("--model").arg(model);
+            }
             cmd.arg("-p")
                 .arg(prompt)
                 .arg("--output-format")
@@ -2875,6 +2881,9 @@ impl AnicaAcpAgent {
                     || stdout_lc.contains("unrecognized option '--output-format'");
                 if unknown_output_format {
                     let mut fallback_cmd = TokioCommand::new(&claude_bin);
+                    if let Some(model) = resolve_model_env("ANICA_CLAUDE_MODEL")? {
+                        fallback_cmd.arg("--model").arg(model);
+                    }
                     fallback_cmd
                         .arg("-p")
                         .arg(prompt)
@@ -2934,6 +2943,9 @@ impl AnicaAcpAgent {
 
         let mut cmd = TokioCommand::new(&codex_bin);
         cmd.arg("exec");
+        if let Some(model) = resolve_model_env("ANICA_CODEX_MODEL")? {
+            cmd.arg("--model").arg(model);
+        }
         if let Some(effort) = resolve_reasoning_effort() {
             cmd.arg("-c")
                 .arg(format!("model_reasoning_effort={effort}"));
@@ -3076,6 +3088,16 @@ impl AnicaAcpAgent {
             }
             "anica.docs/list_files" | "docs_list_files" => Some("anica.docs/list_files"),
             "anica.docs/read_file" | "docs_read_file" => Some("anica.docs/read_file"),
+            "anica.motionloom/get_scene_script"
+            | "motionloom_get_scene_script"
+            | "get_motionloom_scene_script" => Some("anica.motionloom/get_scene_script"),
+            "anica.motionloom/set_scene_script"
+            | "motionloom_set_scene_script"
+            | "set_motionloom_scene_script" => Some("anica.motionloom/set_scene_script"),
+            "anica.motionloom/render_scene"
+            | "motionloom_render_scene"
+            | "render_motionloom_scene"
+            | "gpu_render_scene" => Some("anica.motionloom/render_scene"),
             "anica.export/run" | "export_run" | "run_export" => Some("anica.export/run"),
             _ => None,
         }
@@ -3378,6 +3400,54 @@ Rules:\n\
                 "anica.docs/list_files"
             };
             return Some((method.to_string(), args));
+        }
+
+        if parsed
+            .intent
+            .as_deref()
+            .map(|v| {
+                v.eq_ignore_ascii_case("query_motionloom_script")
+                    || v.eq_ignore_ascii_case("get_motionloom_scene_script")
+                    || v.eq_ignore_ascii_case("read_motionloom_dsl")
+            })
+            .unwrap_or(false)
+        {
+            return Some((
+                "anica.motionloom/get_scene_script".to_string(),
+                parsed.arguments.clone().unwrap_or(Value::Null),
+            ));
+        }
+
+        if parsed
+            .intent
+            .as_deref()
+            .map(|v| {
+                v.eq_ignore_ascii_case("set_motionloom_scene_script")
+                    || v.eq_ignore_ascii_case("edit_motionloom_scene_script")
+                    || v.eq_ignore_ascii_case("update_motionloom_dsl")
+            })
+            .unwrap_or(false)
+        {
+            return Some((
+                "anica.motionloom/set_scene_script".to_string(),
+                parsed.arguments.clone().unwrap_or(Value::Null),
+            ));
+        }
+
+        if parsed
+            .intent
+            .as_deref()
+            .map(|v| {
+                v.eq_ignore_ascii_case("render_motionloom_scene")
+                    || v.eq_ignore_ascii_case("gpu_render_motionloom_scene")
+                    || v.eq_ignore_ascii_case("run_motionloom_gpu_render")
+            })
+            .unwrap_or(false)
+        {
+            return Some((
+                "anica.motionloom/render_scene".to_string(),
+                parsed.arguments.clone().unwrap_or(Value::Null),
+            ));
         }
 
         if parsed
@@ -3934,6 +4004,23 @@ fn resolve_reasoning_effort() -> Option<&'static str> {
         "xhigh" | "extra-high" | "extra_high" | "extrahigh" => Some("xhigh"),
         _ => None,
     }
+}
+
+fn resolve_model_env(env_var: &str) -> anyhow::Result<Option<String>> {
+    let Some(raw) = std::env::var(env_var).ok() else {
+        return Ok(None);
+    };
+    let model = raw.trim();
+    if model.is_empty() {
+        return Ok(None);
+    }
+    let valid = model
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/'));
+    if !valid {
+        anyhow::bail!("Invalid {env_var} value: {model}");
+    }
+    Ok(Some(model.to_string()))
 }
 
 #[async_trait::async_trait(?Send)]

@@ -3,8 +3,13 @@
 // crates/motionloom/src/dsl.rs
 
 pub use crate::error::GraphParseError;
+use crate::scene::{
+    BrushDef, CameraNode, CharacterNode, CircleNode, DefsNode, FaceJawNode, GradientDef,
+    GradientStop, GroupNode, LineNode, LinearGradientDef, MaskNode, PartNode, PathNode,
+    PolylineNode, RadialGradientDef, RectNode, RepeatNode, SceneNode, SceneRootNode, ShadowNode,
+};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -277,9 +282,23 @@ pub struct GraphScript {
     #[serde(default)]
     pub duration_explicit: bool,
     pub size: (u32, u32),
+    #[serde(default)]
+    pub render_size: Option<(u32, u32)>,
     pub inputs: Vec<InputNode>,
     pub textures: Vec<TexNode>,
     pub buffers: Vec<BufferNode>,
+    #[serde(default)]
+    pub solids: Vec<SolidNode>,
+    #[serde(default)]
+    pub texts: Vec<TextNode>,
+    #[serde(default)]
+    pub images: Vec<ImageNode>,
+    #[serde(default)]
+    pub svgs: Vec<SvgNode>,
+    #[serde(default)]
+    pub scenes: Vec<SceneRootNode>,
+    #[serde(default)]
+    pub scene_nodes: Vec<SceneNode>,
     pub passes: Vec<PassNode>,
     pub outputs: Vec<OutputNode>,
     pub present: PresentNode,
@@ -320,6 +339,53 @@ pub struct BufferNode {
     pub usage: Vec<BufferUsage>,
     pub transient: Option<bool>,
     pub pingpong: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SolidNode {
+    pub id: Option<String>,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextNode {
+    pub id: Option<String>,
+    pub value: String,
+    pub x: String,
+    pub y: String,
+    pub width: Option<String>,
+    pub font_size: String,
+    pub line_height: Option<String>,
+    pub color: String,
+    pub opacity: String,
+    pub visible_chars: Option<String>,
+    pub max_lines: Option<String>,
+    pub font_family: Option<String>,
+    pub font_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageNode {
+    pub id: Option<String>,
+    pub src: String,
+    pub x: String,
+    pub y: String,
+    pub scale: String,
+    pub opacity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SvgNode {
+    pub id: Option<String>,
+    pub src: String,
+    pub x: String,
+    pub y: String,
+    pub scale: String,
+    pub opacity: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -377,7 +443,7 @@ pub struct PresentNode {
 impl GraphScript {
     pub fn summary(&self) -> String {
         format!(
-            "Graph parsed: scope={:?}, fps={:.2}, apply={:?}, duration={}ms, size={}x{}, input={}, tex={}, buffer={}, pass={}, output={}, present={}",
+            "Graph parsed: scope={:?}, fps={:.2}, apply={:?}, duration={}ms, size={}x{}, input={}, tex={}, buffer={}, scene={}, scene_node={}, pass={}, output={}, present={}",
             self.scope,
             self.fps,
             self.apply,
@@ -387,6 +453,8 @@ impl GraphScript {
             self.inputs.len(),
             self.textures.len(),
             self.buffers.len(),
+            self.scenes.len(),
+            self.scene_nodes.len(),
             self.passes.len(),
             self.outputs.len(),
             self.present.from
@@ -394,6 +462,21 @@ impl GraphScript {
     }
 
     pub fn resource_size(&self, id: &str) -> Option<(u32, u32)> {
+        if self.scope == GraphScope::Scene && id == "scene" {
+            return Some(self.size);
+        }
+        if let Some(scene_id) = id.strip_prefix("scene:") {
+            return self
+                .scenes
+                .iter()
+                .find(|scene| scene.id == scene_id)
+                .map(|scene| scene.size.unwrap_or(self.size));
+        }
+        if self.scope == GraphScope::Scene {
+            if let Some(scene) = self.scenes.iter().find(|scene| scene.id == id) {
+                return Some(scene.size.unwrap_or(self.size));
+            }
+        }
         self.outputs
             .iter()
             .find(|o| o.id == id)
@@ -406,10 +489,49 @@ impl GraphScript {
             })
             .or_else(|| self.inputs.iter().find(|i| i.id == id).and_then(|i| i.size))
     }
+
+    pub fn has_scene_nodes(&self) -> bool {
+        !self.solids.is_empty()
+            || !self.texts.is_empty()
+            || !self.images.is_empty()
+            || !self.svgs.is_empty()
+            || !self.scenes.is_empty()
+            || !self.scene_nodes.is_empty()
+    }
 }
 
 pub fn is_graph_script(input: &str) -> bool {
     input.contains("<Graph")
+}
+
+#[derive(Debug, Clone, Default)]
+struct BrushParseContext {
+    brushes: HashMap<String, BrushDef>,
+    inherited_brush: Option<String>,
+}
+
+impl BrushParseContext {
+    fn define_brushes(&mut self, brushes: &[BrushDef]) {
+        for brush in brushes {
+            self.brushes.insert(brush.id.clone(), brush.clone());
+        }
+    }
+
+    fn with_inherited_brush(&self, brush: Option<String>) -> Self {
+        let mut next = self.clone();
+        if let Some(brush) = brush {
+            next.inherited_brush = Some(brush);
+        }
+        next
+    }
+
+    fn brush_for_path<'a>(&'a self, block: &str) -> (Option<String>, Option<&'a BrushDef>) {
+        let brush_id = attr_value(block, "brush")
+            .map(|v| strip_wrappers(&v).to_string())
+            .or_else(|| self.inherited_brush.clone());
+        let brush = brush_id.as_ref().and_then(|id| self.brushes.get(id));
+        (brush_id, brush)
+    }
 }
 
 pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
@@ -448,6 +570,16 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
         graph_start_ix + 1,
         "size",
     )?;
+    let render_size = attr_value(&graph_open, "renderSize")
+        .as_deref()
+        .map(|value| parse_size(value, graph_start_ix + 1, "renderSize"))
+        .transpose()?;
+    if let Some((0, _)) | Some((_, 0)) = render_size {
+        return Err(GraphParseError {
+            line: graph_start_ix + 1,
+            message: "renderSize width and height must be greater than zero.".to_string(),
+        });
+    }
 
     let Some(graph_close_ix) = lines
         .iter()
@@ -465,9 +597,16 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
     let mut inputs = Vec::<InputNode>::new();
     let mut textures = Vec::<TexNode>::new();
     let mut buffers = Vec::<BufferNode>::new();
+    let mut solids = Vec::<SolidNode>::new();
+    let mut texts = Vec::<TextNode>::new();
+    let mut images = Vec::<ImageNode>::new();
+    let mut svgs = Vec::<SvgNode>::new();
+    let mut scenes = Vec::<SceneRootNode>::new();
+    let mut scene_nodes = Vec::<SceneNode>::new();
     let mut outputs = Vec::<OutputNode>::new();
     let mut passes = Vec::<PassNode>::new();
     let mut present: Option<PresentNode> = None;
+    let mut brush_ctx = BrushParseContext::default();
     let mut i = graph_open_end_ix + 1;
 
     while i < graph_close_ix {
@@ -480,6 +619,148 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
         if line.starts_with("<Input") {
             let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
             inputs.push(parse_input_node(&tag, i + 1)?);
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Defs") {
+            let (defs, end_ix) = parse_defs_block(&lines, i)?;
+            brush_ctx.define_brushes(&defs.brushes);
+            scene_nodes.push(SceneNode::Defs(defs));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Scene") {
+            let (scene, end_ix) = parse_scene_root_block(&lines, i, &brush_ctx)?;
+            scenes.push(scene);
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Solid") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            let node = parse_solid_node(&tag, i + 1)?;
+            scene_nodes.push(SceneNode::Solid(node.clone()));
+            solids.push(node);
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Text") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            let node = parse_text_node(&tag, i + 1)?;
+            scene_nodes.push(SceneNode::Text(node.clone()));
+            texts.push(node);
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Image") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            let node = parse_image_node(&tag, i + 1)?;
+            scene_nodes.push(SceneNode::Image(node.clone()));
+            images.push(node);
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Svg") || starts_open_tag(line, "SVG") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            let node = parse_svg_node(&tag, i + 1)?;
+            scene_nodes.push(SceneNode::Svg(node.clone()));
+            svgs.push(node);
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Rect") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            scene_nodes.push(SceneNode::Rect(parse_rect_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Circle") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            scene_nodes.push(SceneNode::Circle(parse_circle_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Line") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            scene_nodes.push(SceneNode::Line(parse_line_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Polyline") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            scene_nodes.push(SceneNode::Polyline(parse_polyline_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Path") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            scene_nodes.push(SceneNode::Path(parse_path_node(&tag, i + 1, &brush_ctx)?));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "FaceJaw") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            scene_nodes.push(SceneNode::FaceJaw(parse_face_jaw_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Shadow") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            scene_nodes.push(SceneNode::Shadow(parse_shadow_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Group") {
+            let (group, end_ix) = parse_group_block(&lines, i, &brush_ctx)?;
+            scene_nodes.push(SceneNode::Group(group));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Part") {
+            let (part, end_ix) = parse_part_block(&lines, i, &brush_ctx)?;
+            scene_nodes.push(SceneNode::Part(part));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Repeat") {
+            let (repeat, end_ix) = parse_repeat_block(&lines, i, &brush_ctx)?;
+            scene_nodes.push(SceneNode::Repeat(repeat));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Mask") {
+            let (mask, end_ix) = parse_mask_block(&lines, i, &brush_ctx)?;
+            scene_nodes.push(SceneNode::Mask(mask));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Character") {
+            let (character, end_ix) = parse_character_block(&lines, i, &brush_ctx)?;
+            scene_nodes.push(SceneNode::Character(character));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Camera") {
+            let (camera, end_ix) = parse_camera_block(&lines, i, &brush_ctx)?;
+            scene_nodes.push(SceneNode::Camera(camera));
             i = end_ix + 1;
             continue;
         }
@@ -534,12 +815,19 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
     })?;
 
     validate_graph(
+        scope,
         fps,
         duration_ms,
         size,
         &inputs,
         &textures,
         &buffers,
+        &solids,
+        &texts,
+        &images,
+        &svgs,
+        &scenes,
+        &scene_nodes,
         &outputs,
         &passes,
         &present,
@@ -555,9 +843,16 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
         duration_ms,
         duration_explicit,
         size,
+        render_size,
         inputs,
         textures,
         buffers,
+        solids,
+        texts,
+        images,
+        svgs,
+        scenes,
+        scene_nodes,
         passes,
         outputs,
         present,
@@ -565,12 +860,19 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
 }
 
 fn validate_graph(
+    scope: GraphScope,
     fps: f32,
     duration_ms: u64,
     size: (u32, u32),
     inputs: &[InputNode],
     textures: &[TexNode],
     buffers: &[BufferNode],
+    solids: &[SolidNode],
+    texts: &[TextNode],
+    images: &[ImageNode],
+    svgs: &[SvgNode],
+    scenes: &[SceneRootNode],
+    scene_nodes: &[SceneNode],
     outputs: &[OutputNode],
     passes: &[PassNode],
     present: &PresentNode,
@@ -594,7 +896,19 @@ fn validate_graph(
             message: "size width and height must be greater than zero.".to_string(),
         });
     }
-    if passes.is_empty() {
+    let has_scene_nodes = !solids.is_empty()
+        || !texts.is_empty()
+        || !images.is_empty()
+        || !svgs.is_empty()
+        || !scenes.is_empty()
+        || !scene_nodes.is_empty();
+    if scope != GraphScope::Scene && has_scene_nodes {
+        return Err(GraphParseError {
+            line,
+            message: "Scene nodes are only valid when scope=\"scene\".".to_string(),
+        });
+    }
+    if passes.is_empty() && !(scope == GraphScope::Scene && has_scene_nodes) {
         return Err(GraphParseError {
             line,
             message: "Graph requires at least one <Pass ... /> node.".to_string(),
@@ -602,6 +916,24 @@ fn validate_graph(
     }
 
     let mut resource_ids = HashSet::<String>::new();
+    if scope == GraphScope::Scene && has_scene_nodes {
+        resource_ids.insert("scene".to_string());
+    }
+    for scene in scenes {
+        if !resource_ids.insert(scene.id.clone()) {
+            return Err(GraphParseError {
+                line,
+                message: format!("Duplicate resource id: {}", scene.id),
+            });
+        }
+        let prefixed = format!("scene:{}", scene.id);
+        if !resource_ids.insert(prefixed.clone()) {
+            return Err(GraphParseError {
+                line,
+                message: format!("Duplicate resource id: {}", prefixed),
+            });
+        }
+    }
     for input in inputs {
         if !resource_ids.insert(input.id.clone()) {
             return Err(GraphParseError {
@@ -713,22 +1045,305 @@ fn collect_tag_block(
     requires_self_closing: bool,
 ) -> Result<(String, usize), GraphParseError> {
     let mut out = String::new();
+    let mut in_double_quote = false;
+    let mut prev_char: Option<char> = None;
     for (ix, line) in lines.iter().enumerate().skip(start) {
         let trimmed = line.trim();
         out.push_str(trimmed);
         out.push('\n');
-        if requires_self_closing {
-            if trimmed.contains("/>") {
+        for ch in trimmed.chars() {
+            if ch == '"' {
+                in_double_quote = !in_double_quote;
+                continue;
+            }
+            if in_double_quote {
+                prev_char = Some(ch);
+                continue;
+            }
+            if requires_self_closing {
+                // detect '/>' outside quoted attributes only
+                if ch == '>' && prev_char == Some('/') {
+                    return Ok((out, ix));
+                }
+            } else if ch == end_char {
                 return Ok((out, ix));
             }
-        } else if trimmed.contains(end_char) {
-            return Ok((out, ix));
+            prev_char = Some(ch);
         }
+        prev_char = Some('\n');
     }
     Err(GraphParseError {
         line: start + 1,
         message: "Tag block is not closed.".to_string(),
     })
+}
+
+fn starts_open_tag(line: &str, tag_name: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix('<') else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(tag_name) else {
+        return false;
+    };
+    matches!(
+        rest.chars().next(),
+        None | Some(' ') | Some('\t') | Some('\r') | Some('\n') | Some('>') | Some('/')
+    )
+}
+
+fn starts_close_tag(line: &str, tag_name: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix("</") else {
+        return false;
+    };
+    rest.strip_prefix(tag_name)
+        .is_some_and(|rest| rest.trim_start().starts_with('>'))
+}
+
+fn parse_scene_root_block(
+    lines: &[&str],
+    start: usize,
+    brush_ctx: &BrushParseContext,
+) -> Result<(SceneRootNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Scene")?;
+    let id = strip_wrappers(&required_attr_value(&open_tag, "id", start + 1)?).to_string();
+    let size = attr_value(&open_tag, "size")
+        .as_deref()
+        .map(|v| parse_size(v, start + 1, "size"))
+        .transpose()?;
+    let mut child_ctx = brush_ctx.clone();
+    let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    Ok((SceneRootNode { id, size, children }, close_ix))
+}
+
+fn parse_group_block(
+    lines: &[&str],
+    start: usize,
+    brush_ctx: &BrushParseContext,
+) -> Result<(GroupNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Group")?;
+    let brush = attr_value(&open_tag, "brush").map(|v| strip_wrappers(&v).to_string());
+    let mut child_ctx = brush_ctx.with_inherited_brush(brush);
+    let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    Ok((parse_group_node(&open_tag, start + 1, children)?, close_ix))
+}
+
+fn parse_part_block(
+    lines: &[&str],
+    start: usize,
+    brush_ctx: &BrushParseContext,
+) -> Result<(PartNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Part")?;
+    let brush = attr_value(&open_tag, "brush").map(|v| strip_wrappers(&v).to_string());
+    let mut child_ctx = brush_ctx.with_inherited_brush(brush);
+    let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    Ok((parse_part_node(&open_tag, start + 1, children)?, close_ix))
+}
+
+fn parse_repeat_block(
+    lines: &[&str],
+    start: usize,
+    brush_ctx: &BrushParseContext,
+) -> Result<(RepeatNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Repeat")?;
+    let mut child_ctx = brush_ctx.clone();
+    let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    Ok((parse_repeat_node(&open_tag, start + 1, children)?, close_ix))
+}
+
+fn parse_mask_block(
+    lines: &[&str],
+    start: usize,
+    brush_ctx: &BrushParseContext,
+) -> Result<(MaskNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Mask")?;
+    let mut child_ctx = brush_ctx.clone();
+    let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    Ok((parse_mask_node(&open_tag, start + 1, children)?, close_ix))
+}
+
+fn parse_camera_block(
+    lines: &[&str],
+    start: usize,
+    brush_ctx: &BrushParseContext,
+) -> Result<(CameraNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Camera")?;
+    let mut child_ctx = brush_ctx.clone();
+    let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    Ok((parse_camera_node(&open_tag, start + 1, children)?, close_ix))
+}
+
+fn parse_character_block(
+    lines: &[&str],
+    start: usize,
+    brush_ctx: &BrushParseContext,
+) -> Result<(CharacterNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Character")?;
+    let mut child_ctx = brush_ctx.clone();
+    let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    Ok((
+        parse_character_node(&open_tag, start + 1, children)?,
+        close_ix,
+    ))
+}
+
+fn find_matching_close_tag(
+    lines: &[&str],
+    start: usize,
+    tag_name: &str,
+) -> Result<usize, GraphParseError> {
+    let mut depth = 0usize;
+    for (ix, line) in lines.iter().enumerate().skip(start) {
+        let trimmed = line.trim_start();
+        if starts_close_tag(trimmed, tag_name) {
+            if depth == 0 {
+                return Ok(ix);
+            }
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        if starts_open_tag(trimmed, tag_name) && !trimmed.contains("/>") {
+            depth = depth.saturating_add(1);
+        }
+    }
+    Err(GraphParseError {
+        line: start + 1,
+        message: format!("Missing </{tag_name}> closing tag."),
+    })
+}
+
+fn parse_scene_nodes(
+    lines: &[&str],
+    start: usize,
+    end: usize,
+    brush_ctx: &mut BrushParseContext,
+) -> Result<Vec<SceneNode>, GraphParseError> {
+    let mut nodes = Vec::<SceneNode>::new();
+    let mut i = start;
+    while i < end {
+        let line = lines[i].trim();
+        if line.is_empty() || line.starts_with("//") || line.starts_with('{') {
+            i += 1;
+            continue;
+        }
+        if starts_open_tag(line, "Defs") {
+            let (defs, end_ix) = parse_defs_block(lines, i)?;
+            brush_ctx.define_brushes(&defs.brushes);
+            nodes.push(SceneNode::Defs(defs));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Solid") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Solid(parse_solid_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Text") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Text(parse_text_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Image") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Image(parse_image_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Svg") || starts_open_tag(line, "SVG") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Svg(parse_svg_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Rect") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Rect(parse_rect_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Circle") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Circle(parse_circle_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Line") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Line(parse_line_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Polyline") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Polyline(parse_polyline_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Path") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Path(parse_path_node(&tag, i + 1, brush_ctx)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "FaceJaw") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::FaceJaw(parse_face_jaw_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Shadow") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Shadow(parse_shadow_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Group") {
+            let (group, end_ix) = parse_group_block(lines, i, brush_ctx)?;
+            nodes.push(SceneNode::Group(group));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Part") {
+            let (part, end_ix) = parse_part_block(lines, i, brush_ctx)?;
+            nodes.push(SceneNode::Part(part));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Repeat") {
+            let (repeat, end_ix) = parse_repeat_block(lines, i, brush_ctx)?;
+            nodes.push(SceneNode::Repeat(repeat));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Mask") {
+            let (mask, end_ix) = parse_mask_block(lines, i, brush_ctx)?;
+            nodes.push(SceneNode::Mask(mask));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Character") {
+            let (character, end_ix) = parse_character_block(lines, i, brush_ctx)?;
+            nodes.push(SceneNode::Character(character));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Camera") {
+            let (camera, end_ix) = parse_camera_block(lines, i, brush_ctx)?;
+            nodes.push(SceneNode::Camera(camera));
+            i = end_ix + 1;
+            continue;
+        }
+        i += 1;
+    }
+    Ok(nodes)
 }
 
 fn parse_input_node(block: &str, line: usize) -> Result<InputNode, GraphParseError> {
@@ -828,6 +1443,1158 @@ fn parse_buffer_node(block: &str, line: usize) -> Result<BufferNode, GraphParseE
         usage,
         transient,
         pingpong,
+    })
+}
+
+fn parse_solid_node(block: &str, line: usize) -> Result<SolidNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let color = strip_wrappers(&required_attr_value(block, "color", line)?).to_string();
+    Ok(SolidNode { id, color })
+}
+
+fn parse_text_node(block: &str, line: usize) -> Result<TextNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let value = strip_wrappers(&required_attr_value(block, "value", line)?).to_string();
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "center".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "center".to_string());
+    let width = attr_value(block, "width").map(|v| strip_wrappers(&v).to_string());
+    let font_size = attr_value(block, "fontSize")
+        .or_else(|| attr_value(block, "font_size"))
+        .or_else(|| attr_value(block, "size"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "96".to_string());
+    let line_height = attr_value(block, "lineHeight")
+        .or_else(|| attr_value(block, "line_height"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let color = attr_value(block, "color")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "#ffffff".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let font_family = attr_value(block, "fontFamily")
+        .or_else(|| attr_value(block, "font_family"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let font_path = attr_value(block, "fontPath")
+        .or_else(|| attr_value(block, "font_path"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let visible_chars = attr_value(block, "visibleChars")
+        .or_else(|| attr_value(block, "visible_chars"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let max_lines = attr_value(block, "maxLines")
+        .or_else(|| attr_value(block, "max_lines"))
+        .map(|v| strip_wrappers(&v).to_string());
+
+    Ok(TextNode {
+        id,
+        value,
+        x,
+        y,
+        width,
+        font_size,
+        line_height,
+        color,
+        opacity,
+        visible_chars,
+        max_lines,
+        font_family,
+        font_path,
+    })
+}
+
+fn parse_image_node(block: &str, line: usize) -> Result<ImageNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let src = strip_wrappers(&required_attr_value_any(block, &["src", "path"], line)?).to_string();
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "center".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "center".to_string());
+    let scale = attr_value(block, "scale")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+
+    Ok(ImageNode {
+        id,
+        src,
+        x,
+        y,
+        scale,
+        opacity,
+    })
+}
+
+fn parse_svg_node(block: &str, line: usize) -> Result<SvgNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let src = strip_wrappers(&required_attr_value_any(block, &["src", "path"], line)?).to_string();
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "center".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "center".to_string());
+    let scale = attr_value(block, "scale")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+
+    Ok(SvgNode {
+        id,
+        src,
+        x,
+        y,
+        scale,
+        opacity,
+    })
+}
+
+fn parse_defs_block(lines: &[&str], start: usize) -> Result<(DefsNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Defs")?;
+    let id = attr_value(&open_tag, "id").map(|v| strip_wrappers(&v).to_string());
+    let mut gradients = Vec::<GradientDef>::new();
+    let mut brushes = Vec::<BrushDef>::new();
+    let mut i = open_end_ix + 1;
+
+    while i < close_ix {
+        let line = lines[i].trim();
+        if line.is_empty() || line.starts_with("//") || line.starts_with('{') {
+            i += 1;
+            continue;
+        }
+        if starts_open_tag(line, "LinearGradient") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            gradients.push(GradientDef::Linear(parse_linear_gradient_def(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "RadialGradient") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            gradients.push(GradientDef::Radial(parse_radial_gradient_def(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Brush") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            brushes.push(parse_brush_def(&tag, i + 1)?);
+            i = end_ix + 1;
+            continue;
+        }
+        return Err(GraphParseError {
+            line: i + 1,
+            message: format!(
+                "<Defs> only accepts <LinearGradient />, <RadialGradient />, or <Brush />, got: {line}"
+            ),
+        });
+    }
+
+    Ok((
+        DefsNode {
+            id,
+            gradients,
+            brushes,
+        },
+        close_ix,
+    ))
+}
+
+fn parse_brush_def(block: &str, line: usize) -> Result<BrushDef, GraphParseError> {
+    let id = strip_wrappers(&required_attr_value(block, "id", line)?).to_string();
+    Ok(BrushDef {
+        id,
+        stroke: attr_value(block, "stroke")
+            .or_else(|| attr_value(block, "color"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        fill: attr_value(block, "fill").map(|v| strip_wrappers(&v).to_string()),
+        stroke_width: attr_value(block, "strokeWidth")
+            .or_else(|| attr_value(block, "stroke_width"))
+            .or_else(|| attr_value(block, "width"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        opacity: attr_value(block, "opacity").map(|v| strip_wrappers(&v).to_string()),
+        line_cap: attr_value(block, "lineCap")
+            .or_else(|| attr_value(block, "line_cap"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        line_join: attr_value(block, "lineJoin")
+            .or_else(|| attr_value(block, "line_join"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        taper_start: attr_value(block, "taperStart")
+            .or_else(|| attr_value(block, "taper_start"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        taper_end: attr_value(block, "taperEnd")
+            .or_else(|| attr_value(block, "taper_end"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        stroke_style: attr_value(block, "strokeStyle")
+            .or_else(|| attr_value(block, "stroke_style"))
+            .or_else(|| attr_value(block, "style"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        stroke_roughness: attr_value(block, "strokeRoughness")
+            .or_else(|| attr_value(block, "stroke_roughness"))
+            .or_else(|| attr_value(block, "roughness"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        stroke_copies: attr_value(block, "strokeCopies")
+            .or_else(|| attr_value(block, "stroke_copies"))
+            .or_else(|| attr_value(block, "copies"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        stroke_texture: attr_value(block, "strokeTexture")
+            .or_else(|| attr_value(block, "stroke_texture"))
+            .or_else(|| attr_value(block, "texture"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        stroke_bristles: attr_value(block, "strokeBristles")
+            .or_else(|| attr_value(block, "stroke_bristles"))
+            .or_else(|| attr_value(block, "bristles"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        stroke_pressure: attr_value(block, "strokePressure")
+            .or_else(|| attr_value(block, "stroke_pressure"))
+            .or_else(|| attr_value(block, "pressure"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        stroke_pressure_min: attr_value(block, "strokePressureMin")
+            .or_else(|| attr_value(block, "stroke_pressure_min"))
+            .or_else(|| attr_value(block, "pressureMin"))
+            .or_else(|| attr_value(block, "pressure_min"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        stroke_pressure_curve: attr_value(block, "strokePressureCurve")
+            .or_else(|| attr_value(block, "stroke_pressure_curve"))
+            .or_else(|| attr_value(block, "pressureCurve"))
+            .or_else(|| attr_value(block, "pressure_curve"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        blend: attr_value(block, "blend").map(|v| strip_wrappers(&v).to_string()),
+    })
+}
+
+fn parse_linear_gradient_def(
+    block: &str,
+    line: usize,
+) -> Result<LinearGradientDef, GraphParseError> {
+    let id = strip_wrappers(&required_attr_value(block, "id", line)?).to_string();
+    let x1 = attr_value(block, "x1")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y1 = attr_value(block, "y1")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let x2 = attr_value(block, "x2")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1".to_string());
+    let y2 = attr_value(block, "y2")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let stops_raw = strip_wrappers(&required_attr_value(block, "stops", line)?).to_string();
+    let stops = parse_gradient_stops(&stops_raw, line)?;
+    let units = attr_value(block, "units")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "objectBoundingBox".to_string());
+    Ok(LinearGradientDef {
+        id,
+        x1,
+        y1,
+        x2,
+        y2,
+        stops,
+        units,
+    })
+}
+
+fn parse_radial_gradient_def(
+    block: &str,
+    line: usize,
+) -> Result<RadialGradientDef, GraphParseError> {
+    let id = strip_wrappers(&required_attr_value(block, "id", line)?).to_string();
+    let cx = attr_value(block, "cx")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.5".to_string());
+    let cy = attr_value(block, "cy")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.5".to_string());
+    let r = attr_value(block, "r")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.5".to_string());
+    let fx = attr_value(block, "fx").map(|v| strip_wrappers(&v).to_string());
+    let fy = attr_value(block, "fy").map(|v| strip_wrappers(&v).to_string());
+    let stops_raw = strip_wrappers(&required_attr_value(block, "stops", line)?).to_string();
+    let stops = parse_gradient_stops(&stops_raw, line)?;
+    let units = attr_value(block, "units")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "objectBoundingBox".to_string());
+    Ok(RadialGradientDef {
+        id,
+        cx,
+        cy,
+        r,
+        fx,
+        fy,
+        stops,
+        units,
+    })
+}
+
+fn parse_gradient_stops(raw: &str, line: usize) -> Result<Vec<GradientStop>, GraphParseError> {
+    let mut stops = Vec::<GradientStop>::new();
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let Some((offset_raw, color_raw)) = token.split_once(':') else {
+            return Err(GraphParseError {
+                line,
+                message: format!("gradient stop must be 'offset:color', got: {token}"),
+            });
+        };
+        let offset = offset_raw
+            .trim()
+            .parse::<f32>()
+            .map_err(|_| GraphParseError {
+                line,
+                message: format!("invalid gradient stop offset: {}", offset_raw.trim()),
+            })?
+            .clamp(0.0, 1.0);
+        let color = color_raw.trim();
+        if color.is_empty() {
+            return Err(GraphParseError {
+                line,
+                message: "gradient stop color cannot be empty".to_string(),
+            });
+        }
+        stops.push(GradientStop {
+            offset,
+            color: color.to_string(),
+        });
+    }
+    if stops.len() < 2 {
+        return Err(GraphParseError {
+            line,
+            message: "gradient requires at least two stops".to_string(),
+        });
+    }
+    stops.sort_by(|a, b| {
+        a.offset
+            .partial_cmp(&b.offset)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(stops)
+}
+
+fn parse_rect_node(block: &str, line: usize) -> Result<RectNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let width = strip_wrappers(&required_attr_value(block, "width", line)?).to_string();
+    let height = strip_wrappers(&required_attr_value(block, "height", line)?).to_string();
+    let radius = attr_value(block, "radius")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let color = attr_value(block, "color")
+        .or_else(|| attr_value(block, "fill"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "#ffffff".to_string());
+    let stroke = attr_value(block, "stroke").map(|v| strip_wrappers(&v).to_string());
+    let stroke_width = attr_value(block, "strokeWidth")
+        .or_else(|| attr_value(block, "stroke_width"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let rotation = attr_value(block, "rotation")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+
+    Ok(RectNode {
+        id,
+        x,
+        y,
+        width,
+        height,
+        radius,
+        color,
+        stroke,
+        stroke_width,
+        opacity,
+        rotation,
+        blend: attr_value(block, "blend")
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "normal".to_string()),
+    })
+}
+
+fn parse_circle_node(block: &str, line: usize) -> Result<CircleNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let radius = strip_wrappers(&required_attr_value(block, "radius", line)?).to_string();
+    let color = attr_value(block, "color")
+        .or_else(|| attr_value(block, "fill"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "#ffffff".to_string());
+    let stroke = attr_value(block, "stroke").map(|v| strip_wrappers(&v).to_string());
+    let stroke_width = attr_value(block, "strokeWidth")
+        .or_else(|| attr_value(block, "stroke_width"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    Ok(CircleNode {
+        id,
+        x,
+        y,
+        radius,
+        color,
+        stroke,
+        stroke_width,
+        opacity,
+        blend: attr_value(block, "blend")
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "normal".to_string()),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct StrokeAttrs {
+    style: String,
+    roughness: String,
+    copies: String,
+    texture: String,
+    bristles: String,
+    pressure: String,
+    pressure_min: String,
+    pressure_curve: String,
+}
+
+fn stroke_style_attrs(block: &str) -> StrokeAttrs {
+    stroke_style_attrs_with_brush(block, None)
+}
+
+fn attr_string(block: &str, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|name| attr_value(block, name))
+        .map(|v| strip_wrappers(&v).to_string())
+}
+
+fn attr_or_brush(
+    block: &str,
+    names: &[&str],
+    brush_value: Option<&String>,
+    default_value: &str,
+) -> String {
+    attr_string(block, names)
+        .or_else(|| brush_value.cloned())
+        .unwrap_or_else(|| default_value.to_string())
+}
+
+fn stroke_style_attrs_with_brush(block: &str, brush: Option<&BrushDef>) -> StrokeAttrs {
+    let stroke_style = attr_value(block, "strokeStyle")
+        .or_else(|| attr_value(block, "stroke_style"))
+        .or_else(|| attr_value(block, "style"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.stroke_style.clone()))
+        .unwrap_or_else(|| "solid".to_string());
+    let stroke_roughness = attr_value(block, "strokeRoughness")
+        .or_else(|| attr_value(block, "stroke_roughness"))
+        .or_else(|| attr_value(block, "roughness"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.stroke_roughness.clone()))
+        .unwrap_or_else(|| "0".to_string());
+    let stroke_copies = attr_value(block, "strokeCopies")
+        .or_else(|| attr_value(block, "stroke_copies"))
+        .or_else(|| attr_value(block, "copies"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.stroke_copies.clone()))
+        .unwrap_or_else(|| "1".to_string());
+    let stroke_texture = attr_value(block, "strokeTexture")
+        .or_else(|| attr_value(block, "stroke_texture"))
+        .or_else(|| attr_value(block, "texture"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.stroke_texture.clone()))
+        .unwrap_or_else(|| "0".to_string());
+    let stroke_bristles = attr_value(block, "strokeBristles")
+        .or_else(|| attr_value(block, "stroke_bristles"))
+        .or_else(|| attr_value(block, "bristles"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.stroke_bristles.clone()))
+        .unwrap_or_else(|| "0".to_string());
+    let stroke_pressure = attr_value(block, "strokePressure")
+        .or_else(|| attr_value(block, "stroke_pressure"))
+        .or_else(|| attr_value(block, "pressure"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.stroke_pressure.clone()))
+        .unwrap_or_else(|| "none".to_string());
+    let stroke_pressure_min = attr_value(block, "strokePressureMin")
+        .or_else(|| attr_value(block, "stroke_pressure_min"))
+        .or_else(|| attr_value(block, "pressureMin"))
+        .or_else(|| attr_value(block, "pressure_min"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.stroke_pressure_min.clone()))
+        .unwrap_or_else(|| "1".to_string());
+    let stroke_pressure_curve = attr_value(block, "strokePressureCurve")
+        .or_else(|| attr_value(block, "stroke_pressure_curve"))
+        .or_else(|| attr_value(block, "pressureCurve"))
+        .or_else(|| attr_value(block, "pressure_curve"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.stroke_pressure_curve.clone()))
+        .unwrap_or_else(|| "1".to_string());
+    StrokeAttrs {
+        style: stroke_style,
+        roughness: stroke_roughness,
+        copies: stroke_copies,
+        texture: stroke_texture,
+        bristles: stroke_bristles,
+        pressure: stroke_pressure,
+        pressure_min: stroke_pressure_min,
+        pressure_curve: stroke_pressure_curve,
+    }
+}
+
+fn parse_line_node(block: &str, line: usize) -> Result<LineNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let x1 = strip_wrappers(&required_attr_value(block, "x1", line)?).to_string();
+    let y1 = strip_wrappers(&required_attr_value(block, "y1", line)?).to_string();
+    let x2 = strip_wrappers(&required_attr_value(block, "x2", line)?).to_string();
+    let y2 = strip_wrappers(&required_attr_value(block, "y2", line)?).to_string();
+    let width = attr_value(block, "width")
+        .or_else(|| attr_value(block, "strokeWidth"))
+        .or_else(|| attr_value(block, "stroke_width"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "4".to_string());
+    let color = attr_value(block, "color")
+        .or_else(|| attr_value(block, "stroke"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "#ffffff".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let stroke_attrs = stroke_style_attrs(block);
+    Ok(LineNode {
+        id,
+        x1,
+        y1,
+        x2,
+        y2,
+        width,
+        color,
+        opacity,
+        line_cap: attr_value(block, "lineCap")
+            .or_else(|| attr_value(block, "line_cap"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "round".to_string()),
+        taper_start: attr_value(block, "taperStart")
+            .or_else(|| attr_value(block, "taper_start"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "0".to_string()),
+        taper_end: attr_value(block, "taperEnd")
+            .or_else(|| attr_value(block, "taper_end"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "0".to_string()),
+        stroke_style: stroke_attrs.style,
+        stroke_roughness: stroke_attrs.roughness,
+        stroke_copies: stroke_attrs.copies,
+        stroke_texture: stroke_attrs.texture,
+        stroke_bristles: stroke_attrs.bristles,
+        stroke_pressure: stroke_attrs.pressure,
+        stroke_pressure_min: stroke_attrs.pressure_min,
+        stroke_pressure_curve: stroke_attrs.pressure_curve,
+        blend: attr_value(block, "blend")
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "normal".to_string()),
+    })
+}
+
+fn parse_polyline_node(block: &str, line: usize) -> Result<PolylineNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let points = strip_wrappers(&required_attr_value(block, "points", line)?).to_string();
+    let stroke = attr_value(block, "stroke")
+        .or_else(|| attr_value(block, "color"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "#ffffff".to_string());
+    let stroke_width = attr_value(block, "strokeWidth")
+        .or_else(|| attr_value(block, "stroke_width"))
+        .or_else(|| attr_value(block, "width"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "4".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let trim_start = attr_value(block, "trimStart")
+        .or_else(|| attr_value(block, "trim_start"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.0".to_string());
+    let trim_end = attr_value(block, "trimEnd")
+        .or_else(|| attr_value(block, "trim_end"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let stroke_attrs = stroke_style_attrs(block);
+
+    Ok(PolylineNode {
+        id,
+        points,
+        stroke,
+        stroke_width,
+        opacity,
+        trim_start,
+        trim_end,
+        line_cap: attr_value(block, "lineCap")
+            .or_else(|| attr_value(block, "line_cap"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "round".to_string()),
+        line_join: attr_value(block, "lineJoin")
+            .or_else(|| attr_value(block, "line_join"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "round".to_string()),
+        taper_start: attr_value(block, "taperStart")
+            .or_else(|| attr_value(block, "taper_start"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "0".to_string()),
+        taper_end: attr_value(block, "taperEnd")
+            .or_else(|| attr_value(block, "taper_end"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "0".to_string()),
+        stroke_style: stroke_attrs.style,
+        stroke_roughness: stroke_attrs.roughness,
+        stroke_copies: stroke_attrs.copies,
+        stroke_texture: stroke_attrs.texture,
+        stroke_bristles: stroke_attrs.bristles,
+        stroke_pressure: stroke_attrs.pressure,
+        stroke_pressure_min: stroke_attrs.pressure_min,
+        stroke_pressure_curve: stroke_attrs.pressure_curve,
+        blend: attr_value(block, "blend")
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "normal".to_string()),
+    })
+}
+
+fn parse_path_node(
+    block: &str,
+    line: usize,
+    brush_ctx: &BrushParseContext,
+) -> Result<PathNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let (brush_id, brush) = brush_ctx.brush_for_path(block);
+    let d = strip_wrappers(&required_attr_value(block, "d", line)?).to_string();
+    let fill = attr_value(block, "fill")
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.fill.clone()));
+    let stroke = attr_value(block, "stroke")
+        .or_else(|| attr_value(block, "color"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .or_else(|| brush.and_then(|brush| brush.stroke.clone()))
+        .unwrap_or_else(|| {
+            if fill.is_some() {
+                "none".to_string()
+            } else {
+                "#ffffff".to_string()
+            }
+        });
+    let stroke_width = attr_or_brush(
+        block,
+        &["strokeWidth", "stroke_width", "width"],
+        brush.and_then(|brush| brush.stroke_width.as_ref()),
+        "4",
+    );
+    let opacity = attr_or_brush(
+        block,
+        &["opacity"],
+        brush.and_then(|brush| brush.opacity.as_ref()),
+        "1.0",
+    );
+    let trim_start = attr_value(block, "trimStart")
+        .or_else(|| attr_value(block, "trim_start"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.0".to_string());
+    let trim_end = attr_value(block, "trimEnd")
+        .or_else(|| attr_value(block, "trim_end"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let stroke_attrs = stroke_style_attrs_with_brush(block, brush);
+
+    Ok(PathNode {
+        id,
+        brush: brush_id,
+        d,
+        stroke,
+        fill,
+        stroke_width,
+        opacity,
+        trim_start,
+        trim_end,
+        line_cap: attr_or_brush(
+            block,
+            &["lineCap", "line_cap"],
+            brush.and_then(|brush| brush.line_cap.as_ref()),
+            "round",
+        ),
+        line_join: attr_or_brush(
+            block,
+            &["lineJoin", "line_join"],
+            brush.and_then(|brush| brush.line_join.as_ref()),
+            "round",
+        ),
+        taper_start: attr_or_brush(
+            block,
+            &["taperStart", "taper_start"],
+            brush.and_then(|brush| brush.taper_start.as_ref()),
+            "0",
+        ),
+        taper_end: attr_or_brush(
+            block,
+            &["taperEnd", "taper_end"],
+            brush.and_then(|brush| brush.taper_end.as_ref()),
+            "0",
+        ),
+        stroke_style: stroke_attrs.style,
+        stroke_roughness: stroke_attrs.roughness,
+        stroke_copies: stroke_attrs.copies,
+        stroke_texture: stroke_attrs.texture,
+        stroke_bristles: stroke_attrs.bristles,
+        stroke_pressure: stroke_attrs.pressure,
+        stroke_pressure_min: stroke_attrs.pressure_min,
+        stroke_pressure_curve: stroke_attrs.pressure_curve,
+        blend: attr_or_brush(
+            block,
+            &["blend"],
+            brush.and_then(|brush| brush.blend.as_ref()),
+            "normal",
+        ),
+    })
+}
+
+fn parse_face_jaw_node(block: &str, _line: usize) -> Result<FaceJawNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let width = attr_value(block, "width")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "100".to_string());
+    let height = attr_value(block, "height")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "100".to_string());
+    let cheek_width = attr_value(block, "cheekWidth")
+        .or_else(|| attr_value(block, "cheek_width"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| width.clone());
+    let chin_width = attr_value(block, "chinWidth")
+        .or_else(|| attr_value(block, "chin_width"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "24".to_string());
+    let chin_sharpness = attr_value(block, "chinSharpness")
+        .or_else(|| attr_value(block, "chin_sharpness"))
+        .or_else(|| attr_value(block, "sharpness"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.45".to_string());
+    let jaw_ease = attr_value(block, "jawEase")
+        .or_else(|| attr_value(block, "jaw_ease"))
+        .or_else(|| attr_value(block, "ease"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.55".to_string());
+    let scale = attr_value(block, "scale")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1".to_string());
+    let closed = attr_value(block, "closed")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "true".to_string());
+    let fill = attr_value(block, "fill").map(|v| strip_wrappers(&v).to_string());
+    let stroke = attr_value(block, "stroke")
+        .or_else(|| attr_value(block, "color"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| {
+            if fill.is_some() {
+                "none".to_string()
+            } else {
+                "#ffffff".to_string()
+            }
+        });
+    let stroke_width = attr_value(block, "strokeWidth")
+        .or_else(|| attr_value(block, "stroke_width"))
+        .or_else(|| attr_value(block, "widthStroke"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "4".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let trim_start = attr_value(block, "trimStart")
+        .or_else(|| attr_value(block, "trim_start"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.0".to_string());
+    let trim_end = attr_value(block, "trimEnd")
+        .or_else(|| attr_value(block, "trim_end"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let stroke_attrs = stroke_style_attrs(block);
+    Ok(FaceJawNode {
+        id,
+        x,
+        y,
+        width,
+        height,
+        cheek_width,
+        chin_width,
+        chin_sharpness,
+        jaw_ease,
+        scale,
+        closed,
+        stroke,
+        fill,
+        stroke_width,
+        opacity,
+        trim_start,
+        trim_end,
+        line_cap: attr_value(block, "lineCap")
+            .or_else(|| attr_value(block, "line_cap"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "round".to_string()),
+        line_join: attr_value(block, "lineJoin")
+            .or_else(|| attr_value(block, "line_join"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "round".to_string()),
+        taper_start: attr_value(block, "taperStart")
+            .or_else(|| attr_value(block, "taper_start"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "0".to_string()),
+        taper_end: attr_value(block, "taperEnd")
+            .or_else(|| attr_value(block, "taper_end"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "0".to_string()),
+        stroke_style: stroke_attrs.style,
+        stroke_roughness: stroke_attrs.roughness,
+        stroke_copies: stroke_attrs.copies,
+        stroke_texture: stroke_attrs.texture,
+        stroke_bristles: stroke_attrs.bristles,
+        stroke_pressure: stroke_attrs.pressure,
+        stroke_pressure_min: stroke_attrs.pressure_min,
+        stroke_pressure_curve: stroke_attrs.pressure_curve,
+        blend: attr_value(block, "blend")
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "normal".to_string()),
+    })
+}
+
+fn parse_shadow_node(block: &str, _line: usize) -> Result<ShadowNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "18".to_string());
+    let blur = attr_value(block, "blur")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "36".to_string());
+    let color = attr_value(block, "color")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "[0,0,0,0.18]".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    Ok(ShadowNode {
+        id,
+        x,
+        y,
+        blur,
+        color,
+        opacity,
+    })
+}
+
+fn parse_group_node(
+    block: &str,
+    _line: usize,
+    children: Vec<SceneNode>,
+) -> Result<GroupNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let brush = attr_value(block, "brush").map(|v| strip_wrappers(&v).to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let rotation = attr_value(block, "rotation")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let scale = attr_value(block, "scale")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    Ok(GroupNode {
+        id,
+        brush,
+        x,
+        y,
+        rotation,
+        scale,
+        opacity,
+        children,
+    })
+}
+
+fn parse_part_node(
+    block: &str,
+    _line: usize,
+    children: Vec<SceneNode>,
+) -> Result<PartNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let label = attr_value(block, "label").map(|v| strip_wrappers(&v).to_string());
+    let role = attr_value(block, "role").map(|v| strip_wrappers(&v).to_string());
+    let brush = attr_value(block, "brush").map(|v| strip_wrappers(&v).to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let rotation = attr_value(block, "rotation")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let scale = attr_value(block, "scale")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    Ok(PartNode {
+        id,
+        label,
+        role,
+        brush,
+        x,
+        y,
+        rotation,
+        scale,
+        opacity,
+        children,
+    })
+}
+
+fn parse_repeat_node(
+    block: &str,
+    _line: usize,
+    children: Vec<SceneNode>,
+) -> Result<RepeatNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let count = attr_value(block, "count")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1".to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let rotation = attr_value(block, "rotation")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let scale = attr_value(block, "scale")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let x_step = attr_value(block, "xStep")
+        .or_else(|| attr_value(block, "x_step"))
+        .or_else(|| attr_value(block, "dx"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y_step = attr_value(block, "yStep")
+        .or_else(|| attr_value(block, "y_step"))
+        .or_else(|| attr_value(block, "dy"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let rotation_step = attr_value(block, "rotationStep")
+        .or_else(|| attr_value(block, "rotation_step"))
+        .or_else(|| attr_value(block, "dRotation"))
+        .or_else(|| attr_value(block, "d_rotation"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let scale_step = attr_value(block, "scaleStep")
+        .or_else(|| attr_value(block, "scale_step"))
+        .or_else(|| attr_value(block, "dScale"))
+        .or_else(|| attr_value(block, "d_scale"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let opacity_step = attr_value(block, "opacityStep")
+        .or_else(|| attr_value(block, "opacity_step"))
+        .or_else(|| attr_value(block, "dOpacity"))
+        .or_else(|| attr_value(block, "d_opacity"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+
+    Ok(RepeatNode {
+        id,
+        count,
+        x,
+        y,
+        rotation,
+        scale,
+        opacity,
+        x_step,
+        y_step,
+        rotation_step,
+        scale_step,
+        opacity_step,
+        children,
+    })
+}
+
+fn parse_mask_node(
+    block: &str,
+    _line: usize,
+    children: Vec<SceneNode>,
+) -> Result<MaskNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let shape = attr_value(block, "shape")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "rect".to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let width = attr_value(block, "width")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1920".to_string());
+    let height = attr_value(block, "height")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1080".to_string());
+    let radius = attr_value(block, "radius")
+        .or_else(|| attr_value(block, "r"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let d = attr_value(block, "d").map(|v| strip_wrappers(&v).to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    Ok(MaskNode {
+        id,
+        shape,
+        x,
+        y,
+        width,
+        height,
+        radius,
+        d,
+        opacity,
+        children,
+    })
+}
+
+fn parse_camera_node(
+    block: &str,
+    _line: usize,
+    children: Vec<SceneNode>,
+) -> Result<CameraNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let mode = attr_value(block, "mode")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "2d".to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "center".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "center".to_string());
+    let target_x = attr_value(block, "targetX")
+        .or_else(|| attr_value(block, "target_x"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let target_y = attr_value(block, "targetY")
+        .or_else(|| attr_value(block, "target_y"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let anchor_x = attr_value(block, "anchorX")
+        .or_else(|| attr_value(block, "anchor_x"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.5".to_string());
+    let anchor_y = attr_value(block, "anchorY")
+        .or_else(|| attr_value(block, "anchor_y"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0.5".to_string());
+    let zoom = attr_value(block, "zoom")
+        .or_else(|| attr_value(block, "scale"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let rotation = attr_value(block, "rotation")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let follow = attr_value(block, "follow").map(|v| strip_wrappers(&v).to_string());
+    let viewport = attr_value(block, "viewport").map(|v| strip_wrappers(&v).to_string());
+    let world_bounds = attr_value(block, "worldBounds")
+        .or_else(|| attr_value(block, "world_bounds"))
+        .map(|v| strip_wrappers(&v).to_string());
+
+    Ok(CameraNode {
+        id,
+        mode,
+        x,
+        y,
+        target_x,
+        target_y,
+        anchor_x,
+        anchor_y,
+        zoom,
+        rotation,
+        opacity,
+        follow,
+        viewport,
+        world_bounds,
+        children,
+    })
+}
+
+fn parse_character_node(
+    block: &str,
+    _line: usize,
+    children: Vec<SceneNode>,
+) -> Result<CharacterNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let x = attr_value(block, "x")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let rotation = attr_value(block, "rotation")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let scale = attr_value(block, "scale")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    Ok(CharacterNode {
+        id,
+        x,
+        y,
+        rotation,
+        scale,
+        opacity,
+        children,
     })
 }
 
@@ -1802,9 +3569,12 @@ fn required_attr_value_any(
 }
 
 fn attr_value(block: &str, key: &str) -> Option<String> {
-    let pattern = format!("{key}=");
-    let start = block.find(&pattern)?;
-    let mut rest = block[start + pattern.len()..].trim_start();
+    let start = find_attr_start(block, key)?;
+    let mut rest = block[start..].trim_start();
+    if !rest.starts_with('=') {
+        return None;
+    }
+    rest = rest[1..].trim_start();
     if let Some(stripped) = rest.strip_prefix('"') {
         let end = stripped.find('"')?;
         return Some(stripped[..end].to_string());
@@ -1835,6 +3605,43 @@ fn attr_value(block: &str, key: &str) -> Option<String> {
     Some(rest.to_string())
 }
 
+fn find_attr_start(block: &str, key: &str) -> Option<usize> {
+    let bytes = block.as_bytes();
+    let key_bytes = key.as_bytes();
+    if key_bytes.is_empty() || bytes.len() < key_bytes.len() + 1 {
+        return None;
+    }
+    let mut in_double_quote = false;
+    let mut i = 0usize;
+    while i + key_bytes.len() < bytes.len() {
+        let b = bytes[i];
+        if b == b'"' {
+            in_double_quote = !in_double_quote;
+            i += 1;
+            continue;
+        }
+        if in_double_quote {
+            i += 1;
+            continue;
+        }
+        if &bytes[i..i + key_bytes.len()] == key_bytes {
+            let prev_ok = i == 0
+                || bytes[i - 1].is_ascii_whitespace()
+                || bytes[i - 1] == b'<'
+                || bytes[i - 1] == b'\n';
+            let mut j = i + key_bytes.len();
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if prev_ok && j < bytes.len() && bytes[j] == b'=' {
+                return Some(i + key_bytes.len());
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 fn strip_wrappers(raw: &str) -> &str {
     let mut text = raw.trim();
     loop {
@@ -1856,7 +3663,7 @@ mod tests {
     use super::{
         ColorSpace, GraphApplyScope, GraphParseError, GraphScope, InputType, PassCache, PassKind,
         PassRole, PassTransitionClips, PassTransitionEasing, PassTransitionFallback,
-        PassTransitionMode, Quality, ResourceRef, TextureFormat, is_graph_script,
+        PassTransitionMode, Quality, ResourceRef, SceneNode, TextureFormat, is_graph_script,
         parse_graph_script,
     };
 
@@ -1883,6 +3690,21 @@ mod tests {
         assert_eq!(graph.present.from, "out");
         assert_eq!(graph.scope, GraphScope::Clip);
         assert_eq!(graph.passes[0].kind, PassKind::Compute);
+    }
+
+    #[test]
+    fn graph_parser_accepts_render_size() {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="1s" size={[734,555]} renderSize={[3840,2160]}>
+  <Scene id="scene0">
+    <Solid color="#ffffff" />
+  </Scene>
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script).expect("graph should parse");
+        assert_eq!(graph.size, (734, 555));
+        assert_eq!(graph.render_size, Some((3840, 2160)));
     }
 
     #[test]
@@ -1937,6 +3759,375 @@ mod tests {
             ResourceRef::Tex { tex, .. } => assert_eq!(tex, "clip0"),
             other => panic!("unexpected input ref: {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_scene_solid_text_without_passes() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Solid color="#000000" />
+  <Text value="hello world"
+        x="center"
+        y="center"
+        fontSize="96"
+        color="#ffffff"
+        opacity="min($time.sec / 1.0, 1.0)" />
+  <Present from="scene" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        assert_eq!(graph.scope, GraphScope::Scene);
+        assert_eq!(graph.solids.len(), 1);
+        assert_eq!(graph.texts.len(), 1);
+        assert_eq!(graph.images.len(), 0);
+        assert_eq!(graph.svgs.len(), 0);
+        assert_eq!(graph.texts[0].value, "hello world");
+        assert_eq!(graph.texts[0].font_size, "96");
+        assert_eq!(graph.present.from, "scene");
+        assert_eq!(graph.resource_size("scene"), Some((1920, 1080)));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_scene_image_without_passes() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Image src="/tmp/anica-test-image.png"
+         x="center"
+         y="120"
+         scale="0.5 + 0.5*$time.norm"
+         opacity="0.8" />
+  <Present from="scene" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        assert_eq!(graph.scope, GraphScope::Scene);
+        assert_eq!(graph.images.len(), 1);
+        assert_eq!(graph.images[0].src, "/tmp/anica-test-image.png");
+        assert_eq!(graph.images[0].x, "center");
+        assert_eq!(graph.images[0].y, "120");
+        assert_eq!(graph.images[0].scale, "0.5 + 0.5*$time.norm");
+        assert_eq!(graph.present.from, "scene");
+        assert_eq!(graph.resource_size("scene"), Some((1920, 1080)));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_scene_svg_without_passes() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Svg src="/tmp/anica-test-logo.svg"
+       x="center"
+       y="25%"
+       scale="0.5 + 0.5*$time.norm"
+       opacity="0.8" />
+  <Present from="scene" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        assert_eq!(graph.scope, GraphScope::Scene);
+        assert_eq!(graph.svgs.len(), 1);
+        assert_eq!(graph.svgs[0].src, "/tmp/anica-test-logo.svg");
+        assert_eq!(graph.svgs[0].x, "center");
+        assert_eq!(graph.svgs[0].y, "25%");
+        assert_eq!(graph.svgs[0].scale, "0.5 + 0.5*$time.norm");
+        assert_eq!(graph.svgs[0].opacity, "0.8");
+        assert_eq!(graph.present.from, "scene");
+        assert_eq!(graph.resource_size("scene"), Some((1920, 1080)));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_scene_container_and_primitives() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="8s" size={[1920,1080]}>
+  <Scene id="scene0">
+    <Solid color="[0.96,0.96,0.96,1]" />
+    <Group id="card" x="100" y="100" rotation="-4" opacity="1">
+      <Shadow x="0" y="18" blur="36" color="[0,0,0,0.16]" />
+      <Rect width="360" height="78" radius="20"
+            color="[1,1,1,1]"
+            stroke="[0.84,0.84,0.84,1]"
+            strokeWidth="1" />
+      <Circle x="38" y="39" radius="7" color="[0,0.34,0.95,1]" />
+      <Polyline points="20,110 140,96 260,124"
+                stroke="#2f83ff"
+                strokeWidth="5"
+                trimEnd="0.75"
+                strokeStyle="sketch"
+                strokeRoughness="1.5"
+                strokeCopies="4"
+                strokeTexture="0.45"
+                strokeBristles="5"
+                strokePressure="auto"
+                strokePressureMin="0.25"
+                strokePressureCurve="1.4" />
+      <Path d="M 20 145 C 120 95 240 195 340 145"
+            stroke="#ff7a2f"
+            strokeWidth="6"
+            trimStart="0.1"
+            trimEnd="0.9"
+            strokeStyle="pencil" />
+      <Text value="TechCrunch - OpenAI..."
+            x="62" y="22"
+            width="270"
+            fontSize="28"
+            lineHeight="34"
+            color="[0.08,0.08,0.08,1]" />
+    </Group>
+  </Scene>
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        assert_eq!(graph.scope, GraphScope::Scene);
+        assert_eq!(graph.scenes.len(), 1);
+        assert_eq!(graph.scenes[0].id, "scene0");
+        assert_eq!(graph.scenes[0].children.len(), 2);
+        let SceneNode::Group(group) = &graph.scenes[0].children[1] else {
+            panic!("expected group child");
+        };
+        assert_eq!(group.children.len(), 6);
+        let SceneNode::Polyline(polyline) = &group.children[3] else {
+            panic!("expected polyline child");
+        };
+        assert_eq!(polyline.stroke_style, "sketch");
+        assert_eq!(polyline.stroke_roughness, "1.5");
+        assert_eq!(polyline.stroke_copies, "4");
+        assert_eq!(polyline.stroke_texture, "0.45");
+        assert_eq!(polyline.stroke_bristles, "5");
+        assert_eq!(polyline.stroke_pressure, "auto");
+        assert_eq!(polyline.stroke_pressure_min, "0.25");
+        assert_eq!(polyline.stroke_pressure_curve, "1.4");
+        let SceneNode::Path(path) = &group.children[4] else {
+            panic!("expected path child");
+        };
+        assert_eq!(path.stroke_style, "pencil");
+        assert!(graph.scene_nodes.is_empty());
+        assert_eq!(graph.present.from, "scene0");
+        assert_eq!(graph.resource_size("scene0"), Some((1920, 1080)));
+        assert_eq!(graph.resource_size("scene:scene0"), Some((1920, 1080)));
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_brush_part_inheritance() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="1s" size={[320,180]}>
+  <Scene id="scene0">
+    <Defs>
+      <Brush id="eyebrow_sketch"
+             stroke="#111111"
+             strokeWidth="0.3"
+             strokeStyle="pencil"
+             strokeRoughness="1.8"
+             strokeCopies="6"
+             strokeTexture="0.7"
+             strokeBristles="5"
+             opacity="0.4"
+             lineCap="round" />
+    </Defs>
+    <Part id="left_eyebrow" label="Left eyebrow" role="eyebrow" brush="eyebrow_sketch" x="10" y="20">
+      <Path id="brow_cluster"
+            d="M 0 0 C 20 -8 40 -8 60 0 M 4 4 C 24 -2 42 -1 56 5" />
+      <Path id="brow_override"
+            d="M 0 10 L 60 10"
+            strokeWidth="1.2"
+            opacity="0.8" />
+    </Part>
+  </Scene>
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        let SceneNode::Defs(defs) = &graph.scenes[0].children[0] else {
+            panic!("expected defs child");
+        };
+        assert_eq!(defs.brushes.len(), 1);
+        assert_eq!(defs.brushes[0].id, "eyebrow_sketch");
+
+        let SceneNode::Part(part) = &graph.scenes[0].children[1] else {
+            panic!("expected part child");
+        };
+        assert_eq!(part.id.as_deref(), Some("left_eyebrow"));
+        assert_eq!(part.label.as_deref(), Some("Left eyebrow"));
+        assert_eq!(part.role.as_deref(), Some("eyebrow"));
+        assert_eq!(part.brush.as_deref(), Some("eyebrow_sketch"));
+
+        let SceneNode::Path(inherited) = &part.children[0] else {
+            panic!("expected inherited brush path");
+        };
+        assert_eq!(inherited.brush.as_deref(), Some("eyebrow_sketch"));
+        assert_eq!(inherited.stroke, "#111111");
+        assert_eq!(inherited.stroke_width, "0.3");
+        assert_eq!(inherited.stroke_style, "pencil");
+        assert_eq!(inherited.stroke_roughness, "1.8");
+        assert_eq!(inherited.stroke_copies, "6");
+        assert_eq!(inherited.stroke_texture, "0.7");
+        assert_eq!(inherited.stroke_bristles, "5");
+        assert_eq!(inherited.opacity, "0.4");
+
+        let SceneNode::Path(overridden) = &part.children[1] else {
+            panic!("expected override path");
+        };
+        assert_eq!(overridden.brush.as_deref(), Some("eyebrow_sketch"));
+        assert_eq!(overridden.stroke_width, "1.2");
+        assert_eq!(overridden.opacity, "0.8");
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_scene_camera_container() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Scene id="scene0">
+    <Solid color="#101418" />
+    <Camera mode="2d"
+            x="960 + 500*smoothstep(0,1,$time.norm)"
+            y="540"
+            targetX="1100"
+            anchorX="35%"
+            anchorY="0.6"
+            zoom="1.4"
+            follow="marker"
+            viewport="100,80,1720,920"
+            worldBounds="0,0,2400,1400">
+      <Path d="M 300 600 C 700 300 1200 400 1600 520"
+            stroke="#2f83ff"
+            strokeWidth="8"
+            trimEnd="smoothstep(0.2,0.8,$time.norm)" />
+      <Circle id="marker" x="1200" y="500" radius="12" color="#ffffff" />
+    </Camera>
+  </Scene>
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        let SceneNode::Camera(camera) = &graph.scenes[0].children[1] else {
+            panic!("expected camera child");
+        };
+        assert_eq!(camera.mode, "2d");
+        assert_eq!(camera.x, "960 + 500*smoothstep(0,1,$time.norm)");
+        assert_eq!(camera.target_x.as_deref(), Some("1100"));
+        assert_eq!(camera.anchor_x, "35%");
+        assert_eq!(camera.anchor_y, "0.6");
+        assert_eq!(camera.zoom, "1.4");
+        assert_eq!(camera.follow.as_deref(), Some("marker"));
+        assert_eq!(camera.viewport.as_deref(), Some("100,80,1720,920"));
+        assert_eq!(camera.world_bounds.as_deref(), Some("0,0,2400,1400"));
+        assert_eq!(camera.children.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_scene_character_container() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Scene id="scene0">
+    <Solid color="#101418" />
+    <Character id="heroFace" x="960" y="540" rotation="-2" scale="1.1" opacity="1">
+      <Group x="0" y="-30">
+        <Path d="M -160 0 C -80 -130 80 -130 160 0"
+              stroke="#f6bfd0"
+              strokeWidth="42" />
+        <Line x1="-120" y1="24" x2="120" y2="24" width="6" color="#5d5961" />
+        <Circle x="-70" y="70" radius="26" color="#e05b78" />
+      </Group>
+    </Character>
+  </Scene>
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        let SceneNode::Character(character) = &graph.scenes[0].children[1] else {
+            panic!("expected character child");
+        };
+        assert_eq!(character.id.as_deref(), Some("heroFace"));
+        assert_eq!(character.x, "960");
+        assert_eq!(character.rotation, "-2");
+        assert_eq!(character.children.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_scene_repeat_container() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Scene id="scene0">
+    <Character id="eye" x="260" y="130">
+      <Repeat id="lashFan"
+              count="12"
+              x="180"
+              y="-10"
+              xStep="5"
+              yStep="-8"
+              rotationStep="-1.5"
+              scaleStep="0.02"
+              opacityStep="-0.04">
+        <Path d="M 0 0 C 42 24 76 62 100 114"
+              stroke="#15091d"
+              strokeWidth="5"
+              lineCap="round"
+              lineJoin="round"
+              taperEnd="0.5" />
+      </Repeat>
+    </Character>
+  </Scene>
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        let SceneNode::Character(character) = &graph.scenes[0].children[0] else {
+            panic!("expected character child");
+        };
+        let SceneNode::Repeat(repeat) = &character.children[0] else {
+            panic!("expected repeat child");
+        };
+        assert_eq!(repeat.id.as_deref(), Some("lashFan"));
+        assert_eq!(repeat.count, "12");
+        assert_eq!(repeat.x_step, "5");
+        assert_eq!(repeat.y_step, "-8");
+        assert_eq!(repeat.rotation_step, "-1.5");
+        assert_eq!(repeat.scale_step, "0.02");
+        assert_eq!(repeat.opacity_step, "-0.04");
+        assert_eq!(repeat.children.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_path_fill_taper_and_mask() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Scene id="scene0">
+    <Solid color="#101418" />
+    <Mask id="eyeClip" shape="circle" x="120" y="90" radius="40">
+      <Path d="M 80 60 L 160 60 L 160 120 L 80 120 Z"
+            fill="#ff77aa"
+            stroke="#5d5961"
+            strokeWidth="5"
+            lineCap="round"
+            lineJoin="round"
+            taperStart="0.15"
+            taperEnd="0.2" />
+    </Mask>
+  </Scene>
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        let SceneNode::Mask(mask) = &graph.scenes[0].children[1] else {
+            panic!("expected mask child");
+        };
+        assert_eq!(mask.id.as_deref(), Some("eyeClip"));
+        assert_eq!(mask.shape, "circle");
+        let SceneNode::Path(path) = &mask.children[0] else {
+            panic!("expected masked path");
+        };
+        assert_eq!(path.fill.as_deref(), Some("#ff77aa"));
+        assert_eq!(path.line_cap, "round");
+        assert_eq!(path.taper_start, "0.15");
+        assert_eq!(path.taper_end, "0.2");
         Ok(())
     }
 
@@ -2023,6 +4214,41 @@ mod tests {
         let graph = parse_graph_script(script)?;
         assert_eq!(graph.passes[0].kernel, None);
         assert_eq!(graph.passes[0].effect, "exposure_contrast");
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_face_jaw_scene_node() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph scope="scene" fps={60} size={[512,512]}>
+  <Scene id="face">
+    <Group id="face_shape_param_group" x="0" y="0" scale="1">
+      <FaceJaw id="jaw"
+               x="256" y="64"
+               width="300" height="360"
+               cheekWidth="260"
+               chinWidth="42"
+               chinSharpness="0.35"
+               jawEase="0.6"
+               closed="false"
+               stroke="#000000"
+               strokeWidth="3"
+               fill="none" />
+    </Group>
+  </Scene>
+  <Present from="face" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        let SceneNode::Group(group) = &graph.scenes[0].children[0] else {
+            panic!("expected group");
+        };
+        let SceneNode::FaceJaw(face_jaw) = &group.children[0] else {
+            panic!("expected FaceJaw");
+        };
+        assert_eq!(face_jaw.id.as_deref(), Some("jaw"));
+        assert_eq!(face_jaw.chin_sharpness, "0.35");
+        assert_eq!(face_jaw.jaw_ease, "0.6");
         Ok(())
     }
 

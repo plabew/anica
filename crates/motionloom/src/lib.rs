@@ -15,15 +15,17 @@ pub mod model;
 pub mod preview_adapter;
 pub mod process_catalog;
 pub mod runtime;
+pub mod scene;
+pub mod scene_render;
 pub mod transitions;
 
 pub use dsl::{
     AlphaMode, BlendMode, BufferElemType, BufferNode, BufferUsage, ColorSpace, GraphApplyScope,
-    GraphScope, GraphScript, InputNode, InputType, LoadOp, OutputNode, OutputTarget, PassCache,
-    PassKind, PassNode, PassParam, PassRole, PassTransitionClips, PassTransitionEasing,
+    GraphScope, GraphScript, ImageNode, InputNode, InputType, LoadOp, OutputNode, OutputTarget,
+    PassCache, PassKind, PassNode, PassParam, PassRole, PassTransitionClips, PassTransitionEasing,
     PassTransitionFallback, PassTransitionMode, PresentNode, PresentTarget, Quality, ResourceRef,
-    SampleAddress, SampleConfig, SampleFilter, StoreOp, TexNode, TexUsage, TextureFormat,
-    is_graph_script, parse_graph_script,
+    SampleAddress, SampleConfig, SampleFilter, SolidNode, StoreOp, SvgNode, TexNode, TexUsage,
+    TextNode, TextureFormat, is_graph_script, parse_graph_script,
 };
 pub use effect_kernel_map::{default_kernel_for_effect, resolve_pass_kernel};
 pub use effects::{LayerColorBlurEffects, PerClipColorBlurEffects, combine_clip_with_layer};
@@ -39,7 +41,20 @@ pub use process_catalog::{
     is_known_process_kernel, kernel_source_by_name, process_effect_for_id, process_effects,
     process_effects_for_category,
 };
-pub use runtime::{BlurSharpenMode, RuntimeFrameOutput, RuntimeProgram, compile_runtime_program};
+pub use runtime::{
+    BlurSharpenMode, RuntimeFrameOutput, RuntimeProgram, compile_runtime_program, eval_time_expr,
+};
+pub use scene::{
+    BrushDef, CameraNode, CharacterNode, CircleNode, DefsNode, FaceJawNode, GradientDef,
+    GradientStop, GroupNode, LineNode, LinearGradientDef, MaskNode, PartNode, PathNode,
+    PolylineNode, RadialGradientDef, RectNode, RepeatNode, SceneNode, SceneRootNode, ShadowNode,
+};
+pub use scene_render::{
+    MotionLoomSceneRenderError, SceneRenderError, SceneRenderProfile, SceneRenderProgress,
+    SceneRenderer, next_scene_output_path, next_scene_output_path_for_profile, render_scene_frame,
+    render_scene_graph_frame, render_scene_graph_to_video,
+    render_scene_graph_to_video_with_progress,
+};
 
 /// FrameContext carries the minimum timeline state needed for effect evaluation.
 #[derive(Debug, Clone, Copy, PartialEq)]

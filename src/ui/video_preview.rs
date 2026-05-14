@@ -84,6 +84,12 @@ fn is_image_ext(path: &str) -> bool {
         || p.ends_with(".bmp")
 }
 
+fn is_motionloom_scene_generated_path(path: &str) -> bool {
+    let p = path.replace('\\', "/").to_lowercase();
+    p.contains("/motionloom_generated/motionloom_scene_")
+        && (p.ends_with(".mp4") || p.ends_with(".mov"))
+}
+
 fn fitted_media_bounds(
     width: u32,
     height: u32,
@@ -2750,7 +2756,10 @@ impl VideoPreview {
                             video.set_display_height(Some(PREVIEW_BASE_HEIGHT as u32));
                             video.set_display_width(Some((PREVIEW_BASE_HEIGHT * aspect) as u32));
                         }
-                        let _ = video.seek(Position::Time(src_time), false);
+                        let _ = video.seek(
+                            Position::Time(src_time),
+                            is_motionloom_scene_generated_path(&path_str),
+                        );
                         self.last_seek_requests.insert(id, src_time);
                         self.visual_players.insert(id, video);
                         self.video_cache_paths.insert(id, clip_path.clone());
@@ -3083,13 +3092,16 @@ impl VideoPreview {
             let visible = Self::resolve_visible_clips(gs, playhead);
             let mut issued_seek = false;
 
-            for (id, _, src_time, ..) in visible {
+            for (id, path, src_time, ..) in visible {
                 if let Some(v) = self.visual_players.get(&id) {
                     let should = self.last_seek_requests.get(&id).is_none_or(|last| {
                         (last.as_secs_f64() - src_time.as_secs_f64()).abs() > seek_epsilon
                     });
                     if should {
-                        let _ = v.seek(Position::Time(src_time), false);
+                        let _ = v.seek(
+                            Position::Time(src_time),
+                            is_motionloom_scene_generated_path(&path),
+                        );
                         self.last_seek_requests.insert(id, src_time);
                         issued_seek = true;
                     }
@@ -3184,7 +3196,7 @@ impl VideoPreview {
             // When timeline edits move playhead abruptly during playback (e.g. ripple delete),
             // force one hard seek for active players so audio/video stay in lockstep.
             let seek_epsilon = 0.004_f64;
-            for (id, _, src_time, ..) in &active_visual {
+            for (id, path, src_time, ..) in &active_visual {
                 let should_force = external_playhead_jump || newly_active_visual_ids.contains(id);
                 if !should_force {
                     continue;
@@ -3194,7 +3206,10 @@ impl VideoPreview {
                         (last.as_secs_f64() - src_time.as_secs_f64()).abs() > seek_epsilon
                     });
                     if should_seek {
-                        let _ = v.seek(Position::Time(*src_time), false);
+                        let _ = v.seek(
+                            Position::Time(*src_time),
+                            is_motionloom_scene_generated_path(path),
+                        );
                         this.last_seek_requests.insert(*id, *src_time);
                     }
                 }
@@ -3249,9 +3264,12 @@ impl VideoPreview {
         let gs = self.global.read(cx);
         let visible = Self::resolve_visible_clips(gs, gs.playhead);
         let active_visual_ids: HashSet<u64> = visible.iter().map(|(id, ..)| *id).collect();
-        for (id, _, src, ..) in visible {
+        for (id, path, src, ..) in visible {
             if let Some(v) = self.visual_players.get(&id) {
-                let _ = v.seek(Position::Time(src), false);
+                let _ = v.seek(
+                    Position::Time(src),
+                    is_motionloom_scene_generated_path(&path),
+                );
             }
         }
         let (active, _) = Self::collect_indexed_audio_clips(

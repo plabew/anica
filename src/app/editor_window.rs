@@ -11,6 +11,7 @@ use crate::ui::editor_shell::EditorShell;
 use crate::ui::inspector_panel::InspectorPanel;
 use crate::ui::motionloom_page::MotionLoomPage;
 use crate::ui::timeline_panel::TimelinePanel;
+use crate::ui::vector_lab_page::VectorLabPage;
 use crate::ui::video_preview::VideoPreview;
 use gpui_component::Root;
 
@@ -73,6 +74,9 @@ pub fn open_editor_window(cx: &mut App) -> gpui::Entity<GlobalState> {
             let global_for_motionloom = global.clone();
             let motionloom_page =
                 cx.new(move |cx| MotionLoomPage::new(global_for_motionloom.clone(), cx));
+            let global_for_vector_lab = global.clone();
+            let vector_lab_page =
+                cx.new(move |cx| VectorLabPage::new(global_for_vector_lab.clone(), cx));
 
             let global_for_app_root = global.clone();
             let app_root = cx.new(|cx| {
@@ -98,6 +102,7 @@ pub fn open_editor_window(cx: &mut App) -> gpui::Entity<GlobalState> {
                     ai_srt_page,
                     ai_agents_page,
                     motionloom_page,
+                    vector_lab_page,
                     ai_chat_widget_open: false,
                     ai_chat_input_text: String::new(),
                     ai_chat_input: None,

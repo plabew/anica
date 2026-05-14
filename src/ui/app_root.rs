@@ -19,6 +19,7 @@ use crate::ui::export_modal::render_export_modal_overlay;
 use crate::ui::inspector_panel::InspectorPanel;
 use crate::ui::motionloom_page::MotionLoomPage;
 use crate::ui::timeline_panel::TimelinePanel;
+use crate::ui::vector_lab_page::VectorLabPage;
 use crate::ui::video_preview::VideoPreview;
 use gpui_component::{
     input::{Input, InputEvent, InputState},
@@ -40,6 +41,7 @@ pub struct AppRoot {
     pub ai_srt_page: Entity<AiSrtPage>,
     pub ai_agents_page: Entity<AiAgentsPage>,
     pub motionloom_page: Entity<MotionLoomPage>,
+    pub vector_lab_page: Entity<VectorLabPage>,
     pub ai_chat_widget_open: bool,
     pub ai_chat_input_text: String,
     pub ai_chat_input: Option<Entity<InputState>>,
@@ -1500,6 +1502,7 @@ impl Render for AppRoot {
         let ai_srt_layout = div().flex_1().min_h_0().child(self.ai_srt_page.clone());
         let ai_agents_layout = div().flex_1().min_h_0().child(self.ai_agents_page.clone());
         let motionloom_layout = div().flex_1().min_h_0().child(self.motionloom_page.clone());
+        let vector_lab_layout = div().flex_1().min_h_0().child(self.vector_lab_page.clone());
         let inspector_expand_toggle =
             if active_page == AppPage::Editor && !self.inspector_expand_modal_open {
                 div()
@@ -1834,6 +1837,11 @@ impl Render for AppRoot {
                         AppPage::MotionLoom,
                         active_page == AppPage::MotionLoom,
                     ))
+                    .child(nav_button(
+                        "icons/script.svg",
+                        AppPage::VectorLab,
+                        active_page == AppPage::VectorLab,
+                    ))
                     .child(div().h(px(18.0)))
                     .child(chat_widget_button(self.ai_chat_widget_open)),
             )
@@ -1842,6 +1850,7 @@ impl Render for AppRoot {
                 AppPage::AiSrt => ai_srt_layout,
                 AppPage::AiAgents => ai_agents_layout,
                 AppPage::MotionLoom => motionloom_layout,
+                AppPage::VectorLab => vector_lab_layout,
             })
             .child(inspector_expand_toggle)
             .child(media_drag_ghost)

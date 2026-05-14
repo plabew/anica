@@ -1,0 +1,391 @@
+<Graph scope="scene" fps={60} duration="1s" size={[1320,768]}>
+  <Scene id="eyes2_palette_reference_level2">
+    <Solid color="#ffffff" />
+
+    <Defs>
+      <RadialGradient id="skin_disc" cx="0.50" cy="0.46" r="0.62"
+                      stops="0:#FDE9DE, 0.78:#FDE9DE, 1:#FDE9DE00" />
+
+      <LinearGradient id="sclera_soft" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#D3CEE6, 0.30:#F7F7F7, 0.70:#F7F7F7, 1:#ffffff" />
+
+      <LinearGradient id="iris_level1" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#9368C2, 0.54:#9368C2, 0.55:#FB93A6, 0.68:#FB93A6, 0.69:#FEC3A6, 1:#FEC3A6" />
+
+      <LinearGradient id="lid_grey" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#B7C7C7, 0.70:#B7C7C7, 1:#8da0a3" />
+    </Defs>
+
+    <Rect x="0" y="0" width="1320" height="768" color="#ffffff" />
+
+    <!-- Palette notes -->
+    <Text id="label_line_color" x="48" y="72" value="#3F5877" size="38" color="#3F5877" />
+    <Text id="label_skin_color" x="650" y="72" value="#FDE9DE" size="34" color="#1f1720" />
+
+    <Group id="palette_swatches" x="1010" y="50" opacity="1">
+      <Rect id="swatch_lid" x="10" y="0" width="64" height="64" radius="14"
+            color="#B7C7C7" stroke="#151515" strokeWidth="3" />
+      <Text x="92" y="42" value="#B7C7C7" size="32" color="#B7C7C7" />
+
+      <Rect id="swatch_skin" x="10" y="78" width="64" height="64" radius="14"
+            color="#FEC3A6" stroke="#151515" strokeWidth="3" />
+      <Text x="92" y="120" value="#FEC3A6" size="32" color="#FEC3A6" />
+
+      <Rect id="swatch_iris" x="10" y="156" width="64" height="72" radius="14"
+            color="#9368C2" stroke="#151515" strokeWidth="3" />
+      <Text x="92" y="202" value="#9368C2" size="34" color="#9368C2" />
+
+      <Rect id="swatch_blush" x="10" y="246" width="68" height="66" radius="18"
+            color="#FB93A6" stroke="#151515" strokeWidth="3" />
+      <Text x="92" y="290" value="#FB93A6" size="34" color="#FB93A6" />
+
+      <Rect id="swatch_white" x="10" y="334" width="68" height="68" radius="18"
+            color="#F7F7F7" stroke="#151515" strokeWidth="3" />
+      <Text x="92" y="378" value="#F7F7F7" size="32" color="#1f1720" />
+
+      <Rect id="swatch_shadow" x="10" y="424" width="68" height="68" radius="18"
+            color="#D3CEE6" stroke="#151515" strokeWidth="3" />
+      <Text x="92" y="468" value="#D3CEE6" size="32" color="#D3CEE6" />
+    </Group>
+
+    <!-- Big skin color field from the reference -->
+    <Circle id="skin_color_disc" x="515" y="390" radius="350"
+            fill="url(#skin_disc)" />
+
+        <!-- Level2: mirrored pair. Level1 eye is treated as the right eye. -->
+    <Group id="eyes_pair" x="0" y="0" opacity="1">
+      <Character id="eye_left" x="340" y="376" rotation="4" scale="0.48" opacity="1">
+            <!-- Main eye shape -->
+            <Path id="eye_white_left"
+                  d="M 210 -86 C 96 -156 -34 -182 -158 -142 C -262 -108 -334 -36 -350 54 C -306 180 -178 252 -26 248 C 126 244 224 154 234 20 C 238 -30 230 -62 210 -86 Z"
+                  fill="url(#sclera_soft)"
+                  stroke="#3F5877"
+                  strokeWidth="3"
+                  opacity="0.98" />
+      
+            <!-- Grey-green upper eyelid mass -->
+            <Path id="upper_lid_mass_left"
+                  d="M 244 -82 C 114 -184 -26 -214 -176 -172 C -268 -146 -342 -86 -390 2 C -420 56 -458 82 -512 88 C -456 96 -416 76 -374 34 C -292 -42 -194 -92 -78 -102 C 44 -112 150 -72 230 24 C 260 62 282 90 306 116 C 284 52 264 -30 244 -82 Z"
+                  fill="url(#lid_grey)"
+                  stroke="#3F5877"
+                  strokeWidth="4"
+                  opacity="0.98" />
+      
+            <Path id="upper_lid_sketch_line_left"
+                  d="M 280 -106 C 172 -194 26 -232 -146 -196 C -290 -166 -382 -74 -428 20"
+                  stroke="#3F5877"
+                  strokeWidth="2.3"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.72" />
+      
+            <Path id="outer_corner_spikes_left"
+                  d="M -384 26 C -438 48 -486 70 -538 78 M -386 54 C -436 96 -475 124 -514 154 M -366 90 C -408 132 -432 174 -438 226"
+                  stroke="#3F5877"
+                  strokeWidth="3.2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.92" />
+      
+            <!-- Iris and pupil: simple Level1 reconstruction -->
+            <Group id="iris_group_left" x="4" y="16" opacity="1">
+              <Path id="iris_oval_left"
+                    d="M 58 -184 C -34 -222 -132 -168 -164 -48 C -202 94 -148 256 -30 274 C 90 292 164 188 166 34 C 168 -78 132 -154 58 -184 Z"
+                    fill="url(#iris_level1)"
+                    stroke="#3F5877"
+                    strokeWidth="8" />
+      
+              <Path id="iris_shadow_left_left"
+                    d="M 76 -178 C 132 -112 152 8 134 112 C 120 196 76 254 0 276"
+                    stroke="#3F5877"
+                    strokeWidth="7"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.84" />
+      
+              <Path id="pupil_level1_left"
+                    d="M 22 26 C 32 82 26 132 -8 148 C -44 164 -78 116 -82 50 C -78 96 -54 126 -26 126 C 6 124 18 86 22 26 Z"
+                    fill="#3F5877"
+                    stroke="none"
+                    opacity="0.86" />
+      
+              <Path id="iris_pink_band_top_left"
+                    d="M 138 54 L 78 38 L 76 68 L 140 88 Z"
+                    fill="#FB93A6"
+                    stroke="none"
+                    opacity="0.96" />
+      
+              <Path id="iris_pink_band_mid_left_left"
+                    d="M 146 108 L 74 78 L 66 108 L 146 146 Z"
+                    fill="#FB93A6"
+                    stroke="none"
+                    opacity="0.92" />
+      
+              <Path id="iris_pink_band_mid_right_left"
+                    d="M -72 84 L -154 118 L -146 162 L -64 116 Z"
+                    fill="#FB93A6"
+                    stroke="none"
+                    opacity="0.92" />
+      
+              <Path id="highlight_top_left"
+                    d="M -110 -86 C -148 -104 -206 -92 -224 -58 C -202 -28 -136 -24 -100 -48 C -88 -58 -92 -76 -110 -86 Z"
+                    fill="#F7F7F7"
+                    stroke="none"
+                    opacity="0.96" />
+      
+              <Path id="highlight_lower_left_left"
+                    d="M 114 194 C 96 158 82 144 68 138"
+                    stroke="#F7F7F7"
+                    strokeWidth="12"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.92" />
+      
+              <Path id="highlight_lower_right_left"
+                    d="M -86 156 C -112 188 -132 222 -142 252"
+                    stroke="#F7F7F7"
+                    strokeWidth="14"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.92" />
+            </Group>
+      
+            <!-- Lower sclera rim and tiny lower lashes -->
+            <Path id="lower_sclera_rim_left"
+                  d="M 106 220 C 20 278 -130 288 -224 224 C -154 286 -24 324 88 266"
+                  stroke="#3F5877"
+                  strokeWidth="3"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.70" />
+      
+            <Path id="lower_lash_01_left"
+                  d="M 34 270 L 46 296"
+                  stroke="#3F5877"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.80" />
+            <Path id="lower_lash_02_left"
+                  d="M -10 276 L 4 306"
+                  stroke="#3F5877"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.72" />
+            <Path id="lower_lash_03_left"
+                  d="M -68 264 L -78 292"
+                  stroke="#3F5877"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.65" />
+      
+            <!-- Left side sketch strokes around inner corner -->
+            <Path id="left_corner_sketch_01_left"
+                  d="M 236 -88 C 278 -46 306 0 334 70"
+                  stroke="#3F5877"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.70" />
+      
+            <Path id="left_corner_sketch_02_left"
+                  d="M 250 -66 C 302 0 340 72 368 130"
+                  stroke="#3F5877"
+                  strokeWidth="1.8"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.55" />
+          </Character>
+
+      <Character id="eye_right" x="690" y="376" rotation="-4" scale="0.48" opacity="1">
+            <!-- Main eye shape -->
+            <Path id="eye_white_right"
+                  d="M -210 -86
+                     C -96 -156 34 -182 158 -142
+                     C 262 -108 334 -36 350 54
+                     C 306 180 178 252 26 248
+                     C -126 244 -224 154 -234 20
+                     C -238 -30 -230 -62 -210 -86 Z"
+                  fill="url(#sclera_soft)"
+                  stroke="#3F5877"
+                  strokeWidth="3"
+                  opacity="0.98" />
+      
+            <!-- Grey-green upper eyelid mass -->
+            <Path id="upper_lid_mass_right"
+                  d="M -244 -82
+                     C -114 -184 26 -214 176 -172
+                     C 268 -146 342 -86 390 2
+                     C 420 56 458 82 512 88
+                     C 456 96 416 76 374 34
+                     C 292 -42 194 -92 78 -102
+                     C -44 -112 -150 -72 -230 24
+                     C -260 62 -282 90 -306 116
+                     C -284 52 -264 -30 -244 -82 Z"
+                  fill="url(#lid_grey)"
+                  stroke="#3F5877"
+                  strokeWidth="4"
+                  opacity="0.98" />
+      
+            <Path id="upper_lid_sketch_line_right"
+                  d="M -280 -106
+                     C -172 -194 -26 -232 146 -196
+                     C 290 -166 382 -74 428 20"
+                  stroke="#3F5877"
+                  strokeWidth="2.3"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.72" />
+      
+            <Path id="outer_corner_spikes_right"
+                  d="M 384 26
+                     C 438 48 486 70 538 78
+                     M 386 54
+                     C 436 96 475 124 514 154
+                     M 366 90
+                     C 408 132 432 174 438 226"
+                  stroke="#3F5877"
+                  strokeWidth="3.2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.92" />
+      
+            <!-- Iris and pupil: simple Level1 reconstruction -->
+            <Group id="iris_group_right" x="-4" y="16" opacity="1">
+              <Path id="iris_oval_right"
+                    d="M -58 -184
+                       C 34 -222 132 -168 164 -48
+                       C 202 94 148 256 30 274
+                       C -90 292 -164 188 -166 34
+                       C -168 -78 -132 -154 -58 -184 Z"
+                    fill="url(#iris_level1)"
+                    stroke="#3F5877"
+                    strokeWidth="8" />
+      
+              <Path id="iris_shadow_left_right"
+                    d="M -76 -178
+                       C -132 -112 -152 8 -134 112
+                       C -120 196 -76 254 0 276"
+                    stroke="#3F5877"
+                    strokeWidth="7"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.84" />
+      
+              <Path id="pupil_level1_right"
+                    d="M -22 26
+                       C -32 82 -26 132 8 148
+                       C 44 164 78 116 82 50
+                       C 78 96 54 126 26 126
+                       C -6 124 -18 86 -22 26 Z"
+                    fill="#3F5877"
+                    stroke="none"
+                    opacity="0.86" />
+      
+              <Path id="iris_pink_band_top_right"
+                    d="M -138 54 L -78 38 L -76 68 L -140 88 Z"
+                    fill="#FB93A6"
+                    stroke="none"
+                    opacity="0.96" />
+      
+              <Path id="iris_pink_band_mid_left_right"
+                    d="M -146 108 L -74 78 L -66 108 L -146 146 Z"
+                    fill="#FB93A6"
+                    stroke="none"
+                    opacity="0.92" />
+      
+              <Path id="iris_pink_band_mid_right_right"
+                    d="M 72 84 L 154 118 L 146 162 L 64 116 Z"
+                    fill="#FB93A6"
+                    stroke="none"
+                    opacity="0.92" />
+      
+              <Path id="highlight_top_right"
+                    d="M 110 -86
+                       C 148 -104 206 -92 224 -58
+                       C 202 -28 136 -24 100 -48
+                       C 88 -58 92 -76 110 -86 Z"
+                    fill="#F7F7F7"
+                    stroke="none"
+                    opacity="0.96" />
+      
+              <Path id="highlight_lower_left_right"
+                    d="M -114 194 C -96 158 -82 144 -68 138"
+                    stroke="#F7F7F7"
+                    strokeWidth="12"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.92" />
+      
+              <Path id="highlight_lower_right_right"
+                    d="M 86 156 C 112 188 132 222 142 252"
+                    stroke="#F7F7F7"
+                    strokeWidth="14"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.92" />
+            </Group>
+      
+            <!-- Lower sclera rim and tiny lower lashes -->
+            <Path id="lower_sclera_rim_right"
+                  d="M -106 220
+                     C -20 278 130 288 224 224
+                     C 154 286 24 324 -88 266"
+                  stroke="#3F5877"
+                  strokeWidth="3"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.70" />
+      
+            <Path id="lower_lash_01_right"
+                  d="M -34 270 L -46 296"
+                  stroke="#3F5877"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.80" />
+            <Path id="lower_lash_02_right"
+                  d="M 10 276 L -4 306"
+                  stroke="#3F5877"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.72" />
+            <Path id="lower_lash_03_right"
+                  d="M 68 264 L 78 292"
+                  stroke="#3F5877"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.65" />
+      
+            <!-- Left side sketch strokes around inner corner -->
+            <Path id="left_corner_sketch_01_right"
+                  d="M -236 -88 C -278 -46 -306 0 -334 70"
+                  stroke="#3F5877"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.70" />
+      
+            <Path id="left_corner_sketch_02_right"
+                  d="M -250 -66 C -302 0 -340 72 -368 130"
+                  stroke="#3F5877"
+                  strokeWidth="1.8"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.55" />
+          </Character>
+    </Group>
+
+    <Path id="left_under_eye_blush" d="M 190 612 C 250 590 320 600 382 626"
+          stroke="#FB93A666" strokeWidth="10" lineCap="round" fill="none" opacity="0.42" />
+    <Path id="right_under_eye_blush" d="M 642 626 C 704 600 774 590 834 612"
+          stroke="#FB93A666" strokeWidth="10" lineCap="round" fill="none" opacity="0.42" />
+
+  </Scene>
+
+  <Present from="eyes2_palette_reference_level2" />
+</Graph>

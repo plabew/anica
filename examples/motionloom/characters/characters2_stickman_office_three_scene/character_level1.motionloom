@@ -1,0 +1,234 @@
+<Graph scope="scene" fps={60} duration="1s" size={[790,1080]}>
+  <Scene id="stickman_office_three_scene">
+    <Solid color="#d7e7f2" />
+
+    <Defs>
+      <Brush id="stick_outline"
+             stroke="#050505"
+             strokeWidth="7"
+             lineCap="round"
+             lineJoin="round"
+             fill="none" />
+
+      <Brush id="thin_outline"
+             stroke="#050505"
+             strokeWidth="4"
+             lineCap="round"
+             lineJoin="round"
+             fill="none" />
+
+      <Brush id="window_line"
+             stroke="#334a63"
+             strokeWidth="8"
+             lineCap="round"
+             lineJoin="round"
+             fill="none" />
+    </Defs>
+
+    <!-- Office background -->
+    <Rect x="0" y="0" width="790" height="1080" color="#b8d0df" />
+    <Rect x="0" y="0" width="790" height="690" color="#d8e9f4" opacity="0.96" />
+
+    <!-- Window glass panels -->
+    <Rect x="0" y="0" width="262" height="690" color="#cfe1ec" opacity="0.80" />
+    <Rect x="270" y="0" width="235" height="690" color="#d9e8f1" opacity="0.84" />
+    <Rect x="513" y="0" width="190" height="690" color="#cfdfeb" opacity="0.82" />
+    <Rect x="712" y="0" width="78" height="690" color="#dcebf3" opacity="0.78" />
+
+    <Path id="window_frame_left" brush="window_line"
+          d="M 266 0 L 266 690" opacity="0.94" />
+    <Path id="window_frame_right" brush="window_line"
+          d="M 704 0 L 704 690" opacity="0.94" />
+
+    <!-- Soft city blocks behind glass -->
+    <Group id="city_silhouette" opacity="0.38">
+      <Rect x="50" y="0" width="120" height="150" color="#eef6fb" opacity="0.48" />
+      <Rect x="176" y="0" width="130" height="610" color="#9eb4c1" opacity="0.28" />
+      <Rect x="322" y="196" width="130" height="420" color="#99aebc" opacity="0.24" />
+      <Rect x="470" y="300" width="120" height="300" color="#91a9b8" opacity="0.20" />
+      <Rect x="650" y="248" width="88" height="360" color="#aec2ce" opacity="0.26" />
+
+      <Path id="diagonal_window_light_01"
+            d="M 0 176 L 190 0 L 248 0 L 0 252 Z"
+            fill="#f7fbff"
+            stroke="none"
+            opacity="0.30" />
+      <Path id="diagonal_window_light_02"
+            d="M 302 0 L 520 0 L 250 382 L 190 382 Z"
+            fill="#f7fbff"
+            stroke="none"
+            opacity="0.25" />
+      <Path id="diagonal_window_light_03"
+            d="M 610 0 L 790 0 L 600 350 L 528 350 Z"
+            fill="#f7fbff"
+            stroke="none"
+            opacity="0.22" />
+    </Group>
+
+    <!-- Simple building windows -->
+    <Group id="building_windows" opacity="0.24">
+      <Rect x="176" y="32" width="18" height="24" color="#688295" />
+      <Rect x="203" y="32" width="18" height="24" color="#688295" />
+      <Rect x="232" y="32" width="18" height="24" color="#688295" />
+      <Rect x="176" y="100" width="18" height="24" color="#688295" />
+      <Rect x="203" y="100" width="18" height="24" color="#688295" />
+      <Rect x="232" y="100" width="18" height="24" color="#688295" />
+      <Rect x="176" y="170" width="18" height="24" color="#688295" />
+      <Rect x="203" y="170" width="18" height="24" color="#688295" />
+      <Rect x="232" y="170" width="18" height="24" color="#688295" />
+      <Rect x="176" y="240" width="18" height="24" color="#688295" />
+      <Rect x="203" y="240" width="18" height="24" color="#688295" />
+      <Rect x="232" y="240" width="18" height="24" color="#688295" />
+
+      <Rect x="500" y="335" width="22" height="20" color="#688295" />
+      <Rect x="532" y="335" width="22" height="20" color="#688295" />
+      <Rect x="565" y="335" width="22" height="20" color="#688295" />
+      <Rect x="500" y="404" width="22" height="20" color="#688295" />
+      <Rect x="532" y="404" width="22" height="20" color="#688295" />
+      <Rect x="565" y="404" width="22" height="20" color="#688295" />
+    </Group>
+
+    <!-- Desk and props -->
+    <Rect id="desk_front" x="142" y="730" width="610" height="144" color="#102942" />
+    <Rect id="desk_top" x="146" y="696" width="612" height="42" color="#243b54" />
+    <Rect id="chair_back" x="190" y="545" width="88" height="186" radius="10" color="#172f4b" />
+    <Rect id="laptop_screen" x="452" y="560" width="128" height="138" radius="8" color="#6e6e6e" />
+    <Rect id="laptop_base" x="415" y="692" width="205" height="11" radius="5" color="#616161" />
+    <Rect id="book" x="680" y="682" width="56" height="10" color="#a9e7d7" />
+    <Rect id="book_pages" x="676" y="670" width="58" height="11" color="#ecf4e8" />
+
+    <!-- Left foreground stickman, intentionally cropped by the screen edge. -->
+    <Group id="stickman_left_foreground" x="-72" y="0" opacity="1">
+      <Circle id="left_head" x="58" y="420" radius="132"
+              color="#d7d7d7"
+              stroke="#050505"
+              strokeWidth="7" />
+      <Path id="left_face" brush="stick_outline"
+            d="M 122 365
+               C 145 360, 162 366, 169 386
+               M 166 384
+               C 174 390, 178 401, 176 414" />
+      <Circle id="left_eye" x="103" y="403" radius="21" color="#050505" />
+      <Path id="left_body" brush="stick_outline"
+            d="M 50 552 L 58 760 L 72 1018" />
+      <Path id="left_arm_phone" brush="stick_outline"
+            d="M 55 615
+               C 100 650, 120 698, 144 762
+               C 156 792, 175 808, 199 782" />
+      <Path id="left_back_arm" brush="stick_outline"
+            d="M 46 617 C 28 690, 25 762, 34 854" />
+      <Path id="left_legs" brush="stick_outline"
+            d="M 71 1018 L 125 1018
+               M 55 760 L 10 1018" />
+
+      <Group id="left_phone" x="160" y="640" rotation="13" opacity="1">
+        <Rect id="phone_body" x="-28" y="-65" width="98" height="164" radius="13"
+              color="#111111" />
+        <Rect id="phone_screen" x="-19" y="-55" width="80" height="144" radius="9"
+              color="#2d7deb" />
+        <Text id="phone_label_01" x="-3" y="-20" value="BLOCK" size="14" color="#ffd85c" />
+        <Text id="phone_label_02" x="-2" y="2" value="BLAST" size="14" color="#ff956e" />
+        <Rect x="-6" y="28" width="38" height="24" radius="4" color="#ffce47" />
+        <Rect x="-8" y="60" width="52" height="14" radius="6" color="#85e38b" />
+      </Group>
+    </Group>
+
+    <!-- Middle seated stickman behind desk. -->
+    <Group id="stickman_center_seated" x="0" y="0" opacity="1">
+      <Circle id="center_head" x="328" y="478" radius="74"
+              color="#d6d6d6"
+              stroke="#050505"
+              strokeWidth="6" />
+      <Path id="center_hair_loop" brush="thin_outline"
+            d="M 313 405
+               C 328 376, 369 381, 371 413" />
+      <Path id="center_brows" brush="thin_outline"
+            d="M 300 454 L 319 463
+               M 361 462 L 379 451" />
+      <Circle id="center_eye_left" x="315" y="481" radius="8" color="#050505" />
+      <Circle id="center_eye_right" x="365" y="479" radius="8" color="#050505" />
+      <Path id="center_pursed_mouth" brush="thin_outline"
+            d="M 341 514
+               C 356 510, 356 526, 343 527
+               C 357 532, 354 550, 339 547" />
+      <Path id="center_body" brush="stick_outline"
+            d="M 328 552 L 328 730" />
+      <Path id="center_left_arm" brush="stick_outline"
+            d="M 325 598 C 294 624, 274 666, 260 704" />
+      <Path id="center_right_arm" brush="stick_outline"
+            d="M 335 600 C 374 622, 398 662, 421 708" />
+      <Path id="center_left_hand" brush="thin_outline"
+            d="M 257 704 L 272 696
+               M 257 704 L 275 707
+               M 257 704 L 271 717" />
+      <Path id="center_right_hand" brush="thin_outline"
+            d="M 421 708 L 406 700
+               M 421 708 L 402 711
+               M 421 708 L 408 721" />
+    </Group>
+
+    <!-- Right standing stickman with backwards cap. -->
+    <Group id="stickman_right_standing" x="0" y="0" opacity="1">
+      <Circle id="right_head" x="602" y="444" radius="88"
+              color="#cfcfcf"
+              stroke="#050505"
+              strokeWidth="6" />
+      <Path id="right_cap_crown"
+            d="M 536 392
+               C 560 344, 637 339, 685 382
+               C 660 366, 604 357, 548 379 Z"
+            fill="#b9b9b9"
+            stroke="#050505"
+            strokeWidth="5"
+            lineJoin="round" />
+      <Path id="right_cap_brim"
+            d="M 671 412
+               C 724 426, 730 480, 671 500
+               C 682 465, 682 436, 671 412 Z"
+            fill="#9f9f9f"
+            stroke="#050505"
+            strokeWidth="5"
+            lineJoin="round" />
+      <Path id="right_cap_mark" brush="thin_outline"
+            d="M 559 370
+               C 582 365, 610 367, 628 374
+               L 624 387
+               C 604 381, 578 379, 554 382 Z" />
+      <Circle id="right_eye_left" x="563" y="432" radius="13" color="#050505" />
+      <Circle id="right_eye_right" x="613" y="430" radius="13" color="#050505" />
+      <Path id="right_smile" brush="thin_outline"
+            d="M 579 474 C 591 493, 615 492, 628 472" />
+      <Path id="right_neck_body" brush="stick_outline"
+            d="M 601 532 L 601 684" />
+      <Path id="right_shirt"
+            d="M 568 650 L 631 650 L 640 736 L 558 736 Z"
+            fill="#b4b4b4"
+            stroke="#050505"
+            strokeWidth="5"
+            lineJoin="round" />
+      <Path id="right_left_arm" brush="stick_outline"
+            d="M 584 562 L 542 716" />
+      <Path id="right_right_arm" brush="stick_outline"
+            d="M 621 560 L 681 730" />
+      <Path id="right_left_hand" brush="thin_outline"
+            d="M 542 716
+               C 535 728, 535 745, 544 755
+               M 548 721 L 559 752
+               M 553 719 L 570 748" />
+      <Path id="right_right_hand" brush="thin_outline"
+            d="M 681 730
+               C 690 742, 688 758, 676 767
+               M 675 734 L 665 764
+               M 669 733 L 654 760" />
+      <Path id="right_legs" brush="stick_outline"
+            d="M 589 735 L 545 890 L 502 902
+               M 617 735 L 646 886 L 704 872" />
+    </Group>
+
+    <!-- Bottom caption -->
+    <Text id="subtitle_shadow" x="301" y="823" value="Yeah." size="78" color="#000000" />
+    <Text id="subtitle_fill" x="309" y="815" value="Yeah." size="78" color="#ffffff" />
+  </Scene>
+
+  <Present from="stickman_office_three_scene" />
+</Graph>

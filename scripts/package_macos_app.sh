@@ -379,9 +379,9 @@ write_info_plist() {
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>${APP_VERSION}</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
@@ -389,6 +389,24 @@ write_info_plist() {
 </dict>
 </plist>
 PLIST
+}
+
+resolve_cargo_package_version() {
+  local cargo_toml="$1"
+  awk '
+    BEGIN { in_package = 0 }
+    /^\[package\][[:space:]]*$/ { in_package = 1; next }
+    /^\[[^]]+\][[:space:]]*$/ { if (in_package) exit; in_package = 0 }
+    in_package && $0 ~ /^[[:space:]]*version[[:space:]]*=/ {
+      line = $0
+      gsub(/^[^"]*"/, "", line)
+      gsub(/".*$/, "", line)
+      if (length(line) > 0) {
+        print line
+        exit
+      }
+    }
+  ' "${cargo_toml}"
 }
 
 resolve_ffmpeg_runtime_root() {
@@ -408,6 +426,11 @@ resolve_ffmpeg_runtime_root() {
   done
   return 1
 }
+
+CARGO_TOML="${REPO_ROOT}/Cargo.toml"
+APP_VERSION="$(resolve_cargo_package_version "${CARGO_TOML}")"
+[[ -n "${APP_VERSION}" ]] || die "Failed to read [package].version from ${CARGO_TOML}"
+log "Using app version from Cargo.toml: ${APP_VERSION}"
 
 if [[ -z "${GSTREAMER_PREFIX}" ]]; then
   GSTREAMER_PREFIX="$(brew --prefix gstreamer)"

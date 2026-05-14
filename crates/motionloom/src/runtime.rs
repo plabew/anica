@@ -563,25 +563,298 @@ fn normalize_param_expr(value: &str) -> String {
     value.trim().trim_matches('"').trim().to_string()
 }
 
+pub fn eval_time_expr(value: &str, time_norm: f32, time_sec: f32) -> Result<f32, String> {
+    let expr = normalize_param_expr(value);
+    eval_expr(&expr, time_norm, time_sec)
+}
+
 fn validate_expr(expr: &str) -> Result<(), String> {
-    if is_curve_expr(expr) {
-        parse_curve_points(expr).map(|_| ())?;
-        return Ok(());
-    }
-    let replaced = replace_time_vars(expr, 0.5, 1.0);
-    exmex::FlatEx::<f64>::parse(&replaced)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    eval_expr(expr, 0.5, 1.0).map(|_| ())
 }
 
 fn eval_expr(expr: &str, time_norm: f32, time_sec: f32) -> Result<f32, String> {
     if is_curve_expr(expr) {
         return eval_curve_points(expr, time_sec);
     }
-    let replaced = replace_time_vars(expr, time_norm, time_sec);
+    let folded = fold_custom_calls(expr, time_norm, time_sec)?;
+    let replaced = replace_time_vars(&folded, time_norm, time_sec);
     let parsed = exmex::FlatEx::<f64>::parse(&replaced).map_err(|e| e.to_string())?;
     let val = parsed.eval(&[]).map_err(|e| e.to_string())?;
     Ok(val as f32)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CustomCallKind {
+    Min,
+    Max,
+    Clamp,
+    Smoothstep,
+}
+
+impl CustomCallKind {
+    const fn name(self) -> &'static str {
+        match self {
+            CustomCallKind::Min => "min",
+            CustomCallKind::Max => "max",
+            CustomCallKind::Clamp => "clamp",
+            CustomCallKind::Smoothstep => "smoothstep",
+        }
+    }
+}
+
+fn fold_custom_calls(expr: &str, time_norm: f32, time_sec: f32) -> Result<String, String> {
+    let mut folded = expr.to_string();
+    let mut guard = 0usize;
+    while let Some((start_ix, end_ix, kind)) = find_next_custom_call(&folded)? {
+        guard += 1;
+        if guard > 256 {
+            return Err("expression is too complex (too many nested function calls).".to_string());
+        }
+        let call = folded[start_ix..end_ix].to_string();
+        let value = eval_custom_call(&call, kind, time_norm, time_sec)?;
+        folded.replace_range(start_ix..end_ix, &format!("({value:.9})"));
+    }
+    Ok(folded)
+}
+
+fn eval_custom_call(
+    call: &str,
+    kind: CustomCallKind,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<f32, String> {
+    match kind {
+        CustomCallKind::Clamp => {
+            let Some((value_expr, min_expr, max_expr)) = parse_clamp_call(call)? else {
+                return Err("invalid clamp() call.".to_string());
+            };
+            let value = eval_expr(value_expr, time_norm, time_sec)?;
+            let min_v = eval_expr(min_expr, time_norm, time_sec)?;
+            let max_v = eval_expr(max_expr, time_norm, time_sec)?;
+            let lo = min_v.min(max_v);
+            let hi = min_v.max(max_v);
+            Ok(value.clamp(lo, hi))
+        }
+        CustomCallKind::Min | CustomCallKind::Max => {
+            let Some((parsed_kind, left, right)) = parse_min_max_call(call)? else {
+                return Err(format!("invalid {}() call.", kind.name()));
+            };
+            let a = eval_expr(left, time_norm, time_sec)?;
+            let b = eval_expr(right, time_norm, time_sec)?;
+            let is_min = parsed_kind == "min";
+            Ok(if is_min { a.min(b) } else { a.max(b) })
+        }
+        CustomCallKind::Smoothstep => {
+            let Some((edge0_expr, edge1_expr, x_expr)) = parse_smoothstep_call(call)? else {
+                return Err("invalid smoothstep() call.".to_string());
+            };
+            let edge0 = eval_expr(edge0_expr, time_norm, time_sec)?;
+            let edge1 = eval_expr(edge1_expr, time_norm, time_sec)?;
+            let x = eval_expr(x_expr, time_norm, time_sec)?;
+            let span = edge1 - edge0;
+            if span.abs() <= f32::EPSILON {
+                return Ok(if x < edge0 { 0.0 } else { 1.0 });
+            }
+            let t = ((x - edge0) / span).clamp(0.0, 1.0);
+            Ok(t * t * (3.0 - 2.0 * t))
+        }
+    }
+}
+
+fn find_next_custom_call(expr: &str) -> Result<Option<(usize, usize, CustomCallKind)>, String> {
+    let kinds = [
+        CustomCallKind::Clamp,
+        CustomCallKind::Smoothstep,
+        CustomCallKind::Min,
+        CustomCallKind::Max,
+    ];
+    for (ix, ch) in expr.char_indices() {
+        if !matches!(ch, 'c' | 'm' | 's') {
+            continue;
+        }
+        let prev_is_ident = expr[..ix]
+            .chars()
+            .next_back()
+            .is_some_and(is_identifier_char);
+        if prev_is_ident {
+            continue;
+        }
+        for kind in kinds {
+            let name = kind.name();
+            let call_prefix = format!("{name}(");
+            if !expr[ix..].starts_with(&call_prefix) {
+                continue;
+            }
+            let open_ix = ix + name.len();
+            let end_ix = matching_close_paren_end(expr, open_ix)?;
+            return Ok(Some((ix, end_ix, kind)));
+        }
+    }
+    Ok(None)
+}
+
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn matching_close_paren_end(expr: &str, open_ix: usize) -> Result<usize, String> {
+    let Some(open_ch) = expr[open_ix..].chars().next() else {
+        return Err("invalid expression: missing opening parenthesis.".to_string());
+    };
+    if open_ch != '(' {
+        return Err("invalid expression: expected opening parenthesis.".to_string());
+    }
+    let mut paren_depth = 0_i32;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escape = false;
+    for (ix, ch) in expr.char_indices().skip_while(|(ix, _)| *ix < open_ix) {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' {
+            escape = true;
+            continue;
+        }
+        if in_single_quote {
+            if ch == '\'' {
+                in_single_quote = false;
+            }
+            continue;
+        }
+        if in_double_quote {
+            if ch == '"' {
+                in_double_quote = false;
+            }
+            continue;
+        }
+        match ch {
+            '\'' => in_single_quote = true,
+            '"' => in_double_quote = true,
+            '(' => paren_depth += 1,
+            ')' => {
+                paren_depth -= 1;
+                if paren_depth == 0 {
+                    return Ok(ix + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    Err("invalid expression: missing closing parenthesis.".to_string())
+}
+
+fn parse_min_max_call(expr: &str) -> Result<Option<(&'static str, &str, &str)>, String> {
+    let (kind, inner) = if let Some(inner) = outer_call_inner(expr, "min")? {
+        ("min", inner)
+    } else if let Some(inner) = outer_call_inner(expr, "max")? {
+        ("max", inner)
+    } else {
+        return Ok(None);
+    };
+    let Some((left, right)) = split_binary_args(inner) else {
+        return Err(format!("{kind}() requires exactly two arguments."));
+    };
+    Ok(Some((kind, left.trim(), right.trim())))
+}
+
+fn parse_clamp_call(expr: &str) -> Result<Option<(&str, &str, &str)>, String> {
+    let Some(inner) = outer_call_inner(expr, "clamp")? else {
+        return Ok(None);
+    };
+    let Some((value_expr, min_expr, max_expr)) = split_ternary_args(inner) else {
+        return Err("clamp() requires exactly three arguments.".to_string());
+    };
+    Ok(Some((value_expr.trim(), min_expr.trim(), max_expr.trim())))
+}
+
+fn parse_smoothstep_call(expr: &str) -> Result<Option<(&str, &str, &str)>, String> {
+    let Some(inner) = outer_call_inner(expr, "smoothstep")? else {
+        return Ok(None);
+    };
+    let Some((edge0_expr, edge1_expr, x_expr)) = split_ternary_args(inner) else {
+        return Err("smoothstep() requires exactly three arguments.".to_string());
+    };
+    Ok(Some((edge0_expr.trim(), edge1_expr.trim(), x_expr.trim())))
+}
+
+fn outer_call_inner<'a>(expr: &'a str, name: &str) -> Result<Option<&'a str>, String> {
+    let trimmed = expr.trim();
+    let Some(rest) = trimmed.strip_prefix(name) else {
+        return Ok(None);
+    };
+    let Some(_rest_after_open) = rest.strip_prefix('(') else {
+        return Ok(None);
+    };
+    let open_ix = name.len();
+    let end_ix = matching_close_paren_end(trimmed, open_ix)?;
+    if end_ix != trimmed.len() {
+        return Ok(None);
+    }
+    Ok(Some(&trimmed[open_ix + 1..trimmed.len() - 1]))
+}
+
+fn split_binary_args(input: &str) -> Option<(&str, &str)> {
+    let args = split_top_level_args(input);
+    if args.len() == 2 {
+        Some((args[0], args[1]))
+    } else {
+        None
+    }
+}
+
+fn split_ternary_args(input: &str) -> Option<(&str, &str, &str)> {
+    let args = split_top_level_args(input);
+    if args.len() == 3 {
+        Some((args[0], args[1], args[2]))
+    } else {
+        None
+    }
+}
+
+fn split_top_level_args(input: &str) -> Vec<&str> {
+    let mut paren_depth = 0_i32;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escape = false;
+    let mut start_ix = 0usize;
+    let mut out = Vec::new();
+    for (ix, ch) in input.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' {
+            escape = true;
+            continue;
+        }
+        if in_single_quote {
+            if ch == '\'' {
+                in_single_quote = false;
+            }
+            continue;
+        }
+        if in_double_quote {
+            if ch == '"' {
+                in_double_quote = false;
+            }
+            continue;
+        }
+        match ch {
+            '\'' => in_single_quote = true,
+            '"' => in_double_quote = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            ',' if paren_depth == 0 => {
+                out.push(&input[start_ix..ix]);
+                start_ix = ix + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&input[start_ix..]);
+    out
 }
 
 fn replace_time_vars(expr: &str, time_norm: f32, time_sec: f32) -> String {
@@ -788,7 +1061,7 @@ fn apply_curve_ease(t: f32, easing: CurveEase) -> f32 {
 mod tests {
     use crate::dsl::parse_graph_script;
 
-    use super::{BlurSharpenMode, compile_runtime_program};
+    use super::{BlurSharpenMode, compile_runtime_program, eval_time_expr};
 
     #[test]
     fn runtime_eval_invert_mix_changes_with_time() {
@@ -811,6 +1084,50 @@ mod tests {
         let at_15 = runtime.evaluate_frame(15);
         assert!(at_0.invert_mix >= 0.0 && at_0.invert_mix <= 1.0);
         assert!(at_15.invert_mix >= 0.0 && at_15.invert_mix <= 1.0);
+    }
+
+    #[test]
+    fn runtime_eval_time_expr_supports_min_for_fade_in() {
+        let at_half =
+            eval_time_expr("min($time.sec / 1.0, 1.0)", 0.5, 0.5).expect("fade expression");
+        let at_done =
+            eval_time_expr("min($time.sec / 1.0, 1.0)", 1.0, 2.0).expect("fade expression");
+        assert!((at_half - 0.5).abs() < 0.001);
+        assert!((at_done - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn runtime_eval_time_expr_supports_clamp_with_arithmetic() {
+        let expr = "clamp(($time.sec-0.3)/0.8,0,1) * clamp((8-$time.sec)/1.2,0,1)";
+        let at_start = eval_time_expr(expr, 0.0, 0.0).expect("clamp expression");
+        let at_mid = eval_time_expr(expr, 0.4, 3.5).expect("clamp expression");
+        let at_tail = eval_time_expr(expr, 1.0, 8.0).expect("clamp expression");
+        assert!(
+            at_start.abs() < 0.0001,
+            "unexpected start value: {at_start}"
+        );
+        assert!(at_mid > 0.5, "unexpected mid value: {at_mid}");
+        assert!(at_tail.abs() < 0.0001, "unexpected tail value: {at_tail}");
+    }
+
+    #[test]
+    fn runtime_eval_time_expr_supports_smoothstep() {
+        let expr = "smoothstep(0.10,0.72,$time.norm)";
+        let at_start = eval_time_expr(expr, 0.0, 0.0).expect("smoothstep expression");
+        let at_mid = eval_time_expr(expr, 0.41, 0.0).expect("smoothstep expression");
+        let at_end = eval_time_expr(expr, 0.9, 0.0).expect("smoothstep expression");
+        assert!(
+            at_start.abs() < 0.0001,
+            "unexpected start value: {at_start}"
+        );
+        assert!(
+            (at_mid - 0.5).abs() < 0.001,
+            "unexpected mid value: {at_mid}"
+        );
+        assert!(
+            (at_end - 1.0).abs() < 0.001,
+            "unexpected end value: {at_end}"
+        );
     }
 
     #[test]

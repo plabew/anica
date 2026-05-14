@@ -1,0 +1,151 @@
+<Graph scope="scene" fps={60} duration="1s" size={[520,260]}>
+  <Scene id="high_detail_anime_eye_liner">
+    <Solid color="#f6efe9" />
+    <Defs>
+      <LinearGradient id="skin_soft" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#fff8f1, 0.55:#f7eee7, 1:#eadbd4" />
+      <LinearGradient id="sclera_grad" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#d7e5f2, 0.25:#f7fbff, 0.72:#ffffff, 1:#eef7ff" />
+      <RadialGradient id="iris_base" cx="0.48" cy="0.34" r="0.78"
+                      stops="0:#16385f, 0.24:#276aa0, 0.52:#50c8f0, 0.76:#bdf6ff, 1:#f4feff" />
+      <RadialGradient id="iris_core" cx="0.50" cy="0.46" r="0.52"
+                      stops="0:#061022, 0.30:#13345b, 0.72:#2f9fd0, 1:#ffffff00" />
+      <LinearGradient id="iris_lower_glow" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#ffffff00, 0.45:#8ff5ff55, 0.78:#f8ffffcc, 1:#ffffffee" />
+      <LinearGradient id="upper_lid_shadow" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#24152bb8, 0.45:#4d587688, 1:#ffffff00" />
+      <LinearGradient id="lash_grad" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#2a1a31, 0.55:#1b1024, 1:#120915" />
+      <LinearGradient id="cheek_blush" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#ff9cb000, 0.42:#ff93aa66, 1:#ff9cb000" />
+    </Defs>
+
+    <Rect x="0" y="0" width="520" height="260" color="url(#skin_soft)" />
+
+    <Character id="eye_detail" x="260" y="132" rotation="-9" opacity="1">
+      <Path id="eye_white"
+            d="M -170 -18 C -134 -79 -54 -104 36 -91 C 107 -80 158 -42 176 -3 C 139 43 65 70 -22 63 C -100 57 -151 25 -170 -18 Z"
+            fill="url(#sclera_grad)"
+            stroke="#4c3145"
+            strokeWidth="3" />
+
+      <Circle id="iris_outer_soft" x="12" y="-13" radius="57"
+              color="#172235" />
+      <Circle id="iris" x="12" y="-13" radius="52"
+              fill="url(#iris_base)"
+              stroke="#31233b"
+              strokeWidth="4" />
+      <Circle id="iris_inner" x="12" y="-10" radius="38"
+              fill="url(#iris_core)"
+              blend="multiply"
+              opacity="0.58" />
+      <Circle id="pupil" x="10" y="-8" radius="17"
+              color="#050a16" />
+      <Circle id="pupil_soft_ring" x="10" y="-8" radius="25"
+              color="#0a1a3088"
+              blend="multiply" />
+
+      <Path id="iris_lower_glass"
+            d="M -29 10 C -16 43 24 51 55 21 C 48 47 28 62 1 62 C -23 61 -42 43 -49 17 Z"
+            fill="url(#iris_lower_glow)"
+            stroke="none"
+            blend="screen"
+            opacity="0.85" />
+
+      <Path d="M 12 -12 L 12 -60" stroke="#eaffff73" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.70" />
+      <Path d="M 12 -12 L 42 -50" stroke="#dffbff5c" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.62" />
+      <Path d="M 12 -12 L 61 -24" stroke="#ffffff4f" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.55" />
+      <Path d="M 12 -12 L 54 18" stroke="#d4fbff66" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.62" />
+      <Path d="M 12 -12 L 27 41" stroke="#f6ffff80" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.70" />
+      <Path d="M 12 -12 L -7 40" stroke="#cbf8ff66" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.60" />
+      <Path d="M 12 -12 L -31 21" stroke="#e7ffff55" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.55" />
+      <Path d="M 12 -12 L -36 -18" stroke="#ffffff42" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.50" />
+      <Path d="M 12 -12 L -21 -48" stroke="#d9f8ff5a" strokeWidth="2" lineCap="round" fill="none" blend="screen" opacity="0.62" />
+
+      <Path id="upper_shadow"
+            d="M -160 -21 C -113 -69 -39 -85 41 -75 C 103 -68 151 -34 169 -4 C 118 -22 61 -32 5 -32 C -55 -32 -111 -25 -160 -21 Z"
+            fill="url(#upper_lid_shadow)"
+            stroke="none"
+            blend="multiply"
+            opacity="0.92" />
+
+      <Path id="main_highlight_a"
+            d="M -21 -62 C -4 -76 22 -72 35 -50 C 25 -36 2 -32 -16 -39 C -25 -46 -28 -54 -21 -62 Z"
+            fill="#ffffff"
+            stroke="none"
+            blend="screen"
+            opacity="0.96" />
+      <Path id="main_highlight_b"
+            d="M 35 -58 C 48 -65 61 -56 60 -42 C 51 -34 38 -37 33 -47 C 31 -52 32 -55 35 -58 Z"
+            fill="#f6ffffe8"
+            stroke="none"
+            blend="screen"
+            opacity="0.90" />
+      <Circle x="-29" y="-3" radius="5" color="#d9fbffcc" blend="screen" />
+      <Circle x="31" y="-21" radius="5" color="#ffffffd9" blend="screen" />
+      <Circle x="47" y="13" radius="4" color="#e8ffffaa" blend="screen" />
+      <Circle x="-8" y="35" radius="4" color="#c8fbff99" blend="screen" />
+
+      <Path id="upper_lash_main"
+            d="M -186 -20 C -132 -84 -45 -109 49 -99 C 125 -91 178 -48 199 -7"
+            stroke="#1b1024"
+            strokeWidth="9"
+            lineCap="round"
+            fill="none" />
+      <Path id="upper_lash_inner_edge"
+            d="M -156 -14 C -105 -42 -42 -54 31 -51 C 91 -49 142 -31 176 -7"
+            stroke="#6f5870"
+            strokeWidth="2"
+            lineCap="round"
+            fill="none"
+            opacity="0.72" />
+      <Path id="outer_l_shape_liner"
+            d="M 157 -17 C 190 -4 213 21 224 53 C 216 39 201 25 178 12 C 170 8 164 3 157 -17 Z"
+            fill="#1a0d21"
+            stroke="none" />
+      <Path id="outer_l_shape_tip"
+            d="M 174 8 C 203 21 223 42 232 68"
+            stroke="#1a0d21"
+            strokeWidth="8"
+            lineCap="round"
+            fill="none" />
+      <Path id="inner_liner_hook"
+            d="M -170 -18 C -188 -4 -197 13 -199 32"
+            stroke="#4b2b3f"
+            strokeWidth="5"
+            lineCap="round"
+            fill="none"
+            opacity="0.82" />
+
+
+      <Path id="lower_lid_left"
+            d="M -145 40 C -101 66 -41 78 20 72"
+            stroke="#765f72"
+            strokeWidth="3"
+            lineCap="round"
+            fill="none"
+            opacity="0.42" />
+      <Path id="lower_lid_right"
+            d="M 38 69 C 72 64 103 51 130 34"
+            stroke="#5b4058"
+            strokeWidth="3"
+            lineCap="round"
+            fill="none"
+            opacity="0.35" />
+      <Path id="lower_soft_shadow"
+            d="M -96 70 C -38 92 45 91 103 61"
+            stroke="#d7a9b1"
+            strokeWidth="6"
+            lineCap="round"
+            fill="none"
+            opacity="0.40" />
+      <Path d="M -76 72 L -48 86" stroke="#8d7d8d99" strokeWidth="3" lineCap="round" fill="none" opacity="0.32" />
+      <Path d="M 0 82 L 25 95" stroke="#8d7d8d88" strokeWidth="3" lineCap="round" fill="none" opacity="0.24" />
+      <Path d="M 63 66 L 91 76" stroke="#8d7d8d88" strokeWidth="3" lineCap="round" fill="none" opacity="0.22" />
+    </Character>
+
+    <Path d="M 160 206 C 190 195 224 199 250 211" stroke="#ff93aa66" strokeWidth="10" lineCap="round" fill="none" opacity="0.46" />
+    <Path d="M 286 204 C 318 192 350 198 375 210" stroke="#ff93aa66" strokeWidth="9" lineCap="round" fill="none" opacity="0.34" />
+  </Scene>
+  <Present from="high_detail_anime_eye_liner" />
+</Graph>

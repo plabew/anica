@@ -26,6 +26,17 @@ pub const DEFAULT_GRAPH_SCRIPT: &str = r#"<Graph scope="clip" fps={60} size={[19
   <Present from="out" />
 </Graph>"#;
 
+pub const DEFAULT_SCENE_SCRIPT: &str = r##"<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
+  <Solid color="#000000" />
+  <Text value="hello world"
+        x="center"
+        y="center"
+        fontSize="96"
+        color="#ffffff"
+        opacity="min($time.sec / 1.0, 1.0)" />
+  <Present from="scene" />
+</Graph>"##;
+
 fn begin_layer_graph(add_time_parameter: bool) -> String {
     let mut script = String::new();
     if add_time_parameter {

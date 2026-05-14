@@ -49,6 +49,7 @@ assets/fonts/*
 # Temporary files
 *.tmp
 *.bak
+examples/motionloom/temp_save/
 
 # Local diagnostic binaries (not part of project source)
 host_warn_cfg

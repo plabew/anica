@@ -1,0 +1,195 @@
+<Graph scope="scene" fps={60} duration="1s" size={[746,336]}>
+  <Scene id="eyes2_reference_rebuild_level4">
+    <Solid color="#efe3d2" />
+
+    <Defs>
+      <LinearGradient id="sclera_warm" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#ffffff, 0.58:#f8f8f5, 1:#ecece8" />
+      <LinearGradient id="iris_brown_gold" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#4a3726, 0.42:#5f4a31, 0.43:#d1a85f, 1:#e2c06e" />
+      <RadialGradient id="iris_soft_shadow" cx="0.42" cy="0.18" r="0.64"
+                      stops="0:#a67b6044, 0.45:#3b281a33, 1:#00000000" />
+      <LinearGradient id="upper_lash_black" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#110b0a, 0.62:#000000, 1:#25110e" />
+      <LinearGradient id="outer_corner_red" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#6d2c2a, 0.55:#8d3e39, 1:#2b1110" />
+
+      <Brush id="study_line"
+             stroke="#17110f"
+             strokeWidth="2.2"
+             lineCap="round"
+             lineJoin="round"
+             fill="none" />
+      <Brush id="clean_line"
+             stroke="#16100f"
+             strokeWidth="2.8"
+             lineCap="round"
+             lineJoin="round"
+             fill="none" />
+      <Brush id="fine_line"
+             stroke="#17110f"
+             strokeWidth="1.35"
+             opacity="0.88"
+             lineCap="round"
+             lineJoin="round"
+             fill="none" />
+    </Defs>
+
+    <Rect x="0" y="0" width="746" height="336" color="#efe3d2" />
+
+    <!-- Left: construction-line version from the reference. -->
+    <Part id="eye_study_left" label="Eye construction sketch" role="eye.study" brush="study_line" x="0" y="0">
+      <Path id="study_upper_lid"
+            d="M 16 213
+               C 52 122 116 67 206 43
+               C 270 29 329 36 393 61
+               C 423 73 444 79 472 80" />
+      <Path id="study_upper_lid_outer"
+            d="M 4 236
+               C 48 162 100 112 168 82
+               C 244 48 322 51 392 82
+               C 419 94 444 102 470 102" />
+      <Path id="study_eye_shape"
+            d="M 72 266
+               C 45 176 70 91 149 67
+               C 222 45 303 77 324 151
+               C 351 246 285 300 190 300
+               C 134 300 92 289 72 266 Z" />
+      <Path id="study_lower_lid"
+            d="M 202 299
+               C 248 303 292 292 329 268
+               M 298 285
+               C 320 279 338 273 355 263" />
+      <Path id="study_outer_corner"
+            d="M 386 79
+               C 422 78 453 86 483 100
+               L 426 115
+               L 404 191
+               C 392 161 381 132 370 103" />
+      <Path id="study_brow"
+            d="M 52 49
+               C 128 24 258 20 357 46
+               C 395 55 429 59 468 56" />
+    </Part>
+
+    <!-- Right: colored eye version. -->
+    <Part id="eye_final_right" label="Colored anime eye" role="eye.final" x="-35" y="0">
+      <Path id="eye_sclera_right"
+            d="M 479 179
+               C 515 111 591 84 672 95
+               C 715 102 745 124 760 159
+               C 734 236 659 272 566 260
+               C 512 253 482 224 479 179 Z"
+            fill="url(#sclera_warm)"
+            stroke="none" />
+
+      <Path id="outer_corner_shadow_right"
+            d="M 672 94
+               C 711 96 741 113 766 139
+               C 741 143 718 149 700 163
+               C 691 135 682 112 672 94 Z"
+            fill="url(#outer_corner_red)"
+            stroke="none"
+            opacity="0.95" />
+
+      <Path id="inner_sclera_cut_right"
+            d="M 479 179
+               C 497 142 523 116 558 102
+               L 526 243
+               C 498 231 481 210 479 179 Z"
+            fill="#f7f7f4"
+            stroke="none"
+            opacity="0.86" />
+
+      <Part id="iris_right" label="Brown-gold iris" role="eye.iris">
+        <Path id="iris_outer_right"
+              d="M 561 91
+                 C 608 67 663 92 681 154
+                 C 704 234 666 302 600 301
+                 C 535 300 506 235 516 161
+                 C 521 124 538 103 561 91 Z"
+              fill="url(#iris_brown_gold)"
+              stroke="#211915"
+              strokeWidth="3.2"
+              lineCap="round"
+              lineJoin="round" />
+        <Path id="iris_top_shadow_right"
+              d="M 559 92
+                 C 602 72 653 91 674 145
+                 C 630 135 575 135 522 151
+                 C 528 123 541 103 559 92 Z"
+              fill="#32281fcc"
+              stroke="none"
+              opacity="0.86" />
+        <Circle id="iris_soft_brown_light" x="570" y="120" radius="38"
+                fill="url(#iris_soft_shadow)" />
+        <Path id="pupil_right"
+              d="M 617 145
+                 C 637 145 648 161 647 190
+                 C 646 218 635 232 617 232
+                 C 599 232 588 216 589 188
+                 C 590 160 600 145 617 145 Z"
+              fill="#000000"
+              stroke="none" />
+        <Path id="lower_glow_right"
+              d="M 553 256
+                 C 575 226 642 224 669 254
+                 C 651 289 603 305 561 281
+                 C 551 275 548 266 553 256 Z"
+              fill="#fff8b8"
+              stroke="none"
+              opacity="0.82" />
+      </Part>
+
+      <Path id="upper_lash_right"
+            d="M 479 167
+               C 518 88 600 56 692 66
+               C 724 70 751 81 777 98
+               C 751 108 708 112 668 105
+               C 609 95 547 111 506 154
+               C 492 168 484 175 479 167 Z"
+            fill="url(#upper_lash_black)"
+            stroke="none" />
+
+      <Path id="upper_lid_high_edge_right"
+            d="M 483 167
+               C 528 83 611 57 697 68
+               C 728 72 754 84 779 99"
+            stroke="#0b0808"
+            strokeWidth="3.4"
+            lineCap="round"
+            lineJoin="round"
+            fill="none" />
+
+      <Path id="lower_lid_right" brush="clean_line"
+            d="M 516 252
+               C 555 282 634 287 686 255" />
+      <Path id="lower_corner_right" brush="fine_line"
+            d="M 515 249 C 505 245 500 238 500 230
+               M 675 260 C 691 254 704 244 713 231" />
+      <Path id="tiny_lashes_right" brush="fine_line"
+            d="M 552 269 L 546 277
+               M 574 276 L 574 286" />
+
+      <Path id="highlight_main_right"
+            d="M 678 117
+               C 700 108 728 115 737 132
+               C 732 148 705 153 681 145
+               C 662 138 661 124 678 117 Z"
+            fill="#ffffff"
+            stroke="none"
+            opacity="0.96" />
+      <Circle id="highlight_small_right" x="698" y="140" radius="7"
+              color="#ffffff" opacity="0.82" />
+
+      <Path id="upper_reflect_right"
+            d="M 552 103
+               C 570 84 606 78 630 90
+               C 602 95 577 105 555 124 Z"
+            fill="#ffffff33"
+            stroke="none" />
+    </Part>
+  </Scene>
+
+  <Present from="eyes2_reference_rebuild_level4" />
+</Graph>

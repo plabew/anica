@@ -120,6 +120,7 @@ pub enum AppPage {
     AiSrt,
     AiAgents,
     MotionLoom,
+    VectorLab,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1986,6 +1987,12 @@ pub struct GlobalState {
     pub ui_notice: Option<String>,
     pub semantic_mark_start: Option<Duration>,
     pub ai_chat_messages: Vec<AiChatMessage>,
+    // Shared MotionLoom VFX graph script for ACP <-> VFX page editing.
+    pub motionloom_scene_script: String,
+    pub motionloom_scene_script_revision: u64,
+    pub motionloom_scene_apply_revision: u64,
+    pub motionloom_scene_render_mode: Option<String>,
+    pub motionloom_scene_render_revision: u64,
     /// Silence preview modal: shown when ACP inspect-intent returns silence candidates.
     pub silence_preview_modal: Option<SilencePreviewModalState>,
     pub pending_trim_to_fit: Option<PendingTrimToFit>,
@@ -2082,6 +2089,11 @@ impl Default for GlobalState {
             ui_notice: None,
             semantic_mark_start: None,
             ai_chat_messages: Vec::new(),
+            motionloom_scene_script: String::new(),
+            motionloom_scene_script_revision: 0,
+            motionloom_scene_apply_revision: 0,
+            motionloom_scene_render_mode: None,
+            motionloom_scene_render_revision: 0,
             silence_preview_modal: None,
             pending_trim_to_fit: None,
             proxy_entries: HashMap::new(),
@@ -2096,6 +2108,63 @@ impl Default for GlobalState {
 }
 
 impl GlobalState {
+    pub fn motionloom_scene_script(&self) -> &str {
+        &self.motionloom_scene_script
+    }
+
+    pub fn motionloom_scene_script_revision(&self) -> u64 {
+        self.motionloom_scene_script_revision
+    }
+
+    pub fn motionloom_scene_apply_revision(&self) -> u64 {
+        self.motionloom_scene_apply_revision
+    }
+
+    pub fn motionloom_scene_render_revision(&self) -> u64 {
+        self.motionloom_scene_render_revision
+    }
+
+    pub fn motionloom_scene_render_mode(&self) -> Option<&str> {
+        self.motionloom_scene_render_mode.as_deref()
+    }
+
+    pub fn set_motionloom_scene_script(&mut self, script: String, apply_now: bool) -> (bool, bool) {
+        let mut updated = false;
+        if self.motionloom_scene_script != script {
+            self.motionloom_scene_script = script;
+            self.motionloom_scene_script_revision =
+                self.motionloom_scene_script_revision.saturating_add(1);
+            updated = true;
+        }
+
+        let mut apply_requested = false;
+        if apply_now {
+            self.motionloom_scene_apply_revision =
+                self.motionloom_scene_apply_revision.saturating_add(1);
+            apply_requested = true;
+        }
+
+        (updated, apply_requested)
+    }
+
+    pub fn request_motionloom_scene_render(&mut self, mode: &str) -> Result<u64, String> {
+        let normalized = mode.trim().to_ascii_lowercase();
+        let canonical = match normalized.as_str() {
+            "gpu" | "gpu_render" | "gpu_h264" => "gpu",
+            "gpu_prores" | "gpu-prores" | "prores_gpu" => "gpu_prores",
+            "compatibility_cpu" | "compatibility-cpu" | "cpu" | "cpu_render" => "compatibility_cpu",
+            other => {
+                return Err(format!(
+                    "unsupported motionloom render mode `{other}`. Use `gpu`, `gpu_prores`, or `compatibility_cpu`."
+                ));
+            }
+        };
+        self.motionloom_scene_render_mode = Some(canonical.to_string());
+        self.motionloom_scene_render_revision =
+            self.motionloom_scene_render_revision.saturating_add(1);
+        Ok(self.motionloom_scene_render_revision)
+    }
+
     // Ensure the first audio lane exists so V1-linked audio can always be inserted on A1.
     fn ensure_primary_audio_track(&mut self) {
         // Reuse an existing A1 if present, otherwise insert a dedicated A1 lane at index 0.

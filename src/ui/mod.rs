@@ -11,4 +11,5 @@ pub mod motionloom_templates;
 pub mod painting;
 pub mod timeline_panel;
 pub mod transition_select;
+pub mod vector_lab_page;
 pub mod video_preview;

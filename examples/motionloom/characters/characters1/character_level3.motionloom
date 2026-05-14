@@ -1,0 +1,456 @@
+<Graph scope="scene" fps={60} duration="3s" size={[734,555]}>
+  <Scene id="vector_lab_trace_with_eyes_blink">
+    <Solid color="#f7f7f7" />
+
+    <Defs>
+      <LinearGradient id="hair_base" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#C8D2D4, 0.55:#BCC8CB, 1:#A9B7BC" />
+      <LinearGradient id="hair_shadow" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#B5C2C6, 0.65:#9FAEB4, 1:#8D9EA5" />
+      <LinearGradient id="skin_fill" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#F8E9E0, 0.65:#F4E0D4, 1:#EFD7CA" />
+      <LinearGradient id="clip_fill" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFF2B8, 1:#F3D97A" />
+
+      <LinearGradient id="sclera_soft" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#D3CEE6, 0.30:#F7F7F7, 0.70:#F7F7F7, 1:#ffffff" />
+      <LinearGradient id="iris_level1" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#9368C2, 0.54:#9368C2, 0.55:#FB93A6, 0.68:#FB93A6, 0.69:#FEC3A6, 1:#FEC3A6" />
+      <LinearGradient id="lid_grey" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#B7C7C7, 0.70:#B7C7C7, 1:#8da0a3" />
+    </Defs>
+
+    <!-- Fill layers under line art -->
+    <Group id="base_fills" x="0" y="0" opacity="1">
+      <Path id="hair_back_fill"
+            d="M 157 79
+               C 164 48, 183 28, 212 19
+               C 255 6, 316 5, 370 8
+               C 423 11, 485 18, 534 37
+               C 562 48, 580 66, 590 93
+               C 602 126, 602 172, 596 214
+               C 590 255, 578 287, 560 312
+               C 544 335, 521 353, 493 367
+               C 462 382, 428 393, 392 397
+               C 356 395, 322 387, 293 374
+               C 262 360, 234 341, 212 316
+               C 192 292, 177 260, 167 220
+               C 158 182, 154 123, 157 79 Z"
+            fill="url(#hair_base)"
+            stroke="none" />
+
+      <Path id="face_fill"
+            d="M 233 166
+               C 233 202, 235 247, 243 288
+               C 250 323, 261 349, 280 366
+               C 300 383, 332 392, 359 397
+               C 375 400, 392 399, 408 395
+               C 434 389, 459 377, 478 359
+               C 496 342, 507 320, 512 291
+               C 518 253, 521 204, 518 164
+               C 515 126, 504 96, 486 74
+               C 467 52, 439 40, 404 36
+               C 374 33, 343 35, 315 43
+               C 287 52, 264 69, 249 94
+               C 239 111, 234 136, 233 166 Z"
+            fill="url(#skin_fill)"
+            stroke="none" />
+
+      <Path id="bangs_fill"
+            d="M 239 98
+               C 255 85, 278 76, 307 71
+               C 339 65, 375 64, 409 68
+               C 447 72, 476 84, 503 106
+               C 500 136, 497 167, 493 196
+               C 488 230, 481 260, 470 284
+               C 462 258, 458 224, 455 190
+               C 452 156, 451 122, 451 89
+               C 446 127, 442 165, 437 202
+               C 432 237, 423 271, 410 294
+               C 406 259, 404 223, 403 186
+               C 402 149, 402 113, 402 79
+               C 398 117, 394 159, 389 199
+               C 384 236, 376 271, 363 294
+               C 358 259, 355 221, 353 183
+               C 351 148, 350 111, 348 77
+               C 342 117, 336 159, 330 198
+               C 324 235, 316 269, 303 291
+               C 297 256, 294 220, 291 183
+               C 288 151, 287 121, 286 95
+               C 278 135, 270 177, 264 216
+               C 258 249, 251 276, 244 293
+               C 236 244, 234 163, 239 98 Z"
+            fill="url(#hair_shadow)"
+            opacity="0.96"
+            stroke="none" />
+
+      <Path id="left_side_hair_fill"
+            d="M 158 82
+               C 150 143, 153 210, 166 257
+               C 177 296, 196 326, 224 350
+               C 234 358, 243 364, 248 366
+               C 243 333, 237 287, 230 240
+               C 222 192, 217 143, 216 96
+               C 216 69, 217 49, 220 37
+               C 201 43, 185 53, 171 66
+               C 165 72, 161 77, 158 82 Z"
+            fill="#B4C1C5"
+            opacity="0.92"
+            stroke="none" />
+
+      <Path id="right_side_hair_fill"
+            d="M 546 79
+               C 559 102, 567 138, 569 180
+               C 572 225, 566 267, 552 301
+               C 541 326, 523 347, 501 362
+               C 501 333, 502 300, 505 266
+               C 509 220, 512 174, 512 130
+               C 511 95, 508 65, 500 39
+               C 519 46, 534 58, 546 79 Z"
+            fill="#B1BEC3"
+            opacity="0.90"
+            stroke="none" />
+
+      <Path id="hair_clip_fill"
+            d="M 153 17
+               C 157 13, 163 12, 169 14
+               C 174 16, 178 21, 181 26
+               C 184 31, 184 37, 181 42
+               C 177 48, 171 51, 164 50
+               C 158 49, 152 45, 149 39
+               C 146 34, 146 27, 148 23
+               C 149 20, 150 18, 153 17 Z"
+            fill="url(#clip_fill)"
+            stroke="none" />
+
+      <Path id="hair_clip_petal_fill"
+            d="M 133 33
+               C 136 27, 142 24, 147 24
+               C 150 24, 151 26, 150 29
+               C 148 34, 143 40, 139 43
+               C 136 45, 133 45, 131 43
+               C 129 40, 130 37, 133 33 Z"
+            fill="url(#clip_fill)"
+            stroke="none" />
+    </Group>
+
+    <!-- Open eye -->
+    <Group id="eyes_open_layer"
+           x="170" y="60" scale="0.65"
+           opacity={curve("0.00:1.0:linear, 0.72:1.0:linear, 1.12:0.0:ease_in_out, 1.58:0.0:linear, 2.05:1.0:ease_in_out, 3.00:1.0:linear")}>
+
+      <Character id="eye_right_added" x="435" y="246" rotation="-3" scale="0.23" opacity="1">
+        <Path id="eye_right_white"
+              d="M -210 -86
+                 C -96 -156 34 -182 158 -142
+                 C 262 -108 334 -36 350 54
+                 C 306 180 178 252 26 248
+                 C -126 244 -224 154 -234 20
+                 C -238 -30 -230 -62 -210 -86 Z"
+              fill="url(#sclera_soft)"
+              stroke="#3F5877"
+              strokeWidth="3"
+              opacity="0.98" />
+
+        <Path id="eye_right_upper_lid_mass"
+              d="M -244 -82
+                 C -114 -184 26 -214 176 -172
+                 C 268 -146 342 -86 390 2
+                 C 420 56 458 82 512 88
+                 C 456 96 416 76 374 34
+                 C 292 -42 194 -92 78 -102
+                 C -44 -112 -150 -72 -230 24
+                 C -260 62 -282 90 -306 116
+                 C -284 52 -264 -30 -244 -82 Z"
+              fill="url(#lid_grey)"
+              stroke="#3F5877"
+              strokeWidth="0.1"
+              opacity="0.98" />
+
+        <Path id="eye_right_upper_lid_sketch_line"
+              d="M -280 -106
+                 C -172 -194 -26 -232 146 -196
+                 C 290 -166 382 -74 428 20"
+              stroke="#3F5877"
+              strokeWidth="2.3"
+              lineCap="round"
+              fill="none"
+              opacity="0.72" />
+
+        <Group id="eye_right_iris_group" x="-4" y="16" opacity="1">
+          <Path id="eye_right_iris_oval"
+                d="M -58 -184
+                   C 34 -222 132 -168 164 -48
+                   C 202 94 148 256 30 274
+                   C -90 292 -164 188 -166 34
+                   C -168 -78 -132 -154 -58 -184 Z"
+                fill="url(#iris_level1)"
+                stroke="#3F5877"
+                strokeWidth="8" />
+
+          <Path id="eye_right_iris_shadow"
+                d="M -76 -178
+                   C -132 -112 -152 8 -134 112
+                   C -120 196 -76 254 0 276"
+                stroke="#3F5877"
+                strokeWidth="7"
+                lineCap="round"
+                fill="none"
+                opacity="0.84" />
+
+          <Path id="eye_right_pupil"
+                d="M -22 26
+                   C -32 82 -26 132 8 148
+                   C 44 164 78 116 82 50
+                   C 78 96 54 126 26 126
+                   C -6 124 -18 86 -22 26 Z"
+                fill="#3F5877"
+                stroke="none"
+                opacity="0.86" />
+
+          <Path id="eye_right_iris_pink_band_top"
+                d="M -138 54 L -78 38 L -76 68 L -140 88 Z"
+                fill="#FB93A6"
+                stroke="none"
+                opacity="0.96" />
+
+          <Path id="eye_right_iris_pink_band_mid_left"
+                d="M -146 108 L -74 78 L -66 108 L -146 146 Z"
+                fill="#FB93A6"
+                stroke="none"
+                opacity="0.92" />
+
+          <Path id="eye_right_iris_pink_band_mid_right"
+                d="M 72 84 L 154 118 L 146 162 L 64 116 Z"
+                fill="#FB93A6"
+                stroke="none"
+                opacity="0.92" />
+
+          <Path id="eye_right_highlight_top"
+                d="M 110 -86
+                   C 148 -104 206 -92 224 -58
+                   C 202 -28 136 -24 100 -48
+                   C 88 -58 92 -76 110 -86 Z"
+                fill="#F7F7F7"
+                stroke="none"
+                opacity="0.96" />
+
+          <Path id="eye_right_highlight_lower_left"
+                d="M -114 194 C -96 158 -82 144 -68 138"
+                stroke="#F7F7F7"
+                strokeWidth="12"
+                lineCap="round"
+                fill="none"
+                opacity="0.92" />
+
+          <Path id="eye_right_highlight_lower_right"
+                d="M 86 156 C 112 188 132 222 142 252"
+                stroke="#F7F7F7"
+                strokeWidth="14"
+                lineCap="round"
+                fill="none"
+                opacity="0.92" />
+        </Group>
+
+        <Path id="eye_right_lower_sclera_rim"
+              d="M -106 220
+                 C -20 278 130 288 224 224
+                 C 154 286 24 324 -88 266"
+              stroke="#3F5877"
+              strokeWidth="3"
+              lineCap="round"
+              fill="none"
+              opacity="0.70" />
+
+        <Path id="eye_right_lower_lash_01"
+              d="M -34 270 L -46 296"
+              stroke="#3F5877"
+              strokeWidth="2"
+              lineCap="round"
+              fill="none"
+              opacity="0.80" />
+        <Path id="eye_right_lower_lash_02"
+              d="M 10 276 L -4 306"
+              stroke="#3F5877"
+              strokeWidth="2"
+              lineCap="round"
+              fill="none"
+              opacity="0.72" />
+        <Path id="eye_right_lower_lash_03"
+              d="M 68 264 L 78 292"
+              stroke="#3F5877"
+              strokeWidth="2"
+              lineCap="round"
+              fill="none"
+              opacity="0.65" />
+      </Character>
+    </Group>
+
+    <!-- Closed eye -->
+    <Group id="eyes_closed_layer"
+           x="170" y="60" scale="0.65"
+           opacity={curve("0.00:0.0:linear, 0.72:0.0:linear, 1.12:1.0:ease_in_out, 1.58:1.0:linear, 2.05:0.0:ease_in_out, 3.00:0.0:linear")}>
+
+      <Character id="closed_eye_right_added" x="435" y="246" rotation="-3" scale="0.23" opacity="1">
+        <Path id="closed_lid_mass_right_added"
+              d="M -230 -74
+                 C -104 -150 64 -166 216 -104
+                 C 300 -70 362 -14 406 58
+                 C 334 42 250 4 154 -22
+                 C 42 -54 -78 -34 -212 28
+                 C -238 40 -252 -48 -230 -74 Z"
+              fill="url(#lid_grey)"
+              stroke="#3F5877"
+              strokeWidth="0.1"
+              lineJoin="round"
+              opacity="0.98" />
+
+        <Path id="closed_lash_line_right_added"
+              d="M -202 -20
+                 C -90 -72 52 -82 180 -42
+                 C 266 -16 328 30 374 84"
+              stroke="#3F5877"
+              strokeWidth="8"
+              lineCap="round"
+              lineJoin="round"
+              taperStart="0.10"
+              taperEnd="0.30"
+              fill="none"
+              opacity="0.96" />
+
+        <Path id="closed_lash_soft_right_added"
+              d="M -176 4
+                 C -72 -32 48 -40 160 -8
+                 C 236 14 288 48 326 86"
+              stroke="#B7C7C7"
+              strokeWidth="5"
+              lineCap="round"
+              fill="none"
+              opacity="0.62" />
+
+        <Path id="closed_outer_spikes_right_added"
+              d="M 350 70 C 404 86 454 104 510 108
+                 M 334 94 C 382 130 418 158 456 192
+                 M 304 112 C 340 154 360 196 364 234"
+              stroke="#3F5877"
+              strokeWidth="3"
+              lineCap="round"
+              fill="none"
+              opacity="0.82" />
+      </Character>
+    </Group>
+
+    <!-- Original line art -->
+    <Group id="vector_lab_paths" x="0" y="0" opacity="1">
+      <Path id="vector_path_10"
+            d="M 158.2 77.6 C 155.5 86.6, 145.1 114.7, 142 131.9 C 138.8 149.1, 140.2 166.1, 139.5 180.7 C 138.8 195.2, 135.1 199.2, 137.7 219.3 C 140.3 239.4, 154.3 299.6, 155.1 301.4 C 155.8 303.3, 144.6 244.7, 142.4 230.4 C 140.2 216.2, 142.1 221.8, 142 216.1 C 141.9 210.3, 141.2 201.4, 141.7 195.8 C 142.2 190.2, 143.8 178.4, 144.8 182.6 C 145.8 186.8, 147 211.6, 147.6 221 C 148.3 230.4, 147.8 232.1, 148.7 238.7 C 149.7 245.4, 151 253.3, 153.2 260.8 C 155.4 268.4, 158.2 276.1, 161.7 284.1 C 165.3 292.1, 169.6 301.5, 174.5 308.9 C 179.3 316.4, 184.8 321.9, 190.9 328.8 C 197 335.7, 204.5 345.2, 211 350.5 C 217.5 355.9, 226.8 359.1, 230 360.8"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_11"
+            d="M 159.7 76.9 C 160.2 73.9, 161.4 63.1, 162.7 58.9 C 163.9 54.7, 165.5 53.4, 167.2 51.6 C 168.9 49.8, 170.9 48.7, 172.9 48.2 C 174.9 47.6, 180.2 49, 179 48.2 C 177.8 47.3, 169.3 45.6, 165.7 43 C 162 40.5, 158.7 35.5, 156.8 32.9 C 155 30.4, 154.9 30.1, 154.5 27.6 C 154.2 25.1, 153.6 20.3, 154.5 17.9 C 155.5 15.5, 158.5 13.5, 160.1 13.2 C 161.8 12.9, 162.4 13.8, 164.5 16 C 166.6 18.3, 170.5 24.5, 172.6 26.9 C 174.7 29.4, 175.8 30.8, 177.2 30.7 C 178.5 30.7, 180.2 28.8, 180.8 26.6 C 181.3 24.4, 179.8 20.7, 180.4 17.4 C 181 14.1, 182.9 8.7, 184.6 7.1 C 186.2 5.4, 189.1 4.4, 190.2 7.4 C 191.2 10.4, 188 21.3, 190.8 25 C 193.5 28.8, 203.2 27.9, 206.7 30 C 210.3 32.2, 210.8 34.3, 212.1 38 C 213.3 41.7, 215 48.5, 214.2 52.3 C 213.5 56.2, 210.5 59.1, 207.6 61.1 C 204.6 63.1, 200.1 64.1, 196.6 64.3 C 193 64.5, 188.5 63.7, 186 62.4 C 183.5 61.1, 182.7 55.7, 181.4 56.3 C 180.2 56.8, 180.7 62.6, 178.6 65.6 C 176.5 68.6, 171.4 72.3, 168.8 74.4 C 166.1 76.6, 163.6 78, 162.6 78.7"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_12"
+            d="M 176 127.8 C 175.3 135.4, 172 159.9, 171.8 173.5 C 171.5 187.1, 172 195.5, 174.6 209.4 C 177.2 223.4, 183.8 246.5, 187.2 257.3 C 190.6 268.2, 190 266.3, 195.2 274.5 C 200.3 282.7, 212.5 299.5, 218 306.5 C 223.5 313.6, 230.6 325.7, 228.2 316.9 C 225.9 308.2, 209.3 270.6, 204.1 254.3 C 198.9 238, 198.6 230.3, 197 219 C 195.5 207.7, 195.5 196.2, 194.8 186.4 C 194.1 176.6, 192.9 168.2, 192.8 160.1 C 192.7 151.9, 193.8 145.7, 194.1 137.7 C 194.4 129.8, 193.5 121.1, 194.5 112.3 C 195.5 103.4, 198.4 91.8, 199.9 84.7 C 201.3 77.5, 202.6 71.9, 203.2 69.3"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_13"
+            d="M 231.1 313.1 C 229.2 309.6, 223 299.4, 220 292.3 C 216.9 285.2, 214.2 276.6, 212.6 270.6 C 211.1 264.6, 211.4 260.4, 210.7 256.2 C 210 252, 208.8 247.3, 208.4 245.6"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_14"
+            d="M 221.1 214.3 C 221.6 218.4, 223 230.4, 224.4 238.9 C 225.7 247.4, 227.2 257.6, 229.2 265.5 C 231.1 273.4, 233.6 280.3, 236.1 286.4 C 238.7 292.4, 243.1 299.4, 244.5 302"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_15"
+            d="M 257.2 30.6 C 255.5 35.2, 249.8 49.6, 247 58.5 C 244.2 67.3, 242.9 74.8, 240.4 83.7 C 237.9 92.5, 233.7 101.4, 232.1 111.4 C 230.5 121.4, 230.5 131.4, 230.7 143.6 C 230.9 155.7, 232.4 170.6, 233.3 184.1 C 234.2 197.6, 234.9 213.2, 236.4 224.6 C 237.8 236, 239.3 242, 241.8 252.5 C 244.3 263, 249.7 281.9, 251.3 287.8"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_16"
+            d="M 268.4 125.4 C 267.2 131.3, 262.7 150.5, 261.4 161 C 260 171.5, 261.2 178.1, 260.1 188.4 C 259.1 198.6, 255.7 211.6, 255 222.4 C 254.2 233.3, 255.7 245.3, 255.9 253.7 C 256.1 262, 256.4 267.4, 255.9 272.8 C 255.4 278.1, 253.6 282.3, 253.1 285.8 C 252.5 289.2, 252.7 292.3, 252.6 293.6"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_17"
+            d="M 260.2 209.9 C 260.8 215, 262.8 229.7, 263.8 240.4 C 264.8 251, 265.4 266.8, 266 273.9 C 266.6 281.1, 266.9 281.5, 267.1 283"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_18"
+            d="M 272.6 274.2 C 273 266.9, 274 245.1, 274.9 230.5 C 275.8 215.9, 276 202, 277.8 186.6 C 279.7 171.3, 283.8 152.8, 285.8 138.4 C 287.9 124, 288.7 110.2, 290 100.2 C 291.4 90.2, 293.3 82.1, 293.9 78.5"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_20"
+            d="M 286.3 159.5 C 286.5 164.7, 286.8 179.7, 287.5 190.3 C 288.1 200.9, 289.5 214.1, 290.3 223 C 291.2 231.8, 291.6 237, 292.5 243.4 C 293.4 249.7, 295.4 258.2, 295.9 261.1"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_21"
+            d="M 320.2 65.1 C 318.9 73.5, 314.5 101, 312.3 115.4 C 310.1 129.8, 308.5 139, 307 151.6 C 305.5 164.2, 304.1 180.1, 303.3 191.1 C 302.5 202.2, 302.4 209.7, 302.2 217.8 C 301.9 226, 301.7 232.9, 301.8 240 C 301.9 247.1, 302.4 257.2, 302.5 260.6"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_22"
+            d="M 311.8 148.8 C 311.5 160.6, 309.4 201, 310.4 219.7 C 311.3 238.3, 316.2 253.9, 317.4 260.7"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_23"
+            d="M 338.3 122.9 C 337.5 129.5, 334.8 148.6, 333.6 162.5 C 332.5 176.5, 331.4 190.6, 331.4 206.5 C 331.4 222.3, 333.1 249.1, 333.5 257.7"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_24"
+            d="M 388.7 78.7 C 388.6 86.4, 388.3 110.6, 388.2 124.9 C 388.1 139.3, 388.5 152.7, 388.1 165 C 387.8 177.3, 387 186.4, 386.3 198.8 C 385.5 211.3, 384.4 230.9, 383.4 239.7 C 382.5 248.5, 380.9 249.5, 380.4 251.4"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_25"
+            d="M 413.9 154 C 413.3 158.2, 411.2 171.3, 410.4 179.1 C 409.6 186.8, 409.7 193.7, 409.2 200.7 C 408.7 207.7, 408.7 213.5, 407.2 221 C 405.8 228.4, 401.6 241.3, 400.5 245.4"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_26"
+            d="M 412.7 29.9 C 413.8 34.8, 418.2 48.6, 419.5 59.4 C 420.8 70.3, 420.4 84, 420.7 95.2 C 420.9 106.4, 421.2 116, 420.9 126.9 C 420.7 137.8, 420.1 148.6, 419 160.5 C 418 172.4, 417 183.7, 414.5 198.3 C 412.1 212.9, 405.9 239.7, 404.2 247.9"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_28"
+            d="M 414.8 32.9 C 417.5 36.9, 424.6 48.2, 431 57.2 C 437.5 66.3, 446.2 77.5, 453.6 87.2 C 461 96.9, 468.5 107.4, 475.2 115.5 C 481.9 123.6, 488.1 130.1, 493.8 135.9 C 499.5 141.7, 507.2 140.1, 509.4 150.2 C 511.5 160.4, 508.5 184.1, 506.9 196.9 C 505.3 209.7, 501.9 218.2, 499.6 227.1 C 497.2 236, 495.6 242.5, 492.7 250.5 C 489.8 258.5, 484.3 270.5, 482.1 274.9 C 480 279.3, 480.2 276.6, 479.8 277"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_29"
+            d="M 476.3 31.8 C 479.8 41.1, 492 71.4, 497.3 88 C 502.5 104.6, 505.9 122.2, 507.9 131.5 C 509.8 140.9, 508.8 141.8, 509 143.9"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_30"
+            d="M 486.1 280 C 488.1 275.8, 495.1 262.1, 498.3 254.9 C 501.5 247.6, 503.2 242.2, 505.4 236.5 C 507.6 230.9, 509.8 225, 511.4 221.1 C 513 217.3, 514.6 214.7, 515.2 213.5"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_31"
+            d="M 494.5 278.3 C 495.3 275.6, 497.8 268.2, 499.7 262.1 C 501.6 256, 504.9 245.2, 505.9 241.8"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_32"
+            d="M 543.7 201.3 C 542.5 206.7, 539.8 223, 536.3 233.9 C 532.8 244.7, 524.9 261, 522.7 266.5"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_33"
+            d="M 522.8 29.4 C 526.7 35.3, 539.7 47.4, 546.5 64.9 C 553.3 82.3, 562 113.4, 563.9 134.1 C 565.7 154.8, 560.5 172.6, 557.7 188.9 C 554.8 205.2, 551.9 218.1, 546.6 231.8 C 541.3 245.5, 529.4 264.4, 525.9 270.9"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_34"
+            d="M 548.6 30 C 553.1 34.1, 568.7 43.2, 575.3 54.5 C 581.9 65.8, 584.7 81.1, 588.4 97.9 C 592.1 114.7, 596.4 135.8, 597.6 155.3 C 598.8 174.7, 597.4 197.9, 595.4 214.6 C 593.4 231.4, 591.5 240.3, 585.4 255.7 C 579.2 271.1, 566.7 294.8, 558.5 307.1 C 550.3 319.4, 542.2 323.8, 536.2 329.5 C 530.2 335.1, 526.5 337.8, 522.5 341 C 518.6 344.3, 515.2 347.1, 512.6 349 C 509.9 350.9, 508.4 350, 506.8 352.4 C 505.2 354.8, 503.6 361.6, 503 363.4"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_35"
+            d="M 543.5 282.7 C 541.3 288.1, 536.1 305.1, 530.4 314.6 C 524.8 324.2, 513 336, 509.5 340.3"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_36"
+            d="M 483.8 350.5 C 483.9 354.2, 484.4 368.9, 484.5 372.6"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_37"
+            d="M 481.1 366.5 C 478 368.4, 465.7 376, 462.6 377.9"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_38"
+            d="M 227 333.8 C 228.4 337.1, 233.5 346.2, 235.1 353.7 C 236.7 361.2, 236.4 374.7, 236.7 378.9"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_39"
+            d="M 259.8 345.6 C 259.5 349.9, 259 364.9, 258.1 371.1 C 257.3 377.3, 255.1 380.9, 254.6 382.9"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_40"
+            d="M 266.4 340.8 C 261.6 338.4, 243.5 329.9, 237.6 326.1 C 231.8 322.4, 232.5 319.7, 231.5 318.5"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_41"
+            d="M 249.4 300.8 C 251.1 305.5, 255 321, 259.6 328.8 C 264.2 336.7, 269.9 341.8, 276.9 347.8 C 283.8 353.9, 292.3 359.7, 301.3 365.1 C 310.2 370.5, 319.1 375.9, 330.7 380.4 C 342.4 384.8, 360.3 389.1, 370.9 391.9 C 381.5 394.7, 384.2 398.8, 394.5 397.2 C 404.7 395.7, 421.8 388.1, 432.4 382.5 C 443.1 376.9, 449.2 370, 458.4 363.6 C 467.5 357.1, 479.9 350.4, 487.4 343.6 C 494.9 336.8, 498.2 331.4, 503.3 322.8 C 508.4 314.1, 514.8 300, 518.1 291.7 C 521.4 283.4, 522.3 276.2, 523.1 273.1"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_42"
+            d="M 523.3 294.4 C 525.8 292.8, 532.9 290, 538 285.2 C 543.2 280.3, 550.1 270.8, 554.3 265.3 C 558.5 259.9, 561.4 257.2, 563.2 252.6 C 565.1 248, 565.8 245.1, 565.4 237.8 C 565 230.5, 561.9 214.7, 560.8 208.9 C 559.7 203.1, 559.2 204.1, 558.9 203.2"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Path id="vector_path_43"
+            d="M 554.5 250.6 C 551.8 252.9, 543.1 261.4, 538.7 264.3 C 534.4 267.1, 530.2 267.1, 528.5 267.7"
+            stroke="#111111" strokeWidth="0.1" strokeStyle="sketch" strokeRoughness="0.8" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+    </Group>
+
+    <Path id="vector_path_44"
+      d="M 380.1 340 C 382.2 340, 390.3 340, 392.3 340"
+      stroke="#111111"
+      strokeWidth="0.1"
+      strokeStyle="sketch"
+      strokeRoughness="0.8"
+      strokeCopies="2"
+      lineCap="round"
+      lineJoin="round"
+      fill="none" />
+  </Scene>
+
+  <Present from="vector_lab_trace_with_eyes_blink" />
+</Graph>

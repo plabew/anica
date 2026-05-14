@@ -1,0 +1,109 @@
+<Graph scope="scene" fps={60} duration="6s" size={[960,540]}>
+  <Scene id="stickman_jump_walk_handshake">
+    <Solid color="#ffffff" />
+    <Rect x="0" y="0" width="960" height="540" color="#ffffff" />
+
+    <!-- Plain stage -->
+    <Line id="ground_line" x1="80" y1="412" x2="880" y2="412"
+          width="3" color="#00000022" />
+
+    <!-- Left stickman: jump 3 times, then walk to the right stickman. -->
+    <Character id="stickman_left"
+               x={curve("0.00:220:linear, 1.25:220:linear, 3.95:588:ease_in_out, 6.00:588:linear")}
+               y={curve("0.00:410:linear, 0.15:338:ease_out, 0.30:410:ease_in, 0.45:338:ease_out, 0.60:410:ease_in, 0.75:338:ease_out, 0.90:410:ease_in, 6.00:410:linear")}
+               opacity="1">
+
+      <Circle id="left_head" x="0" y="-148" radius="26"
+              color="#ffffff" stroke="#000000" strokeWidth="6" />
+      <Line id="left_neck_body" x1="0" y1="-122" x2="0" y2="-58"
+            width="7" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+
+      <!-- Arms before handshake: walking swing, then fade out near contact. -->
+      <Group id="left_normal_arms" opacity={curve("0.00:1:linear, 3.90:1:linear, 4.10:0:ease_in_out, 6.00:0:linear")}>
+        <Line id="left_arm_back"
+              x1="0" y1="-100"
+              x2={curve("0.00:-36:linear, 1.30:-36:linear, 1.65:-28:linear, 2.00:-42:linear, 2.35:-28:linear, 2.70:-42:linear, 3.05:-28:linear, 3.40:-42:linear, 3.95:-34:linear, 6.00:-34:linear")}
+              y2={curve("0.00:-70:linear, 1.30:-70:linear, 1.65:-82:linear, 2.00:-66:linear, 2.35:-82:linear, 2.70:-66:linear, 3.05:-82:linear, 3.40:-66:linear, 3.95:-72:linear, 6.00:-72:linear")}
+              width="6" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+
+        <Line id="left_arm_front"
+              x1="0" y1="-100"
+              x2={curve("0.00:36:linear, 1.30:36:linear, 1.65:42:linear, 2.00:28:linear, 2.35:42:linear, 2.70:28:linear, 3.05:42:linear, 3.40:28:linear, 3.95:38:linear, 6.00:38:linear")}
+              y2={curve("0.00:-70:linear, 1.30:-70:linear, 1.65:-66:linear, 2.00:-82:linear, 2.35:-66:linear, 2.70:-82:linear, 3.05:-66:linear, 3.40:-82:linear, 3.95:-72:linear, 6.00:-72:linear")}
+              width="6" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+      </Group>
+
+      <!-- Handshake arm: appears after walking, then shakes up and down. -->
+      <Group id="left_handshake_arm" opacity={curve("0.00:0:linear, 3.95:0:linear, 4.15:1:ease_in_out, 6.00:1:linear")}>
+        <Line id="left_handshake_line"
+              x1="0" y1="-100"
+              x2="72"
+              y2={curve("0.00:-88:linear, 4.15:-88:linear, 4.32:-98:ease_in_out, 4.49:-88:ease_in_out, 4.66:-98:ease_in_out, 4.83:-88:ease_in_out, 5.00:-98:ease_in_out, 5.17:-88:ease_in_out, 6.00:-88:linear")}
+              width="7" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+      </Group>
+
+      <!-- Walking legs. During jump they stay simple; during walk they alternate. -->
+      <Line id="left_leg_back"
+            x1="0" y1="-58"
+            x2={curve("0.00:-25:linear, 1.30:-25:linear, 1.65:-44:linear, 2.00:-12:linear, 2.35:-44:linear, 2.70:-12:linear, 3.05:-44:linear, 3.40:-12:linear, 3.95:-24:linear, 6.00:-24:linear")}
+            y2="0"
+            width="7" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+
+      <Line id="left_leg_front"
+            x1="0" y1="-58"
+            x2={curve("0.00:25:linear, 1.30:25:linear, 1.65:12:linear, 2.00:44:linear, 2.35:12:linear, 2.70:44:linear, 3.05:12:linear, 3.40:44:linear, 3.95:24:linear, 6.00:24:linear")}
+            y2="0"
+            width="7" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+
+      <Circle id="left_left_foot" x="-24" y="0" radius="4"
+              color="#000000" opacity={curve("0.00:1:linear, 1.30:1:linear, 3.95:0.35:linear, 6.00:0.35:linear")} />
+      <Circle id="left_right_foot" x="24" y="0" radius="4"
+              color="#000000" opacity={curve("0.00:1:linear, 1.30:1:linear, 3.95:0.35:linear, 6.00:0.35:linear")} />
+    </Character>
+
+    <!-- Right stickman: waits, then raises one hand for the handshake. -->
+    <Character id="stickman_right" x="732" y="410" opacity="1">
+      <Circle id="right_head" x="0" y="-148" radius="26"
+              color="#ffffff" stroke="#000000" strokeWidth="6" />
+      <Line id="right_body" x1="0" y1="-122" x2="0" y2="-58"
+            width="7" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+
+      <Group id="right_waiting_arms" opacity={curve("0.00:1:linear, 3.95:1:linear, 4.15:0:ease_in_out, 6.00:0:linear")}>
+        <Line id="right_arm_left_idle" x1="0" y1="-100" x2="-36" y2="-70"
+              width="6" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+        <Line id="right_arm_right_idle" x1="0" y1="-100" x2="36" y2="-70"
+              width="6" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+      </Group>
+
+      <Group id="right_handshake_arm" opacity={curve("0.00:0:linear, 3.95:0:linear, 4.15:1:ease_in_out, 6.00:1:linear")}>
+        <Line id="right_handshake_line"
+              x1="0" y1="-100"
+              x2="-72"
+              y2={curve("0.00:-88:linear, 4.15:-88:linear, 4.32:-98:ease_in_out, 4.49:-88:ease_in_out, 4.66:-98:ease_in_out, 4.83:-88:ease_in_out, 5.00:-98:ease_in_out, 5.17:-88:ease_in_out, 6.00:-88:linear")}
+              width="7" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+        <Line id="right_arm_free" x1="0" y1="-100" x2="36" y2="-70"
+              width="6" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+      </Group>
+
+      <Line id="right_leg_left" x1="0" y1="-58" x2="-25" y2="0"
+            width="7" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+      <Line id="right_leg_right" x1="0" y1="-58" x2="25" y2="0"
+            width="7" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+    </Character>
+
+    <!-- Contact mark for the handshake. -->
+    <Group id="handshake_contact"
+           x="660"
+           y={curve("0.00:322:linear, 4.15:322:linear, 4.32:312:ease_in_out, 4.49:322:ease_in_out, 4.66:312:ease_in_out, 4.83:322:ease_in_out, 5.00:312:ease_in_out, 5.17:322:ease_in_out, 6.00:322:linear")}
+           opacity={curve("0.00:0:linear, 4.05:0:linear, 4.18:1:ease_in_out, 5.80:1:linear, 6.00:0:ease_in_out")}>
+      <Circle id="handshake_knot" x="0" y="0" radius="7"
+              color="#ffffff" stroke="#000000" strokeWidth="5" />
+      <Line id="shake_tick_top" x1="-18" y1="-20" x2="-6" y2="-10"
+            width="4" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+      <Line id="shake_tick_bottom" x1="8" y1="12" x2="22" y2="22"
+            width="4" color="#000000" strokeStyle="sketch" strokeRoughness="1.0" strokeCopies="3" />
+    </Group>
+  </Scene>
+
+  <Present from="stickman_jump_walk_handshake" />
+</Graph>

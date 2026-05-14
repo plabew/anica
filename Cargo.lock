@@ -4405,9 +4405,17 @@ dependencies = [
 name = "motionloom"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "cosmic-text",
  "exmex",
+ "image",
+ "pollster 0.4.0",
+ "resvg",
  "serde",
  "thiserror 2.0.17",
+ "ureq 2.12.1",
+ "url",
+ "wgpu",
 ]
 
 [[package]]
