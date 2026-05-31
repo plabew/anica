@@ -4647,8 +4647,12 @@ fn composite_background(
         scaled_h.max(1),
         imageops::FilterType::Triangle,
     );
-    let offset_x = ((cw as i64 - scaled.width() as i64) / 2).min(0).abs() as u32;
-    let offset_y = ((ch as i64 - scaled.height() as i64) / 2).min(0).abs() as u32;
+    let offset_x = ((cw as i64 - scaled.width() as i64) / 2)
+        .min(0)
+        .unsigned_abs() as u32;
+    let offset_y = ((ch as i64 - scaled.height() as i64) / 2)
+        .min(0)
+        .unsigned_abs() as u32;
     let crop_w = cw.min(scaled.width().saturating_sub(offset_x));
     let crop_h = ch.min(scaled.height().saturating_sub(offset_y));
     let cropped =
