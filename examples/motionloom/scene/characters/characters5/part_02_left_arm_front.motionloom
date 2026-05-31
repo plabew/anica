@@ -1,0 +1,29 @@
+<Graph fps={60} duration="1s" size={[720,960]}>
+  <Background color="#f7f7f7" />
+
+  <Scene id="character5_part_left_arm_front">
+
+    <Defs>
+      <Brush id="rig_bone" stroke="#1f2a37" strokeWidth="7" strokeStyle="pencil" strokeRoughness="0.6" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="rig_joint" stroke="#2f6fed" strokeWidth="4" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="rig_volume" stroke="#64748b" strokeWidth="2.5" strokeStyle="pencil" strokeRoughness="0.5" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.55" />
+    </Defs>
+
+    <Character id="character5_left_arm_front" x="360" y="230" opacity="1">
+      <Part id="left_upper_arm_front" label="Left upper arm front" role="upper_arm_l" brush="rig_bone" anchorX="0" anchorY="0">
+        <Path id="left_upper_arm_bone" d="M 0 0 L -78 138" />
+        <Path id="left_upper_arm_volume" brush="rig_volume" d="M -10 0 C -44 42 -72 92 -88 138 M 11 4 C -19 48 -48 96 -68 143" />
+        <Path id="left_shoulder_joint" brush="rig_joint" d="M -15 0 C -15 -9 -9 -15 0 -15 C 9 -15 15 -9 15 0 C 15 9 9 15 0 15 C -9 15 -15 9 -15 0 Z" />
+        <Path id="left_elbow_joint" brush="rig_joint" d="M -93 138 C -93 129 -87 123 -78 123 C -69 123 -63 129 -63 138 C -63 147 -69 153 -78 153 C -87 153 -93 147 -93 138 Z" />
+      </Part>
+
+      <Part id="left_forearm_front" label="Left forearm front" role="forearm_l" brush="rig_bone" anchorX="-78" anchorY="138">
+        <Path id="left_forearm_bone" d="M -78 138 L -116 282" />
+        <Path id="left_forearm_volume" brush="rig_volume" d="M -90 141 C -108 190 -118 236 -126 282 M -66 143 C -87 193 -101 239 -106 286" />
+        <Path id="left_wrist_joint" brush="rig_joint" d="M -130 282 C -130 274 -124 268 -116 268 C -108 268 -102 274 -102 282 C -102 290 -108 296 -116 296 C -124 296 -130 290 -130 282 Z" />
+      </Part>
+    </Character>
+  </Scene>
+
+  <Present from="character5_part_left_arm_front" />
+</Graph>

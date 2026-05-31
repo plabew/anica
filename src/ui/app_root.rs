@@ -2,17 +2,23 @@
 // =========================================
 // src/ui/app_root.rs
 use gpui::{
-    ClipboardItem, Context, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Render, ScrollWheelEvent, Subscription, Window, div, prelude::*, px, rgb, rgba,
-    svg,
+    ClipboardItem, Context, Entity, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, Subscription, Window, div, img,
+    prelude::*, px, rgb, rgba, svg,
 };
 
 use crate::core::global_state::{
-    AiChatMessage, AiChatRole, AppPage, GlobalState, MediaPoolUiEvent,
+    AiChatImageAttachment, AiChatMessage, AiChatRole, AppPage, GlobalState, MediaPoolUiEvent,
 };
 use crate::core::media_tools::{detect_gstreamer_cli, detect_or_bootstrap_media_dependencies};
 use crate::ui::ai_agents_page::AiAgentsPage;
 use crate::ui::ai_srt_page::AiSrtPage;
+use crate::ui::character_design_page::CharacterDesignPage;
+use crate::ui::chat_attachments::{
+    attachment_display_name, attachment_size_label, clipboard_text_path_attachment,
+    image_path_attachment, save_clipboard_images,
+};
+use crate::ui::chat_markdown::{ChatMarkdownSegment, split_markdown_code_blocks};
 use crate::ui::display_settings_modal::render_display_settings_modal_overlay;
 use crate::ui::editor_shell::EditorShell;
 use crate::ui::export_modal::render_export_modal_overlay;
@@ -42,6 +48,7 @@ pub struct AppRoot {
     pub ai_agents_page: Entity<AiAgentsPage>,
     pub motionloom_page: Entity<MotionLoomPage>,
     pub vector_lab_page: Entity<VectorLabPage>,
+    pub character_design_page: Entity<CharacterDesignPage>,
     pub ai_chat_widget_open: bool,
     pub ai_chat_input_text: String,
     pub ai_chat_input: Option<Entity<InputState>>,
@@ -86,7 +93,8 @@ impl AppRoot {
 
     fn send_chat_widget_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = self.ai_chat_input_text.trim().to_string();
-        if prompt.is_empty() {
+        let has_pending_images = !self.global.read(cx).ai_chat_pending_images.is_empty();
+        if prompt.is_empty() && !has_pending_images {
             return;
         }
 
@@ -96,6 +104,90 @@ impl AppRoot {
 
         if sent {
             self.clear_chat_widget_input(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn push_chat_widget_system_message(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        let text = text.into();
+        self.global.update(cx, |gs, cx| {
+            gs.ai_chat_messages.push(AiChatMessage {
+                role: AiChatRole::System,
+                text,
+                pending: false,
+                image_attachments: Vec::new(),
+            });
+            cx.notify();
+        });
+    }
+
+    fn paste_chat_widget_images_from_clipboard(
+        &mut self,
+        show_errors: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(item) = cx.read_from_clipboard() else {
+            if show_errors {
+                self.push_chat_widget_system_message("Clipboard is empty.", cx);
+            }
+            return false;
+        };
+
+        let mut attachments = match save_clipboard_images(&item) {
+            Ok(images) => images,
+            Err(err) => {
+                if show_errors {
+                    self.push_chat_widget_system_message(err, cx);
+                }
+                return false;
+            }
+        };
+
+        if attachments.is_empty()
+            && let Some(path) = clipboard_text_path_attachment(&item)
+        {
+            match image_path_attachment(path) {
+                Ok(attachment) => attachments.push(attachment),
+                Err(err) => {
+                    if show_errors {
+                        self.push_chat_widget_system_message(err, cx);
+                    }
+                    return false;
+                }
+            }
+        }
+
+        if attachments.is_empty() {
+            if show_errors {
+                self.push_chat_widget_system_message("Clipboard has no supported image.", cx);
+            }
+            return false;
+        }
+
+        self.global.update(cx, |gs, cx| {
+            gs.ai_chat_pending_images.extend(attachments);
+            cx.notify();
+        });
+        true
+    }
+
+    fn remove_pending_chat_widget_image(&mut self, image_id: &str, cx: &mut Context<Self>) {
+        self.global.update(cx, |gs, cx| {
+            gs.ai_chat_pending_images
+                .retain(|attachment| attachment.id != image_id);
+            cx.notify();
+        });
+    }
+
+    fn handle_chat_widget_paste_shortcut(&mut self, evt: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = evt.keystroke.key.as_str();
+        let modifiers = evt.keystroke.modifiers;
+        if (modifiers.platform || modifiers.control)
+            && !modifiers.shift
+            && key.eq_ignore_ascii_case("v")
+            && self.paste_chat_widget_images_from_clipboard(false, cx)
+        {
+            cx.stop_propagation();
             cx.notify();
         }
     }
@@ -205,10 +297,199 @@ impl AppRoot {
                     .text_xs()
                     .text_color(white().opacity(0.92))
                     .whitespace_normal()
+                    .child(Self::render_chat_message_body(
+                        "ai-widget-msg-body",
+                        bubble_index,
+                        &text,
+                        window,
+                        cx,
+                    )),
+            )
+            .child(Self::render_chat_image_attachment_list(
+                &msg.image_attachments,
+            ))
+    }
+
+    fn render_chat_image_attachment_list(attachments: &[AiChatImageAttachment]) -> gpui::Div {
+        let mut row = div().flex().flex_wrap().gap_2();
+        if attachments.is_empty() {
+            return row;
+        }
+
+        for attachment in attachments {
+            row = row.child(
+                div()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(white().opacity(0.14))
+                    .bg(white().opacity(0.05))
+                    .p_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .child(
-                        TextView::markdown(("ai-widget-msg-body", bubble_index), text, window, cx)
-                            .selectable(true)
-                            .w_full(),
+                        div()
+                            .w(px(46.0))
+                            .h(px(34.0))
+                            .rounded_sm()
+                            .overflow_hidden()
+                            .bg(white().opacity(0.08))
+                            .child(img(attachment.path.clone()).size_full()),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(160.0))
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.84))
+                                    .child(attachment_display_name(attachment)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.48))
+                                    .child(attachment_size_label(attachment)),
+                            ),
+                    ),
+            );
+        }
+
+        row
+    }
+
+    fn render_chat_message_body(
+        id_prefix: &'static str,
+        bubble_index: usize,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let mut body = div().w_full().min_w_0().flex().flex_col().gap_2();
+
+        for (segment_index, segment) in split_markdown_code_blocks(text).into_iter().enumerate() {
+            body = match segment {
+                ChatMarkdownSegment::Markdown(markdown) => body.child(
+                    TextView::markdown(
+                        gpui::ElementId::from((
+                            gpui::ElementId::from((id_prefix, bubble_index)),
+                            format!("md-{segment_index}"),
+                        )),
+                        markdown,
+                        window,
+                        cx,
+                    )
+                    .selectable(true)
+                    .w_full(),
+                ),
+                ChatMarkdownSegment::Code { language, code } => {
+                    body.child(Self::render_chat_code_block(
+                        id_prefix,
+                        bubble_index,
+                        segment_index,
+                        language,
+                        code,
+                        window,
+                        cx,
+                    ))
+                }
+            };
+        }
+
+        body
+    }
+
+    fn render_chat_code_block(
+        id_prefix: &'static str,
+        bubble_index: usize,
+        segment_index: usize,
+        language: String,
+        code: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let language_label = if language.trim().is_empty() {
+            "code".to_string()
+        } else {
+            language.trim().to_string()
+        };
+        let fenced = format!("```{}\n{}\n```", language_label, code);
+        let copy_code = code.clone();
+
+        div()
+            .w_full()
+            .min_w_0()
+            .rounded_md()
+            .border_1()
+            .border_color(white().opacity(0.16))
+            .bg(gpui::Hsla::from(rgb(0x111827)).opacity(0.74))
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(white().opacity(0.10))
+                    .bg(white().opacity(0.04))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family("Mono")
+                            .text_color(white().opacity(0.56))
+                            .child(language_label),
+                    )
+                    .child(
+                        div()
+                            .h(px(22.0))
+                            .px_2()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(white().opacity(0.18))
+                            .bg(white().opacity(0.05))
+                            .text_xs()
+                            .text_color(white().opacity(0.78))
+                            .hover(|s| s.bg(white().opacity(0.10)))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("Copy Code")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_this, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_code.clone(),
+                                    ));
+                                }),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_x_scrollbar()
+                    .px_2()
+                    .py_1()
+                    .child(
+                        TextView::markdown(
+                            gpui::ElementId::from((
+                                gpui::ElementId::from((id_prefix, bubble_index)),
+                                format!("code-{segment_index}"),
+                            )),
+                            fenced,
+                            window,
+                            cx,
+                        )
+                        .selectable(true)
+                        .w_full(),
                     ),
             )
     }
@@ -231,7 +512,149 @@ impl AppRoot {
                 .bg(white().opacity(0.05))
                 .into_any_element()
         };
-        let can_send_widget = !self.ai_chat_input_text.trim().is_empty();
+        let pending_chat_images = self.global.read(cx).ai_chat_pending_images.clone();
+        let can_send_widget =
+            !self.ai_chat_input_text.trim().is_empty() || !pending_chat_images.is_empty();
+        let mut pending_images_row = div().flex().flex_wrap().gap_2();
+        for attachment in pending_chat_images.iter().cloned() {
+            let id = attachment.id.clone();
+            pending_images_row = pending_images_row.child(
+                div()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(gpui::Hsla::from(rgb(0x3b82f6)).opacity(0.38))
+                    .bg(gpui::Hsla::from(rgb(0x172554)).opacity(0.38))
+                    .p_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(42.0))
+                            .h(px(30.0))
+                            .rounded_sm()
+                            .overflow_hidden()
+                            .bg(white().opacity(0.08))
+                            .child(img(attachment.path.clone()).size_full()),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(140.0))
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.86))
+                                    .child(attachment_display_name(&attachment)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.50))
+                                    .child(attachment_size_label(&attachment)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h(px(20.0))
+                            .px_2()
+                            .rounded_sm()
+                            .bg(white().opacity(0.07))
+                            .text_xs()
+                            .text_color(white().opacity(0.7))
+                            .hover(|s| s.bg(white().opacity(0.14)))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("Remove")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.remove_pending_chat_widget_image(&id, cx);
+                                }),
+                            ),
+                    ),
+            );
+        }
+        let prompt_input_row = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().flex_1().min_w_0().child(chat_input_elem))
+            .child(
+                div().w(px(98.0)).flex_shrink_0().child(
+                    div()
+                        .h(px(34.0))
+                        .px_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(white().opacity(0.14))
+                        .bg(white().opacity(0.05))
+                        .text_xs()
+                        .text_color(white().opacity(0.80))
+                        .hover(|s| s.bg(white().opacity(0.1)))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child("Paste Image")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.paste_chat_widget_images_from_clipboard(true, cx);
+                            }),
+                        ),
+                ),
+            )
+            .child(
+                div().w(px(82.0)).flex_shrink_0().child(
+                    div()
+                        .h(px(34.0))
+                        .px_3()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(white().opacity(0.14))
+                        .bg(if can_send_widget {
+                            gpui::Hsla::from(rgb(0x1d4ed8)).opacity(0.9)
+                        } else {
+                            white().opacity(0.06)
+                        })
+                        .text_sm()
+                        .text_color(white().opacity(if can_send_widget { 0.95 } else { 0.45 }))
+                        .hover(|s| s.bg(white().opacity(0.1)))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child("Send")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                if !this.ai_chat_input_text.trim().is_empty()
+                                    || !this.global.read(cx).ai_chat_pending_images.is_empty()
+                                {
+                                    this.send_chat_widget_prompt(window, cx);
+                                }
+                            }),
+                        ),
+                ),
+            );
+        let prompt_controls = if pending_chat_images.is_empty() {
+            prompt_input_row
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap_2()
+                .child(pending_images_row)
+                .child(prompt_input_row)
+        };
         let chat_messages = self.global.read(cx).ai_chat_messages.clone();
         let system_count = chat_messages
             .iter()
@@ -289,6 +712,9 @@ impl AppRoot {
                     cx.stop_propagation();
                 }),
             )
+            .on_key_down(cx.listener(|this, evt: &KeyDownEvent, _window, cx| {
+                this.handle_chat_widget_paste_shortcut(evt, cx);
+            }))
             .child(
                 div()
                     .h(px(44.0))
@@ -406,45 +832,7 @@ impl AppRoot {
                     .p_2()
                     .border_t_1()
                     .border_color(white().opacity(0.12))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().flex_1().min_w_0().child(chat_input_elem))
-                    .child(
-                        div().w(px(82.0)).flex_shrink_0().child(
-                            div()
-                                .h(px(34.0))
-                                .px_3()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(white().opacity(0.14))
-                                .bg(if can_send_widget {
-                                    gpui::Hsla::from(rgb(0x1d4ed8)).opacity(0.9)
-                                } else {
-                                    white().opacity(0.06)
-                                })
-                                .text_sm()
-                                .text_color(white().opacity(if can_send_widget {
-                                    0.95
-                                } else {
-                                    0.45
-                                }))
-                                .hover(|s| s.bg(white().opacity(0.1)))
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child("Send")
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _, window, cx| {
-                                        if !this.ai_chat_input_text.trim().is_empty() {
-                                            this.send_chat_widget_prompt(window, cx);
-                                        }
-                                    }),
-                                ),
-                        ),
-                    ),
+                    .child(prompt_controls),
             )
     }
 
@@ -1503,6 +1891,10 @@ impl Render for AppRoot {
         let ai_agents_layout = div().flex_1().min_h_0().child(self.ai_agents_page.clone());
         let motionloom_layout = div().flex_1().min_h_0().child(self.motionloom_page.clone());
         let vector_lab_layout = div().flex_1().min_h_0().child(self.vector_lab_page.clone());
+        let character_design_layout = div()
+            .flex_1()
+            .min_h_0()
+            .child(self.character_design_page.clone());
         let inspector_expand_toggle =
             if active_page == AppPage::Editor && !self.inspector_expand_modal_open {
                 div()
@@ -1842,6 +2234,11 @@ impl Render for AppRoot {
                         AppPage::VectorLab,
                         active_page == AppPage::VectorLab,
                     ))
+                    .child(nav_button(
+                        "icons/3d_layout.svg",
+                        AppPage::CharacterDesign,
+                        active_page == AppPage::CharacterDesign,
+                    ))
                     .child(div().h(px(18.0)))
                     .child(chat_widget_button(self.ai_chat_widget_open)),
             )
@@ -1851,6 +2248,7 @@ impl Render for AppRoot {
                 AppPage::AiAgents => ai_agents_layout,
                 AppPage::MotionLoom => motionloom_layout,
                 AppPage::VectorLab => vector_lab_layout,
+                AppPage::CharacterDesign => character_design_layout,
             })
             .child(inspector_expand_toggle)
             .child(media_drag_ghost)

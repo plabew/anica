@@ -1,0 +1,41 @@
+<Graph fps={60} duration="2s" size={[1920,1080]}>
+  <Background color="#05070B" />
+
+  <Scene id="aa_test_04_luma_matte_text">
+    <Defs>
+      <LinearGradient id="matte_soft_ramp" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#000000, 0.22:#000000, 0.50:#FFFFFF, 0.78:#000000, 1:#000000" />
+    </Defs>
+
+    <!-- Luma matte test. If test 02 is clean but this is jagged/blocked, matte sampling/luma conversion is the issue. -->
+    <Precompose id="text_source" size={[1920,1080]}>
+      <Rect x="0" y="0" width="1920" height="1080" color="#000000" opacity="0" />
+      <Text value="LUMA MATTE"
+            x="140"
+            y="380"
+            fontSize="150"
+            color="#FFFFFF"
+            opacity="1" />
+      <Text value="soft luma matte should reveal smooth edges"
+            x="148"
+            y="458"
+            fontSize="42"
+            color="#7DEBFF"
+            opacity="1" />
+    </Precompose>
+
+    <Precompose id="soft_luma_matte" size={[1920,1080]}>
+      <Rect x="0" y="0" width="1920" height="1080" color="#000000" opacity="1" />
+      <Rect x="0" y="0" width="1920" height="1080" color="url(#matte_soft_ramp)" opacity="1" />
+      <Circle x="1220" y="390" radius="260" color="#FFFFFF" opacity="1" />
+    </Precompose>
+
+    <Layer id="matted_text"
+           source="text_source"
+           matte="soft_luma_matte"
+           matteMode="luma"
+           opacity="1" />
+  </Scene>
+
+  <Present from="aa_test_04_luma_matte_text" />
+</Graph>

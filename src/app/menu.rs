@@ -1,6 +1,7 @@
 // =========================================
 // =========================================
 // src/app/menu.rs
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -116,6 +117,8 @@ fn save_to_path(cx: &mut App, global: gpui::Entity<GlobalState>, path: PathBuf) 
     let saved_signature = global.update(cx, |gs, cx| {
         if let Err(err) = save_project_to_path(gs, &path_for_save) {
             eprintln!("[Project] Save failed: {err}");
+            gs.ui_notice = Some(format_project_save_error(&path_for_save, &err));
+            cx.notify();
             return None;
         }
 
@@ -126,6 +129,7 @@ fn save_to_path(cx: &mut App, global: gpui::Entity<GlobalState>, path: PathBuf) 
         {
             eprintln!("[Project] Snapshot failed: {err}");
         }
+        gs.ui_notice = Some(format!("Project saved: {}", path_for_save.display()));
         cx.notify();
         Some(project_signature(gs))
     });
@@ -522,6 +526,19 @@ fn prompt_save_as(
     post_save_action: PostSaveAction,
 ) {
     let dir = default_project_dir();
+    if let Err(err) = fs::create_dir_all(&dir) {
+        eprintln!(
+            "[Project] Failed to create default project directory {}: {err}",
+            dir.display()
+        );
+        let _ = global.update(cx, |gs, cx| {
+            gs.ui_notice = Some(format!(
+                "Cannot prepare Save As folder {}: {err}",
+                dir.display()
+            ));
+            cx.notify();
+        });
+    }
     let suggested_name = suggested.unwrap_or_else(|| {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -554,6 +571,8 @@ fn prompt_save_as(
         let saved_signature = global.update(cx, |gs, cx| {
             if let Err(err) = save_project_to_path(gs, &path_for_save) {
                 eprintln!("[Project] Save failed: {err}");
+                gs.ui_notice = Some(format_project_save_error(&path_for_save, &err));
+                cx.notify();
                 return None;
             }
 
@@ -564,6 +583,7 @@ fn prompt_save_as(
             {
                 eprintln!("[Project] Snapshot failed: {err}");
             }
+            gs.ui_notice = Some(format!("Project saved: {}", path_for_save.display()));
             cx.notify();
             Some(project_signature(gs))
         });
@@ -584,6 +604,19 @@ fn prompt_save_as(
         }
     })
     .detach();
+}
+
+fn format_project_save_error(path: &Path, err: &anyhow::Error) -> String {
+    let detail = format!("{err:#}");
+    let lower = detail.to_lowercase();
+    if lower.contains("operation not permitted") || lower.contains("permission denied") {
+        return format!(
+            "Save failed: macOS denied access to {}. Grant Desktop/Documents access or choose another folder. ({detail})",
+            path.display()
+        );
+    }
+
+    format!("Save failed to {}: {detail}", path.display())
 }
 
 fn open_action(_: &OpenAction, cx: &mut App) {

@@ -1,0 +1,119 @@
+<Graph fps={30} duration="1s" size={[1584,891]}>
+  <Background color="#87c9ff" />
+
+  <Scene id="forest_path_static_level1">
+
+    <Defs>
+      <LinearGradient id="sky_day" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#3F86EE, 0.48:#86CBFF, 1:#DDF6FF" />
+      <LinearGradient id="distant_hill" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#6CA777, 1:#497C72" />
+      <LinearGradient id="meadow_light" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#CBE976, 0.52:#9ED553, 1:#5F963F" />
+      <LinearGradient id="road_warm" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#EFDFAE, 0.52:#CDB77B, 1:#8C7D55" />
+      <LinearGradient id="trunk_bark" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#25352E, 0.18:#56634E, 0.48:#B0A47C, 0.72:#4A4C38, 1:#1F2C28" />
+      <LinearGradient id="trunk_dark" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#142521, 0.48:#5E644D, 1:#182520" />
+      <RadialGradient id="leaf_light" cx="0.42" cy="0.28" r="0.72"
+                      stops="0:#D4F070, 0.48:#79B94D, 1:#244F38" />
+      <RadialGradient id="leaf_deep" cx="0.45" cy="0.35" r="0.78"
+                      stops="0:#7BB858, 0.55:#2E6D49, 1:#17352F" />
+      <RadialGradient id="cloud_soft" cx="0.50" cy="0.45" r="0.66"
+                      stops="0:#FFFFFFEE, 0.62:#FFFFFFB8, 1:#FFFFFF00" />
+
+      <Brush id="grass_line" stroke="#4C7F32" strokeWidth="2.2" strokeStyle="pencil" strokeRoughness="0.7" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.68" />
+      <Brush id="road_crack" stroke="#8E7B51" strokeWidth="2" strokeStyle="pencil" strokeRoughness="0.9" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.42" />
+      <Brush id="twig_line" stroke="#1B332B" strokeWidth="3" strokeStyle="pencil" strokeRoughness="0.55" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.72" />
+    </Defs>
+
+    <Rect id="sky" x="0" y="0" width="1584" height="891" fill="url(#sky_day)" />
+
+    <Group id="cloud_layer" x="0" y="0" opacity="1">
+      <Circle x="420" y="245" radius="72" fill="url(#cloud_soft)" opacity="0.82" />
+      <Circle x="498" y="230" radius="48" fill="url(#cloud_soft)" opacity="0.75" />
+      <Circle x="575" y="258" radius="84" fill="url(#cloud_soft)" opacity="0.78" />
+      <Circle x="650" y="230" radius="58" fill="url(#cloud_soft)" opacity="0.72" />
+      <Circle x="715" y="268" radius="88" fill="url(#cloud_soft)" opacity="0.70" />
+      <Path id="cloud_wisp_mid" d="M 310 287 C 432 250 580 294 745 275 C 810 268 860 278 918 292" stroke="#FFFFFF99" strokeWidth="18" lineCap="round" fill="none" opacity="0.48" />
+      <Path id="cloud_high_wisp" d="M 878 170 C 980 145 1070 152 1175 135 C 1235 126 1290 124 1358 139" stroke="#FFFFFF66" strokeWidth="12" lineCap="round" fill="none" opacity="0.52" />
+      <Circle x="225" y="217" radius="38" fill="url(#cloud_soft)" opacity="0.58" />
+      <Circle x="265" y="226" radius="32" fill="url(#cloud_soft)" opacity="0.50" />
+    </Group>
+
+    <Group id="distant_mountains" x="0" y="0" opacity="1">
+      <Path id="far_blue_hills" d="M 0 430 C 115 392 180 360 304 374 C 420 386 492 342 600 370 C 690 392 744 340 840 328 C 945 316 1020 366 1115 350 C 1235 330 1348 358 1584 312 L 1584 535 L 0 535 Z" fill="#5F93A8" opacity="0.50" />
+      <Path id="green_hill_back" d="M 0 462 C 145 407 250 402 380 428 C 485 448 575 394 690 405 C 820 419 870 350 985 358 C 1100 367 1192 430 1320 410 C 1428 394 1500 368 1584 360 L 1584 560 L 0 560 Z" fill="url(#distant_hill)" opacity="0.78" />
+      <Path id="hill_highlights" d="M 610 405 C 690 370 746 376 820 390 M 922 378 C 995 355 1055 372 1118 398 M 280 420 C 340 396 408 404 476 430" stroke="#A7D77966" strokeWidth="18" lineCap="round" fill="none" opacity="0.65" />
+    </Group>
+
+    <Group id="mid_forest_mass" x="0" y="0" opacity="1">
+      <Path id="forest_base_deep" d="M 0 535 C 80 500 136 515 214 478 C 285 445 338 490 410 458 C 475 429 536 490 600 462 C 686 425 750 505 836 460 C 918 418 990 484 1062 456 C 1144 424 1190 475 1264 450 C 1364 416 1470 455 1584 420 L 1584 690 L 0 690 Z" fill="#2F7550" opacity="0.62" />
+      <Path id="forest_light_blobs" d="M 68 540 C 118 486 178 500 196 552 C 250 488 326 498 344 566 C 414 506 498 510 518 574 C 594 505 668 522 696 590 C 790 505 872 526 890 592 C 995 502 1085 532 1094 604 C 1204 500 1305 514 1332 590 C 1438 502 1522 518 1584 568 L 1584 708 L 0 708 Z" fill="#74B85D" opacity="0.48" />
+      <Path id="pine_row" d="M 360 548 L 402 285 L 446 548 Z M 505 560 L 548 325 L 594 560 Z M 905 554 L 935 285 L 970 554 Z M 1000 560 L 1028 310 L 1064 560 Z M 1235 562 L 1270 350 L 1310 562 Z" fill="#2A614E" opacity="0.72" />
+      <Path id="mid_tree_trunks" d="M 408 552 L 416 298 L 425 552 M 548 560 L 553 328 L 562 560 M 934 554 L 940 292 L 949 554 M 1028 560 L 1035 315 L 1044 560 M 1269 562 L 1275 356 L 1284 562" stroke="#315647AA" strokeWidth="7" lineCap="round" fill="none" opacity="0.65" />
+    </Group>
+
+    <Group id="ground_and_path" x="0" y="0" opacity="1">
+      <Path id="main_meadow" d="M 0 650 C 170 604 340 606 520 613 C 722 621 884 563 1058 560 C 1260 558 1420 595 1584 565 L 1584 891 L 0 891 Z" fill="url(#meadow_light)" />
+      <Path id="left_shadow_bank" d="M 0 620 C 180 612 330 660 520 650 C 430 705 340 775 220 828 C 118 872 50 884 0 891 Z" fill="#315B34" opacity="0.78" />
+      <Path id="sunlit_slope_right" d="M 870 604 C 1030 552 1225 548 1432 590 C 1358 630 1225 672 1078 700 C 940 728 818 708 702 684 C 738 650 790 625 870 604 Z" fill="#B7E05F" opacity="0.60" />
+      <Path id="road_shape" d="M 686 590 C 740 612 816 626 898 644 C 1032 675 1145 750 1262 891 L 318 891 C 430 792 532 686 686 590 Z" fill="url(#road_warm)" opacity="0.96" />
+      <Path id="road_center_light" d="M 694 620 C 792 656 900 704 992 792 C 1032 830 1065 860 1098 891 L 575 891 C 602 826 642 742 704 666" fill="#F2E4B8" opacity="0.50" />
+      <Path id="road_left_edge" d="M 682 596 C 582 654 482 742 360 884" stroke="#5F7B3C88" strokeWidth="8" lineCap="round" fill="none" opacity="0.55" />
+      <Path id="road_right_edge" d="M 802 620 C 930 668 1090 762 1246 886" stroke="#7A8E4488" strokeWidth="8" lineCap="round" fill="none" opacity="0.45" />
+      <Path id="road_cracks_a" brush="road_crack" d="M 640 708 C 710 690 775 700 836 724 M 548 807 C 630 786 720 800 800 836 M 780 766 C 852 742 928 762 988 805 M 676 850 C 745 842 815 850 882 875" />
+      <Path id="grass_strokes_left" brush="grass_line" d="M 70 838 L 55 802 M 96 820 L 102 772 M 138 822 L 160 782 M 188 782 L 232 760 M 250 838 L 305 810 M 360 698 L 392 672 M 425 683 L 462 652" />
+      <Path id="grass_strokes_right" brush="grass_line" d="M 1152 784 L 1190 726 M 1195 805 L 1246 740 M 1288 808 L 1298 740 M 1340 785 L 1392 730 M 1420 815 L 1484 755 M 1018 696 L 1068 650 M 1110 674 L 1150 630" />
+      <Path id="small_foreground_grass" d="M 892 875 C 912 850 935 856 940 891 M 918 878 C 942 842 960 852 970 891 M 150 870 C 170 840 188 850 194 891 M 1252 865 C 1292 822 1324 835 1328 891" stroke="#5B8B36AA" strokeWidth="4" lineCap="round" fill="none" opacity="0.70" />
+    </Group>
+
+    <Group id="foreground_rocks" x="0" y="0" opacity="1">
+      <Path id="rock_cluster_right_01" d="M 1148 665 C 1190 628 1240 635 1260 675 C 1238 705 1182 704 1148 665 Z" fill="#AAB4A8" stroke="#71806E" strokeWidth="3" opacity="0.76" />
+      <Path id="rock_cluster_right_02" d="M 1260 632 C 1296 596 1348 606 1365 650 C 1330 675 1286 672 1260 632 Z" fill="#879488" stroke="#667264" strokeWidth="3" opacity="0.72" />
+      <Path id="rock_cluster_right_03" d="M 1226 758 C 1268 715 1330 724 1350 772 C 1312 812 1254 805 1226 758 Z" fill="#A0AA9E" stroke="#6D776E" strokeWidth="3" opacity="0.78" />
+      <Path id="rock_highlights" d="M 1166 657 C 1190 646 1212 646 1234 662 M 1282 632 C 1306 618 1332 622 1348 640 M 1258 754 C 1285 740 1314 742 1332 764" stroke="#DCE3D8AA" strokeWidth="5" lineCap="round" fill="none" opacity="0.70" />
+    </Group>
+
+    <Group id="foreground_left_trees" x="0" y="0" opacity="1">
+      <Path id="left_main_trunk" d="M 12 891 C 42 706 48 545 56 360 C 64 178 64 64 86 0 L 161 0 C 132 150 132 302 122 462 C 110 636 98 776 100 891 Z" fill="url(#trunk_bark)" opacity="0.96" />
+      <Path id="left_rear_trunk" d="M 175 891 C 190 720 190 560 182 388 C 174 235 172 110 188 0 L 244 0 C 222 140 224 280 230 440 C 238 618 244 760 260 891 Z" fill="url(#trunk_dark)" opacity="0.88" />
+      <Path id="left_bark_marks" d="M 78 42 C 58 165 64 300 52 430 M 98 88 C 120 220 100 348 112 500 M 72 520 C 50 650 48 748 38 852 M 205 52 C 195 190 206 302 196 450 M 232 490 C 224 650 226 760 242 870" stroke="#E4D59C88" strokeWidth="7" lineCap="round" fill="none" opacity="0.55" />
+      <Path id="left_shadow_stripes" d="M 25 120 C 58 180 42 250 70 325 C 92 384 65 455 88 540 M 130 60 C 112 218 145 350 118 510 M 178 110 C 200 245 184 402 214 560" stroke="#13262099" strokeWidth="12" lineCap="round" fill="none" opacity="0.45" />
+      <Path id="left_top_branches" brush="twig_line" d="M 122 116 C 206 64 270 42 360 22 M 110 220 C 198 168 290 144 378 120 M 190 110 C 260 172 314 212 390 252" />
+    </Group>
+
+    <Group id="foreground_right_trees" x="0" y="0" opacity="1">
+      <Path id="right_main_trunk" d="M 1368 891 C 1348 710 1368 548 1378 392 C 1390 215 1374 82 1396 0 L 1480 0 C 1472 170 1488 315 1496 468 C 1508 650 1516 778 1540 891 Z" fill="url(#trunk_bark)" opacity="0.98" />
+      <Path id="right_second_trunk" d="M 1190 891 C 1212 732 1216 606 1210 456 C 1204 302 1184 145 1198 0 L 1272 0 C 1266 170 1280 315 1284 468 C 1288 625 1272 752 1308 891 Z" fill="url(#trunk_bark)" opacity="0.92" />
+      <Path id="right_deep_trunks" d="M 1518 891 C 1512 680 1505 460 1538 0 L 1584 0 L 1584 891 Z M 1118 650 C 1140 520 1140 365 1122 160 C 1116 90 1114 38 1122 0 L 1162 0 C 1150 110 1160 242 1168 380 C 1176 515 1164 615 1154 690 Z" fill="#1B2C28" opacity="0.72" />
+      <Path id="right_bark_highlights" d="M 1422 42 C 1410 205 1430 352 1412 520 M 1455 105 C 1485 258 1468 448 1495 640 M 1232 22 C 1218 190 1248 350 1228 510 M 1258 555 C 1242 700 1262 800 1288 882" stroke="#E7D9A188" strokeWidth="8" lineCap="round" fill="none" opacity="0.60" />
+      <Path id="right_shadow_marks" d="M 1378 130 C 1404 240 1375 330 1398 455 C 1420 560 1398 670 1430 790 M 1200 100 C 1228 230 1202 365 1238 492 M 1505 80 C 1535 250 1512 420 1568 590" stroke="#12221F99" strokeWidth="13" lineCap="round" fill="none" opacity="0.45" />
+      <Path id="right_branches" brush="twig_line" d="M 1264 138 C 1364 88 1450 58 1558 32 M 1250 245 C 1340 198 1430 185 1536 170 M 1410 118 C 1356 188 1310 245 1255 330" />
+    </Group>
+
+    <Group id="leaf_canopy_top" x="0" y="0" opacity="1">
+      <Path id="left_canopy_mass" d="M 0 0 L 515 0 C 490 42 460 72 420 72 C 400 125 345 127 312 105 C 292 154 230 155 198 120 C 158 172 70 158 50 105 C 15 112 0 106 0 106 Z" fill="url(#leaf_deep)" opacity="0.95" />
+      <Path id="right_canopy_mass" d="M 804 0 L 1584 0 L 1584 295 C 1540 280 1514 245 1500 205 C 1430 240 1376 205 1370 145 C 1288 162 1228 122 1232 70 C 1132 94 1040 74 1018 24 C 950 58 870 44 804 0 Z" fill="url(#leaf_deep)" opacity="0.94" />
+      <Path id="sunlit_leaf_blobs_left" d="M 28 68 C 62 28 124 34 134 82 C 182 42 252 45 270 92 C 324 44 395 47 418 98 C 92 135 44 126 28 68 Z" fill="url(#leaf_light)" opacity="0.70" />
+      <Path id="sunlit_leaf_blobs_right" d="M 870 54 C 922 5 990 18 1002 72 C 1070 12 1155 30 1170 98 C 1248 42 1325 55 1340 128 C 1428 64 1520 78 1584 142 L 1584 226 C 1400 188 1264 175 1120 160 C 1012 150 920 124 870 54 Z" fill="url(#leaf_light)" opacity="0.70" />
+      <Path id="leaf_dabs_top" d="M 350 18 C 372 4 395 4 412 22 M 1120 38 C 1140 20 1175 22 1198 42 M 1338 80 C 1362 62 1400 66 1422 88 M 88 28 C 110 12 140 18 154 38 M 1012 122 C 1036 104 1065 108 1082 132" stroke="#C7EB68" strokeWidth="10" lineCap="round" fill="none" opacity="0.58" />
+    </Group>
+
+    <Group id="mid_leaf_clusters" x="0" y="0" opacity="1">
+      <Path id="left_mid_leaves" d="M 80 292 C 130 235 210 250 222 322 C 278 270 370 292 376 372 C 318 405 240 390 214 346 C 165 380 102 360 80 292 Z" fill="url(#leaf_light)" opacity="0.80" />
+      <Path id="right_mid_leaves" d="M 1162 336 C 1228 265 1320 288 1338 368 C 1405 312 1505 330 1532 414 C 1452 468 1330 430 1300 378 C 1258 420 1192 404 1162 336 Z" fill="url(#leaf_light)" opacity="0.78" />
+      <Path id="deep_underbrush_right" d="M 1215 555 C 1268 500 1350 510 1368 584 C 1438 538 1532 556 1584 626 L 1584 794 C 1460 758 1340 730 1200 706 C 1158 650 1162 592 1215 555 Z" fill="#254D36" opacity="0.70" />
+      <Path id="deep_underbrush_left" d="M 0 522 C 88 490 148 520 188 585 C 244 540 320 552 360 628 C 250 662 130 668 0 650 Z" fill="#2B5A38" opacity="0.72" />
+    </Group>
+
+    <Group id="atmosphere" x="0" y="0" opacity="1">
+      <Rect x="0" y="0" width="1584" height="891" fill="#FFFFFF" opacity="0.03" />
+      <Path id="sun_beam_left" d="M 0 135 C 260 270 455 380 650 560 L 560 612 C 345 462 175 310 0 220 Z" fill="#FFFFFF" opacity="0.08" />
+      <Path id="sun_beam_right" d="M 1250 0 C 1178 210 1102 372 1015 570 L 950 548 C 1032 342 1098 176 1160 0 Z" fill="#FFFFFF" opacity="0.07" />
+    </Group>
+  </Scene>
+
+  <Present from="forest_path_static_level1" />
+</Graph>

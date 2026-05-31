@@ -34,12 +34,13 @@ use crate::runtime_paths;
 use agent_client_protocol::{
     Agent, AuthenticateRequest, CancelNotification, Client, ClientCapabilities,
     ClientSideConnection, ContentBlock, ContentChunk, Error as AcpError, ExtRequest, ExtResponse,
-    FileSystemCapability, Implementation, InitializeRequest, NewSessionRequest,
+    FileSystemCapability, ImageContent, Implementation, InitializeRequest, NewSessionRequest,
     PermissionOptionKind, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
     SessionNotification, SessionUpdate,
 };
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use thiserror::Error;
@@ -58,6 +59,7 @@ enum AcpWorkerCommand {
     },
     SendPrompt {
         prompt: String,
+        image_attachments: Vec<AcpPromptImageAttachment>,
     },
     UpdateMediaPoolSnapshot {
         items: Vec<MediaPoolItem>,
@@ -67,6 +69,12 @@ enum AcpWorkerCommand {
     },
     Disconnect,
     Shutdown,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcpPromptImageAttachment {
+    pub path: PathBuf,
+    pub mime_type: String,
 }
 
 #[derive(Debug)]
@@ -617,8 +625,15 @@ impl AcpWorker {
             .send(AcpWorkerCommand::Connect { command, cwd, env });
     }
 
-    pub fn send_prompt(&self, prompt: String) {
-        let _ = self.cmd_tx.send(AcpWorkerCommand::SendPrompt { prompt });
+    pub fn send_prompt_with_images(
+        &self,
+        prompt: String,
+        image_attachments: Vec<AcpPromptImageAttachment>,
+    ) {
+        let _ = self.cmd_tx.send(AcpWorkerCommand::SendPrompt {
+            prompt,
+            image_attachments,
+        });
     }
 
     pub fn disconnect(&self) {
@@ -790,8 +805,22 @@ impl AcpSession {
         })
     }
 
-    async fn prompt(&self, prompt: String) -> Result<String, AcpInternalError> {
-        let req = PromptRequest::new(self.session_id.clone(), vec![ContentBlock::from(prompt)]);
+    async fn prompt(
+        &self,
+        prompt: String,
+        image_attachments: Vec<AcpPromptImageAttachment>,
+    ) -> Result<String, AcpInternalError> {
+        let mut blocks = vec![ContentBlock::from(prompt)];
+        for image in image_attachments {
+            if let Ok(bytes) = fs::read(&image.path) {
+                blocks.push(ContentBlock::Image(
+                    ImageContent::new(BASE64_STANDARD.encode(bytes), image.mime_type)
+                        .uri(format!("file://{}", image.path.display())),
+                ));
+            }
+        }
+
+        let req = PromptRequest::new(self.session_id.clone(), blocks);
         let rsp = self
             .conn
             .prompt(req)
@@ -1359,7 +1388,10 @@ fn worker_loop(cmd_rx: Receiver<AcpWorkerCommand>, evt_tx: Sender<AcpUiEvent>) {
                     }
                 }
             }
-            AcpWorkerCommand::SendPrompt { prompt } => {
+            AcpWorkerCommand::SendPrompt {
+                prompt,
+                image_attachments,
+            } => {
                 let Some(current) = session.as_ref() else {
                     let _ = evt_tx.send(AcpUiEvent::Error(
                         "ACP agent is not connected. Connect first.".to_string(),
@@ -1376,7 +1408,7 @@ fn worker_loop(cmd_rx: Receiver<AcpWorkerCommand>, evt_tx: Sender<AcpUiEvent>) {
                 match local.block_on(&runtime, async {
                     timeout(
                         Duration::from_secs(prompt_timeout_secs),
-                        current.prompt(prompt),
+                        current.prompt(prompt, image_attachments),
                     )
                     .await
                 }) {

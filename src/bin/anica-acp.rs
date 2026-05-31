@@ -3917,7 +3917,15 @@ fn collect_prompt_text(blocks: &[ContentBlock]) -> String {
                     lines.push(txt.to_string());
                 }
             }
-            ContentBlock::Image(_) => image_count += 1,
+            ContentBlock::Image(image) => {
+                image_count += 1;
+                if let Some(uri) = image.uri.as_deref() {
+                    lines.push(format!(
+                        "[attached image {image_count}] {uri} ({})",
+                        image.mime_type
+                    ));
+                }
+            }
             ContentBlock::Audio(_) => audio_count += 1,
             ContentBlock::Resource(_) | ContentBlock::ResourceLink(_) => resource_count += 1,
             _ => {}

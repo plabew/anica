@@ -1,0 +1,101 @@
+<Graph fps={60} duration="6s" size={[1920,1080]}>
+  <Background color="#071018" />
+
+  <Scene id="mask_matte_precompose_level1">
+    <Defs>
+      <LinearGradient id="neon_ramp" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#65F7FF, 0.48:#EAFEFF, 0.70:#FFB000, 1:#FF3D77" />
+      <LinearGradient id="luma_sweep" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#000000, 0.42:#000000, 0.52:#ffffff, 0.62:#000000, 1:#000000" />
+      <RadialGradient id="orb_soft" cx="0.50" cy="0.50" r="0.58"
+                      stops="0:#ffffff, 0.38:#65F7FFCC, 1:#65F7FF00" />
+    </Defs>
+
+    <!-- Reusable soft alpha mask for the title reveal. -->
+    <Mask id="title_wipe"
+          shape="rect"
+          x={curve("0.00:-270:ease_in_out, 1.30:180:ease_in_out, 3.20:180:linear, 4.70:1320:ease_in_out, 6.00:1920:ease_in_out")}
+          y="369"
+          width="705"
+          height="233"
+          radius="66"
+          feather="36" />
+
+    <!-- This luma precomp becomes a moving track matte for the neon ribbon. -->
+    <Precompose id="ribbon_luma_matte" size={[1920,1080]}>
+      <Rect x={curve("0.00:-630:ease_in_out, 2.80:480:ease_in_out, 6.00:1470:ease_in_out")}
+            y="0"
+            width="780"
+            height="1080"
+            color="url(#luma_sweep)"
+            opacity="1" />
+      <Circle x={curve("0.00:270:ease_in_out, 3.00:960:ease_in_out, 6.00:1650:ease_in_out")}
+              y={curve("0.00:810:ease_in_out, 2.60:315:ease_in_out, 6.00:630:ease_in_out")}
+              radius={curve("0.00:90:ease_in_out, 2.60:285:ease_in_out, 6.00:180:ease_in_out")}
+              color="#ffffff"
+              opacity="0.82" />
+    </Precompose>
+
+    <!-- Source layer: many primitives rendered once offscreen, then composited by <Layer source>. -->
+    <Precompose id="neon_ribbon_source" size={[1920,1080]}>
+      <Rect x="0" y="0" width="1920" height="1080" color="#000000" opacity="0" />
+      <Path d="M -120 765 C 240 480 480 915 780 585 C 1065 270 1365 315 2085 120"
+            stroke="#65F7FF"
+            strokeWidth="48"
+            lineCap="round"
+            fill="none"
+            opacity="0.88"
+            trimStart={curve("0.00:0.00:ease_in_out, 1.10:0.00:linear, 6.00:0.25:ease_in_out")}
+            trimEnd={curve("0.00:0.08:ease_in_out, 1.10:0.74:ease_in_out, 6.00:1.00:ease_in_out")} />
+      <Path d="M -120 765 C 240 480 480 915 780 585 C 1065 270 1365 315 2085 120"
+            stroke="#FFFFFF"
+            strokeWidth="11"
+            lineCap="round"
+            fill="none"
+            opacity="0.72"
+            blend="screen"
+            trimStart={curve("0.00:0.00:ease_in_out, 1.10:0.03:ease_in_out, 6.00:0.46:ease_in_out")}
+            trimEnd={curve("0.00:0.05:ease_in_out, 1.10:0.62:ease_in_out, 6.00:1.00:ease_in_out")} />
+      <Circle x={curve("0.00:255:ease_in_out, 3.00:960:ease_in_out, 6.00:1680:ease_in_out")}
+              y={curve("0.00:780:ease_in_out, 2.60:360:ease_in_out, 6.00:600:ease_in_out")}
+              radius={curve("0.00:180:ease_in_out, 3.00:345:ease_in_out, 6.00:225:ease_in_out")}
+              color="url(#orb_soft)"
+              blend="screen"
+              opacity={curve("0.00:0.10:ease_in_out, 2.80:0.80:ease_in_out, 6.00:0.38:ease_in_out")} />
+    </Precompose>
+
+    <Layer id="matted_neon_ribbon"
+           source="neon_ribbon_source"
+           matte="ribbon_luma_matte"
+           matteMode="luma"
+           blend="screen"
+           opacity="1" />
+
+    <!-- Group-level alpha mask: only this title group is revealed by title_wipe. -->
+    <Group id="masked_title_group" mask="title_wipe" maskMode="alpha" opacity="1">
+      <Text id="title"
+            value="MASK / MATTE"
+            x="144"
+            y="501"
+            fontSize="123"
+            color="#EAFEFF"
+            opacity="1" />
+      <Text id="subtitle"
+            value="Precompose source + luma matte + feathered group mask"
+            x="153"
+            y="579"
+            fontSize="42"
+            color="#65F7FF"
+            opacity="0.82" />
+    </Group>
+
+    <Text value="scene compositing test"
+          x="141"
+          y="957"
+          fontSize="33"
+          color="#FFFFFF"
+          opacity={curve("0.00:0.0:linear, 1.20:0.34:ease_in_out, 6.00:0.34:linear")} />
+  </Scene>
+
+  <Present from="mask_matte_precompose_level1" />
+</Graph>

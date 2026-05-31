@@ -4,9 +4,10 @@ use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_frame};
 fn public_scene_render_api_draws_cpu_frame() {
     let graph = parse_graph_script(
         r##"
-<Graph scope="scene" fps={60} duration="1s" size={[32,24]}>
+<Graph fps={60} duration="1s" size={[32,24]}>
+  <Background color="#000000" />
+
   <Scene id="api_scene">
-    <Solid color="#000000" />
     <Rect x="4" y="6" width="10" height="8" color="#ff0000" />
   </Scene>
   <Present from="api_scene" />

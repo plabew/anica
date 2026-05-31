@@ -1,0 +1,34 @@
+<Graph fps={30} duration="2s" size={[420,320]} renderSize={[420,320]}>
+  <Background color="#111827" />
+
+  <Scene id="pixel_grid_level1">
+    <Palette id="anime16">
+      <Color key="." value="#00000000" />
+      <Color key="K" value="#0B0D16" />
+      <Color key="S" value="#F4BDAF" />
+      <Color key="B" value="#8ABBE0" />
+      <Color key="W" value="#F8FAFC" />
+    </Palette>
+
+    <PixelGrid id="face_pixels"
+               x="118"
+               y="72"
+               pixelSize="14"
+               palette="anime16">
+      <![CDATA[
+....KKKK....
+..KKSSSSKK..
+.KSSSSSSSSK.
+.KSSKSSKSSK.
+.KSSSSSSSSK.
+..KKSSSSKK..
+....KKKK....
+.....BB.....
+....BBBB....
+...BBWWBB...
+      ]]>
+    </PixelGrid>
+  </Scene>
+
+  <Present from="pixel_grid_level1" />
+</Graph>

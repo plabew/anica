@@ -1,0 +1,43 @@
+    <Actor id="test_actor"
+           model="../sample_assets/glb/your_character.glb"
+           profile="test_actor_profile"
+           x="0"
+           y="0"
+           z="0"
+           yaw="40"
+           pitch="0"
+           roll="0"
+           scale="1"
+           opacity="1">
+      <Material style="toon" outline="true" outlineWidth="2" />
+      <Play clip="Idle" loop="true" speed="1" />
+    </Actor>
+  </World>
+   <Action id="calibration_walk_test" skeleton="humanoid_v1" duration="1s">
+    <Pose t="0.0">
+      <Bone id="upper_leg_l" forward="25" />
+      <Bone id="lower_leg_l" bend="35" />
+      <Bone id="upper_leg_r" forward="-25" />
+      <Bone id="lower_leg_r" bend="-15" />
+    </Pose>
+
+    <Pose t="0.5">
+      <Bone id="upper_leg_l" forward="-25" />
+      <Bone id="lower_leg_l" bend="-15" />
+      <Bone id="upper_leg_r" forward="25" />
+      <Bone id="lower_leg_r" bend="35" />
+    </Pose>
+
+    <Pose t="1.0">
+      <Bone id="upper_leg_l" forward="25" />
+      <Bone id="lower_leg_l" bend="35" />
+      <Bone id="upper_leg_r" forward="-25" />
+      <Bone id="lower_leg_r" bend="-15" />
+    </Pose>
+  </Action>
+
+  <ApplyAction target="test_actor"
+               action="calibration_walk_test"
+               at="0s"
+               loop="true"
+               weight="1" />

@@ -1,0 +1,125 @@
+<Graph fps={30} duration="3s" size={[478,980]} renderSize={[478,980]}>
+  <Background color="#191919" />
+
+  <Scene id="professor_bw_pose">
+    <!-- back arm -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M330 392 C364 420 395 463 401 508 C379 530 358 553 337 574 C328 536 312 493 295 454 Z" />
+    <Path fill="#111111" stroke="#111111" strokeWidth="3"
+          d="M270 376 C298 375 326 386 347 412 C338 426 322 440 301 450 C291 420 278 393 270 376 Z" />
+
+    <!-- legs -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M159 660 L225 660 L225 918 C208 926 187 928 166 920 L154 775 Z" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M229 660 L296 660 L303 921 C281 932 257 929 238 916 L225 760 Z" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M225 694 L224 915" />
+    <Path fill="#111111" stroke="#111111" strokeWidth="3"
+          d="M221 790 C235 812 234 858 219 874 L218 785 Z" />
+
+    <!-- shoes -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M98 919 C133 895 180 894 216 917 C201 943 121 947 94 939 Z" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M118 922 C145 914 177 913 205 925" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M240 917 C274 894 316 902 348 932 C334 956 268 957 240 940 Z" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M260 922 C284 915 313 921 336 940" />
+
+    <!-- coat body -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M153 400 C189 380 250 373 293 395 C304 472 313 575 307 685 C276 706 235 708 197 701 C170 710 134 704 106 685 C122 594 129 488 153 400 Z" />
+    <Path fill="none" stroke="#111111" strokeWidth="5"
+          d="M195 405 C182 470 180 570 198 700" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M248 407 C236 473 235 595 250 700" />
+
+    <!-- left sleeve / hand in pocket -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M134 463 C117 505 105 568 101 629 C105 648 116 666 128 680 C144 659 151 620 157 581 L169 477 Z" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+          d="M113 628 L139 665 L122 693 L101 651 Z" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M154 601 C136 613 122 631 112 654" />
+
+    <!-- lapels and tie -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M174 393 L212 456 L188 560 L143 430 Z" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M245 393 L218 456 L239 566 L284 425 Z" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+          d="M203 423 L224 423 L220 463 L207 463 Z" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+          d="M208 463 L222 463 L238 560 L207 602 L191 560 Z" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M162 483 L194 463 M256 480 L224 461" />
+    <Path fill="none" stroke="#111111" strokeWidth="3"
+          d="M156 525 L185 507 M160 545 L189 526" />
+
+    <!-- neck -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M184 328 L243 331 L243 399 C226 414 203 414 185 399 Z" />
+
+    <!-- head -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M118 179 C144 116 217 94 277 126 C329 154 344 214 325 275 C309 325 259 354 195 348 C139 343 105 305 111 253 C114 225 108 203 118 179 Z" />
+
+    <!-- ear -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M304 277 C334 251 365 259 356 294 C350 318 321 332 300 323 Z" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M318 286 C340 280 343 299 319 309 M319 309 C321 321 309 323 303 314" />
+
+    <!-- side hair behind ear -->
+    <Path fill="#111111" stroke="#111111" strokeWidth="3"
+          d="M281 326 C303 338 322 357 332 386 C306 382 281 371 260 349 Z" />
+
+    <!-- hair cloud -->
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+          d="M123 196 C98 161 112 111 151 96 C145 58 177 27 218 37 C237 12 286 14 302 51 C338 39 378 60 381 101 C421 99 452 129 446 170 C478 198 462 252 419 261 C424 297 396 325 361 315 C350 351 303 352 286 321 C251 335 212 324 196 292 C163 301 126 284 122 249 C89 240 91 207 123 196 Z" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+          d="M160 94 C154 126 170 153 202 156 C226 158 244 143 251 121" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+          d="M296 55 C272 78 268 113 292 133 C313 151 343 146 361 126" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+          d="M412 149 C386 154 372 179 382 205 C392 229 419 235 439 221" />
+    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+          d="M408 268 C383 256 357 267 350 292 C344 313 358 330 378 335" />
+
+    <!-- forehead / hairline -->
+    <Path fill="none" stroke="#111111" strokeWidth="5"
+          d="M126 197 C154 191 177 176 195 153 C218 179 239 190 267 192 L284 235 L287 294" />
+
+    <!-- eyes -->
+    <Circle x="154" y="265" radius="30" fill="#f2f2f2" stroke="#111111" strokeWidth="4" />
+    <Circle x="247" y="263" radius="31" fill="#f2f2f2" stroke="#111111" strokeWidth="4" />
+    <Circle x="161" y="267" radius="10" fill="#111111" />
+    <Circle x="248" y="264" radius="10" fill="#111111" />
+
+    <!-- brows -->
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M133 225 C147 214 164 214 178 225" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M222 224 C240 214 260 216 274 229" />
+
+    <!-- nose / mouth -->
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M190 284 L170 318 L201 324" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M169 346 C187 334 209 336 224 352" />
+
+    <!-- cheek / face contour -->
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M116 276 C122 318 147 343 187 350" />
+
+    <!-- pocket and coat details -->
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M253 622 C274 628 291 625 306 614" />
+    <Path fill="none" stroke="#111111" strokeWidth="4"
+          d="M129 693 C140 675 152 664 169 656" />
+  </Scene>
+
+  <Present from="professor_bw_pose" />
+</Graph>

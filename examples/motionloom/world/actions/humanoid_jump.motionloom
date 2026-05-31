@@ -1,0 +1,123 @@
+  <!-- Graph，Reusable humanoid_v1 action. Copy this Action into a GLB animation graph,
+       then attach it with: <ApplyAction target="actor_id" action="jump" at="0s" loop="true" /> -->
+
+  <Action id="jump" skeleton="humanoid_v1" duration="1.6s">
+    <Pose t="0.0">
+      <Bone id="hips" y="0" rotationZ="0" />
+      <Bone id="spine" rotationZ="0" />
+      <Bone id="chest" rotationZ="0" />
+      <Bone id="head" rotationZ="0" />
+      <Bone id="upper_leg_l" rotationZ="0" />
+      <Bone id="lower_leg_l" rotationZ="0" />
+      <Bone id="foot_l" rotationZ="0" />
+      <Bone id="upper_leg_r" rotationZ="0" />
+      <Bone id="lower_leg_r" rotationZ="0" />
+      <Bone id="foot_r" rotationZ="0" />
+      <Bone id="upper_arm_l" rotationZ="-8" />
+      <Bone id="forearm_l" rotationZ="6" />
+      <Bone id="upper_arm_r" rotationZ="8" />
+      <Bone id="forearm_r" rotationZ="-6" />
+    </Pose>
+
+    <Pose t="0.22">
+      <Bone id="hips" y="-0.08" rotationZ="0" />
+      <Bone id="spine" rotationZ="4" />
+      <Bone id="chest" rotationZ="5" />
+      <Bone id="head" rotationZ="-3" />
+      <Bone id="upper_leg_l" rotationZ="18" />
+      <Bone id="lower_leg_l" rotationZ="-48" />
+      <Bone id="foot_l" rotationZ="16" />
+      <Bone id="upper_leg_r" rotationZ="-18" />
+      <Bone id="lower_leg_r" rotationZ="48" />
+      <Bone id="foot_r" rotationZ="-16" />
+      <Bone id="upper_arm_l" rotationZ="42" />
+      <Bone id="forearm_l" rotationZ="-28" />
+      <Bone id="upper_arm_r" rotationZ="-42" />
+      <Bone id="forearm_r" rotationZ="28" />
+    </Pose>
+
+    <Pose t="0.45">
+      <Bone id="hips" y="0.24" rotationZ="0" />
+      <Bone id="spine" rotationZ="-2" />
+      <Bone id="chest" rotationZ="-3" />
+      <Bone id="head" rotationZ="2" />
+      <Bone id="upper_leg_l" rotationZ="-8" />
+      <Bone id="lower_leg_l" rotationZ="14" />
+      <Bone id="foot_l" rotationZ="-8" />
+      <Bone id="upper_leg_r" rotationZ="8" />
+      <Bone id="lower_leg_r" rotationZ="-14" />
+      <Bone id="foot_r" rotationZ="8" />
+      <Bone id="upper_arm_l" rotationZ="-58" />
+      <Bone id="forearm_l" rotationZ="28" />
+      <Bone id="upper_arm_r" rotationZ="58" />
+      <Bone id="forearm_r" rotationZ="-28" />
+    </Pose>
+
+    <Pose t="0.80">
+      <Bone id="hips" y="0.34" rotationZ="0" />
+      <Bone id="spine" rotationZ="0" />
+      <Bone id="chest" rotationZ="0" />
+      <Bone id="head" rotationZ="0" />
+      <Bone id="upper_leg_l" rotationZ="-14" />
+      <Bone id="lower_leg_l" rotationZ="24" />
+      <Bone id="foot_l" rotationZ="-10" />
+      <Bone id="upper_leg_r" rotationZ="14" />
+      <Bone id="lower_leg_r" rotationZ="-24" />
+      <Bone id="foot_r" rotationZ="10" />
+      <Bone id="upper_arm_l" rotationZ="-68" />
+      <Bone id="forearm_l" rotationZ="35" />
+      <Bone id="upper_arm_r" rotationZ="68" />
+      <Bone id="forearm_r" rotationZ="-35" />
+    </Pose>
+
+    <Pose t="1.08">
+      <Bone id="hips" y="0.08" rotationZ="0" />
+      <Bone id="spine" rotationZ="3" />
+      <Bone id="chest" rotationZ="4" />
+      <Bone id="head" rotationZ="-2" />
+      <Bone id="upper_leg_l" rotationZ="12" />
+      <Bone id="lower_leg_l" rotationZ="-34" />
+      <Bone id="foot_l" rotationZ="12" />
+      <Bone id="upper_leg_r" rotationZ="-12" />
+      <Bone id="lower_leg_r" rotationZ="34" />
+      <Bone id="foot_r" rotationZ="-12" />
+      <Bone id="upper_arm_l" rotationZ="-22" />
+      <Bone id="forearm_l" rotationZ="12" />
+      <Bone id="upper_arm_r" rotationZ="22" />
+      <Bone id="forearm_r" rotationZ="-12" />
+    </Pose>
+
+    <Pose t="1.28">
+      <Bone id="hips" y="-0.04" rotationZ="0" />
+      <Bone id="spine" rotationZ="-2" />
+      <Bone id="chest" rotationZ="-3" />
+      <Bone id="head" rotationZ="2" />
+      <Bone id="upper_leg_l" rotationZ="8" />
+      <Bone id="lower_leg_l" rotationZ="-22" />
+      <Bone id="foot_l" rotationZ="8" />
+      <Bone id="upper_leg_r" rotationZ="-8" />
+      <Bone id="lower_leg_r" rotationZ="22" />
+      <Bone id="foot_r" rotationZ="-8" />
+      <Bone id="upper_arm_l" rotationZ="-6" />
+      <Bone id="forearm_l" rotationZ="4" />
+      <Bone id="upper_arm_r" rotationZ="6" />
+      <Bone id="forearm_r" rotationZ="-4" />
+    </Pose>
+
+    <Pose t="1.6">
+      <Bone id="hips" y="0" rotationZ="0" />
+      <Bone id="spine" rotationZ="0" />
+      <Bone id="chest" rotationZ="0" />
+      <Bone id="head" rotationZ="0" />
+      <Bone id="upper_leg_l" rotationZ="0" />
+      <Bone id="lower_leg_l" rotationZ="0" />
+      <Bone id="foot_l" rotationZ="0" />
+      <Bone id="upper_leg_r" rotationZ="0" />
+      <Bone id="lower_leg_r" rotationZ="0" />
+      <Bone id="foot_r" rotationZ="0" />
+      <Bone id="upper_arm_l" rotationZ="-8" />
+      <Bone id="forearm_l" rotationZ="6" />
+      <Bone id="upper_arm_r" rotationZ="8" />
+      <Bone id="forearm_r" rotationZ="-6" />
+    </Pose>
+  </Action>

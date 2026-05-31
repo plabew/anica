@@ -1,0 +1,74 @@
+<Graph fps={60} duration="1s" size={[900,1200]}>
+  <Background color="#f7f7f7" />
+
+  <Scene id="character5_front_rig_level1">
+
+    <Defs>
+      <Brush id="rig_bone" stroke="#1f2a37" strokeWidth="7" strokeStyle="pencil" strokeRoughness="0.6" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="rig_bone_heavy" stroke="#111827" strokeWidth="9" strokeStyle="pencil" strokeRoughness="0.55" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="rig_joint" stroke="#2f6fed" strokeWidth="4" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="rig_volume" stroke="#64748b" strokeWidth="2.6" strokeStyle="pencil" strokeRoughness="0.5" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.55" />
+      <Brush id="rig_guide" stroke="#94a3b8" strokeWidth="2" strokeStyle="pencil" strokeRoughness="0.4" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.38" />
+    </Defs>
+
+    <Character id="character5_front_rig"
+               x="450" y="118" scale="1"
+               opacity="1">
+      <Part id="head_blank_front" label="Blank head front" role="head" brush="rig_bone_heavy" anchorX="0" anchorY="0">
+        <Path id="head_outer_shape" d="M -86 0 C -86 -54 -50 -94 0 -96 C 50 -94 86 -54 86 0 C 86 55 50 94 0 96 C -50 94 -86 55 -86 0 Z" />
+        <Path id="head_center_guide" brush="rig_guide" d="M 0 -96 L 0 96 M -64 0 L 64 0" />
+      </Part>
+
+      <Part id="neck_front" label="Neck front" role="neck" brush="rig_bone" y="96" anchorX="0" anchorY="0">
+        <Path id="neck_bone" d="M 0 0 L 0 82" />
+        <Path id="neck_joints" brush="rig_joint" d="M -12 0 C -12 -7 -7 -12 0 -12 C 7 -12 12 -7 12 0 C 12 7 7 12 0 12 C -7 12 -12 7 -12 0 Z M -14 82 C -14 74 -8 68 0 68 C 8 68 14 74 14 82 C 14 90 8 96 0 96 C -8 96 -14 90 -14 82 Z" />
+      </Part>
+
+      <Part id="torso_core_front" label="Torso core front" role="torso" brush="rig_bone" y="178" anchorX="0" anchorY="0">
+        <Path id="spine_chain" d="M 0 0 L 0 96 L 0 208" />
+        <Path id="shoulder_axis" d="M -118 28 L 118 28" />
+        <Path id="hip_axis" d="M -86 208 L 86 208" />
+        <Path id="torso_volume" brush="rig_volume" d="M -108 28 C -96 88 -70 154 0 176 C 70 154 96 88 108 28 M -86 208 C -52 248 52 248 86 208" />
+        <Path id="torso_joints" brush="rig_joint" d="M -132 28 C -132 20 -126 14 -118 14 C -110 14 -104 20 -104 28 C -104 36 -110 42 -118 42 C -126 42 -132 36 -132 28 Z M 104 28 C 104 20 110 14 118 14 C 126 14 132 20 132 28 C 132 36 126 42 118 42 C 110 42 104 36 104 28 Z M -13 28 C -13 20 -8 15 0 15 C 8 15 13 20 13 28 C 13 36 8 41 0 41 C -8 41 -13 36 -13 28 Z M -12 96 C -12 89 -7 84 0 84 C 7 84 12 89 12 96 C 12 103 7 108 0 108 C -7 108 -12 103 -12 96 Z M -15 208 C -15 199 -9 193 0 193 C 9 193 15 199 15 208 C 15 217 9 223 0 223 C -9 223 -15 217 -15 208 Z M -100 208 C -100 200 -94 194 -86 194 C -78 194 -72 200 -72 208 C -72 216 -78 222 -86 222 C -94 222 -100 216 -100 208 Z M 72 208 C 72 200 78 194 86 194 C 94 194 100 200 100 208 C 100 216 94 222 86 222 C 78 222 72 216 72 208 Z" />
+      </Part>
+
+      <Part id="left_arm_front" label="Left arm front" role="arm_l" brush="rig_bone" y="206" anchorX="-118" anchorY="0">
+        <Path id="left_arm_bones" d="M -118 0 L -196 138 L -234 282" />
+        <Path id="left_arm_volume" brush="rig_volume" d="M -128 0 C -162 42 -190 92 -206 138 M -107 4 C -137 48 -166 96 -186 143 M -208 141 C -226 190 -236 236 -244 282 M -184 143 C -205 193 -219 239 -224 286" />
+        <Path id="left_arm_joints" brush="rig_joint" d="M -133 0 C -133 -9 -127 -15 -118 -15 C -109 -15 -103 -9 -103 0 C -103 9 -109 15 -118 15 C -127 15 -133 9 -133 0 Z M -211 138 C -211 129 -205 123 -196 123 C -187 123 -181 129 -181 138 C -181 147 -187 153 -196 153 C -205 153 -211 147 -211 138 Z M -248 282 C -248 274 -242 268 -234 268 C -226 268 -220 274 -220 282 C -220 290 -226 296 -234 296 C -242 296 -248 290 -248 282 Z" />
+      </Part>
+
+      <Part id="right_arm_front" label="Right arm front" role="arm_r" brush="rig_bone" y="206" anchorX="118" anchorY="0">
+        <Path id="right_arm_bones" d="M 118 0 L 196 138 L 234 282" />
+        <Path id="right_arm_volume" brush="rig_volume" d="M 128 0 C 162 42 190 92 206 138 M 107 4 C 137 48 166 96 186 143 M 208 141 C 226 190 236 236 244 282 M 184 143 C 205 193 219 239 224 286" />
+        <Path id="right_arm_joints" brush="rig_joint" d="M 103 0 C 103 -9 109 -15 118 -15 C 127 -15 133 -9 133 0 C 133 9 127 15 118 15 C 109 15 103 9 103 0 Z M 181 138 C 181 129 187 123 196 123 C 205 123 211 129 211 138 C 211 147 205 153 196 153 C 187 153 181 147 181 138 Z M 220 282 C 220 274 226 268 234 268 C 242 268 248 274 248 282 C 248 290 242 296 234 296 C 226 296 220 290 220 282 Z" />
+      </Part>
+
+      <Part id="left_hand_front" label="Left hand front" role="hand_l" brush="rig_bone" y="488" anchorX="-234" anchorY="0">
+        <Path id="left_palm_shape" brush="rig_volume" d="M -258 -4 C -266 22 -262 58 -242 78 C -222 64 -210 30 -212 2 C -226 -8 -244 -10 -258 -4 Z" />
+        <Path id="left_hand_bones" d="M -234 0 L -238 72 M -238 72 L -270 118 M -238 72 L -254 130 M -238 72 L -234 136 M -238 72 L -214 124 M -254 38 L -290 64 L -304 92" />
+        <Path id="left_finger_joints" brush="rig_joint" d="M -247 0 C -247 -8 -242 -13 -234 -13 C -226 -13 -221 -8 -221 0 C -221 8 -226 13 -234 13 C -242 13 -247 8 -247 0 Z M -278 118 C -278 114 -274 110 -270 110 C -266 110 -262 114 -262 118 C -262 122 -266 126 -270 126 C -274 126 -278 122 -278 118 Z M -262 130 C -262 126 -258 122 -254 122 C -250 122 -246 126 -246 130 C -246 134 -250 138 -254 138 C -258 138 -262 134 -262 130 Z M -242 136 C -242 132 -238 128 -234 128 C -230 128 -226 132 -226 136 C -226 140 -230 144 -234 144 C -238 144 -242 140 -242 136 Z M -222 124 C -222 120 -218 116 -214 116 C -210 116 -206 120 -206 124 C -206 128 -210 132 -214 132 C -218 132 -222 128 -222 124 Z" />
+      </Part>
+
+      <Part id="right_hand_front" label="Right hand front" role="hand_r" brush="rig_bone" y="488" anchorX="234" anchorY="0">
+        <Path id="right_palm_shape" brush="rig_volume" d="M 258 -4 C 266 22 262 58 242 78 C 222 64 210 30 212 2 C 226 -8 244 -10 258 -4 Z" />
+        <Path id="right_hand_bones" d="M 234 0 L 238 72 M 238 72 L 270 118 M 238 72 L 254 130 M 238 72 L 234 136 M 238 72 L 214 124 M 254 38 L 290 64 L 304 92" />
+        <Path id="right_finger_joints" brush="rig_joint" d="M 221 0 C 221 -8 226 -13 234 -13 C 242 -13 247 -8 247 0 C 247 8 242 13 234 13 C 226 13 221 8 221 0 Z M 262 118 C 262 114 266 110 270 110 C 274 110 278 114 278 118 C 278 122 274 126 270 126 C 266 126 262 122 262 118 Z M 246 130 C 246 126 250 122 254 122 C 258 122 262 126 262 130 C 262 134 258 138 254 138 C 250 138 246 134 246 130 Z M 226 136 C 226 132 230 128 234 128 C 238 128 242 132 242 136 C 242 140 238 144 234 144 C 230 144 226 140 226 136 Z M 206 124 C 206 120 210 116 214 116 C 218 116 222 120 222 124 C 222 128 218 132 214 132 C 210 132 206 128 206 124 Z" />
+      </Part>
+
+      <Part id="left_leg_front" label="Left leg front" role="leg_l" brush="rig_bone_heavy" y="386" anchorX="-86" anchorY="0">
+        <Path id="left_leg_bones" d="M -86 0 L -128 172 L -144 340 L -202 362" />
+        <Path id="left_leg_volume" brush="rig_volume" d="M -100 2 C -118 54 -131 112 -140 172 M -72 4 C -82 60 -98 118 -116 176 M -140 174 C -150 226 -153 286 -156 340 M -116 176 C -126 230 -131 288 -132 344" />
+        <Path id="left_leg_joints" brush="rig_joint" d="M -101 0 C -101 -9 -95 -15 -86 -15 C -77 -15 -71 -9 -71 0 C -71 9 -77 15 -86 15 C -95 15 -101 9 -101 0 Z M -144 172 C -144 162 -138 156 -128 156 C -118 156 -112 162 -112 172 C -112 182 -118 188 -128 188 C -138 188 -144 182 -144 172 Z M -158 340 C -158 332 -152 326 -144 326 C -136 326 -130 332 -130 340 C -130 348 -136 354 -144 354 C -152 354 -158 348 -158 340 Z" />
+      </Part>
+
+      <Part id="right_leg_front" label="Right leg front" role="leg_r" brush="rig_bone_heavy" y="386" anchorX="86" anchorY="0">
+        <Path id="right_leg_bones" d="M 86 0 L 128 172 L 144 340 L 202 362" />
+        <Path id="right_leg_volume" brush="rig_volume" d="M 100 2 C 118 54 131 112 140 172 M 72 4 C 82 60 98 118 116 176 M 140 174 C 150 226 153 286 156 340 M 116 176 C 126 230 131 288 132 344" />
+        <Path id="right_leg_joints" brush="rig_joint" d="M 71 0 C 71 -9 77 -15 86 -15 C 95 -15 101 -9 101 0 C 101 9 95 15 86 15 C 77 15 71 9 71 0 Z M 112 172 C 112 162 118 156 128 156 C 138 156 144 162 144 172 C 144 182 138 188 128 188 C 118 188 112 182 112 172 Z M 130 340 C 130 332 136 326 144 326 C 152 326 158 332 158 340 C 158 348 152 354 144 354 C 136 354 130 348 130 340 Z" />
+      </Part>
+    </Character>
+  </Scene>
+
+  <Present from="character5_front_rig_level1" />
+</Graph>

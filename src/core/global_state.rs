@@ -121,6 +121,7 @@ pub enum AppPage {
     AiAgents,
     MotionLoom,
     VectorLab,
+    CharacterDesign,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +136,17 @@ pub struct AiChatMessage {
     pub role: AiChatRole,
     pub text: String,
     pub pending: bool,
+    pub image_attachments: Vec<AiChatImageAttachment>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AiChatImageAttachment {
+    pub id: String,
+    pub path: PathBuf,
+    pub mime_type: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub byte_len: usize,
 }
 
 // ── Silence preview modal state for ACP inspect-intent flow ──
@@ -1987,12 +1999,14 @@ pub struct GlobalState {
     pub ui_notice: Option<String>,
     pub semantic_mark_start: Option<Duration>,
     pub ai_chat_messages: Vec<AiChatMessage>,
+    pub ai_chat_pending_images: Vec<AiChatImageAttachment>,
     // Shared MotionLoom VFX graph script for ACP <-> VFX page editing.
     pub motionloom_scene_script: String,
     pub motionloom_scene_script_revision: u64,
     pub motionloom_scene_apply_revision: u64,
     pub motionloom_scene_render_mode: Option<String>,
     pub motionloom_scene_render_revision: u64,
+    pub motionloom_scene_preview_frame: u32,
     /// Silence preview modal: shown when ACP inspect-intent returns silence candidates.
     pub silence_preview_modal: Option<SilencePreviewModalState>,
     pub pending_trim_to_fit: Option<PendingTrimToFit>,
@@ -2089,11 +2103,13 @@ impl Default for GlobalState {
             ui_notice: None,
             semantic_mark_start: None,
             ai_chat_messages: Vec::new(),
+            ai_chat_pending_images: Vec::new(),
             motionloom_scene_script: String::new(),
             motionloom_scene_script_revision: 0,
             motionloom_scene_apply_revision: 0,
             motionloom_scene_render_mode: None,
             motionloom_scene_render_revision: 0,
+            motionloom_scene_preview_frame: 0,
             silence_preview_modal: None,
             pending_trim_to_fit: None,
             proxy_entries: HashMap::new(),
@@ -2126,6 +2142,18 @@ impl GlobalState {
 
     pub fn motionloom_scene_render_mode(&self) -> Option<&str> {
         self.motionloom_scene_render_mode.as_deref()
+    }
+
+    pub fn motionloom_scene_preview_frame(&self) -> u32 {
+        self.motionloom_scene_preview_frame
+    }
+
+    pub fn set_motionloom_scene_preview_frame(&mut self, frame: u32) -> bool {
+        if self.motionloom_scene_preview_frame == frame {
+            return false;
+        }
+        self.motionloom_scene_preview_frame = frame;
+        true
     }
 
     pub fn set_motionloom_scene_script(&mut self, script: String, apply_now: bool) -> (bool, bool) {

@@ -3329,24 +3329,6 @@ impl FrameRamCache {
         }
         evicted_images
     }
-
-    fn clear_video(&mut self, video_id: u64) -> Vec<Arc<RenderImage>> {
-        let mut dropped = Vec::new();
-        let keys: Vec<FrameRamCacheKey> = self
-            .entries
-            .keys()
-            .copied()
-            .filter(|key| key.video_id == video_id)
-            .collect();
-        for key in keys {
-            if let Some(entry) = self.entries.remove(&key) {
-                self.total_bytes = self.total_bytes.saturating_sub(entry.bytes);
-                dropped.push(entry.image);
-            }
-        }
-        self.lru.retain(|key| key.video_id != video_id);
-        dropped
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3451,20 +3433,84 @@ impl SurfaceRamCache {
             }
         }
     }
+}
 
-    fn clear_video(&mut self, video_id: u64) {
-        let keys: Vec<SurfaceCacheKey> = self
-            .entries
-            .keys()
-            .copied()
-            .filter(|key| key.video_id == video_id)
-            .collect();
-        for key in keys {
-            if let Some(entry) = self.entries.remove(&key) {
-                self.total_bytes = self.total_bytes.saturating_sub(entry.estimated_bytes);
+#[cfg(target_os = "macos")]
+struct ProcessedSurfaceRamCache {
+    entries: HashMap<FrameRamCacheKey, SurfaceCacheEntry>,
+    lru: VecDeque<FrameRamCacheKey>,
+    total_bytes: usize,
+    budget_bytes: usize,
+    hits: u64,
+    misses: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl ProcessedSurfaceRamCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
+            total_bytes: 0,
+            budget_bytes: FrameRamCache::budget_bytes(),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    fn touch(&mut self, key: FrameRamCacheKey) {
+        if let Some(pos) = self.lru.iter().position(|k| *k == key) {
+            let _ = self.lru.remove(pos);
+        }
+        self.lru.push_back(key);
+    }
+
+    fn get(&mut self, key: FrameRamCacheKey) -> Option<CVPixelBuffer> {
+        let surface = self.entries.get(&key).map(|entry| entry.surface.clone());
+        if surface.is_some() {
+            self.hits = self.hits.saturating_add(1);
+            self.touch(key);
+        } else {
+            self.misses = self.misses.saturating_add(1);
+        }
+        if (self.hits + self.misses) % 240 == 0 {
+            log::info!(
+                "[VideoElement][ProcessedSurfaceCache] entries={} mem_mb={:.1}/{:.1} hits={} misses={}",
+                self.entries.len(),
+                self.total_bytes as f64 / (1024.0 * 1024.0),
+                self.budget_bytes as f64 / (1024.0 * 1024.0),
+                self.hits,
+                self.misses
+            );
+        }
+        surface
+    }
+
+    fn insert(&mut self, key: FrameRamCacheKey, surface: CVPixelBuffer, estimated_bytes: usize) {
+        if let Some(old) = self.entries.remove(&key) {
+            self.total_bytes = self.total_bytes.saturating_sub(old.estimated_bytes);
+            self.touch(key);
+        } else {
+            self.lru.push_back(key);
+        }
+
+        self.total_bytes = self.total_bytes.saturating_add(estimated_bytes);
+        self.entries.insert(
+            key,
+            SurfaceCacheEntry {
+                surface,
+                estimated_bytes,
+            },
+        );
+
+        while self.total_bytes > self.budget_bytes {
+            let Some(oldest) = self.lru.pop_front() else {
+                break;
+            };
+            if let Some(evicted) = self.entries.remove(&oldest) {
+                self.total_bytes = self.total_bytes.saturating_sub(evicted.estimated_bytes);
             }
         }
-        self.lru.retain(|key| key.video_id != video_id);
     }
 }
 
@@ -4333,6 +4379,15 @@ impl VideoElement {
         }
     }
 
+    fn has_frame_render_effects(&self) -> bool {
+        let has_localized_effect = self.local_mask_active()
+            && (self.has_local_blur_effects() || self.has_local_color_or_alpha_effects());
+        self.has_color_or_alpha_effects()
+            || self.has_transform_effects()
+            || self.effective_signed_blur_sigma().abs() >= 0.001
+            || has_localized_effect
+    }
+
     fn needs_pixel_processing(&self) -> bool {
         let has_localized_effect = self.local_mask_active()
             && (self.has_local_blur_effects() || self.has_local_color_or_alpha_effects());
@@ -4420,6 +4475,9 @@ impl Element for VideoElement {
         let surface_ram_cache: Entity<SurfaceRamCache> =
             window.use_state(cx, |_, _| SurfaceRamCache::new());
         #[cfg(target_os = "macos")]
+        let processed_surface_ram_cache: Entity<ProcessedSurfaceRamCache> =
+            window.use_state(cx, |_, _| ProcessedSurfaceRamCache::new());
+        #[cfg(target_os = "macos")]
         let last_surface_blur_cache: Entity<Option<SurfaceBlurCacheEntry>> =
             window.use_state(cx, |_, _| None);
         // Async NV12 blur: holds an in-flight Metal compute job.
@@ -4432,18 +4490,11 @@ impl Element for VideoElement {
         let was_paused = last_paused_state.read(cx).as_ref().copied();
         let playback_state_changed = was_paused != Some(is_paused);
         let _ = last_paused_state.update(cx, |state, _| state.replace(is_paused));
-        let allow_ram_cache = is_paused;
+        let allow_decoded_ram_cache = is_paused;
         if playback_state_changed && !is_paused {
-            // Continuous playback generates unique PTS frames and can balloon RAM.
-            // Flush this video's paused/scrub caches when entering play.
-            let dropped = frame_ram_cache.update(cx, |cache, _| cache.clear_video(self.video.id()));
-            for img in dropped {
-                cx.drop_image(img, Some(window));
-            }
+            // Keep LRU render caches warm across play/stop cycles, but drop stale in-flight work.
             #[cfg(target_os = "macos")]
             {
-                surface_ram_cache.update(cx, |cache, _| cache.clear_video(self.video.id()));
-                let _ = last_surface_buffer.update(cx, |state, _| state.take());
                 let _ = last_surface_blur_cache.update(cx, |state, _| state.take());
                 let _ = pending_nv12_blur.update(cx, |state, _| state.take());
                 let _ = nv12_effect_fail_streak.update(cx, |streak, _| *streak = 0);
@@ -4485,6 +4536,7 @@ impl Element for VideoElement {
             pts_ns: frame_pts_ns,
             pixel_key,
         };
+        let allow_frame_render_cache = frame_pts_ns > 0 && self.has_frame_render_effects();
 
         #[cfg(target_os = "macos")]
         {
@@ -4504,7 +4556,7 @@ impl Element for VideoElement {
                     };
 
                     // 1. Try surface RAM cache first (avoids GStreamer decode)
-                    let cached = if allow_ram_cache && frame_pts_ns > 0 {
+                    let cached = if allow_decoded_ram_cache && frame_pts_ns > 0 {
                         surface_ram_cache.update(cx, |cache, _| cache.get(cache_key))
                     } else {
                         None
@@ -4516,7 +4568,7 @@ impl Element for VideoElement {
                         refreshed_surface = true;
                     } else if let Some(surface) = self.video.current_frame_surface_nv12() {
                         // Cache miss — decoded via GStreamer, insert into cache for future reuse
-                        if allow_ram_cache && frame_pts_ns > 0 {
+                        if allow_decoded_ram_cache && frame_pts_ns > 0 {
                             let (w, h) = frame_size;
                             let estimated_bytes = (w as usize) * (h as usize) * 3 / 2;
                             surface_ram_cache.update(cx, |cache, _| {
@@ -4571,10 +4623,24 @@ impl Element for VideoElement {
                             }
                             None
                         });
-                        // Update the blur cache with the completed async result.
+                        // Store completed effect output by frame + effect key so playback can reuse it.
                         if let Some((completed_surface, completed_pts, completed_key)) =
                             async_completed
                         {
+                            let (w, h) = frame_size;
+                            let estimated_bytes = (w as usize) * (h as usize) * 3 / 2;
+                            let completed_cache_key = FrameRamCacheKey {
+                                video_id: self.video.id(),
+                                pts_ns: completed_pts,
+                                pixel_key: completed_key,
+                            };
+                            processed_surface_ram_cache.update(cx, |cache, _| {
+                                cache.insert(
+                                    completed_cache_key,
+                                    completed_surface.clone(),
+                                    estimated_bytes,
+                                );
+                            });
                             let entry = SurfaceBlurCacheEntry {
                                 frame_pts_ns: completed_pts,
                                 pixel_key: completed_key,
@@ -4585,19 +4651,26 @@ impl Element for VideoElement {
                         }
 
                         // Step 2: Try exact cache hit (same frame + same params).
-                        let mut blurred_surface = last_surface_blur_cache
-                            .read(cx)
-                            .as_ref()
-                            .cloned()
-                            .and_then(|cached| {
-                                if cached.frame_pts_ns == frame_pts_ns
-                                    && cached.pixel_key == pixel_key
-                                {
-                                    Some(cached.surface)
-                                } else {
-                                    None
-                                }
-                            });
+                        let mut blurred_surface = if frame_pts_ns > 0 {
+                            processed_surface_ram_cache
+                                .update(cx, |cache, _| cache.get(frame_cache_key))
+                        } else {
+                            None
+                        };
+                        if blurred_surface.is_none() {
+                            blurred_surface =
+                                last_surface_blur_cache.read(cx).as_ref().cloned().and_then(
+                                    |cached| {
+                                        if cached.frame_pts_ns == frame_pts_ns
+                                            && cached.pixel_key == pixel_key
+                                        {
+                                            Some(cached.surface)
+                                        } else {
+                                            None
+                                        }
+                                    },
+                                );
+                        }
                         let mut nv12_effect_failed = false;
 
                         // Step 3: Submit new async blur if no work is in flight.
@@ -4618,6 +4691,15 @@ impl Element for VideoElement {
                                     let sync_result =
                                         self.apply_metal_nv12_effects_surface(&surface);
                                     if let Some(s) = sync_result.as_ref() {
+                                        let (w, h) = frame_size;
+                                        let estimated_bytes = (w as usize) * (h as usize) * 3 / 2;
+                                        processed_surface_ram_cache.update(cx, |cache, _| {
+                                            cache.insert(
+                                                frame_cache_key,
+                                                s.clone(),
+                                                estimated_bytes,
+                                            );
+                                        });
                                         let entry = SurfaceBlurCacheEntry {
                                             frame_pts_ns,
                                             pixel_key,
@@ -4731,8 +4813,7 @@ impl Element for VideoElement {
         // Update texture only when a fresh decoded frame arrives (or first paint has no texture yet).
         if has_new_frame || image_to_paint.is_none() || pixel_key_changed {
             // True RAM cache path: key by (video_id + frame pts + effect key).
-            if allow_ram_cache
-                && frame_pts_ns > 0
+            if allow_frame_render_cache
                 && let Some(cached) =
                     frame_ram_cache.update(cx, |cache, _| cache.get(frame_cache_key))
             {
@@ -4754,7 +4835,7 @@ impl Element for VideoElement {
                     frame_size = (width, height);
                     let _ = last_pixel_key.update(cx, |state, _| state.replace(pixel_key));
 
-                    if allow_ram_cache && frame_pts_ns > 0 {
+                    if allow_frame_render_cache {
                         let evicted = frame_ram_cache.update(cx, |cache, _| {
                             cache.insert(
                                 frame_cache_key,

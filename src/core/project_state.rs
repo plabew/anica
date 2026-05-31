@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -594,10 +595,48 @@ pub fn save_project_to_path(gs: &GlobalState, path: impl AsRef<Path>) -> anyhow:
     let cache_root = gs.cache_root_dir();
     let state = ProjectState::from_global_with_embed_previews(gs, Some(cache_root.as_path()));
     let data = serde_json::to_vec(&state)?;
-    if let Some(parent) = path.as_ref().parent() {
+    write_project_file_atomic(path.as_ref(), &data)?;
+    Ok(())
+}
+
+fn write_project_file_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, data)?;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project.anica.json");
+    let tmp_path = parent.join(format!(
+        ".{file_name}.tmp.{}.{}",
+        std::process::id(),
+        now_epoch_millis()
+    ));
+
+    let write_result = (|| -> anyhow::Result<()> {
+        let mut file = fs::File::create(&tmp_path)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(err) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    #[cfg(target_os = "windows")]
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+
     Ok(())
 }
 
@@ -1791,4 +1830,31 @@ fn prune_snapshots(dir: &Path, keep: usize) -> anyhow::Result<()> {
         let _ = fs::remove_file(entry.path());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_project_file_atomic;
+    use std::fs;
+
+    #[test]
+    fn atomic_project_write_creates_parent_and_overwrites_file() {
+        let root = std::env::temp_dir().join(format!(
+            "anica_project_write_test_{}_{}",
+            std::process::id(),
+            super::now_epoch_millis()
+        ));
+        let path = root.join("nested").join("project.anica.json");
+
+        write_project_file_atomic(&path, b"first").expect("initial atomic write");
+        assert_eq!(fs::read(&path).expect("read initial project"), b"first");
+
+        write_project_file_atomic(&path, b"second").expect("overwrite atomic write");
+        assert_eq!(
+            fs::read(&path).expect("read overwritten project"),
+            b"second"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

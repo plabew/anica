@@ -1,0 +1,116 @@
+
+  <!-- Graph ，Reusable humanoid_v1 action. Copy this Action into a GLB animation graph,
+       then attach it with: <ApplyAction target="actor_id" action="wave_hand" at="0s" loop="true" /> -->
+
+  <Action id="wave_hand" skeleton="humanoid_v1" duration="2s">
+    <!-- Neutral pose. Keep the arm close to the original rest pose before raising it. -->
+    <Pose t="0.0">
+      <Bone id="hips" rotationZ="0" />
+      <Bone id="spine" rotationZ="0" />
+      <Bone id="chest" rotationZ="0" />
+      <Bone id="head" rotationZ="0" />
+      <Bone id="shoulder_r" rotationZ="0" />
+      <Bone id="upper_arm_r" rotationZ="8" />
+      <Bone id="forearm_r" rotationZ="0" />
+      <Bone id="hand_r" rotationZ="0" />
+      <Bone id="upper_arm_l" rotationZ="-6" />
+      <Bone id="forearm_l" rotationZ="4" />
+    </Pose>
+
+    <!-- Raise the right arm without over-folding the elbow. -->
+    <Pose t="0.30">
+      <Bone id="hips" rotationZ="-0.8" />
+      <Bone id="spine" rotationZ="-1.2" />
+      <Bone id="chest" rotationZ="-2.5" />
+      <Bone id="head" rotationZ="2" />
+      <Bone id="shoulder_r" rotationZ="-5" />
+      <Bone id="upper_arm_r" rotationZ="-34" />
+      <Bone id="forearm_r" rotationZ="-46" />
+      <Bone id="hand_r" rotationZ="-8" />
+      <Bone id="upper_arm_l" rotationZ="7" />
+      <Bone id="forearm_l" rotationZ="-5" />
+    </Pose>
+
+    <!-- Wave outward: keep upper arm stable, move forearm/hand. -->
+    <Pose t="0.55">
+      <Bone id="hips" rotationZ="-0.8" />
+      <Bone id="spine" rotationZ="-1.2" />
+      <Bone id="chest" rotationZ="-2.5" />
+      <Bone id="head" rotationZ="2" />
+      <Bone id="shoulder_r" rotationZ="-5" />
+      <Bone id="upper_arm_r" rotationZ="-34" />
+      <Bone id="forearm_r" rotationZ="-28" />
+      <Bone id="hand_r" rotationZ="22" />
+      <Bone id="upper_arm_l" rotationZ="7" />
+      <Bone id="forearm_l" rotationZ="-5" />
+    </Pose>
+
+    <!-- Wave inward. -->
+    <Pose t="0.80">
+      <Bone id="hips" rotationZ="-1" />
+      <Bone id="spine" rotationZ="-1.5" />
+      <Bone id="chest" rotationZ="-3" />
+      <Bone id="head" rotationZ="2.5" />
+      <Bone id="shoulder_r" rotationZ="-5" />
+      <Bone id="upper_arm_r" rotationZ="-36" />
+      <Bone id="forearm_r" rotationZ="-54" />
+      <Bone id="hand_r" rotationZ="-24" />
+      <Bone id="upper_arm_l" rotationZ="8" />
+      <Bone id="forearm_l" rotationZ="-6" />
+    </Pose>
+
+    <!-- Second outward wave. -->
+    <Pose t="1.05">
+      <Bone id="hips" rotationZ="-0.8" />
+      <Bone id="spine" rotationZ="-1.2" />
+      <Bone id="chest" rotationZ="-2.5" />
+      <Bone id="head" rotationZ="2" />
+      <Bone id="shoulder_r" rotationZ="-5" />
+      <Bone id="upper_arm_r" rotationZ="-34" />
+      <Bone id="forearm_r" rotationZ="-30" />
+      <Bone id="hand_r" rotationZ="24" />
+      <Bone id="upper_arm_l" rotationZ="7" />
+      <Bone id="forearm_l" rotationZ="-5" />
+    </Pose>
+
+    <!-- Second inward wave. -->
+    <Pose t="1.30">
+      <Bone id="hips" rotationZ="-1" />
+      <Bone id="spine" rotationZ="-1.5" />
+      <Bone id="chest" rotationZ="-3" />
+      <Bone id="head" rotationZ="2.5" />
+      <Bone id="shoulder_r" rotationZ="-5" />
+      <Bone id="upper_arm_r" rotationZ="-36" />
+      <Bone id="forearm_r" rotationZ="-52" />
+      <Bone id="hand_r" rotationZ="-22" />
+      <Bone id="upper_arm_l" rotationZ="8" />
+      <Bone id="forearm_l" rotationZ="-6" />
+    </Pose>
+
+    <!-- Lower the arm back to neutral. -->
+    <Pose t="1.65">
+      <Bone id="hips" rotationZ="-0.4" />
+      <Bone id="spine" rotationZ="-0.6" />
+      <Bone id="chest" rotationZ="-1" />
+      <Bone id="head" rotationZ="1" />
+      <Bone id="shoulder_r" rotationZ="-2" />
+      <Bone id="upper_arm_r" rotationZ="-12" />
+      <Bone id="forearm_r" rotationZ="-18" />
+      <Bone id="hand_r" rotationZ="4" />
+      <Bone id="upper_arm_l" rotationZ="1" />
+      <Bone id="forearm_l" rotationZ="1" />
+    </Pose>
+
+    <Pose t="2.0">
+      <Bone id="hips" rotationZ="0" />
+      <Bone id="spine" rotationZ="0" />
+      <Bone id="chest" rotationZ="0" />
+      <Bone id="head" rotationZ="0" />
+      <Bone id="shoulder_r" rotationZ="0" />
+      <Bone id="upper_arm_r" rotationZ="8" />
+      <Bone id="forearm_r" rotationZ="0" />
+      <Bone id="hand_r" rotationZ="0" />
+      <Bone id="upper_arm_l" rotationZ="-6" />
+      <Bone id="forearm_l" rotationZ="4" />
+    </Pose>
+  </Action>

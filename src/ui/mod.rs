@@ -1,6 +1,9 @@
 pub mod ai_agents_page;
 pub mod ai_srt_page;
 pub mod app_root;
+pub mod character_design_page;
+pub mod chat_attachments;
+pub mod chat_markdown;
 pub mod display_settings_modal;
 pub mod editor_shell;
 pub mod export_modal;

@@ -1,53 +1,77 @@
 // =========================================
-// =========================================
 // crates/motionloom/src/lib.rs
 
-pub mod backend;
+pub mod animation;
+pub mod clip;
+pub mod common;
 pub mod dsl;
-pub mod effect_kernel_map;
-pub mod effects;
-pub mod error;
-pub mod eval;
-pub mod export_adapter;
-pub mod graph;
-pub mod keyframe;
-pub mod model;
-pub mod preview_adapter;
-pub mod process_catalog;
-pub mod runtime;
 pub mod scene;
-pub mod scene_render;
-pub mod transitions;
 
-pub use dsl::{
-    AlphaMode, BlendMode, BufferElemType, BufferNode, BufferUsage, ColorSpace, GraphApplyScope,
-    GraphScope, GraphScript, ImageNode, InputNode, InputType, LoadOp, OutputNode, OutputTarget,
-    PassCache, PassKind, PassNode, PassParam, PassRole, PassTransitionClips, PassTransitionEasing,
-    PassTransitionFallback, PassTransitionMode, PresentNode, PresentTarget, Quality, ResourceRef,
-    SampleAddress, SampleConfig, SampleFilter, SolidNode, StoreOp, SvgNode, TexNode, TexUsage,
-    TextNode, TextureFormat, is_graph_script, parse_graph_script,
+// Compatibility module aliases. Public API names stay stable while the source
+// tree is split by product domain.
+pub use clip::export_adapter;
+pub use clip::model;
+pub use clip::preview_adapter;
+pub use clip::transitions;
+pub use common::backend;
+pub use common::curve as eval;
+pub use common::effect as effects;
+pub use common::error;
+pub use common::graph;
+pub use common::keyframe;
+pub use common::pass as effect_kernel_map;
+pub use common::process_catalog;
+pub use common::runtime;
+pub use scene::model as scene_model;
+pub use scene::render as scene_render;
+
+pub use animation::{
+    AnimationAction, AnimationActionBone, AnimationActionPose, AnimationActor,
+    AnimationApplyAction, AnimationBackground, AnimationBackgroundFit, AnimationBoneAxis,
+    AnimationBoneAxisMap, AnimationCamera, AnimationCameraMode, AnimationCameraProjection,
+    AnimationFrameRenderer, AnimationGpuDiagnostics, AnimationGraph, AnimationMaterial,
+    AnimationMaterialStyle, AnimationModelProfile, AnimationPathStyle, AnimationPlay,
+    AnimationPresent, AnimationProfileRetarget, AnimationRenderError, AnimationRenderProgress,
+    AnimationRetarget, AnimationRetargetMap, AnimationSpritePlayback, AnimationTime,
+    AnimationWorld, CharacterDesignGpuViewport, CharacterDesignViewportFrame, GlbLoadError,
+    GlbMeshData, GlbMetadata, diagnose_animation_glb_gpu_plan,
+    diagnose_animation_graph_actor_gpu_frame, is_animation_graph_script, load_glb_mesh_data,
+    load_glb_metadata, parse_animation_graph_script, parse_glb_mesh_data, parse_glb_metadata,
+    render_animation_frame, render_animation_graph_to_video_with_progress,
 };
-pub use effect_kernel_map::{default_kernel_for_effect, resolve_pass_kernel};
-pub use effects::{LayerColorBlurEffects, PerClipColorBlurEffects, combine_clip_with_layer};
-pub use error::{GraphParseError, RuntimeCompileError};
-pub use eval::sample_anim_f32;
-pub use keyframe::ScalarKeyframe;
-pub use model::{
-    AnimF32, ClipZoomSpec, ColorRgba, LayerEffectClip, LocalMaskLayer, MAX_LOCAL_MASK_LAYERS,
-    SlideDirection, TextStyle, VideoEffect, ZoomStyle,
-};
-pub use process_catalog::{
+pub use common::effect::{LayerColorBlurEffects, PerClipColorBlurEffects, combine_clip_with_layer};
+pub use common::error::{GraphParseError, RuntimeCompileError};
+pub use common::keyframe::ScalarKeyframe;
+pub use common::pass::{default_kernel_for_effect, resolve_pass_kernel};
+pub use common::process_catalog::{
     PROCESS_CATEGORIES, PROCESS_EFFECTS, ProcessCategory, ProcessEffectDefinition,
     is_known_process_kernel, kernel_source_by_name, process_effect_for_id, process_effects,
     process_effects_for_category,
 };
-pub use runtime::{
+pub use common::runtime::{
     BlurSharpenMode, RuntimeFrameOutput, RuntimeProgram, compile_runtime_program, eval_time_expr,
+};
+pub use dsl::{
+    ActionBoneNode, ActionNode, ActionPoseNode, AlphaMode, ApplyActionNode, BackgroundNode,
+    BlendMode, BufferElemType, BufferNode, BufferUsage, ColorSpace, EffectNode, GraphApplyScope,
+    GraphScript, ImageNode, InputNode, InputType, LayerNode, LoadOp, ModelProfileBoneAxisMapNode,
+    ModelProfileBoneAxisNode, ModelProfileNode, ModelProfileRetargetMapNode,
+    ModelProfileRetargetNode, OutputNode, OutputTarget, PassCache, PassKind, PassNode, PassParam,
+    PassRole, PassTransitionClips, PassTransitionEasing, PassTransitionFallback,
+    PassTransitionMode, PresentNode, PresentTarget, Quality, ResourceRef, SampleAddress,
+    SampleConfig, SampleFilter, SkeletonBoneNode, SkeletonNode, StoreOp, SvgNode, TexNode,
+    TexUsage, TextNode, TextureFormat, is_graph_script, parse_graph_script,
+};
+pub use eval::sample_anim_f32;
+pub use model::{
+    AnimF32, ClipZoomSpec, ColorRgba, LayerEffectClip, LocalMaskLayer, MAX_LOCAL_MASK_LAYERS,
+    SlideDirection, TextStyle, VideoEffect, ZoomStyle,
 };
 pub use scene::{
     BrushDef, CameraNode, CharacterNode, CircleNode, DefsNode, FaceJawNode, GradientDef,
-    GradientStop, GroupNode, LineNode, LinearGradientDef, MaskNode, PartNode, PathNode,
-    PolylineNode, RadialGradientDef, RectNode, RepeatNode, SceneNode, SceneRootNode, ShadowNode,
+    GradientStop, GroupNode, LineNode, LinearGradientDef, MaskNode, PaletteColorDef, PaletteNode,
+    PartNode, PathNode, PixelGridNode, PolylineNode, PrecomposeNode, RadialGradientDef, RectNode,
+    RepeatNode, SceneLayerNode, SceneNode, SceneRootNode, ShadowNode,
 };
 pub use scene_render::{
     MotionLoomSceneRenderError, SceneRenderError, SceneRenderProfile, SceneRenderProgress,

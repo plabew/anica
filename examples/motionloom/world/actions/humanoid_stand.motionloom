@@ -1,0 +1,18 @@
+  <Action id="stand" skeleton="humanoid_v1" duration="2s" intent="pose">
+    <Pose t="0.0" label="pose">
+      <Bone id="hips" turn="0" />
+      <Bone id="chest" turn="0" bend="0" />
+      <Bone id="head" turn="0" />
+      <Bone id="upper_arm_r" forward="0" side="0" twist="0" />
+      <Bone id="forearm_r" bend="8" twist="0" />
+      <Bone id="hand_r" twist="0" />
+      <Bone id="upper_leg_l" forward="0" />
+      <Bone id="lower_leg_l" bend="0" />
+      <Bone id="upper_leg_r" forward="0" />
+      <Bone id="lower_leg_r" bend="0" />
+      <!-- Raw bone overrides. Mapped bones export through canonical ids; unmapped ids are model-specific. -->
+      <Bone id="upper_arm_l" rotationX="89.04" rotationY="15.83" />
+      <Bone id="hand_r" rotationX="-3.62" rotationY="-81.23" />
+      <Bone id="upper_arm_r" rotationX="97.66" rotationY="-13.85" />
+    </Pose>
+  </Action>

@@ -1,0 +1,139 @@
+<Graph fps={60} duration="2s" size={[1200,1200]}>
+  <Background color="#f8fafc" />
+
+  <Skeleton id="humanoid_front_v1">
+    <Bone id="root" x="0" y="0" />
+    <Bone id="pelvis" parent="root" x="0" y="430" />
+    <Bone id="spine" parent="pelvis" x="0" y="-170" />
+    <Bone id="chest" parent="spine" x="0" y="-50" />
+    <Bone id="neck" parent="chest" x="0" y="-56" />
+    <Bone id="head" parent="neck" x="0" y="-112" />
+
+    <Bone id="shoulder_l" parent="chest" x="-130" y="28" />
+    <Bone id="upper_arm_l" parent="shoulder_l" x="-30" y="18" />
+    <Bone id="forearm_l" parent="upper_arm_l" x="-64" y="140" />
+    <Bone id="hand_l" parent="forearm_l" x="-36" y="150" />
+
+    <Bone id="shoulder_r" parent="chest" x="130" y="28" />
+    <Bone id="upper_arm_r" parent="shoulder_r" x="30" y="18" />
+    <Bone id="forearm_r" parent="upper_arm_r" x="64" y="140" />
+    <Bone id="hand_r" parent="forearm_r" x="36" y="150" />
+
+    <Bone id="upper_leg_l" parent="pelvis" x="-92" y="0" />
+    <Bone id="lower_leg_l" parent="upper_leg_l" x="-40" y="178" />
+    <Bone id="foot_l" parent="lower_leg_l" x="-14" y="176" />
+    <Bone id="upper_leg_r" parent="pelvis" x="92" y="0" />
+    <Bone id="lower_leg_r" parent="upper_leg_r" x="40" y="178" />
+    <Bone id="foot_r" parent="lower_leg_r" x="14" y="176" />
+  </Skeleton>
+
+  <Action id="wave_hand" skeleton="humanoid_front_v1" duration="2s">
+    <Pose t="0.0">
+      <Bone id="upper_arm_r" rotation="0" />
+      <Bone id="forearm_r" rotation="0" />
+      <Bone id="hand_r" rotation="0" />
+    </Pose>
+    <Pose t="0.5">
+      <Bone id="upper_arm_r" rotation="-55" />
+      <Bone id="forearm_r" rotation="-70" />
+      <Bone id="hand_r" rotation="-15" />
+    </Pose>
+    <Pose t="1.0">
+      <Bone id="upper_arm_r" rotation="-45" />
+      <Bone id="forearm_r" rotation="-25" />
+      <Bone id="hand_r" rotation="25" />
+    </Pose>
+    <Pose t="1.5">
+      <Bone id="upper_arm_r" rotation="-55" />
+      <Bone id="forearm_r" rotation="-70" />
+      <Bone id="hand_r" rotation="-15" />
+    </Pose>
+    <Pose t="2.0">
+      <Bone id="upper_arm_r" rotation="0" />
+      <Bone id="forearm_r" rotation="0" />
+      <Bone id="hand_r" rotation="0" />
+    </Pose>
+  </Action>
+
+  <Scene id="character6_skeleton_constraints">
+
+    <Defs>
+      <Brush id="bone_main" stroke="#111827" strokeWidth="8" strokeStyle="pencil" strokeRoughness="0.45" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="bone_limb" stroke="#1f2937" strokeWidth="7" strokeStyle="pencil" strokeRoughness="0.55" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="joint_blue" stroke="#2563eb" strokeWidth="4" lineCap="round" lineJoin="round" fill="#dbeafe" />
+      <Brush id="body_volume" stroke="#64748b" strokeWidth="2.5" strokeStyle="pencil" strokeRoughness="0.5" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.5" />
+    </Defs>
+
+    <Character id="hero" rig="humanoid_front_v1" x="450" y="110" opacity="1">
+      <Part id="head_art" attachTo="head" brush="bone_main">
+        <Path id="head_shape" d="M -88 52 C -88 -2 -52 -42 0 -44 C 52 -42 88 -2 88 52 C 88 108 52 148 0 150 C -52 148 -88 108 -88 52 Z" />
+        <Path id="face_cross" brush="body_volume" d="M 0 -44 L 0 150 M -64 52 L 64 52" />
+      </Part>
+
+      <Part id="neck_art" attachTo="neck" brush="bone_main">
+        <Path id="neck_bone" d="M 0 0 L 0 56" />
+      </Part>
+
+      <Part id="torso_art" attachTo="chest" brush="bone_main">
+        <Path id="chest_bone" d="M 0 0 L 0 122" />
+        <Path id="shoulder_axis" d="M -130 28 L 130 28" />
+        <Path id="rib_volume" brush="body_volume" d="M -120 28 C -106 92 -72 150 0 170 C 72 150 106 92 120 28" />
+      </Part>
+
+      <Part id="pelvis_art" attachTo="pelvis" brush="bone_main">
+        <Path id="pelvis_bone" d="M -92 0 L 0 0 L 92 0" />
+        <Path id="pelvis_volume" brush="body_volume" d="M -92 0 C -58 50 58 50 92 0" />
+      </Part>
+
+      <Part id="upper_arm_l_art" attachTo="upper_arm_l" brush="bone_limb">
+        <Path id="upper_arm_l_bone" d="M 0 0 L -64 140" />
+      </Part>
+      <Part id="forearm_l_art" attachTo="forearm_l" brush="bone_limb">
+        <Path id="forearm_l_bone" d="M 0 0 L -36 150" />
+      </Part>
+      <Part id="hand_l_art" attachTo="hand_l" brush="bone_limb">
+        <Path id="hand_l_bones" d="M 0 0 L -4 72 M -4 72 L -34 118 M -4 72 L -16 128 M -4 72 L 4 132 M -4 72 L 24 118" />
+      </Part>
+
+      <Part id="upper_arm_r_art" attachTo="upper_arm_r" brush="bone_limb">
+        <Path id="upper_arm_r_bone" d="M 0 0 L 64 140" />
+      </Part>
+      <Part id="forearm_r_art" attachTo="forearm_r" brush="bone_limb">
+        <Path id="forearm_r_bone" d="M 0 0 L 36 150" />
+      </Part>
+      <Part id="hand_r_art" attachTo="hand_r" brush="bone_limb">
+        <Path id="hand_r_bones" d="M 0 0 L 4 72 M 4 72 L 34 118 M 4 72 L 16 128 M 4 72 L -4 132 M 4 72 L -24 118" />
+      </Part>
+
+      <Part id="upper_leg_l_art" attachTo="upper_leg_l" brush="bone_limb">
+        <Path id="upper_leg_l_bone" d="M 0 0 L -40 178" />
+      </Part>
+      <Part id="lower_leg_l_art" attachTo="lower_leg_l" brush="bone_limb">
+        <Path id="lower_leg_l_bone" d="M 0 0 L -14 176" />
+      </Part>
+      <Part id="foot_l_art" attachTo="foot_l" brush="bone_limb">
+        <Path id="foot_l_bone" d="M 0 0 L -72 22" />
+      </Part>
+
+      <Part id="upper_leg_r_art" attachTo="upper_leg_r" brush="bone_limb">
+        <Path id="upper_leg_r_bone" d="M 0 0 L 40 178" />
+      </Part>
+      <Part id="lower_leg_r_art" attachTo="lower_leg_r" brush="bone_limb">
+        <Path id="lower_leg_r_bone" d="M 0 0 L 14 176" />
+      </Part>
+      <Part id="foot_r_art" attachTo="foot_r" brush="bone_limb">
+        <Path id="foot_r_bone" d="M 0 0 L 72 22" />
+      </Part>
+
+      <Part id="right_elbow_debug" attachTo="forearm_r" brush="joint_blue">
+        <Path id="right_elbow_dot" d="M -10 0 C -10 -6 -6 -10 0 -10 C 6 -10 10 -6 10 0 C 10 6 6 10 0 10 C -6 10 -10 6 -10 0 Z" />
+      </Part>
+      <Part id="right_wrist_debug" attachTo="hand_r" brush="joint_blue">
+        <Path id="right_wrist_dot" d="M -9 0 C -9 -5 -5 -9 0 -9 C 5 -9 9 -5 9 0 C 9 5 5 9 0 9 C -5 9 -9 5 -9 0 Z" />
+      </Part>
+    </Character>
+  </Scene>
+
+  <ApplyAction target="hero" action="wave_hand" at="0s" />
+  <Present from="character6_skeleton_constraints" />
+</Graph>

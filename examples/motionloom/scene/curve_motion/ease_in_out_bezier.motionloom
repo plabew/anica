@@ -1,0 +1,33 @@
+<Graph fps={60} duration="2s" size={[900,420]}>
+  <Background color="#10141f" />
+
+  <Scene id="curve_two_lines_demo">
+
+    <Text x="80" y="70" value="curve ease demo" fontSize="34" color="#ffffff" />
+
+    <Line x1="140" y1="160" x2="760" y2="160" stroke="#ffffff33" strokeWidth="3" />
+    <Line x1="140" y1="260" x2="760" y2="260" stroke="#ffffff33" strokeWidth="3" />
+
+    <Text x="80" y="180" value="ease_in_out" fontSize="24" color="#7cc7ff" />
+    <Line
+      x1="140"
+      y1="160"
+      x2={curve("0:140:ease_in_out, 1:760:linear")}
+      y2="160"
+      stroke="#7cc7ff"
+      strokeWidth="10"
+      lineCap="round" />
+
+    <Text x="80" y="280" value="ease(0.82,0,0.58,1)" fontSize="24" color="#ff7aa8" />
+    <Line
+      x1="140"
+      y1="260"
+      x2={curve("0:140:ease(0.82,0,0.58,1), 1:760:linear")}
+      y2="260"
+      stroke="#ff7aa8"
+      strokeWidth="10"
+      lineCap="round" />
+  </Scene>
+
+  <Present from="curve_two_lines_demo" />
+</Graph>

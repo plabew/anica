@@ -1,0 +1,53 @@
+<Graph fps={60} duration="3s" size={[640,360]}>
+  <Background color="#101827" />
+
+  <Scene id="deform_grid_demo">
+    <Text id="title"
+          x="32"
+          y="48"
+          value="Group DeformGrid"
+          fontSize="28"
+          color="#e5eefc" />
+
+    <Group id="warped_card"
+           deformGrid="3x3"
+           deformAmount={curve("0.00:0:linear, 1.40:1:ease_in_out, 3.00:1:linear")}
+           gridFrom="160,92 320,92 480,92;
+                     150,180 320,180 490,180;
+                     160,268 320,268 480,268"
+           gridTo="190,74 330,98 462,120;
+                   154,174 326,180 480,204;
+                   176,282 318,252 442,250">
+      <Rect id="card"
+            x="160"
+            y="92"
+            width="320"
+            height="176"
+            radius="28"
+            color="#f8fbff"
+            opacity="0.92" />
+
+      <Path id="eye_shape"
+            d="M 408 166 C 360 124 280 118 220 158 C 250 224 350 232 408 166 Z"
+            fill="#f7f7f7"
+            stroke="#3F5877"
+            strokeWidth="4" />
+
+      <Circle id="iris"
+              x="318"
+              y="174"
+              radius="34"
+              color="#9368C2"
+              stroke="#3F5877"
+              strokeWidth="4" />
+
+      <Path id="highlight"
+            d="M 300 154 C 286 144 262 150 258 166 C 274 178 296 170 300 154 Z"
+            fill="#ffffff"
+            stroke="none"
+            opacity="0.88" />
+    </Group>
+  </Scene>
+
+  <Present from="deform_grid_demo" />
+</Graph>

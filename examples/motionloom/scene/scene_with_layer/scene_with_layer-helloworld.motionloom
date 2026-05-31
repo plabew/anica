@@ -1,0 +1,26 @@
+<Graph fps={30} duration="3s" size={[1920,1080]}>
+  <Background color="#FB923C" />
+
+  <Scene id="hello_world_scene">
+    <Group id="hello_world_title" x="0" y="0" opacity="1">
+      <Text value="hello world"
+            x="center"
+            y="center"
+            fontSize="96"
+            color="#ffffff"
+            opacity={curve("0:0:linear, 1:1:ease_in_out, 3:1:linear")} />
+    </Group>
+  </Scene>
+
+  <Tex id="scene_tex" fmt="rgba16f" from="hello_world_scene" />
+  <Tex id="blurred" fmt="rgba16f" size={[1920,1080]} />
+
+  <Pass id="blur_scene"
+        kind="compute"
+        effect="gaussian_5tap_h"
+        in={["scene_tex"]}
+        out={["blurred"]}
+        params={{ sigma: "18.0" }} />
+
+  <Present from="blurred" />
+</Graph>

@@ -3,34 +3,37 @@
 // src/ui/motionloom_page.rs — MotionLoom VFX Studio page with graph preview and template picker
 
 use std::any::Any;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    ClipboardItem, Context, Element, Entity, GlobalElementId, InspectorElementId, IntoElement,
-    LayoutId, MouseButton, MouseDownEvent, PathPromptOptions, Render, RenderImage,
-    ScrollWheelEvent, Style, Subscription, Window, div, prelude::*, px, rgb, rgba,
+    ClipboardItem, Context, Element, Entity, Focusable, GlobalElementId, InspectorElementId,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, PathPromptOptions, Render, RenderImage,
+    ScrollWheelEvent, Style, Subscription, Timer, Window, div, prelude::*, px, rgb, rgba,
 };
 use gpui_component::{
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
+    select::{SearchableVec, Select, SelectState},
     white,
 };
 use image::{ImageBuffer, Rgba};
 use motionloom::{
-    GraphScope, RuntimeProgram, SceneRenderProfile, SceneRenderProgress, compile_runtime_program,
-    is_graph_script, next_scene_output_path_for_profile, parse_graph_script,
-    render_scene_graph_frame, render_scene_graph_to_video_with_progress,
+    AnimationFrameRenderer, AnimationGraph, AnimationPathStyle, AnimationRenderProgress,
+    RuntimeProgram, SceneRenderProfile, SceneRenderProgress, compile_runtime_program,
+    is_animation_graph_script, is_graph_script, load_glb_mesh_data,
+    next_scene_output_path_for_profile, parse_animation_graph_script, parse_graph_script,
+    render_animation_graph_to_video_with_progress, render_scene_graph_frame,
+    render_scene_graph_to_video_with_progress,
 };
 use smallvec::SmallVec;
 use thiserror::Error;
-use url::Url;
-use video_engine::{Position, Video, VideoOptions};
 
 use crate::core::export::get_media_duration;
 use crate::core::global_state::{GlobalState, MediaPoolUiEvent};
@@ -41,8 +44,64 @@ use crate::ui::motionloom_templates::LayerEffectTemplateKind;
 const THUMB_MAX_DIM: u32 = 640;
 const SCENE_RENDER_PROGRESS_EVERY_FRAMES: u32 = 10;
 const SCENE_RENDER_PROGRESS_POLL_MS: u64 = 120;
+const SCENE_LIVE_PREVIEW_144P_MAX_DIM: u32 = 256;
+const SCENE_LIVE_PREVIEW_360P_MAX_DIM: u32 = 640;
+const SCENE_LIVE_PREVIEW_480P_MAX_DIM: u32 = 854;
+const SCENE_LIVE_SCROLL_RENDER_DEBOUNCE_MS: u64 = 2000;
+const SCENE_LIVE_INPUT_RENDER_DEBOUNCE_MS: u64 = 120;
+const SCENE_LIVE_PRERENDER_MAX_FRAMES: u32 = 240;
+const SCENE_LIVE_PRERENDER_POLL_MS: u64 = 16;
 const DEFAULT_SCENE_LIVE_NODE_ID: &str = "iris_outer_soft";
 const DEFAULT_SCENE_LIVE_ATTR: &str = "x";
+
+type SceneLivePreviewCacheKey = (u64, u32, SceneLivePreviewQuality, u32, u32);
+
+struct AnimationLivePreviewRequest {
+    graph: AnimationGraph,
+    frame: u32,
+    asset_root: PathBuf,
+    response_tx: Sender<Result<(u32, u32, Vec<u8>), String>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MotionLoomPage;
+
+    #[test]
+    fn scene_live_attr_range_handles_braced_curve_with_spaces() {
+        let tag = r#"<Group id="iris_turn_left"
+             x={curve("0.00:4:ease_in_out, 0.90:-54:ease_in_out, 2.20:-176:ease_in_out")}
+             y="16">"#;
+
+        let (start, end) =
+            MotionLoomPage::find_attr_value_range_in_tag(tag, "x").expect("x attr range");
+        assert_eq!(
+            &tag[start..end],
+            r#"{curve("0.00:4:ease_in_out, 0.90:-54:ease_in_out, 2.20:-176:ease_in_out")}"#
+        );
+    }
+
+    #[test]
+    fn scene_live_patch_replaces_whole_braced_curve_attr() {
+        let script = r#"<Graph fps={60} duration="3s" size={[1320,768]}>
+  <Scene id="scene">
+    <Group id="iris_turn_left"
+           x={curve("0.00:4:ease_in_out, 0.90:-54:ease_in_out, 2.20:-176:ease_in_out")}
+           y="16">
+    </Group>
+  </Scene>
+  <Present from="scene" />
+</Graph>"#;
+
+        let updated =
+            MotionLoomPage::patch_scene_tag_attr_number(script, "iris_turn_left", "x", -10.0)
+                .expect("patch x attr");
+        assert!(updated.contains(r#"<Group id="iris_turn_left""#));
+        assert!(updated.contains(r#"x=-10"#));
+        assert!(!updated.contains("0.90:-54"));
+        assert!(updated.contains("</Group>"));
+    }
+}
 
 fn panic_payload_to_string(payload: Box<dyn Any + Send + 'static>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
@@ -79,6 +138,31 @@ impl SceneRenderMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum SceneLivePreviewQuality {
+    P144,
+    P360,
+    P480,
+}
+
+impl SceneLivePreviewQuality {
+    const fn label(self) -> &'static str {
+        match self {
+            SceneLivePreviewQuality::P144 => "144p",
+            SceneLivePreviewQuality::P360 => "360p",
+            SceneLivePreviewQuality::P480 => "480p",
+        }
+    }
+
+    const fn max_dim(self) -> u32 {
+        match self {
+            SceneLivePreviewQuality::P144 => SCENE_LIVE_PREVIEW_144P_MAX_DIM,
+            SceneLivePreviewQuality::P360 => SCENE_LIVE_PREVIEW_360P_MAX_DIM,
+            SceneLivePreviewQuality::P480 => SCENE_LIVE_PREVIEW_480P_MAX_DIM,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ImportedClipKind {
     Image,
@@ -99,7 +183,6 @@ struct LoadedPreview {
     image: Arc<RenderImage>,
     width: u32,
     height: u32,
-    bgra: Arc<Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -108,8 +191,6 @@ struct ImportedClip {
     path: String,
     kind: ImportedClipKind,
     duration: Duration,
-    preview: Option<LoadedPreview>,
-    error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -130,10 +211,77 @@ struct VfxAssetContextMenu {
 }
 
 #[derive(Clone, Debug)]
+struct SceneRenderProgressUi {
+    label: &'static str,
+    rendered_frames: u32,
+    total_frames: u32,
+}
+
+impl SceneRenderProgressUi {
+    fn percent(&self) -> u32 {
+        if self.total_frames == 0 {
+            return 0;
+        }
+        ((self.rendered_frames as f32 / self.total_frames as f32) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u32
+    }
+}
+
+#[derive(Clone, Debug)]
 struct SceneLiveTarget {
     id: String,
     tag: String,
     attrs: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct GlbSkeletonInspectReport {
+    summary: String,
+    retarget_draft: String,
+    model_profile_draft: String,
+    calibrated_model_profile_draft: String,
+    actors: Vec<GlbSkeletonActorReport>,
+}
+
+#[derive(Clone, Debug)]
+struct GlbSkeletonActorReport {
+    actor_id: String,
+    model: String,
+    resolved_path: String,
+    vertex_count: usize,
+    triangle_count: usize,
+    node_count: usize,
+    joint_count: usize,
+    weighted_vertex_count: usize,
+    has_inverse_bind_matrices: bool,
+    mapped_bones: Vec<String>,
+    missing_humanoid_bones: Vec<String>,
+    guessed_maps: Vec<(String, String)>,
+    joint_tree_lines: Vec<String>,
+    model_profile_draft: String,
+    calibrated_model_profile_draft: String,
+    calibration_preview_lines: Vec<String>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GlbRestPoseBasis {
+    right: [f32; 3],
+    up: [f32; 3],
+    forward: [f32; 3],
+}
+
+#[derive(Clone, Debug)]
+struct GlbAxisCalibration {
+    axis_lines: Vec<String>,
+    preview_lines: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct GlbAxisBindingScore {
+    binding: String,
+    score: f32,
 }
 
 #[derive(Debug, Error)]
@@ -144,10 +292,6 @@ enum MotionLoomPageError {
     BuildPreviewImageBuffer,
     #[error("Failed to construct runtime preview buffer")]
     BuildRuntimePreviewBuffer,
-    #[error("Failed to convert path to URL: {path}")]
-    PathToUrl { path: PathBuf },
-    #[error("Failed to open video preview player: {message}")]
-    OpenVideoPreviewPlayer { message: String },
     #[error(transparent)]
     Thumbnail(#[from] crate::core::thumbnail::ThumbnailError),
 }
@@ -274,31 +418,48 @@ pub struct MotionLoomPage {
     script_text: String,
     script_input: Option<Entity<InputState>>,
     script_input_sub: Option<Subscription>,
+    script_input_syncing: bool,
+    script_input_needs_sync: bool,
     motionloom_script_revision: u64,
     motionloom_apply_revision: u64,
     motionloom_render_revision: u64,
     graph_runtime: Option<RuntimeProgram>,
-    runtime_preview_cache_key: Option<(usize, u32, i32, i32, i32, i32, i32, i32, u32, u32)>,
-    runtime_preview_cache_image: Option<Arc<RenderImage>>,
-    scene_live_preview_cache_key: Option<(u64, u32)>,
+    scene_live_preview_cache_key: Option<SceneLivePreviewCacheKey>,
     scene_live_preview_cache_image: Option<(Arc<RenderImage>, u32, u32)>,
+    scene_live_preview_frame_cache: HashMap<SceneLivePreviewCacheKey, (Arc<RenderImage>, u32, u32)>,
+    scene_live_preview_quality: SceneLivePreviewQuality,
+    scene_live_render_defer_until: Option<Instant>,
+    scene_live_render_defer_token: u64,
+    scene_live_async_render_key: Option<SceneLivePreviewCacheKey>,
+    scene_live_async_render_token: u64,
+    animation_live_preview_tx: Sender<AnimationLivePreviewRequest>,
+    scene_live_prerender_token: u64,
+    scene_live_prerendering: bool,
+    scene_live_prerender_progress: Option<(u32, u32)>,
+    scene_live_prerender_cancel: Option<Arc<AtomicBool>>,
+    scene_render_progress: Option<SceneRenderProgressUi>,
     scene_live_knob_node_id: String,
     scene_live_knob_attr: String,
+    scene_live_knob_input: Option<Entity<InputState>>,
+    scene_live_knob_input_sub: Option<Subscription>,
+    scene_live_knob_input_syncing: bool,
     scene_live_target_offset: usize,
-    scene_live_groups_only: bool,
+    scene_live_tag_filters: HashSet<String>,
     preview_playing: bool,
     preview_play_token: u64,
     preview_last_tick: Option<Instant>,
     preview_frame_accum: f32,
-    video_preview_player: Option<Video>,
-    video_preview_player_path: Option<String>,
-    video_preview_last_seek_frame: Option<u32>,
     import_modal_open: bool,
     asset_modal_open: bool,
     asset_folder: Option<PathBuf>,
     asset_items: Vec<VfxAssetItem>,
     asset_selected_idx: Option<usize>,
     asset_context_menu: Option<VfxAssetContextMenu>,
+    scene_template_select: Option<Entity<SelectState<SearchableVec<String>>>>,
+    scene_template_selected_label: String,
+    scene_template_modal_open: bool,
+    glb_inspector_modal_open: bool,
+    glb_inspector_report: Option<GlbSkeletonInspectReport>,
     // Template picker state
     template_modal_open: bool,
     template_selected: Vec<LayerEffectTemplateKind>,
@@ -313,7 +474,7 @@ impl MotionLoomPage {
         })
         .detach();
 
-        let (mut initial_script, mut script_revision, apply_revision, render_revision) = {
+        let (initial_script, script_revision, apply_revision, render_revision) = {
             let gs = global.read(cx);
             (
                 gs.motionloom_scene_script().to_string(),
@@ -322,18 +483,6 @@ impl MotionLoomPage {
                 gs.motionloom_scene_render_revision(),
             )
         };
-
-        if initial_script.trim().is_empty() {
-            initial_script = motionloom_templates::DEFAULT_GRAPH_SCRIPT.to_string();
-            let (new_script_revision, _new_apply_revision) = global.update(cx, |gs, _cx| {
-                gs.set_motionloom_scene_script(initial_script.clone(), false);
-                (
-                    gs.motionloom_scene_script_revision(),
-                    gs.motionloom_scene_apply_revision(),
-                )
-            });
-            script_revision = new_script_revision;
-        }
 
         Self {
             global,
@@ -345,31 +494,50 @@ impl MotionLoomPage {
             script_text: initial_script,
             script_input: None,
             script_input_sub: None,
+            script_input_syncing: false,
+            script_input_needs_sync: false,
             motionloom_script_revision: script_revision,
             motionloom_apply_revision: apply_revision,
             motionloom_render_revision: render_revision,
             graph_runtime: None,
-            runtime_preview_cache_key: None,
-            runtime_preview_cache_image: None,
             scene_live_preview_cache_key: None,
             scene_live_preview_cache_image: None,
+            scene_live_preview_frame_cache: HashMap::new(),
+            scene_live_preview_quality: SceneLivePreviewQuality::P360,
+            scene_live_render_defer_until: None,
+            scene_live_render_defer_token: 0,
+            scene_live_async_render_key: None,
+            scene_live_async_render_token: 0,
+            animation_live_preview_tx: Self::spawn_animation_live_preview_worker(),
+            scene_live_prerender_token: 0,
+            scene_live_prerendering: false,
+            scene_live_prerender_progress: None,
+            scene_live_prerender_cancel: None,
+            scene_render_progress: None,
             scene_live_knob_node_id: DEFAULT_SCENE_LIVE_NODE_ID.to_string(),
             scene_live_knob_attr: DEFAULT_SCENE_LIVE_ATTR.to_string(),
+            scene_live_knob_input: None,
+            scene_live_knob_input_sub: None,
+            scene_live_knob_input_syncing: false,
             scene_live_target_offset: 0,
-            scene_live_groups_only: false,
+            scene_live_tag_filters: HashSet::new(),
             preview_playing: false,
             preview_play_token: 0,
             preview_last_tick: None,
             preview_frame_accum: 0.0,
-            video_preview_player: None,
-            video_preview_player_path: None,
-            video_preview_last_seek_frame: None,
             import_modal_open: false,
             asset_modal_open: false,
             asset_folder: None,
             asset_items: Vec::new(),
             asset_selected_idx: None,
             asset_context_menu: None,
+            scene_template_select: None,
+            scene_template_selected_label: motionloom_templates::first_scene_template()
+                .map(|template| template.label.to_string())
+                .unwrap_or_default(),
+            scene_template_modal_open: false,
+            glb_inspector_modal_open: false,
+            glb_inspector_report: None,
             template_modal_open: false,
             template_selected: Vec::new(),
             template_add_time_parameter: false,
@@ -420,7 +588,6 @@ impl MotionLoomPage {
             px[0] = b;
             px[2] = r;
         }
-        let source_bgra = Arc::new(bgra.clone());
         let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, bgra)
             .ok_or(MotionLoomPageError::BuildPreviewImageBuffer)?;
         let frames = SmallVec::from_elem(image::Frame::new(image_buffer), 1);
@@ -428,7 +595,6 @@ impl MotionLoomPage {
             image: Arc::new(RenderImage::new(frames)),
             width: w,
             height: h,
-            bgra: source_bgra,
         })
     }
 
@@ -443,32 +609,186 @@ impl MotionLoomPage {
         Ok(Arc::new(RenderImage::new(frames)))
     }
 
+    fn animation_asset_root() -> PathBuf {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        for candidate in [
+            cwd.join("examples/motionloom/world"),
+            cwd.join("anica/examples/motionloom/world"),
+            PathBuf::from("examples/motionloom/world"),
+            PathBuf::from("anica/examples/motionloom/world"),
+        ] {
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+        PathBuf::from("examples/motionloom/world")
+    }
+
+    fn spawn_animation_live_preview_worker() -> Sender<AnimationLivePreviewRequest> {
+        let (request_tx, request_rx) = mpsc::channel::<AnimationLivePreviewRequest>();
+        std::thread::spawn(move || {
+            let mut renderer = AnimationFrameRenderer::new();
+            while let Ok(mut request) = request_rx.recv() {
+                while let Ok(next_request) = request_rx.try_recv() {
+                    request = next_request;
+                }
+                let result = renderer
+                    .render_frame_gpu(&request.graph, request.frame, &request.asset_root)
+                    .map_err(|err| format!("Animation live render error: {err}"))
+                    .map(|rgba| {
+                        let (w, h) = rgba.dimensions();
+                        let mut bgra = rgba.into_raw();
+                        for px in bgra.chunks_mut(4) {
+                            px.swap(0, 2);
+                        }
+                        (w, h, bgra)
+                    });
+                let _ = request.response_tx.send(result);
+            }
+        });
+        request_tx
+    }
+
+    fn uses_pure_animation_renderer(raw: &str) -> bool {
+        is_animation_graph_script(raw)
+            && !raw.contains("<Tex")
+            && !raw.contains("<Pass")
+            && !raw.contains("<Layer")
+            && !raw.contains("<Scene")
+            && !raw.contains("<Clip")
+    }
+
     fn script_hash(script: &str) -> u64 {
         let mut hasher = DefaultHasher::new();
         script.hash(&mut hasher);
         hasher.finish()
     }
 
+    fn invalidate_scene_live_preview_cache(&mut self) {
+        if let Some(cancel) = self.scene_live_prerender_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.clear_scene_live_preview_images();
+        self.scene_live_async_render_key = None;
+        self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
+        self.scene_live_prerender_token = self.scene_live_prerender_token.wrapping_add(1);
+        self.scene_live_prerendering = false;
+        self.scene_live_prerender_progress = None;
+        self.scene_live_render_defer_until = None;
+        self.scene_live_render_defer_token = self.scene_live_render_defer_token.wrapping_add(1);
+    }
+
+    fn clear_scene_live_preview_images(&mut self) {
+        self.scene_live_preview_cache_key = None;
+        self.scene_live_preview_cache_image = None;
+        self.scene_live_preview_frame_cache.clear();
+    }
+
+    fn has_scene_live_preview_state(&self) -> bool {
+        self.scene_live_preview_cache_key.is_some()
+            || self.scene_live_preview_cache_image.is_some()
+            || !self.scene_live_preview_frame_cache.is_empty()
+            || self.scene_live_async_render_key.is_some()
+            || self.scene_live_prerendering
+            || self.scene_live_render_defer_until.is_some()
+    }
+
+    fn cancel_scene_live_prerender(&mut self) {
+        if let Some(cancel) = self.scene_live_prerender_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.scene_live_prerender_token = self.scene_live_prerender_token.wrapping_add(1);
+        self.scene_live_prerendering = false;
+        self.scene_live_prerender_progress = None;
+    }
+
+    fn cancel_scene_live_async_render(&mut self) {
+        self.scene_live_async_render_key = None;
+        self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
+    }
+
+    fn defer_scene_live_preview_render(&mut self, cx: &mut Context<Self>, delay_ms: u64) {
+        self.cancel_scene_live_prerender();
+        self.cancel_scene_live_async_render();
+        self.scene_live_render_defer_until = Some(Instant::now() + Duration::from_millis(delay_ms));
+        self.scene_live_render_defer_token = self.scene_live_render_defer_token.wrapping_add(1);
+        let token = self.scene_live_render_defer_token;
+
+        cx.spawn(async move |view, cx| {
+            Timer::after(Duration::from_millis(delay_ms)).await;
+            let _ = view.update(cx, |this, cx| {
+                if this.scene_live_render_defer_token == token {
+                    this.scene_live_render_defer_until = None;
+                    this.scene_live_preview_cache_key = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn scene_live_preview_output_size(final_size: (u32, u32), max_dim: Option<u32>) -> (u32, u32) {
+        let final_w = final_size.0.max(1);
+        let final_h = final_size.1.max(1);
+        let Some(max_dim) = max_dim.map(|dim| dim.max(1)) else {
+            return (final_w, final_h);
+        };
+        if final_w <= max_dim && final_h <= max_dim {
+            return (final_w, final_h);
+        }
+
+        let scale = (max_dim as f32 / final_w as f32).min(max_dim as f32 / final_h as f32);
+        (
+            (final_w as f32 * scale).round().max(1.0) as u32,
+            (final_h as f32 * scale).round().max(1.0) as u32,
+        )
+    }
+
+    fn scene_live_effective_preview_quality(&self) -> SceneLivePreviewQuality {
+        self.scene_live_preview_quality
+    }
+
+    fn scene_live_preview_label(&self) -> String {
+        let quality = self.scene_live_effective_preview_quality();
+        let mut label = format!("Preview: {} <= {}px", quality.label(), quality.max_dim());
+        if self.scene_live_prerendering
+            && let Some((done, total)) = self.scene_live_prerender_progress
+        {
+            label.push_str(&format!(" · RAM {done}/{total}"));
+        }
+        label
+    }
+
     fn scene_live_preview_image(
         &mut self,
         frame: u32,
+        cx: &mut Context<Self>,
     ) -> Result<Option<(Arc<RenderImage>, u32, u32)>, String> {
         let raw = self.script_text.clone();
         if raw.trim().is_empty() {
+            if self.has_scene_live_preview_state() {
+                self.invalidate_scene_live_preview_cache();
+            }
             return Ok(None);
         }
         if !is_graph_script(&raw) {
+            if self.has_scene_live_preview_state() {
+                self.invalidate_scene_live_preview_cache();
+            }
             return Err(
                 "Scene live preview requires a <Graph ...> MotionLoom DSL block.".to_string(),
             );
         }
-
-        let script_hash = Self::script_hash(&raw);
-        let key = (script_hash, frame);
-        if self.scene_live_preview_cache_key == Some(key)
-            && let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref()
+        if let Some(until) = self.scene_live_render_defer_until
+            && Instant::now() < until
         {
-            return Ok(Some((image.clone(), *w, *h)));
+            if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
+                return Ok(Some((image.clone(), *w, *h)));
+            }
+            return Ok(None);
+        }
+        if Self::uses_pure_animation_renderer(&raw) {
+            return self.animation_live_preview_image(&raw, frame, cx);
         }
 
         let graph = parse_graph_script(&raw).map_err(|err| {
@@ -477,24 +797,226 @@ impl MotionLoomPage {
                 err.line, err.message
             )
         })?;
-        if graph.scope != GraphScope::Scene {
-            return Err("Scene live preview requires <Graph scope=\"scene\" ...>.".to_string());
-        }
         if !graph.has_scene_nodes() {
             return Err("Scene live preview needs at least one scene node.".to_string());
         }
 
-        let rgba = render_scene_graph_frame(&graph, frame, SceneRenderProfile::Cpu)
-            .map_err(|err| format!("Scene live render error: {err}"))?;
-        let (w, h) = rgba.dimensions();
-        let mut bgra = rgba.into_raw();
-        for px in bgra.chunks_mut(4) {
-            px.swap(0, 2);
+        let final_size = graph.render_size.unwrap_or(graph.size);
+        let effective_quality = self.scene_live_effective_preview_quality();
+        let preview_size =
+            Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()));
+        let script_hash = Self::script_hash(&raw);
+        let key = (
+            script_hash,
+            frame,
+            effective_quality,
+            preview_size.0,
+            preview_size.1,
+        );
+        if self.scene_live_preview_cache_key == Some(key)
+            && let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref()
+        {
+            return Ok(Some((image.clone(), *w, *h)));
         }
-        let image = Self::render_image_from_bgra(w, h, bgra).map_err(|err| err.to_string())?;
-        self.scene_live_preview_cache_key = Some(key);
-        self.scene_live_preview_cache_image = Some((image.clone(), w, h));
-        Ok(Some((image, w, h)))
+        if let Some((image, w, h)) = self.scene_live_preview_frame_cache.get(&key) {
+            let image = image.clone();
+            let w = *w;
+            let h = *h;
+            self.scene_live_preview_cache_key = Some(key);
+            self.scene_live_preview_cache_image = Some((image.clone(), w, h));
+            return Ok(Some((image, w, h)));
+        }
+        if self.preview_playing && self.scene_live_prerendering {
+            if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
+                return Ok(Some((image.clone(), *w, *h)));
+            }
+            return Ok(None);
+        }
+
+        let mut preview_graph = graph.clone();
+        if preview_size != final_size {
+            preview_graph.render_size = Some(preview_size);
+        }
+
+        if self.scene_live_async_render_key != Some(key) {
+            self.scene_live_async_render_key = Some(key);
+            self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
+            let token = self.scene_live_async_render_token;
+            let (tx, rx) = mpsc::channel::<Result<(u32, u32, Vec<u8>), String>>();
+            std::thread::spawn(move || {
+                let result =
+                    render_scene_graph_frame(&preview_graph, frame, SceneRenderProfile::Gpu)
+                        .map_err(|err| format!("Scene live render error: {err}"))
+                        .map(|rgba| {
+                            let (w, h) = rgba.dimensions();
+                            let mut bgra = rgba.into_raw();
+                            for px in bgra.chunks_mut(4) {
+                                px.swap(0, 2);
+                            }
+                            (w, h, bgra)
+                        });
+                let _ = tx.send(result);
+            });
+            cx.spawn(async move |view, cx| {
+                loop {
+                    Timer::after(Duration::from_millis(SCENE_LIVE_PRERENDER_POLL_MS)).await;
+                    let mut done = false;
+                    let _ = view.update(cx, |this, cx| {
+                        if this.scene_live_async_render_token != token {
+                            done = true;
+                            return;
+                        }
+                        match rx.try_recv() {
+                            Ok(Ok((w, h, bgra))) => {
+                                this.scene_live_async_render_key = None;
+                                if let Ok(image) = Self::render_image_from_bgra(w, h, bgra) {
+                                    this.scene_live_preview_cache_key = Some(key);
+                                    this.scene_live_preview_cache_image =
+                                        Some((image.clone(), w, h));
+                                    this.scene_live_preview_frame_cache
+                                        .insert(key, (image, w, h));
+                                }
+                                done = true;
+                                cx.notify();
+                            }
+                            Ok(Err(err)) => {
+                                this.scene_live_async_render_key = None;
+                                this.status_line = err;
+                                done = true;
+                                cx.notify();
+                            }
+                            Err(mpsc::TryRecvError::Empty) => {}
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                this.scene_live_async_render_key = None;
+                                done = true;
+                                cx.notify();
+                            }
+                        }
+                    });
+                    if done {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+        if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
+            return Ok(Some((image.clone(), *w, *h)));
+        }
+        Ok(None)
+    }
+
+    fn animation_live_preview_image(
+        &mut self,
+        raw: &str,
+        frame: u32,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<(Arc<RenderImage>, u32, u32)>, String> {
+        let graph = parse_animation_graph_script(raw).map_err(|err| {
+            format!(
+                "Animation live parse error at line {}: {}",
+                err.line, err.message
+            )
+        })?;
+        let final_size = graph.render_size.unwrap_or(graph.size);
+        let effective_quality = self.scene_live_effective_preview_quality();
+        let preview_size =
+            Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()));
+        let script_hash = Self::script_hash(raw);
+        let key = (
+            script_hash,
+            frame,
+            effective_quality,
+            preview_size.0,
+            preview_size.1,
+        );
+        if self.scene_live_preview_cache_key == Some(key)
+            && let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref()
+        {
+            return Ok(Some((image.clone(), *w, *h)));
+        }
+        if let Some((image, w, h)) = self.scene_live_preview_frame_cache.get(&key) {
+            let image = image.clone();
+            let w = *w;
+            let h = *h;
+            self.scene_live_preview_cache_key = Some(key);
+            self.scene_live_preview_cache_image = Some((image.clone(), w, h));
+            return Ok(Some((image, w, h)));
+        }
+        if self.preview_playing && self.scene_live_prerendering {
+            if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
+                return Ok(Some((image.clone(), *w, *h)));
+            }
+            return Ok(None);
+        }
+
+        let mut preview_graph = graph.clone();
+        if preview_size != final_size {
+            preview_graph.render_size = Some(preview_size);
+        }
+        if self.scene_live_async_render_key != Some(key) {
+            self.scene_live_async_render_key = Some(key);
+            self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
+            let token = self.scene_live_async_render_token;
+            let asset_root = Self::animation_asset_root();
+            let (tx, rx) = mpsc::channel::<Result<(u32, u32, Vec<u8>), String>>();
+            let request = AnimationLivePreviewRequest {
+                graph: preview_graph,
+                frame,
+                asset_root,
+                response_tx: tx,
+            };
+            if let Err(err) = self.animation_live_preview_tx.send(request) {
+                self.animation_live_preview_tx = Self::spawn_animation_live_preview_worker();
+                let _ = self.animation_live_preview_tx.send(err.0);
+            }
+            cx.spawn(async move |view, cx| {
+                loop {
+                    Timer::after(Duration::from_millis(SCENE_LIVE_PRERENDER_POLL_MS)).await;
+                    let mut done = false;
+                    let _ = view.update(cx, |this, cx| {
+                        if this.scene_live_async_render_token != token {
+                            done = true;
+                            return;
+                        }
+                        match rx.try_recv() {
+                            Ok(Ok((w, h, bgra))) => {
+                                this.scene_live_async_render_key = None;
+                                if let Ok(image) = Self::render_image_from_bgra(w, h, bgra) {
+                                    this.scene_live_preview_cache_key = Some(key);
+                                    this.scene_live_preview_cache_image =
+                                        Some((image.clone(), w, h));
+                                    this.scene_live_preview_frame_cache
+                                        .insert(key, (image, w, h));
+                                }
+                                done = true;
+                                cx.notify();
+                            }
+                            Ok(Err(err)) => {
+                                this.scene_live_async_render_key = None;
+                                this.status_line = err;
+                                done = true;
+                                cx.notify();
+                            }
+                            Err(mpsc::TryRecvError::Empty) => {}
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                this.scene_live_async_render_key = None;
+                                done = true;
+                                cx.notify();
+                            }
+                        }
+                    });
+                    if done {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+        if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
+            return Ok(Some((image.clone(), *w, *h)));
+        }
+        Ok(None)
     }
 
     fn format_live_number(value: f32) -> String {
@@ -508,10 +1030,23 @@ impl MotionLoomPage {
         if text == "-0" { "0".to_string() } else { text }
     }
 
+    fn format_live_number_like_existing(value: f32, existing: &str) -> String {
+        let value = Self::format_live_number(value);
+        let existing = existing.trim();
+        if existing.ends_with('s') {
+            format!("{value}s")
+        } else {
+            value
+        }
+    }
+
     fn parse_live_number(raw: &str) -> Option<f32> {
         let mut text = raw.trim();
         if let Some(inner) = text.strip_prefix('{').and_then(|v| v.strip_suffix('}')) {
             text = inner.trim();
+        }
+        if let Some(seconds) = text.strip_suffix('s') {
+            text = seconds.trim();
         }
         text.parse::<f32>().ok()
     }
@@ -526,13 +1061,55 @@ impl MotionLoomPage {
             format!("id='{node_id}'"),
             format!("id={node_id}"),
         ];
-        let id_pos = id_patterns
+        if let Some(id_pos) = id_patterns
             .iter()
             .filter_map(|pattern| script.find(pattern))
-            .min()?;
-        let tag_start = script[..id_pos].rfind('<')?;
-        let tag_end = id_pos + script[id_pos..].find('>')? + 1;
-        Some((tag_start, tag_end))
+            .min()
+        {
+            let tag_start = script[..id_pos].rfind('<')?;
+            let tag_end = id_pos + script[id_pos..].find('>')? + 1;
+            return Some((tag_start, tag_end));
+        }
+        Self::find_synthetic_scene_live_tag_range(script, node_id)
+    }
+
+    fn scene_live_filter_tags() -> &'static [&'static str] {
+        &["Group", "Actor", "Action", "Pose", "ApplyAction"]
+    }
+
+    fn synthetic_scene_live_target_id(tag_name: &str, ordinal: usize) -> String {
+        format!("{tag_name}#{:02}", ordinal + 1)
+    }
+
+    fn parse_synthetic_scene_live_target_id(node_id: &str) -> Option<(&str, usize)> {
+        let (tag_name, ordinal) = node_id.split_once('#')?;
+        if !Self::scene_live_filter_tags().contains(&tag_name) {
+            return None;
+        }
+        let ordinal = ordinal.parse::<usize>().ok()?.checked_sub(1)?;
+        Some((tag_name, ordinal))
+    }
+
+    fn find_synthetic_scene_live_tag_range(script: &str, node_id: &str) -> Option<(usize, usize)> {
+        let (wanted_tag, wanted_ordinal) = Self::parse_synthetic_scene_live_target_id(node_id)?;
+        let mut seen = 0usize;
+        let mut search_from = 0usize;
+        while let Some(rel_start) = script[search_from..].find('<') {
+            let tag_start = search_from + rel_start;
+            let Some(rel_end) = script[tag_start..].find('>') else {
+                break;
+            };
+            let tag_end = tag_start + rel_end + 1;
+            let tag = &script[tag_start..tag_end];
+            if Self::tag_name(tag).as_deref() == Some(wanted_tag) {
+                if seen == wanted_ordinal {
+                    return Some((tag_start, tag_end));
+                }
+                seen += 1;
+            }
+            search_from = tag_end;
+        }
+        None
     }
 
     fn find_attr_value_range_in_tag(tag: &str, attr: &str) -> Option<(usize, usize)> {
@@ -575,6 +1152,39 @@ impl MotionLoomPage {
                     .map(|pos| value_start + pos)?;
                 return Some((value_start, value_end));
             }
+            if bytes[i] == b'{' {
+                let value_start = i;
+                let mut depth = 0usize;
+                let mut quote: Option<u8> = None;
+                while i < bytes.len() {
+                    let byte = bytes[i];
+                    if let Some(active_quote) = quote {
+                        if byte == active_quote
+                            && (i == 0 || bytes.get(i.wrapping_sub(1)) != Some(&b'\\'))
+                        {
+                            quote = None;
+                        }
+                        i += 1;
+                        continue;
+                    }
+
+                    match byte {
+                        b'"' | b'\'' => quote = Some(byte),
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth = depth.saturating_sub(1);
+                            i += 1;
+                            if depth == 0 {
+                                return Some((value_start, i));
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                return None;
+            }
 
             let value_start = i;
             while i < bytes.len()
@@ -610,6 +1220,10 @@ impl MotionLoomPage {
             tag,
             "Character"
                 | "Group"
+                | "Actor"
+                | "Action"
+                | "Pose"
+                | "ApplyAction"
                 | "Camera"
                 | "Mask"
                 | "Circle"
@@ -634,27 +1248,123 @@ impl MotionLoomPage {
         let mut attrs = Vec::new();
         match tag_name {
             "Character" | "Group" | "Camera" | "Mask" => {
-                for attr in ["x", "y", "rotation", "scale", "opacity"] {
+                for attr in [
+                    "x",
+                    "y",
+                    "rotation",
+                    "scale",
+                    "scaleX",
+                    "scaleY",
+                    "skewX",
+                    "skewY",
+                    "transformOriginX",
+                    "transformOriginY",
+                    "opacity",
+                ] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "Actor" => {
+                for attr in ["x", "y", "z", "yaw", "pitch", "roll", "scale", "opacity"] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "Action" => {
+                for attr in ["duration"] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "Pose" => {
+                for attr in ["t"] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "ApplyAction" => {
+                for attr in ["at", "weight"] {
                     Self::push_scene_live_attr(&mut attrs, attr);
                 }
             }
             "Circle" => {
-                for attr in ["x", "y", "radius", "opacity", "strokeWidth"] {
+                for attr in [
+                    "x",
+                    "y",
+                    "radius",
+                    "rotation",
+                    "scale",
+                    "scaleX",
+                    "scaleY",
+                    "skewX",
+                    "skewY",
+                    "transformOriginX",
+                    "transformOriginY",
+                    "opacity",
+                    "strokeWidth",
+                ] {
                     Self::push_scene_live_attr(&mut attrs, attr);
                 }
             }
-            "Rect" | "Image" | "Svg" | "Text" => {
+            "Rect" | "Text" => {
+                for attr in [
+                    "x",
+                    "y",
+                    "width",
+                    "height",
+                    "rotation",
+                    "scale",
+                    "scaleX",
+                    "scaleY",
+                    "skewX",
+                    "skewY",
+                    "transformOriginX",
+                    "transformOriginY",
+                    "opacity",
+                ] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "Image" | "Svg" => {
                 for attr in ["x", "y", "width", "height", "rotation", "scale", "opacity"] {
                     Self::push_scene_live_attr(&mut attrs, attr);
                 }
             }
             "Line" => {
-                for attr in ["x1", "y1", "x2", "y2", "strokeWidth", "opacity"] {
+                for attr in [
+                    "x",
+                    "y",
+                    "x1",
+                    "y1",
+                    "x2",
+                    "y2",
+                    "rotation",
+                    "scale",
+                    "scaleX",
+                    "scaleY",
+                    "skewX",
+                    "skewY",
+                    "transformOriginX",
+                    "transformOriginY",
+                    "strokeWidth",
+                    "opacity",
+                ] {
                     Self::push_scene_live_attr(&mut attrs, attr);
                 }
             }
             "Path" | "Polyline" => {
-                for attr in ["strokeWidth", "opacity", "feather"] {
+                for attr in [
+                    "x",
+                    "y",
+                    "rotation",
+                    "scale",
+                    "scaleX",
+                    "scaleY",
+                    "skewX",
+                    "skewY",
+                    "transformOriginX",
+                    "transformOriginY",
+                    "strokeWidth",
+                    "opacity",
+                    "feather",
+                ] {
                     Self::push_scene_live_attr(&mut attrs, attr);
                 }
             }
@@ -685,6 +1395,14 @@ impl MotionLoomPage {
             "y1",
             "x2",
             "y2",
+            "z",
+            "yaw",
+            "pitch",
+            "roll",
+            "duration",
+            "t",
+            "at",
+            "weight",
             "radius",
             "width",
             "height",
@@ -694,6 +1412,12 @@ impl MotionLoomPage {
             "jawEase",
             "rotation",
             "scale",
+            "scaleX",
+            "scaleY",
+            "skewX",
+            "skewY",
+            "transformOriginX",
+            "transformOriginY",
             "opacity",
             "strokeWidth",
             "feather",
@@ -707,6 +1431,7 @@ impl MotionLoomPage {
 
     fn extract_scene_live_targets(script: &str) -> Vec<SceneLiveTarget> {
         let mut out = Vec::new();
+        let mut tag_ordinals = HashMap::<String, usize>::new();
         let mut search_from = 0;
         while let Some(rel_start) = script[search_from..].find('<') {
             let tag_start = search_from + rel_start;
@@ -717,9 +1442,16 @@ impl MotionLoomPage {
             let tag = &script[tag_start..tag_end];
             if let Some(tag_name) = Self::tag_name(tag)
                 && Self::is_scene_live_target_tag(&tag_name)
-                && let Some((id_start, id_end)) = Self::find_attr_value_range_in_tag(tag, "id")
             {
-                let id = tag[id_start..id_end].trim().to_string();
+                let ordinal = tag_ordinals.entry(tag_name.clone()).or_insert(0);
+                let current_ordinal = *ordinal;
+                *ordinal += 1;
+                let id = Self::find_attr_value_range_in_tag(tag, "id")
+                    .map(|(id_start, id_end)| tag[id_start..id_end].trim().to_string())
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| {
+                        Self::synthetic_scene_live_target_id(&tag_name, current_ordinal)
+                    });
                 if !id.is_empty() && !out.iter().any(|target: &SceneLiveTarget| target.id == id) {
                     let attrs = Self::scene_live_attrs_for_tag(&tag_name, tag);
                     if !attrs.is_empty() {
@@ -834,11 +1566,12 @@ impl MotionLoomPage {
         let (tag_start, tag_end) = Self::find_scene_tag_range_by_id(script, node_id)
             .ok_or_else(|| format!("Live knob target id=\"{node_id}\" was not found."))?;
         let tag = &script[tag_start..tag_end];
-        let value_text = Self::format_live_number(value);
 
         if let Some((value_start, value_end)) = Self::find_attr_value_range_in_tag(tag, attr) {
             let abs_start = tag_start + value_start;
             let abs_end = tag_start + value_end;
+            let value_text =
+                Self::format_live_number_like_existing(value, &tag[value_start..value_end]);
             let mut out = String::with_capacity(script.len() + value_text.len());
             out.push_str(&script[..abs_start]);
             out.push_str(&value_text);
@@ -850,6 +1583,7 @@ impl MotionLoomPage {
             .rfind("/>")
             .map(|rel| tag_start + rel)
             .unwrap_or(tag_end.saturating_sub(1));
+        let value_text = Self::format_live_number(value);
         let mut out = String::with_capacity(script.len() + attr.len() + value_text.len() + 4);
         out.push_str(&script[..insert_at]);
         out.push(' ');
@@ -871,7 +1605,7 @@ impl MotionLoomPage {
 
     fn scene_live_attr_default_value(attr: &str) -> f32 {
         match attr {
-            "scale" | "opacity" => 1.0,
+            "scale" | "scaleX" | "scaleY" | "opacity" | "duration" | "weight" => 1.0,
             _ => 0.0,
         }
     }
@@ -879,27 +1613,33 @@ impl MotionLoomPage {
     fn clamp_scene_live_attr_value(attr: &str, value: f32) -> f32 {
         match attr {
             "scale" => value.clamp(0.01, 20.0),
-            "opacity" => value.clamp(0.0, 1.0),
+            "scaleX" | "scaleY" => value.clamp(-20.0, 20.0),
+            "opacity" | "weight" => value.clamp(0.0, 1.0),
             "chinSharpness" | "jawEase" => value.clamp(0.0, 1.0),
             "radius" | "width" | "height" | "cheekWidth" | "chinWidth" | "strokeWidth"
-            | "feather" => value.max(0.0),
+            | "feather" | "duration" | "t" | "at" => value.max(0.0),
             _ => value,
         }
     }
 
     fn scene_live_attr_base_step(attr: &str) -> f32 {
         match attr {
-            "scale" | "opacity" => 0.05,
+            "scale" | "scaleX" | "scaleY" | "opacity" => 0.05,
+            "duration" | "t" | "at" => 0.05,
+            "weight" => 0.05,
             "chinSharpness" | "jawEase" => 0.02,
             _ => 1.0,
         }
     }
 
-    fn nudge_scene_live_knob(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self
-            .scene_live_knob_current_value()
-            .unwrap_or_else(|| Self::scene_live_attr_default_value(&self.scene_live_knob_attr));
-        let next = Self::clamp_scene_live_attr_value(&self.scene_live_knob_attr, current + delta);
+    fn patch_scene_live_knob_value(
+        &mut self,
+        value: f32,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+        defer_preview_ms: Option<u64>,
+    ) {
+        let next = Self::clamp_scene_live_attr_value(&self.scene_live_knob_attr, value);
         match Self::patch_scene_tag_attr_number(
             &self.script_text,
             &self.scene_live_knob_node_id,
@@ -907,9 +1647,19 @@ impl MotionLoomPage {
             next,
         ) {
             Ok(script) => {
-                self.set_script_text(script, window, cx);
-                self.scene_live_preview_cache_key = None;
-                self.scene_live_preview_cache_image = None;
+                if let Some(defer_ms) = defer_preview_ms {
+                    self.script_text = script.clone();
+                    self.script_input_needs_sync = true;
+                    self.defer_scene_live_preview_render(cx, defer_ms);
+                    self.sync_script_to_global(cx, false);
+                } else if let Some(window) = window {
+                    self.set_script_text_preserve_preview(script, window, cx);
+                } else {
+                    self.script_text = script.clone();
+                    self.script_input_needs_sync = true;
+                    self.invalidate_scene_live_preview_cache();
+                    self.sync_script_to_global(cx, false);
+                }
                 self.status_line = format!(
                     "Updated selected group attr: {}.{} = {}.",
                     self.scene_live_knob_node_id,
@@ -920,6 +1670,28 @@ impl MotionLoomPage {
             Err(message) => {
                 self.status_line = message;
             }
+        }
+    }
+
+    fn nudge_scene_live_knob(
+        &mut self,
+        delta: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        defer_preview: bool,
+    ) {
+        let current = self
+            .scene_live_knob_current_value()
+            .unwrap_or_else(|| Self::scene_live_attr_default_value(&self.scene_live_knob_attr));
+        if defer_preview {
+            self.patch_scene_live_knob_value(
+                current + delta,
+                Some(window),
+                cx,
+                Some(SCENE_LIVE_SCROLL_RENDER_DEBOUNCE_MS),
+            );
+        } else {
+            self.patch_scene_live_knob_value(current + delta, Some(window), cx, None);
         }
     }
 
@@ -962,112 +1734,30 @@ impl MotionLoomPage {
         )
     }
 
-    // Nearest-neighbor resize for CPU preview rendering.
-    fn resize_bgra_nearest(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
-        if src_w == dst_w && src_h == dst_h {
-            return src.to_vec();
-        }
-        if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
-            return src.to_vec();
-        }
-
-        let mut dst = vec![0u8; (dst_w as usize) * (dst_h as usize) * 4];
-        for y in 0..dst_h {
-            let sy = ((y as u64 * src_h as u64) / dst_h as u64) as u32;
-            for x in 0..dst_w {
-                let sx = ((x as u64 * src_w as u64) / dst_w as u64) as u32;
-                let src_ix = ((sy as usize) * (src_w as usize) + (sx as usize)) * 4;
-                let dst_ix = ((y as usize) * (dst_w as usize) + (x as usize)) * 4;
-                dst[dst_ix..dst_ix + 4].copy_from_slice(&src[src_ix..src_ix + 4]);
-            }
-        }
-        dst
-    }
-
-    // Resolve the target canvas size from the graph runtime or fall back to None.
-    fn runtime_target_size(&self) -> Option<(u32, u32)> {
-        let runtime = self.graph_runtime.as_ref()?;
-        let graph = runtime.graph();
-        if let Some(size) = graph.resource_size(&graph.present.from) {
-            return Some(size);
-        }
-        Some(graph.size)
-    }
-
     fn playback_fps(&self) -> f32 {
         self.graph_runtime
             .as_ref()
             .map(|runtime| runtime.graph().fps)
             .filter(|fps| fps.is_finite() && *fps > 0.0)
+            .or_else(|| {
+                self.script_playback_spec()
+                    .map(|(fps, _)| fps)
+                    .filter(|fps| fps.is_finite() && *fps > 0.0)
+            })
             .unwrap_or(30.0)
     }
 
-    fn ensure_video_preview_player(&mut self, path: &str) -> Result<(), MotionLoomPageError> {
-        if self.video_preview_player.is_some()
-            && self.video_preview_player_path.as_deref() == Some(path)
-        {
-            return Ok(());
+    fn script_playback_spec(&self) -> Option<(f32, u32)> {
+        if Self::uses_pure_animation_renderer(&self.script_text) {
+            let graph = parse_animation_graph_script(&self.script_text).ok()?;
+            let fps = graph.fps;
+            let total = ((graph.duration_ms as f64 / 1000.0) * fps as f64).round() as u32;
+            return Some((fps, total.max(1)));
         }
-
-        self.video_preview_player = None;
-        self.video_preview_player_path = None;
-        self.video_preview_last_seek_frame = None;
-
-        let pb = PathBuf::from(path);
-        let url = Url::from_file_path(&pb)
-            .map_err(|_| MotionLoomPageError::PathToUrl { path: pb.clone() })?;
-        let fps = self.playback_fps().round().clamp(1.0, 240.0) as u32;
-        let opts = VideoOptions {
-            frame_buffer_capacity: Some(2),
-            preview_scale: None,
-            preview_max_dim: None,
-            preview_fps: Some(fps),
-            appsink_max_buffers: Some(2),
-            #[cfg(target_os = "macos")]
-            // VFX Stage favors decode compatibility over NV12 surface fast-path.
-            // Scene renders may be ProRes/yuv422p10le and can fail to produce stable
-            // surface frames in this panel if NV12 is forced too early.
-            prefer_surface: false,
-            #[cfg(target_os = "macos")]
-            strict_surface_proxy_nv12: false,
-            benchmark_raw_appsink: VideoOptions::benchmark_raw_appsink_from_env(),
-            ..Default::default()
-        };
-        let player = Video::new_with_options(&url, opts).map_err(|err| {
-            MotionLoomPageError::OpenVideoPreviewPlayer {
-                message: err.to_string(),
-            }
-        })?;
-        player.set_muted(true);
-        player.set_paused(true);
-        let _ = player.seek(Position::Time(Duration::ZERO), false);
-        self.video_preview_player = Some(player);
-        self.video_preview_player_path = Some(path.to_string());
-        Ok(())
-    }
-
-    fn seek_video_preview_frame(&mut self, path: &str, frame: u32) -> bool {
-        if self.ensure_video_preview_player(path).is_err() {
-            return false;
-        }
-        let fps = self.playback_fps().max(1.0);
-        if self.video_preview_last_seek_frame != Some(frame) {
-            let seek_t = Duration::from_secs_f64(frame as f64 / fps as f64);
-            if let Some(player) = self.video_preview_player.as_ref() {
-                let _ = player.seek(Position::Time(seek_t), false);
-            }
-            self.video_preview_last_seek_frame = Some(frame);
-        }
-        true
-    }
-
-    fn video_preview_frame_bgra(&mut self, path: &str, frame: u32) -> Option<(Vec<u8>, u32, u32)> {
-        if !self.seek_video_preview_frame(path, frame) {
-            return None;
-        }
-        self.video_preview_player
-            .as_ref()
-            .and_then(|player| player.current_frame_data())
+        let graph = parse_graph_script(&self.script_text).ok()?;
+        let fps = graph.fps;
+        let total = ((graph.duration_ms as f64 / 1000.0) * fps as f64).round() as u32;
+        Some((fps, total.max(1)))
     }
 
     // Calculate total frame count from graph runtime duration or clip duration.
@@ -1075,6 +1765,12 @@ impl MotionLoomPage {
         if let Some(runtime) = self.graph_runtime.as_ref() {
             let graph = runtime.graph();
             let total = ((graph.duration_ms as f64 / 1000.0) * graph.fps as f64).round() as u32;
+            if total > 1 {
+                return total;
+            }
+        }
+
+        if let Some((_, total)) = self.script_playback_spec() {
             if total > 1 {
                 return total;
             }
@@ -1095,7 +1791,16 @@ impl MotionLoomPage {
         60
     }
 
-    // Schedule the next frame tick for continuous playback preview.
+    fn has_scene_playback_graph(&self) -> bool {
+        self.graph_runtime
+            .as_ref()
+            .map(|runtime| runtime.graph().has_scene_nodes())
+            .or_else(|| self.script_playback_spec().map(|_| true))
+            .unwrap_or(false)
+    }
+
+    // Schedule timeline playback for imported clips. Graph playback is render-locked by the
+    // async frame renderer so the UI never advances to frames that are not ready yet.
     fn schedule_preview_playback(
         &mut self,
         token: u64,
@@ -1116,28 +1821,8 @@ impl MotionLoomPage {
             let step = this.preview_frame_accum.floor() as u32;
             if step > 0 {
                 this.preview_frame_accum -= step as f32;
-                let frame_count = this.playback_frame_count();
-                let stop_on_end = this
-                    .graph_runtime
-                    .as_ref()
-                    .map(|runtime| runtime.graph().scope == GraphScope::Scene)
-                    .unwrap_or(false);
-                if stop_on_end {
-                    let last_frame = frame_count.saturating_sub(1);
-                    let next = this.preview_frame.saturating_add(step);
-                    if next >= frame_count {
-                        this.preview_frame = last_frame;
-                        this.preview_playing = false;
-                        this.preview_last_tick = None;
-                        this.preview_frame_accum = 0.0;
-                        this.status_line =
-                            format!("Scene preview reached end at frame {}.", this.preview_frame);
-                    } else {
-                        this.preview_frame = next;
-                    }
-                } else {
-                    this.preview_frame = (this.preview_frame + step) % frame_count;
-                }
+                let frame_count = this.playback_frame_count().max(1);
+                this.preview_frame = (this.preview_frame + step) % frame_count;
                 cx.notify();
             }
 
@@ -1147,10 +1832,342 @@ impl MotionLoomPage {
         });
     }
 
+    fn start_scene_live_prerender(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.script_text.clone();
+        if Self::uses_pure_animation_renderer(&raw) {
+            self.start_animation_live_prerender(raw, window, cx);
+            return;
+        }
+        let Ok(graph) = parse_graph_script(&raw) else {
+            return;
+        };
+        if !graph.has_scene_nodes() {
+            return;
+        }
+
+        let final_size = graph.render_size.unwrap_or(graph.size);
+        let effective_quality = self.scene_live_effective_preview_quality();
+        let preview_size =
+            Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()));
+        let mut preview_graph = graph.clone();
+        if preview_size != final_size {
+            preview_graph.render_size = Some(preview_size);
+        }
+
+        let total_frames = self
+            .playback_frame_count()
+            .max(1)
+            .min(SCENE_LIVE_PRERENDER_MAX_FRAMES);
+        let script_hash = Self::script_hash(&raw);
+        if let Some(cancel) = self.scene_live_prerender_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.scene_live_prerender_cancel = Some(cancel.clone());
+        self.scene_live_prerender_token = self.scene_live_prerender_token.wrapping_add(1);
+        let token = self.scene_live_prerender_token;
+        self.scene_live_preview_cache_key = None;
+        if !self.preview_playing {
+            self.scene_live_preview_cache_image = None;
+        }
+        self.scene_live_preview_frame_cache.clear();
+        self.scene_live_prerendering = true;
+        self.scene_live_prerender_progress = Some((0, total_frames));
+
+        enum SceneLivePrerenderEvent {
+            Frame {
+                frame: u32,
+                width: u32,
+                height: u32,
+                bgra: Vec<u8>,
+            },
+            Finished(Result<u32, String>),
+        }
+
+        let (tx, rx) = mpsc::channel::<SceneLivePrerenderEvent>();
+        std::thread::spawn(move || {
+            for frame in 0..total_frames {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let rgba = match render_scene_graph_frame(
+                    &preview_graph,
+                    frame,
+                    SceneRenderProfile::Gpu,
+                ) {
+                    Ok(rgba) => rgba,
+                    Err(err) => {
+                        let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(err.to_string())));
+                        return;
+                    }
+                };
+                let (width, height) = rgba.dimensions();
+                let mut bgra = rgba.into_raw();
+                for px in bgra.chunks_mut(4) {
+                    px.swap(0, 2);
+                }
+                if tx
+                    .send(SceneLivePrerenderEvent::Frame {
+                        frame,
+                        width,
+                        height,
+                        bgra,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let _ = tx.send(SceneLivePrerenderEvent::Finished(Ok(total_frames)));
+        });
+
+        cx.spawn_in(window, async move |view, window| {
+            loop {
+                Timer::after(Duration::from_millis(SCENE_LIVE_PRERENDER_POLL_MS)).await;
+                let mut done = false;
+                let mut should_notify = false;
+                let _ = view.update_in(window, |this, _window, cx| {
+                    if this.scene_live_prerender_token != token {
+                        done = true;
+                        return;
+                    }
+
+                    loop {
+                        match rx.try_recv() {
+                            Ok(SceneLivePrerenderEvent::Frame {
+                                frame,
+                                width,
+                                height,
+                                bgra,
+                            }) => {
+                                let key = (script_hash, frame, effective_quality, width, height);
+                                if let Ok(image) = Self::render_image_from_bgra(width, height, bgra)
+                                {
+                                    this.scene_live_preview_frame_cache
+                                        .insert(key, (image.clone(), width, height));
+                                    this.scene_live_prerender_progress =
+                                        Some((frame.saturating_add(1), total_frames));
+                                    if this.preview_playing || this.preview_frame == frame {
+                                        this.preview_frame = frame;
+                                        this.scene_live_preview_cache_key = Some(key);
+                                        this.scene_live_preview_cache_image =
+                                            Some((image, width, height));
+                                    }
+                                    should_notify = true;
+                                }
+                            }
+                            Ok(SceneLivePrerenderEvent::Finished(result)) => {
+                                this.scene_live_prerendering = false;
+                                this.scene_live_prerender_progress = None;
+                                this.scene_live_prerender_cancel = None;
+                                match result {
+                                    Ok(frames) => {
+                                        this.status_line =
+                                            format!("RAM preview cached {} frame(s).", frames);
+                                    }
+                                    Err(err) => {
+                                        this.status_line = format!("RAM preview failed: {err}");
+                                    }
+                                }
+                                should_notify = true;
+                                done = true;
+                                break;
+                            }
+                            Err(mpsc::TryRecvError::Empty) => break,
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                this.scene_live_prerendering = false;
+                                this.scene_live_prerender_progress = None;
+                                this.scene_live_prerender_cancel = None;
+                                should_notify = true;
+                                done = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if should_notify {
+                        cx.notify();
+                    }
+                });
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn start_animation_live_prerender(
+        &mut self,
+        raw: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(graph) = parse_animation_graph_script(&raw) else {
+            return;
+        };
+        let final_size = graph.render_size.unwrap_or(graph.size);
+        let effective_quality = self.scene_live_effective_preview_quality();
+        let preview_size =
+            Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()));
+        let mut preview_graph = graph.clone();
+        if preview_size != final_size {
+            preview_graph.render_size = Some(preview_size);
+        }
+
+        let total_frames = self
+            .playback_frame_count()
+            .max(1)
+            .min(SCENE_LIVE_PRERENDER_MAX_FRAMES);
+        let script_hash = Self::script_hash(&raw);
+        if let Some(cancel) = self.scene_live_prerender_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.scene_live_prerender_cancel = Some(cancel.clone());
+        self.scene_live_prerender_token = self.scene_live_prerender_token.wrapping_add(1);
+        let token = self.scene_live_prerender_token;
+        self.scene_live_preview_cache_key = None;
+        if !self.preview_playing {
+            self.scene_live_preview_cache_image = None;
+        }
+        self.scene_live_preview_frame_cache.clear();
+        self.scene_live_prerendering = true;
+        self.scene_live_prerender_progress = Some((0, total_frames));
+
+        enum AnimationLivePrerenderEvent {
+            Frame {
+                frame: u32,
+                width: u32,
+                height: u32,
+                bgra: Vec<u8>,
+            },
+            Finished(Result<u32, String>),
+        }
+
+        let asset_root = Self::animation_asset_root();
+        let (tx, rx) = mpsc::channel::<AnimationLivePrerenderEvent>();
+        std::thread::spawn(move || {
+            let mut renderer = AnimationFrameRenderer::new();
+            for frame in 0..total_frames {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let rgba = match renderer.render_frame_gpu(&preview_graph, frame, &asset_root) {
+                    Ok(rgba) => rgba,
+                    Err(err) => {
+                        let _ =
+                            tx.send(AnimationLivePrerenderEvent::Finished(Err(err.to_string())));
+                        return;
+                    }
+                };
+                let (width, height) = rgba.dimensions();
+                let mut bgra = rgba.into_raw();
+                for px in bgra.chunks_mut(4) {
+                    px.swap(0, 2);
+                }
+                if tx
+                    .send(AnimationLivePrerenderEvent::Frame {
+                        frame,
+                        width,
+                        height,
+                        bgra,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let _ = tx.send(AnimationLivePrerenderEvent::Finished(Ok(total_frames)));
+        });
+
+        cx.spawn_in(window, async move |view, window| {
+            loop {
+                Timer::after(Duration::from_millis(SCENE_LIVE_PRERENDER_POLL_MS)).await;
+                let mut done = false;
+                let mut should_notify = false;
+                let _ = view.update_in(window, |this, _window, cx| {
+                    if this.scene_live_prerender_token != token {
+                        done = true;
+                        return;
+                    }
+
+                    loop {
+                        match rx.try_recv() {
+                            Ok(AnimationLivePrerenderEvent::Frame {
+                                frame,
+                                width,
+                                height,
+                                bgra,
+                            }) => {
+                                let key = (script_hash, frame, effective_quality, width, height);
+                                if let Ok(image) = Self::render_image_from_bgra(width, height, bgra)
+                                {
+                                    this.scene_live_preview_frame_cache
+                                        .insert(key, (image.clone(), width, height));
+                                    this.scene_live_prerender_progress =
+                                        Some((frame.saturating_add(1), total_frames));
+                                    if this.preview_playing || this.preview_frame == frame {
+                                        this.preview_frame = frame;
+                                        this.scene_live_preview_cache_key = Some(key);
+                                        this.scene_live_preview_cache_image =
+                                            Some((image, width, height));
+                                    }
+                                    should_notify = true;
+                                }
+                            }
+                            Ok(AnimationLivePrerenderEvent::Finished(result)) => {
+                                this.scene_live_prerendering = false;
+                                this.scene_live_prerender_progress = None;
+                                this.scene_live_prerender_cancel = None;
+                                match result {
+                                    Ok(frames) => {
+                                        this.status_line =
+                                            format!("GPU RAM preview cached {} frame(s).", frames);
+                                    }
+                                    Err(err) => {
+                                        this.status_line = format!("GPU RAM preview failed: {err}");
+                                    }
+                                }
+                                should_notify = true;
+                                done = true;
+                                break;
+                            }
+                            Err(mpsc::TryRecvError::Empty) => break,
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                this.scene_live_prerendering = false;
+                                this.scene_live_prerender_progress = None;
+                                this.scene_live_prerender_cancel = None;
+                                should_notify = true;
+                                done = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if should_notify {
+                        cx.notify();
+                    }
+                });
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     fn step_preview_frame(&mut self, delta: i32) {
         self.preview_playing = false;
         self.preview_last_tick = None;
         self.preview_frame_accum = 0.0;
+        self.cancel_scene_live_prerender();
         if delta >= 0 {
             self.preview_frame = self.preview_frame.saturating_add(delta as u32);
         } else {
@@ -1163,12 +2180,15 @@ impl MotionLoomPage {
             self.preview_playing = false;
             self.preview_last_tick = None;
             self.preview_frame_accum = 0.0;
+            self.cancel_scene_live_prerender();
             self.status_line = format!("Paused at frame {}.", self.preview_frame);
             cx.notify();
             return;
         }
-        if self.current_clip().is_none() {
-            self.status_line = "Import/select a clip before playback.".to_string();
+        if self.current_clip().is_none() && !self.has_scene_playback_graph() {
+            self.status_line =
+                "Import/select a clip or write a valid unified <Graph> before playback."
+                    .to_string();
             cx.notify();
             return;
         }
@@ -1179,169 +2199,15 @@ impl MotionLoomPage {
         self.preview_frame_accum = 0.0;
         let token = self.preview_play_token;
         self.status_line = format!("Playback started at {} fps.", self.playback_fps());
-        self.schedule_preview_playback(token, window, cx);
+        if self.has_scene_playback_graph() {
+            self.start_scene_live_prerender(window, cx);
+        } else {
+            self.schedule_preview_playback(token, window, cx);
+        }
         cx.notify();
     }
 
-    // CPU-side preview rendering with color/blur/opacity effects from the graph runtime.
-    fn runtime_preview_image(
-        &mut self,
-        clip_idx: usize,
-        source_bgra: &[u8],
-        source_w: u32,
-        source_h: u32,
-        fallback_image: Arc<RenderImage>,
-        frame: u32,
-        invert_mix: f32,
-        brightness: f32,
-        contrast: f32,
-        saturation: f32,
-        blur_sigma: f32,
-        opacity: f32,
-        target_size: (u32, u32),
-    ) -> (Arc<RenderImage>, u32, u32) {
-        let mix = invert_mix.clamp(0.0, 1.0);
-        let brightness = brightness.clamp(-1.0, 1.0);
-        let contrast = contrast.clamp(0.0, 2.0);
-        let saturation = saturation.clamp(0.0, 2.0);
-        let blur_sigma = blur_sigma.clamp(-64.0, 64.0);
-        let opacity = opacity.clamp(0.0, 1.0);
-        let target_w = target_size.0.max(1);
-        let target_h = target_size.1.max(1);
-        let quantized = (mix * 1000.0).round() as i32;
-        let bq = (brightness * 1000.0).round() as i32;
-        let cq = (contrast * 1000.0).round() as i32;
-        let sq = (saturation * 1000.0).round() as i32;
-        let blur_q = (blur_sigma * 1000.0).round() as i32;
-        let oq = (opacity * 1000.0).round() as i32;
-        let key = (
-            clip_idx, frame, quantized, bq, cq, sq, blur_q, oq, target_w, target_h,
-        );
-        if self.runtime_preview_cache_key == Some(key)
-            && let Some(image) = self.runtime_preview_cache_image.as_ref()
-        {
-            return (image.clone(), target_w, target_h);
-        }
-
-        let mut bgra =
-            Self::resize_bgra_nearest(source_bgra, source_w, source_h, target_w, target_h);
-
-        // Apply color grading effects (invert, brightness, contrast, saturation, opacity)
-        if mix > 0.0001
-            || brightness.abs() > 0.0001
-            || (contrast - 1.0).abs() > 0.0001
-            || (saturation - 1.0).abs() > 0.0001
-            || (opacity - 1.0).abs() > 0.0001
-        {
-            for px in bgra.chunks_mut(4) {
-                let sb = px[0] as f32;
-                let sg = px[1] as f32;
-                let sr = px[2] as f32;
-
-                let mut r = sr / 255.0;
-                let mut g = sg / 255.0;
-                let mut b = sb / 255.0;
-
-                if mix > 0.0001 {
-                    r = r * (1.0 - mix) + (1.0 - r) * mix;
-                    g = g * (1.0 - mix) + (1.0 - g) * mix;
-                    b = b * (1.0 - mix) + (1.0 - b) * mix;
-                }
-
-                r = ((r + brightness) - 0.5) * contrast + 0.5;
-                g = ((g + brightness) - 0.5) * contrast + 0.5;
-                b = ((b + brightness) - 0.5) * contrast + 0.5;
-
-                let luma = 0.299 * r + 0.587 * g + 0.114 * b;
-                r = luma + (r - luma) * saturation;
-                g = luma + (g - luma) * saturation;
-                b = luma + (b - luma) * saturation;
-
-                let mut nr = r.clamp(0.0, 1.0);
-                let mut ng = g.clamp(0.0, 1.0);
-                let mut nb = b.clamp(0.0, 1.0);
-                if opacity < 0.9999 {
-                    let srn = sr / 255.0;
-                    let sgn = sg / 255.0;
-                    let sbn = sb / 255.0;
-                    nr = srn * (1.0 - opacity) + nr * opacity;
-                    ng = sgn * (1.0 - opacity) + ng * opacity;
-                    nb = sbn * (1.0 - opacity) + nb * opacity;
-                }
-
-                px[2] = (nr * 255.0).round().clamp(0.0, 255.0) as u8;
-                px[1] = (ng * 255.0).round().clamp(0.0, 255.0) as u8;
-                px[0] = (nb * 255.0).round().clamp(0.0, 255.0) as u8;
-            }
-        }
-
-        // Apply gaussian blur or unsharp-mask sharpening
-        if blur_sigma > 0.05 {
-            let mut rgba = Vec::with_capacity(bgra.len());
-            for px in bgra.chunks_exact(4) {
-                rgba.push(px[2]);
-                rgba.push(px[1]);
-                rgba.push(px[0]);
-                rgba.push(px[3]);
-            }
-            if let Some(rgba_img) =
-                ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(target_w, target_h, rgba)
-            {
-                let blurred = image::imageops::blur(&rgba_img, blur_sigma);
-                let raw = blurred.into_raw();
-                for (dst, src) in bgra.chunks_exact_mut(4).zip(raw.chunks_exact(4)) {
-                    dst[0] = src[2];
-                    dst[1] = src[1];
-                    dst[2] = src[0];
-                    dst[3] = src[3];
-                }
-            }
-        } else if blur_sigma < -0.05 {
-            let sharpen_sigma = blur_sigma.abs();
-            let amount = 1.0_f32;
-            let base = bgra.clone();
-            let mut rgba = Vec::with_capacity(base.len());
-            for px in base.chunks_exact(4) {
-                rgba.push(px[2]);
-                rgba.push(px[1]);
-                rgba.push(px[0]);
-                rgba.push(px[3]);
-            }
-            if let Some(rgba_img) =
-                ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(target_w, target_h, rgba)
-            {
-                let blurred = image::imageops::blur(&rgba_img, sharpen_sigma);
-                let raw_blur = blurred.into_raw();
-                for ((dst, src_base), src_blur) in bgra
-                    .chunks_exact_mut(4)
-                    .zip(base.chunks_exact(4))
-                    .zip(raw_blur.chunks_exact(4))
-                {
-                    for ch in 0..3 {
-                        let b = src_base[ch] as f32 / 255.0;
-                        let bl = src_blur[ch] as f32 / 255.0;
-                        let v = (b + (b - bl) * amount).clamp(0.0, 1.0);
-                        dst[ch] = (v * 255.0).round().clamp(0.0, 255.0) as u8;
-                    }
-                    dst[3] = src_base[3];
-                }
-            }
-        }
-
-        let image = Self::render_image_from_bgra(target_w, target_h, bgra)
-            .unwrap_or_else(|_| fallback_image.clone());
-        self.runtime_preview_cache_key = Some(key);
-        self.runtime_preview_cache_image = Some(image.clone());
-        (image, target_w, target_h)
-    }
-
-    // Build an ImportedClip from a file path, generating a thumbnail if possible.
-    fn build_imported_clip(
-        path: &str,
-        ffmpeg_path: &str,
-        cache_root: &Path,
-        can_generate_video_thumbnail: bool,
-    ) -> ImportedClip {
+    fn build_imported_clip(path: &str) -> ImportedClip {
         let pb = PathBuf::from(path);
         let name = pb
             .file_name()
@@ -1354,60 +2220,15 @@ impl MotionLoomPage {
             Duration::ZERO
         };
 
-        if Self::is_image_path(path) {
-            return match Self::load_render_image(&pb) {
-                Ok(preview) => ImportedClip {
-                    name,
-                    path: path.to_string(),
-                    kind: ImportedClipKind::Image,
-                    duration,
-                    preview: Some(preview),
-                    error: None,
-                },
-                Err(err) => ImportedClip {
-                    name,
-                    path: path.to_string(),
-                    kind: ImportedClipKind::Image,
-                    duration,
-                    preview: None,
-                    error: Some(err.to_string()),
-                },
-            };
-        }
-
-        if !can_generate_video_thumbnail {
-            return ImportedClip {
-                name,
-                path: path.to_string(),
-                kind: ImportedClipKind::Video,
-                duration,
-                preview: None,
-                error: Some("FFmpeg is required to generate video preview thumbnails.".to_string()),
-            };
-        }
-
-        let thumb_path = thumbnail::thumbnail_path_for_in(cache_root, &pb, THUMB_MAX_DIM);
-        let preview = thumbnail::run_thumbnail_job(ffmpeg_path, &pb, &thumb_path, THUMB_MAX_DIM)
-            .map_err(MotionLoomPageError::from)
-            .and_then(|_| Self::load_render_image(&thumb_path));
-
-        match preview {
-            Ok(preview) => ImportedClip {
-                name,
-                path: path.to_string(),
-                kind: ImportedClipKind::Video,
-                duration,
-                preview: Some(preview),
-                error: None,
+        ImportedClip {
+            name,
+            path: path.to_string(),
+            kind: if Self::is_image_path(path) {
+                ImportedClipKind::Image
+            } else {
+                ImportedClipKind::Video
             },
-            Err(err) => ImportedClip {
-                name,
-                path: path.to_string(),
-                kind: ImportedClipKind::Video,
-                duration,
-                preview: None,
-                error: Some(err.to_string()),
-            },
+            duration,
         }
     }
 
@@ -1565,6 +2386,13 @@ impl MotionLoomPage {
         self.motionloom_apply_revision = apply_revision;
     }
 
+    fn sync_preview_frame_to_global(&mut self, cx: &mut Context<Self>) {
+        let frame = self.preview_frame;
+        self.global.update(cx, |gs, _cx| {
+            gs.set_motionloom_scene_preview_frame(frame);
+        });
+    }
+
     fn sync_script_from_global(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (global_script, script_revision, apply_revision) = {
             let gs = self.global.read(cx);
@@ -1649,25 +2477,103 @@ impl MotionLoomPage {
         });
         let sub = cx.subscribe(&input, |this, input, ev, cx| match ev {
             InputEvent::Change => {
+                if this.script_input_syncing {
+                    return;
+                }
                 this.script_text = input.read(cx).value().to_string();
-                this.scene_live_preview_cache_key = None;
-                this.scene_live_preview_cache_image = None;
+                this.defer_scene_live_preview_render(cx, SCENE_LIVE_INPUT_RENDER_DEBOUNCE_MS);
                 this.sync_script_to_global(cx, false);
             }
             InputEvent::PressEnter { secondary } => {
+                if this.script_input_syncing {
+                    return;
+                }
                 this.script_text = input.read(cx).value().to_string();
-                this.scene_live_preview_cache_key = None;
-                this.scene_live_preview_cache_image = None;
-                this.sync_script_to_global(cx, false);
                 if *secondary {
+                    this.invalidate_scene_live_preview_cache();
+                    this.sync_script_to_global(cx, false);
                     this.apply_script_command(cx);
                     cx.notify();
+                } else {
+                    this.defer_scene_live_preview_render(cx, SCENE_LIVE_INPUT_RENDER_DEBOUNCE_MS);
+                    this.sync_script_to_global(cx, false);
                 }
             }
             _ => {}
         });
         self.script_input = Some(input);
         self.script_input_sub = Some(sub);
+    }
+
+    fn ensure_scene_live_knob_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scene_live_knob_input.is_some() {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("value"));
+        let sub = cx.subscribe(&input, |this, input, ev, cx| match ev {
+            InputEvent::Change | InputEvent::PressEnter { .. } => {
+                if this.scene_live_knob_input_syncing {
+                    return;
+                }
+                let raw = input.read(cx).value().to_string();
+                if let Some(value) = Self::parse_live_number(&raw) {
+                    this.patch_scene_live_knob_value(
+                        value,
+                        None,
+                        cx,
+                        Some(SCENE_LIVE_INPUT_RENDER_DEBOUNCE_MS),
+                    );
+                    cx.notify();
+                }
+            }
+            _ => {}
+        });
+        self.scene_live_knob_input = Some(input);
+        self.scene_live_knob_input_sub = Some(sub);
+    }
+
+    fn sync_script_input_if_needed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.script_input_needs_sync {
+            return;
+        }
+        let Some(input) = self.script_input.as_ref() else {
+            return;
+        };
+        let focused = input.read(cx).focus_handle(cx).is_focused(window);
+        if focused {
+            return;
+        }
+        self.script_input_needs_sync = false;
+        self.script_input_syncing = true;
+        let text = self.script_text.clone();
+        input.update(cx, |this, cx| {
+            this.set_value(text, window, cx);
+        });
+        self.script_input_syncing = false;
+    }
+
+    fn sync_scene_live_knob_input(
+        &mut self,
+        value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(input) = self.scene_live_knob_input.as_ref() else {
+            return;
+        };
+        let focused = input.read(cx).focus_handle(cx).is_focused(window);
+        if focused {
+            return;
+        }
+        let current = input.read(cx).value().to_string();
+        if current == value {
+            return;
+        }
+        self.scene_live_knob_input_syncing = true;
+        input.update(cx, |this, cx| {
+            this.set_value(value, window, cx);
+        });
+        self.scene_live_knob_input_syncing = false;
     }
 
     // Parse and compile the graph script, activating the runtime for preview.
@@ -1683,6 +2589,38 @@ impl MotionLoomPage {
         // Only accept Graph DSL scripts (XML-based MotionLoom format)
         if !is_graph_script(&raw) {
             self.status_line = "Not a valid Graph script. Use the Template Picker to generate one, or write a <Graph ...> block.".to_string();
+            return;
+        }
+
+        if Self::uses_pure_animation_renderer(&raw) {
+            match parse_animation_graph_script(&raw) {
+                Ok(graph) => {
+                    self.graph_runtime = None;
+                    self.preview_frame = 0;
+                    self.preview_playing = false;
+                    self.preview_last_tick = None;
+                    self.preview_frame_accum = 0.0;
+                    self.invalidate_scene_live_preview_cache();
+                    self.status_line = format!(
+                        "Animation DSL active | worlds={} actors={} fps={:.2} duration={}ms",
+                        graph.worlds.len(),
+                        graph
+                            .worlds
+                            .iter()
+                            .map(|world| world.actors.len())
+                            .sum::<usize>(),
+                        graph.fps,
+                        graph.duration_ms
+                    );
+                }
+                Err(err) => {
+                    self.graph_runtime = None;
+                    self.status_line = format!(
+                        "Animation parse error at line {}: {}",
+                        err.line, err.message
+                    );
+                }
+            }
             return;
         }
 
@@ -1704,11 +2642,7 @@ impl MotionLoomPage {
                     self.preview_playing = false;
                     self.preview_last_tick = None;
                     self.preview_frame_accum = 0.0;
-                    self.runtime_preview_cache_key = None;
-                    self.runtime_preview_cache_image = None;
-                    self.scene_live_preview_cache_key = None;
-                    self.scene_live_preview_cache_image = None;
-                    self.video_preview_last_seek_frame = None;
+                    self.invalidate_scene_live_preview_cache();
                     self.status_line =
                         format!("Runtime ACTIVE | {} | {}", graph_summary, runtime_summary);
                 }
@@ -1732,6 +2666,10 @@ impl MotionLoomPage {
         cx: &mut Context<Self>,
     ) {
         let raw = self.script_text.clone();
+        if Self::uses_pure_animation_renderer(&raw) {
+            self.render_animation_to_media_pool(raw, mode, window, cx);
+            return;
+        }
         let graph = match parse_graph_script(&raw) {
             Ok(graph) => graph,
             Err(err) => {
@@ -1742,18 +2680,14 @@ impl MotionLoomPage {
                 return;
             }
         };
-        if graph.scope != GraphScope::Scene {
-            self.status_line = "Scene render requires <Graph scope=\"scene\" ...>.".to_string();
-            return;
-        }
         if !graph.has_scene_nodes() {
             self.status_line =
-                "Scene graph needs at least one scene node: <Scene>, <Solid>, <Text>, <Image>, <Svg>, <Rect>, <Circle>, <Line>, <Polyline>, <Path>, <Camera>, or <Group>."
+                "Graph needs at least one node: <Background>, <Scene>, <Text>, <Image>, <Svg>, <Rect>, <Circle>, <Line>, <Polyline>, <Path>, <Camera>, or <Group>."
                     .to_string();
             return;
         }
 
-        let (ffmpeg_path, output_dir, cache_root, can_generate_video_thumbnail) = {
+        let (ffmpeg_path, output_dir) = {
             let gs = self.global.read(cx);
             if !gs.media_tools_ready_for_preview_gen() {
                 self.status_line =
@@ -1763,8 +2697,6 @@ impl MotionLoomPage {
             (
                 gs.ffmpeg_path.clone(),
                 gs.generated_media_root_dir().join("motionloom_generated"),
-                gs.cache_root_dir(),
-                gs.media_tools_ready_for_preview_gen(),
             )
         };
         let profile = mode.profile();
@@ -1778,8 +2710,9 @@ impl MotionLoomPage {
         let duration = Duration::from_millis(graph.duration_ms);
         let global = self.global.clone();
         let ffmpeg_for_render = ffmpeg_path.clone();
-        let ffmpeg_for_import = ffmpeg_path.clone();
-        let cache_root_for_import = cache_root.clone();
+        let total_frames = ((graph.duration_ms as f64 / 1000.0) * graph.fps as f64)
+            .round()
+            .max(1.0) as u32;
 
         self.status_line = format!(
             "{} started: {}...",
@@ -1789,6 +2722,11 @@ impl MotionLoomPage {
                 .and_then(|name| name.to_str())
                 .unwrap_or("motionloom_scene.mov")
         );
+        self.scene_render_progress = Some(SceneRenderProgressUi {
+            label: mode.label(),
+            rendered_frames: 0,
+            total_frames,
+        });
         cx.notify();
 
         enum SceneRenderEvent {
@@ -1853,6 +2791,11 @@ impl MotionLoomPage {
                             * 100.0)
                             .round()
                             .clamp(0.0, 100.0) as u32;
+                        this.scene_render_progress = Some(SceneRenderProgressUi {
+                            label: mode.label(),
+                            rendered_frames: progress.rendered_frames,
+                            total_frames: progress.total_frames,
+                        });
                         this.status_line = format!(
                             "{}: {}% ({}/{})",
                             mode.label(),
@@ -1863,6 +2806,7 @@ impl MotionLoomPage {
                     }
 
                     if let Some(result) = finished {
+                        this.scene_render_progress = None;
                         match result {
                             Ok(path) => {
                                 let path_str = path.to_string_lossy().to_string();
@@ -1875,12 +2819,7 @@ impl MotionLoomPage {
                                     cx.notify();
                                 });
 
-                                let clip = Self::build_imported_clip(
-                                    &path_str,
-                                    &ffmpeg_for_import,
-                                    &cache_root_for_import,
-                                    can_generate_video_thumbnail,
-                                );
+                                let clip = Self::build_imported_clip(&path_str);
                                 this.clips.push(clip);
                                 this.selected_idx = Some(this.clips.len().saturating_sub(1));
                                 this.status_line = format!(
@@ -1907,11 +2846,222 @@ impl MotionLoomPage {
         .detach();
     }
 
+    fn render_animation_to_media_pool(
+        &mut self,
+        raw: String,
+        mode: SceneRenderMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let graph = match parse_animation_graph_script(&raw) {
+            Ok(graph) => graph,
+            Err(err) => {
+                self.status_line = format!(
+                    "Animation graph parse error at line {}: {}",
+                    err.line, err.message
+                );
+                return;
+            }
+        };
+
+        let (ffmpeg_path, output_dir) = {
+            let gs = self.global.read(cx);
+            if !gs.media_tools_ready_for_preview_gen() {
+                self.status_line =
+                    "MISSING_FFMPEG: MotionLoom animation render requires FFmpeg.".to_string();
+                return;
+            }
+            (
+                gs.ffmpeg_path.clone(),
+                gs.generated_media_root_dir().join("motionloom_generated"),
+            )
+        };
+        let profile = mode.profile();
+        let prefix = match mode {
+            SceneRenderMode::CompatibilityCpu => "motionloom_animation",
+            SceneRenderMode::GpuNativeH264 => "motionloom_animation_gpu",
+            SceneRenderMode::GpuNativeProRes => "motionloom_animation_gpu_prores",
+        };
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let output_path =
+            output_dir.join(format!("{prefix}_{stamp}.{}", profile.output_extension()));
+        let asset_root = Self::animation_asset_root();
+        let duration = Duration::from_millis(graph.duration_ms);
+        let global = self.global.clone();
+        let ffmpeg_for_render = ffmpeg_path.clone();
+        let output_path_for_thread = output_path.clone();
+        let total_frames = ((graph.duration_ms as f64 / 1000.0) * graph.fps as f64)
+            .round()
+            .max(1.0) as u32;
+
+        self.status_line = format!(
+            "{} started: {}...",
+            mode.label(),
+            output_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("motionloom_animation.mov")
+        );
+        self.scene_render_progress = Some(SceneRenderProgressUi {
+            label: mode.label(),
+            rendered_frames: 0,
+            total_frames,
+        });
+        cx.notify();
+
+        enum AnimationRenderEvent {
+            Progress(AnimationRenderProgress),
+            Finished(Result<PathBuf, String>),
+        }
+
+        let (tx, rx) = mpsc::channel::<AnimationRenderEvent>();
+        std::thread::spawn(move || {
+            let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let tx_progress = tx.clone();
+                render_animation_graph_to_video_with_progress(
+                    &ffmpeg_for_render,
+                    &graph,
+                    &asset_root,
+                    &output_path_for_thread,
+                    profile,
+                    SCENE_RENDER_PROGRESS_EVERY_FRAMES,
+                    move |progress| {
+                        let _ = tx_progress.send(AnimationRenderEvent::Progress(progress));
+                    },
+                )
+                .map(|_| output_path_for_thread.clone())
+                .map_err(|err| err.to_string())
+            }))
+            .unwrap_or_else(|payload| {
+                Err(format!(
+                    "Animation render worker panicked: {}",
+                    panic_payload_to_string(payload)
+                ))
+            });
+            let _ = tx.send(AnimationRenderEvent::Finished(render_result));
+        });
+
+        cx.spawn_in(window, async move |view, window| {
+            loop {
+                gpui::Timer::after(Duration::from_millis(SCENE_RENDER_PROGRESS_POLL_MS)).await;
+
+                let mut latest_progress: Option<AnimationRenderProgress> = None;
+                let mut finished: Option<Result<PathBuf, String>> = None;
+                loop {
+                    match rx.try_recv() {
+                        Ok(AnimationRenderEvent::Progress(progress)) => {
+                            latest_progress = Some(progress);
+                        }
+                        Ok(AnimationRenderEvent::Finished(result)) => {
+                            finished = Some(result);
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            finished =
+                                Some(Err("Animation render worker disconnected.".to_string()));
+                            break;
+                        }
+                    }
+                }
+
+                let has_finished = finished.is_some();
+                let _ = view.update_in(window, |this, _window, cx| {
+                    if let Some(progress) = latest_progress {
+                        let pct = ((progress.rendered_frames as f32 / progress.total_frames as f32)
+                            * 100.0)
+                            .round()
+                            .clamp(0.0, 100.0) as u32;
+                        this.scene_render_progress = Some(SceneRenderProgressUi {
+                            label: mode.label(),
+                            rendered_frames: progress.rendered_frames,
+                            total_frames: progress.total_frames,
+                        });
+                        this.status_line = format!(
+                            "{}: {}% ({}/{})",
+                            mode.label(),
+                            pct,
+                            progress.rendered_frames,
+                            progress.total_frames
+                        );
+                    }
+
+                    if let Some(result) = finished {
+                        this.scene_render_progress = None;
+                        match result {
+                            Ok(path) => {
+                                let path_str = path.to_string_lossy().to_string();
+                                global.update(cx, |gs, cx| {
+                                    gs.add_media_pool_item(path.clone(), duration);
+                                    gs.ui_notice = Some(format!(
+                                        "MotionLoom animation added to Media Pool: {path_str}"
+                                    ));
+                                    cx.emit(MediaPoolUiEvent::StateChanged);
+                                    cx.notify();
+                                });
+
+                                let clip = Self::build_imported_clip(&path_str);
+                                this.clips.push(clip);
+                                this.selected_idx = Some(this.clips.len().saturating_sub(1));
+                                this.status_line = format!(
+                                    "{} done: {}",
+                                    mode.label(),
+                                    path.file_name()
+                                        .and_then(|name| name.to_str())
+                                        .unwrap_or("motionloom_animation.mov")
+                                );
+                            }
+                            Err(err) => {
+                                this.status_line = format!("{} failed: {err}", mode.label());
+                            }
+                        }
+                    }
+                    cx.notify();
+                });
+
+                if has_finished {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     // Set the script text and sync into the input widget.
     fn set_script_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         self.script_text = text.clone();
+        self.invalidate_scene_live_preview_cache();
+        if let Some(input) = self.script_input.as_ref() {
+            input.update(cx, |this, cx| {
+                this.set_value(text, window, cx);
+            });
+        }
+        self.sync_script_to_global(cx, false);
+    }
+
+    // Update script while keeping the last preview image visible until the next frame finishes.
+    fn set_script_text_preserve_preview(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.script_text = text.clone();
+        self.cancel_scene_live_prerender();
+        self.cancel_scene_live_async_render();
         self.scene_live_preview_cache_key = None;
-        self.scene_live_preview_cache_image = None;
+        self.scene_live_preview_frame_cache.clear();
+        if text.trim().is_empty() || !is_graph_script(&text) {
+            self.scene_live_preview_cache_image = None;
+            self.preview_playing = false;
+            self.preview_last_tick = None;
+            self.preview_frame_accum = 0.0;
+        }
+        self.scene_live_render_defer_until = None;
+        self.scene_live_render_defer_token = self.scene_live_render_defer_token.wrapping_add(1);
         if let Some(input) = self.script_input.as_ref() {
             input.update(cx, |this, cx| {
                 this.set_value(text, window, cx);
@@ -2119,14 +3269,2548 @@ impl MotionLoomPage {
     fn open_template_modal(&mut self) {
         self.import_modal_open = false;
         self.asset_modal_open = false;
+        self.scene_template_modal_open = false;
+        self.glb_inspector_modal_open = false;
         self.template_modal_open = true;
         self.template_selected.clear();
         self.status_line = "Template picker opened.".to_string();
     }
 
+    fn scene_template_items() -> SearchableVec<String> {
+        SearchableVec::new(
+            motionloom_templates::SCENE_TEMPLATES
+                .iter()
+                .map(|template| template.label.to_string())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn ensure_scene_template_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scene_template_select.is_some() {
+            return;
+        }
+
+        let state = cx.new(|cx| {
+            SelectState::new(Self::scene_template_items(), None, window, cx).searchable(false)
+        });
+        let selected_label = if self.scene_template_selected_label.is_empty() {
+            motionloom_templates::first_scene_template()
+                .map(|template| template.label.to_string())
+                .unwrap_or_default()
+        } else {
+            self.scene_template_selected_label.clone()
+        };
+        state.update(cx, |this, cx| {
+            this.set_selected_value(&selected_label, window, cx);
+        });
+
+        self.scene_template_selected_label = selected_label;
+        self.scene_template_select = Some(state);
+    }
+
+    fn load_scene_template_by_label(
+        &mut self,
+        label: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(template) = motionloom_templates::scene_template_by_label(label) else {
+            self.status_line = format!("Scene template not found: {label}.");
+            return;
+        };
+        self.scene_template_selected_label = template.label.to_string();
+        self.set_script_text(template.script.to_string(), window, cx);
+        self.status_line = format!("Loaded scene template: {}.", template.label);
+        cx.notify();
+    }
+
+    fn open_scene_template_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.import_modal_open = false;
+        self.asset_modal_open = false;
+        self.template_modal_open = false;
+        self.glb_inspector_modal_open = false;
+
+        self.ensure_scene_template_select(window, cx);
+
+        if self.scene_template_select.is_none() {
+            self.status_line = "No scene templates are available.".to_string();
+            cx.notify();
+            return;
+        }
+
+        self.scene_template_modal_open = true;
+        self.status_line = "Scene template selector opened.".to_string();
+
+        cx.notify();
+    }
+    fn render_scene_template_modal_overlay(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let select_state = self.scene_template_select.as_ref().cloned();
+
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .bg(gpui_component::black().opacity(0.62))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.scene_template_modal_open = false;
+                    this.status_line = "Scene template selector closed.".to_string();
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(620.0))
+                    .max_h(px(620.0))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(white().opacity(0.16))
+                    .bg(rgb(0x111827))
+                    .shadow_2xl()
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| {
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(white().opacity(0.96))
+                                    .child("Scene Template"),
+                            )
+                            .child(
+                                div()
+                                    .h(px(28.0))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(white().opacity(0.16))
+                                    .bg(white().opacity(0.05))
+                                    .text_xs()
+                                    .text_color(white().opacity(0.85))
+                                    .hover(|s| s.bg(white().opacity(0.10)))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child("Close")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.scene_template_modal_open = false;
+                                            this.status_line =
+                                                "Scene template selector closed.".to_string();
+                                            cx.notify();
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.68))
+                            .child(
+                                "Choose a reusable scene graph. Selecting an item imports it into Graph Lab when you press Insert Template.",
+                            ),
+                    )
+                    .when_some(select_state.clone(), |el, select_state| {
+                        el.child(
+                            Select::new(&select_state)
+                                .placeholder("Please select")
+                                .menu_width(px(560.0))
+                                .w_full(),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .h(px(30.0))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(white().opacity(0.16))
+                                    .bg(white().opacity(0.05))
+                                    .text_xs()
+                                    .text_color(white().opacity(0.85))
+                                    .hover(|s| s.bg(white().opacity(0.10)))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child("Cancel")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.scene_template_modal_open = false;
+                                            this.status_line =
+                                                "Scene template selector closed.".to_string();
+                                            cx.notify();
+                                        }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .h(px(30.0))
+                                    .px_3()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(rgba(0x3b82f6cc))
+                                    .bg(rgba(0x2563ebdd))
+                                    .text_xs()
+                                    .text_color(white().opacity(0.96))
+                                    .hover(|s| s.bg(rgba(0x3b82f6ee)))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child("Insert Template")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, window, cx| {
+                                            let label = this
+                                                .scene_template_select
+                                                .as_ref()
+                                                .and_then(|select| {
+                                                    select.read(cx).selected_value().cloned()
+                                                })
+                                                .or_else(|| {
+                                                    motionloom_templates::first_scene_template()
+                                                        .map(|template| template.label.to_string())
+                                                });
+
+                                            let Some(label) = label else {
+                                                this.status_line =
+                                                    "No scene template selected.".to_string();
+                                                cx.notify();
+                                                return;
+                                            };
+
+                                            this.load_scene_template_by_label(&label, window, cx);
+                                            this.scene_template_modal_open = false;
+                                            this.status_line =
+                                                format!("Scene template inserted: {label}");
+                                            cx.notify();
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(160.0))
+                            .max_h(px(320.0))
+                            .overflow_y_scrollbar()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(white().opacity(0.10))
+                            .bg(white().opacity(0.03))
+                            .p_2()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(
+                                motionloom_templates::SCENE_TEMPLATES
+                                    .iter()
+                                    .map(|template| {
+                                        div()
+                                            .text_xs()
+                                            .text_color(white().opacity(0.58))
+                                            .child(format!(
+                                                "{}: {}",
+                                                template.label, template.description
+                                            ))
+                                    }),
+                            ),
+                    ),
+            )
+    }
+
+    fn open_glb_inspector_modal(&mut self, cx: &mut Context<Self>) {
+        self.import_modal_open = false;
+        self.asset_modal_open = false;
+        self.template_modal_open = false;
+        self.scene_template_modal_open = false;
+
+        match self.build_glb_skeleton_report() {
+            Ok(report) => {
+                self.status_line = report.summary.clone();
+                self.glb_inspector_report = Some(report);
+            }
+            Err(message) => {
+                self.status_line = message.clone();
+                self.glb_inspector_report = Some(GlbSkeletonInspectReport {
+                    summary: message,
+                    retarget_draft: String::new(),
+                    model_profile_draft: String::new(),
+                    calibrated_model_profile_draft: String::new(),
+                    actors: Vec::new(),
+                });
+            }
+        }
+        self.glb_inspector_modal_open = true;
+        cx.notify();
+    }
+
+    fn build_glb_skeleton_report(&self) -> Result<GlbSkeletonInspectReport, String> {
+        let raw = self.script_text.trim();
+        if raw.is_empty() {
+            return Err("Inspect GLB needs a MotionLoom animation DSL script.".to_string());
+        }
+        if !is_animation_graph_script(raw) {
+            return Err(
+                "Inspect GLB requires a unified <Graph> containing <Animation> or <World>."
+                    .to_string(),
+            );
+        }
+        let graph = parse_animation_graph_script(raw).map_err(|err| {
+            format!(
+                "Animation parse error before GLB inspect at line {}: {}",
+                err.line, err.message
+            )
+        })?;
+        let asset_root = Self::animation_asset_root();
+        let mut actors = Vec::<GlbSkeletonActorReport>::new();
+
+        for world in &graph.worlds {
+            for actor in &world.actors {
+                let path =
+                    Self::resolve_animation_model_path(&asset_root, &actor.model, actor.path_style);
+                let current_retarget = actor
+                    .retarget
+                    .as_deref()
+                    .and_then(|id| graph.retargets.iter().find(|retarget| retarget.id == id))
+                    .or_else(|| {
+                        graph
+                            .retargets
+                            .iter()
+                            .find(|retarget| retarget.actor.as_deref() == Some(actor.id.as_str()))
+                    });
+                let current_profile = actor
+                    .profile
+                    .as_deref()
+                    .and_then(|id| graph.model_profiles.iter().find(|profile| profile.id == id));
+                let current_profile_retarget =
+                    current_profile.and_then(|profile| profile.retarget.as_ref());
+                let mapped_bones = current_retarget
+                    .map(|retarget| {
+                        retarget
+                            .maps
+                            .iter()
+                            .map(|map| map.to.clone())
+                            .collect::<HashSet<_>>()
+                    })
+                    .or_else(|| {
+                        current_profile_retarget.map(|retarget| {
+                            retarget
+                                .maps
+                                .iter()
+                                .map(|map| map.to.clone())
+                                .collect::<HashSet<_>>()
+                        })
+                    })
+                    .unwrap_or_default();
+                let mut mapped_bones_sorted = mapped_bones.iter().cloned().collect::<Vec<_>>();
+                mapped_bones_sorted.sort();
+                let missing_humanoid_bones = Self::humanoid_bones()
+                    .iter()
+                    .filter(|bone| !mapped_bones.contains(**bone))
+                    .map(|bone| (*bone).to_string())
+                    .collect::<Vec<_>>();
+
+                let report = match load_glb_mesh_data(&path) {
+                    Ok(mesh) => {
+                        let joint_node_indices = mesh
+                            .skin
+                            .as_ref()
+                            .map(|skin| {
+                                skin.joints
+                                    .iter()
+                                    .map(|joint| joint.node_index)
+                                    .collect::<HashSet<_>>()
+                            })
+                            .unwrap_or_default();
+                        let joint_names = mesh
+                            .skin
+                            .as_ref()
+                            .map(|skin| {
+                                skin.joints
+                                    .iter()
+                                    .filter_map(|joint| joint.name.clone())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let guessed_maps = Self::guess_humanoid_retarget_maps(&joint_names);
+                        let sorted_guessed_maps = Self::sort_retarget_maps(&guessed_maps);
+                        let model_profile_draft = Self::build_model_profile_draft(
+                            &actor.id,
+                            &actor.model,
+                            &mesh,
+                            &sorted_guessed_maps,
+                            false,
+                        );
+                        let calibrated_model_profile_draft = Self::build_model_profile_draft(
+                            &actor.id,
+                            &actor.model,
+                            &mesh,
+                            &sorted_guessed_maps,
+                            true,
+                        );
+                        let calibration_preview_lines =
+                            Self::calibrate_bone_axis_map(&mesh, &sorted_guessed_maps)
+                                .preview_lines;
+                        let weighted_vertex_count = mesh
+                            .weights
+                            .iter()
+                            .zip(mesh.joints.iter())
+                            .filter(|(weights, joints)| {
+                                joints.is_some()
+                                    && weights
+                                        .as_ref()
+                                        .is_some_and(|weights| weights.iter().sum::<f32>() > 0.0)
+                            })
+                            .count();
+                        let has_inverse_bind_matrices = mesh.skin.as_ref().is_some_and(|skin| {
+                            skin.joints.iter().any(|joint| {
+                                joint
+                                    .inverse_bind_matrix
+                                    .iter()
+                                    .zip(Self::identity_mat4().iter())
+                                    .any(|(a, b)| (a - b).abs() > 0.0001)
+                            })
+                        });
+                        GlbSkeletonActorReport {
+                            actor_id: actor.id.clone(),
+                            model: actor.model.clone(),
+                            resolved_path: path.display().to_string(),
+                            vertex_count: mesh.positions.len(),
+                            triangle_count: mesh.triangles.len(),
+                            node_count: mesh.nodes.len(),
+                            joint_count: joint_node_indices.len(),
+                            weighted_vertex_count,
+                            has_inverse_bind_matrices,
+                            mapped_bones: mapped_bones_sorted,
+                            missing_humanoid_bones,
+                            guessed_maps,
+                            joint_tree_lines: Self::glb_joint_tree_lines(
+                                &mesh.nodes,
+                                &joint_node_indices,
+                            ),
+                            model_profile_draft,
+                            calibrated_model_profile_draft,
+                            calibration_preview_lines,
+                            error: None,
+                        }
+                    }
+                    Err(err) => GlbSkeletonActorReport {
+                        actor_id: actor.id.clone(),
+                        model: actor.model.clone(),
+                        resolved_path: path.display().to_string(),
+                        vertex_count: 0,
+                        triangle_count: 0,
+                        node_count: 0,
+                        joint_count: 0,
+                        weighted_vertex_count: 0,
+                        has_inverse_bind_matrices: false,
+                        mapped_bones: mapped_bones_sorted,
+                        missing_humanoid_bones,
+                        guessed_maps: Vec::new(),
+                        joint_tree_lines: Vec::new(),
+                        model_profile_draft: String::new(),
+                        calibrated_model_profile_draft: String::new(),
+                        calibration_preview_lines: Vec::new(),
+                        error: Some(err.to_string()),
+                    },
+                };
+                actors.push(report);
+            }
+        }
+
+        if actors.is_empty() {
+            return Err(
+                "No <Actor model=\"...glb\"> found in current animation graph.".to_string(),
+            );
+        }
+
+        let retarget_draft = Self::build_retarget_draft(&actors);
+        let model_profile_draft = Self::build_model_profile_drafts(&actors);
+        let calibrated_model_profile_draft = Self::build_calibrated_model_profile_drafts(&actors);
+        let loaded_count = actors.iter().filter(|actor| actor.error.is_none()).count();
+        Ok(GlbSkeletonInspectReport {
+            summary: format!(
+                "GLB inspect: {} actor(s), {} loaded, {} retarget draft map(s), {} ModelProfile draft(s), {} calibrated profile draft(s).",
+                actors.len(),
+                loaded_count,
+                actors
+                    .iter()
+                    .map(|actor| actor.guessed_maps.len())
+                    .sum::<usize>(),
+                actors
+                    .iter()
+                    .filter(|actor| !actor.model_profile_draft.trim().is_empty())
+                    .count(),
+                actors
+                    .iter()
+                    .filter(|actor| !actor.calibrated_model_profile_draft.trim().is_empty())
+                    .count()
+            ),
+            retarget_draft,
+            model_profile_draft,
+            calibrated_model_profile_draft,
+            actors,
+        })
+    }
+
+    fn resolve_animation_model_path(
+        asset_root: &Path,
+        src: &str,
+        path_style: AnimationPathStyle,
+    ) -> PathBuf {
+        let path = Path::new(src);
+        match path_style {
+            AnimationPathStyle::Absolute => path.to_path_buf(),
+            AnimationPathStyle::Relative => {
+                if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    asset_root.join(path)
+                }
+            }
+        }
+    }
+
+    fn humanoid_bones() -> &'static [&'static str] {
+        &[
+            "hips",
+            "spine",
+            "chest",
+            "neck",
+            "head",
+            "shoulder_l",
+            "upper_arm_l",
+            "forearm_l",
+            "hand_l",
+            "shoulder_r",
+            "upper_arm_r",
+            "forearm_r",
+            "hand_r",
+            "upper_leg_l",
+            "lower_leg_l",
+            "foot_l",
+            "toe_l",
+            "upper_leg_r",
+            "lower_leg_r",
+            "foot_r",
+            "toe_r",
+        ]
+    }
+
+    fn sort_retarget_maps(maps: &[(String, String)]) -> Vec<(String, String)> {
+        let order = Self::humanoid_bones()
+            .iter()
+            .enumerate()
+            .map(|(index, bone)| (*bone, index))
+            .collect::<HashMap<_, _>>();
+        let mut sorted = maps.to_vec();
+        sorted.sort_by(|(_, a), (_, b)| {
+            order
+                .get(a.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+                .cmp(&order.get(b.as_str()).copied().unwrap_or(usize::MAX))
+                .then_with(|| a.cmp(b))
+        });
+        sorted
+    }
+
+    fn build_model_profile_drafts(actors: &[GlbSkeletonActorReport]) -> String {
+        actors
+            .iter()
+            .filter_map(|actor| {
+                let draft = actor.model_profile_draft.trim();
+                if draft.is_empty() {
+                    None
+                } else {
+                    Some(draft.to_string())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    fn build_calibrated_model_profile_drafts(actors: &[GlbSkeletonActorReport]) -> String {
+        actors
+            .iter()
+            .filter_map(|actor| {
+                let draft = actor.calibrated_model_profile_draft.trim();
+                if draft.is_empty() {
+                    None
+                } else {
+                    Some(draft.to_string())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    fn build_model_profile_draft(
+        actor_id: &str,
+        model: &str,
+        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        maps: &[(String, String)],
+        calibrated: bool,
+    ) -> String {
+        if maps.is_empty() {
+            return String::new();
+        }
+
+        let profile_id = format!("{}_profile", Self::sanitize_xml_ident(actor_id));
+        let axis_lines = if calibrated {
+            Self::calibrate_bone_axis_map(mesh, maps).axis_lines
+        } else {
+            Self::infer_bone_axis_map_lines(mesh, maps)
+        };
+        let correction_lines = Self::infer_rest_pose_correction_lines(mesh, maps);
+
+        let mut out = String::new();
+        out.push_str(&format!(
+            "<ModelProfile id=\"{}\"\n",
+            Self::xml_attr_escape(&profile_id)
+        ));
+        out.push_str(&format!(
+            "              model=\"{}\"\n",
+            Self::xml_attr_escape(model)
+        ));
+        out.push_str("              preset=\"humanoid_v1\">\n");
+        if calibrated {
+            out.push_str("  <!-- Auto calibration draft: retarget guess + simulated rotationX/Y/Z endpoint tests. Review once per model. -->\n");
+        } else {
+            out.push_str("  <!-- Auto draft from GLB joint names + rest-pose geometry. Review once per model. -->\n");
+        }
+        out.push_str("  <Retarget>\n");
+        for (from, to) in maps {
+            out.push_str(&format!(
+                "    <Map from=\"{}\" to=\"{}\" />\n",
+                Self::xml_attr_escape(from),
+                Self::xml_attr_escape(to)
+            ));
+        }
+        out.push_str("  </Retarget>\n");
+
+        if !axis_lines.is_empty() {
+            out.push_str("\n  <BoneAxisMap>\n");
+            for line in axis_lines {
+                out.push_str("    ");
+                out.push_str(&line);
+                out.push('\n');
+            }
+            out.push_str("  </BoneAxisMap>\n");
+        }
+
+        if !correction_lines.is_empty() {
+            out.push_str("\n  <RestPoseCorrection>\n");
+            for line in correction_lines {
+                out.push_str("    ");
+                out.push_str(&line);
+                out.push('\n');
+            }
+            out.push_str("  </RestPoseCorrection>\n");
+        }
+
+        out.push_str("</ModelProfile>");
+        out
+    }
+
+    fn calibrate_bone_axis_map(
+        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        maps: &[(String, String)],
+    ) -> GlbAxisCalibration {
+        let bone_to_node = Self::bone_to_node_name(maps);
+        let node_name_to_index = Self::node_name_to_index(&mesh.nodes);
+        let global = Self::glb_global_node_matrices(&mesh.nodes);
+        let positions = global
+            .iter()
+            .map(|matrix| Self::mat4_transform_point(*matrix, [0.0, 0.0, 0.0]))
+            .collect::<Vec<_>>();
+        let basis = Self::glb_rest_pose_basis(&positions, &bone_to_node, &node_name_to_index);
+        let mut axis_lines = Vec::new();
+        let mut preview_lines = Vec::new();
+
+        for bone in Self::humanoid_bones() {
+            if !bone_to_node.contains_key(*bone) {
+                continue;
+            }
+
+            let mut attrs = Vec::<(&'static str, GlbAxisBindingScore)>::new();
+            match *bone {
+                "hips" => {
+                    if let Some(score) = Self::score_twist_binding(
+                        *bone,
+                        basis.up,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("turn", score));
+                    }
+                }
+                "spine" | "chest" | "head" => {
+                    if let Some(score) = Self::score_twist_binding(
+                        *bone,
+                        basis.up,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("turn", score));
+                    }
+                    if let Some(score) = Self::score_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        basis.forward,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("bend", score));
+                    }
+                }
+                "upper_arm_r" | "upper_arm_l" => {
+                    let side_target = if bone.ends_with("_r") {
+                        basis.right
+                    } else {
+                        Self::vec3_scale(basis.right, -1.0)
+                    };
+                    if let Some(score) = Self::score_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        basis.forward,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("forward", score));
+                    }
+                    if let Some(score) = Self::score_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        side_target,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("side", score));
+                    }
+                    if let Some(score) = Self::score_twist_binding(
+                        *bone,
+                        Self::bone_direction(
+                            *bone,
+                            Self::humanoid_child_for_axis(*bone),
+                            &positions,
+                            &bone_to_node,
+                            &node_name_to_index,
+                        )
+                        .unwrap_or(basis.up),
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("twist", score));
+                    }
+                }
+                "forearm_r" | "forearm_l" | "hand_r" | "hand_l" => {
+                    if let Some(score) = Self::score_bend_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        Self::humanoid_parent_for_axis(*bone),
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("bend", score));
+                    }
+                    if let Some(score) = Self::score_twist_binding(
+                        *bone,
+                        Self::bone_direction(
+                            *bone,
+                            Self::humanoid_child_for_axis(*bone)
+                                .or_else(|| Self::humanoid_parent_for_axis(*bone)),
+                            &positions,
+                            &bone_to_node,
+                            &node_name_to_index,
+                        )
+                        .unwrap_or(basis.up),
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("twist", score));
+                    }
+                }
+                "upper_leg_r" | "upper_leg_l" => {
+                    let side_target = if bone.ends_with("_r") {
+                        basis.right
+                    } else {
+                        Self::vec3_scale(basis.right, -1.0)
+                    };
+                    if let Some(score) = Self::score_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        basis.forward,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("forward", score));
+                    }
+                    if let Some(score) = Self::score_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        side_target,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("side", score));
+                    }
+                }
+                "lower_leg_r" | "lower_leg_l" | "foot_r" | "foot_l" => {
+                    if let Some(score) = Self::score_bend_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        Self::humanoid_parent_for_axis(*bone),
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("bend", score));
+                    }
+                }
+                _ => {}
+            }
+
+            if attrs.is_empty() {
+                continue;
+            }
+
+            preview_lines.extend(attrs.iter().map(|(semantic, score)| {
+                format!(
+                    "{}.{} -> {}  score={:.2}",
+                    bone, semantic, score.binding, score.score
+                )
+            }));
+            let attrs = attrs
+                .into_iter()
+                .map(|(key, score)| {
+                    format!("{}=\"{}\"", key, Self::xml_attr_escape(&score.binding))
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            axis_lines.push(format!(
+                "<Axis bone=\"{}\" {} />",
+                Self::xml_attr_escape(bone),
+                attrs
+            ));
+        }
+
+        GlbAxisCalibration {
+            axis_lines,
+            preview_lines,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn score_movement_binding(
+        bone: &str,
+        child: Option<&str>,
+        fallback_child: Option<&str>,
+        target: [f32; 3],
+        global: &[[f32; 16]],
+        positions: &[[f32; 3]],
+        bone_to_node: &HashMap<String, String>,
+        node_name_to_index: &HashMap<String, usize>,
+    ) -> Option<GlbAxisBindingScore> {
+        let bone_index = Self::node_index_for_bone(bone, bone_to_node, node_name_to_index)?;
+        let child_index = child
+            .or(fallback_child)
+            .and_then(|child| Self::node_index_for_bone(child, bone_to_node, node_name_to_index))?;
+        let bone_pos = positions.get(bone_index).copied()?;
+        let child_pos = positions.get(child_index).copied()?;
+        let rest_vec = Self::vec3_sub(child_pos, bone_pos);
+        let target = Self::vec3_normalize(target)?;
+        let local_axes = Self::local_axes(global.get(bone_index).copied()?);
+
+        let mut best = None::<GlbAxisBindingScore>;
+        for (axis_index, axis_world) in local_axes.into_iter().enumerate() {
+            for scale in [1.0, -1.0] {
+                let rotated = Self::rotate_vec3_around_axis(
+                    rest_vec,
+                    axis_world,
+                    30.0_f32.to_radians() * scale,
+                );
+                let Some(movement) = Self::vec3_normalize(Self::vec3_sub(rotated, rest_vec)) else {
+                    continue;
+                };
+                let score = Self::vec3_dot(movement, target).max(0.0);
+                if score <= 0.02 {
+                    continue;
+                }
+                let candidate = GlbAxisBindingScore {
+                    binding: Self::axis_binding(axis_index, scale),
+                    score,
+                };
+                if best
+                    .as_ref()
+                    .is_none_or(|best| candidate.score > best.score)
+                {
+                    best = Some(candidate);
+                }
+            }
+        }
+        best
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn score_bend_binding(
+        bone: &str,
+        child: Option<&str>,
+        parent: Option<&str>,
+        global: &[[f32; 16]],
+        positions: &[[f32; 3]],
+        bone_to_node: &HashMap<String, String>,
+        node_name_to_index: &HashMap<String, usize>,
+    ) -> Option<GlbAxisBindingScore> {
+        let bone_index = Self::node_index_for_bone(bone, bone_to_node, node_name_to_index)?;
+        let child_index = child
+            .and_then(|child| Self::node_index_for_bone(child, bone_to_node, node_name_to_index));
+        let parent_index = parent
+            .and_then(|parent| Self::node_index_for_bone(parent, bone_to_node, node_name_to_index));
+        let child_index = child_index.or(parent_index)?;
+        let child_pos = positions.get(child_index).copied()?;
+        let target = parent_index
+            .and_then(|index| positions.get(index).copied())
+            .map(|parent_pos| Self::vec3_sub(parent_pos, child_pos))
+            .or_else(|| {
+                positions
+                    .get(bone_index)
+                    .copied()
+                    .map(|bone_pos| Self::vec3_sub(bone_pos, child_pos))
+            })?;
+        Self::score_movement_binding(
+            bone,
+            child,
+            parent,
+            target,
+            global,
+            positions,
+            bone_to_node,
+            node_name_to_index,
+        )
+    }
+
+    fn score_twist_binding(
+        bone: &str,
+        target: [f32; 3],
+        global: &[[f32; 16]],
+        _positions: &[[f32; 3]],
+        bone_to_node: &HashMap<String, String>,
+        node_name_to_index: &HashMap<String, usize>,
+    ) -> Option<GlbAxisBindingScore> {
+        let target = Self::vec3_normalize(target)?;
+        let node_index = Self::node_index_for_bone(bone, bone_to_node, node_name_to_index)?;
+        let local_axes = Self::local_axes(global.get(node_index).copied()?);
+        let mut best = None::<GlbAxisBindingScore>;
+        for (axis_index, axis_world) in local_axes.into_iter().enumerate() {
+            let score = Self::vec3_dot(axis_world, target);
+            let (scale, score_abs) = if score >= 0.0 {
+                (1.0, score)
+            } else {
+                (-1.0, -score)
+            };
+            let candidate = GlbAxisBindingScore {
+                binding: Self::axis_binding(axis_index, scale),
+                score: score_abs,
+            };
+            if best
+                .as_ref()
+                .is_none_or(|best| candidate.score > best.score)
+            {
+                best = Some(candidate);
+            }
+        }
+        best
+    }
+
+    fn infer_bone_axis_map_lines(
+        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        maps: &[(String, String)],
+    ) -> Vec<String> {
+        let bone_to_node = Self::bone_to_node_name(maps);
+        let node_name_to_index = Self::node_name_to_index(&mesh.nodes);
+        let global = Self::glb_global_node_matrices(&mesh.nodes);
+        let positions = global
+            .iter()
+            .map(|matrix| Self::mat4_transform_point(*matrix, [0.0, 0.0, 0.0]))
+            .collect::<Vec<_>>();
+        let basis = Self::glb_rest_pose_basis(&positions, &bone_to_node, &node_name_to_index);
+        let mut out = Vec::new();
+
+        for bone in Self::humanoid_bones() {
+            if !bone_to_node.contains_key(*bone) {
+                continue;
+            }
+            let mut attrs = Vec::<(&'static str, String)>::new();
+            match *bone {
+                "hips" => {
+                    if let Some(binding) = Self::infer_twist_binding(
+                        *bone,
+                        &basis.up,
+                        mesh,
+                        &global,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("turn", binding));
+                    }
+                }
+                "spine" | "chest" | "head" => {
+                    if let Some(binding) = Self::infer_twist_binding(
+                        *bone,
+                        &basis.up,
+                        mesh,
+                        &global,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("turn", binding));
+                    }
+                    if let Some(binding) = Self::infer_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        basis.forward,
+                        mesh,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("bend", binding));
+                    }
+                }
+                "upper_arm_r" | "upper_arm_l" => {
+                    let side_target = if bone.ends_with("_r") {
+                        basis.right
+                    } else {
+                        Self::vec3_scale(basis.right, -1.0)
+                    };
+                    if let Some(binding) = Self::infer_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        basis.forward,
+                        mesh,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("forward", binding));
+                    }
+                    if let Some(binding) = Self::infer_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        side_target,
+                        mesh,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("side", binding));
+                    }
+                    if let Some(binding) = Self::infer_twist_binding(
+                        *bone,
+                        &Self::bone_direction(
+                            *bone,
+                            Self::humanoid_child_for_axis(*bone),
+                            &positions,
+                            &bone_to_node,
+                            &node_name_to_index,
+                        )
+                        .unwrap_or(basis.up),
+                        mesh,
+                        &global,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("twist", binding));
+                    }
+                }
+                "forearm_r" | "forearm_l" | "hand_r" | "hand_l" => {
+                    if let Some(binding) = Self::infer_bend_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        Self::humanoid_parent_for_axis(*bone),
+                        mesh,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("bend", binding));
+                    }
+                    if let Some(binding) = Self::infer_twist_binding(
+                        *bone,
+                        &Self::bone_direction(
+                            *bone,
+                            Self::humanoid_child_for_axis(*bone)
+                                .or_else(|| Self::humanoid_parent_for_axis(*bone)),
+                            &positions,
+                            &bone_to_node,
+                            &node_name_to_index,
+                        )
+                        .unwrap_or(basis.up),
+                        mesh,
+                        &global,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("twist", binding));
+                    }
+                }
+                "upper_leg_r" | "upper_leg_l" => {
+                    let side_target = if bone.ends_with("_r") {
+                        basis.right
+                    } else {
+                        Self::vec3_scale(basis.right, -1.0)
+                    };
+                    if let Some(binding) = Self::infer_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        basis.forward,
+                        mesh,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("forward", binding));
+                    }
+                    if let Some(binding) = Self::infer_movement_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        None,
+                        side_target,
+                        mesh,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("side", binding));
+                    }
+                }
+                "lower_leg_r" | "lower_leg_l" | "foot_r" | "foot_l" => {
+                    if let Some(binding) = Self::infer_bend_binding(
+                        *bone,
+                        Self::humanoid_child_for_axis(*bone),
+                        Self::humanoid_parent_for_axis(*bone),
+                        mesh,
+                        &global,
+                        &positions,
+                        &bone_to_node,
+                        &node_name_to_index,
+                    ) {
+                        attrs.push(("bend", binding));
+                    }
+                }
+                _ => {}
+            }
+
+            if !attrs.is_empty() {
+                let attrs = attrs
+                    .into_iter()
+                    .map(|(key, value)| format!("{}=\"{}\"", key, Self::xml_attr_escape(&value)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                out.push(format!(
+                    "<Axis bone=\"{}\" {} />",
+                    Self::xml_attr_escape(bone),
+                    attrs
+                ));
+            }
+        }
+
+        out
+    }
+
+    fn infer_rest_pose_correction_lines(
+        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        maps: &[(String, String)],
+    ) -> Vec<String> {
+        let bone_to_node = Self::bone_to_node_name(maps);
+        let node_name_to_index = Self::node_name_to_index(&mesh.nodes);
+        let global = Self::glb_global_node_matrices(&mesh.nodes);
+        let positions = global
+            .iter()
+            .map(|matrix| Self::mat4_transform_point(*matrix, [0.0, 0.0, 0.0]))
+            .collect::<Vec<_>>();
+        let mut out = Vec::new();
+
+        for (forearm, upper_arm, hand) in [
+            ("forearm_r", "upper_arm_r", "hand_r"),
+            ("forearm_l", "upper_arm_l", "hand_l"),
+        ] {
+            let Some(upper_dir) = Self::bone_direction(
+                upper_arm,
+                Some(forearm),
+                &positions,
+                &bone_to_node,
+                &node_name_to_index,
+            ) else {
+                continue;
+            };
+            let Some(forearm_dir) = Self::bone_direction(
+                forearm,
+                Some(hand),
+                &positions,
+                &bone_to_node,
+                &node_name_to_index,
+            ) else {
+                continue;
+            };
+            let straightness = Self::vec3_dot(upper_dir, forearm_dir).clamp(-1.0, 1.0);
+            if straightness > 0.72 {
+                let amount = (((straightness - 0.72) / 0.28) * 10.0)
+                    .clamp(4.0, 10.0)
+                    .round();
+                out.push(format!(
+                    "<Bone bone=\"{}\" bend=\"{}\" />",
+                    Self::xml_attr_escape(forearm),
+                    amount
+                ));
+            }
+        }
+
+        out
+    }
+
+    fn bone_to_node_name(maps: &[(String, String)]) -> HashMap<String, String> {
+        maps.iter()
+            .map(|(from, to)| (to.clone(), from.clone()))
+            .collect()
+    }
+
+    fn node_name_to_index(
+        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+    ) -> HashMap<String, usize> {
+        nodes
+            .iter()
+            .filter_map(|node| node.name.as_ref().map(|name| (name.clone(), node.index)))
+            .collect()
+    }
+
+    fn node_index_for_bone(
+        bone: &str,
+        bone_to_node: &HashMap<String, String>,
+        node_name_to_index: &HashMap<String, usize>,
+    ) -> Option<usize> {
+        bone_to_node
+            .get(bone)
+            .and_then(|name| node_name_to_index.get(name))
+            .copied()
+    }
+
+    fn humanoid_child_for_axis(bone: &str) -> Option<&'static str> {
+        match bone {
+            "hips" => Some("spine"),
+            "spine" => Some("chest"),
+            "chest" => Some("neck"),
+            "neck" => Some("head"),
+            "shoulder_l" => Some("upper_arm_l"),
+            "upper_arm_l" => Some("forearm_l"),
+            "forearm_l" => Some("hand_l"),
+            "hand_l" => None,
+            "shoulder_r" => Some("upper_arm_r"),
+            "upper_arm_r" => Some("forearm_r"),
+            "forearm_r" => Some("hand_r"),
+            "hand_r" => None,
+            "upper_leg_l" => Some("lower_leg_l"),
+            "lower_leg_l" => Some("foot_l"),
+            "foot_l" => Some("toe_l"),
+            "upper_leg_r" => Some("lower_leg_r"),
+            "lower_leg_r" => Some("foot_r"),
+            "foot_r" => Some("toe_r"),
+            _ => None,
+        }
+    }
+
+    fn humanoid_parent_for_axis(bone: &str) -> Option<&'static str> {
+        match bone {
+            "spine" => Some("hips"),
+            "chest" => Some("spine"),
+            "neck" => Some("chest"),
+            "head" => Some("neck"),
+            "upper_arm_l" => Some("shoulder_l"),
+            "forearm_l" => Some("upper_arm_l"),
+            "hand_l" => Some("forearm_l"),
+            "upper_arm_r" => Some("shoulder_r"),
+            "forearm_r" => Some("upper_arm_r"),
+            "hand_r" => Some("forearm_r"),
+            "upper_leg_l" => Some("hips"),
+            "lower_leg_l" => Some("upper_leg_l"),
+            "foot_l" => Some("lower_leg_l"),
+            "toe_l" => Some("foot_l"),
+            "upper_leg_r" => Some("hips"),
+            "lower_leg_r" => Some("upper_leg_r"),
+            "foot_r" => Some("lower_leg_r"),
+            "toe_r" => Some("foot_r"),
+            _ => None,
+        }
+    }
+
+    fn glb_rest_pose_basis(
+        positions: &[[f32; 3]],
+        bone_to_node: &HashMap<String, String>,
+        node_name_to_index: &HashMap<String, usize>,
+    ) -> GlbRestPoseBasis {
+        let pos = |bone: &str| {
+            Self::node_index_for_bone(bone, bone_to_node, node_name_to_index)
+                .and_then(|index| positions.get(index).copied())
+        };
+
+        let up = pos("head")
+            .zip(pos("hips"))
+            .and_then(|(head, hips)| Self::vec3_normalize(Self::vec3_sub(head, hips)))
+            .or_else(|| {
+                pos("chest")
+                    .zip(pos("hips"))
+                    .and_then(|(chest, hips)| Self::vec3_normalize(Self::vec3_sub(chest, hips)))
+            })
+            .unwrap_or([0.0, 1.0, 0.0]);
+        let right = pos("shoulder_r")
+            .zip(pos("shoulder_l"))
+            .and_then(|(right, left)| Self::vec3_normalize(Self::vec3_sub(right, left)))
+            .or_else(|| {
+                pos("upper_arm_r")
+                    .zip(pos("upper_arm_l"))
+                    .and_then(|(right, left)| Self::vec3_normalize(Self::vec3_sub(right, left)))
+            })
+            .unwrap_or([1.0, 0.0, 0.0]);
+        let forward = Self::vec3_normalize(Self::vec3_cross(right, up)).unwrap_or([0.0, 0.0, 1.0]);
+
+        GlbRestPoseBasis { right, up, forward }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn infer_movement_binding(
+        bone: &str,
+        child: Option<&str>,
+        fallback_child: Option<&str>,
+        target: [f32; 3],
+        _mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        global: &[[f32; 16]],
+        positions: &[[f32; 3]],
+        bone_to_node: &HashMap<String, String>,
+        node_name_to_index: &HashMap<String, usize>,
+    ) -> Option<String> {
+        let bone_dir = Self::bone_direction(
+            bone,
+            child.or(fallback_child),
+            positions,
+            bone_to_node,
+            node_name_to_index,
+        )?;
+        let target = Self::vec3_normalize(target)?;
+        let node_index = Self::node_index_for_bone(bone, bone_to_node, node_name_to_index)?;
+        let local_axes = Self::local_axes(global.get(node_index).copied()?);
+
+        let mut best = None::<(usize, f32, f32)>;
+        for (axis_index, axis_world) in local_axes.into_iter().enumerate() {
+            let Some(movement) = Self::vec3_normalize(Self::vec3_cross(axis_world, bone_dir))
+            else {
+                continue;
+            };
+            let score = Self::vec3_dot(movement, target);
+            let (scale, score_abs) = if score >= 0.0 {
+                (1.0, score)
+            } else {
+                (-1.0, -score)
+            };
+            if best.is_none_or(|(_, _, best_score)| score_abs > best_score) {
+                best = Some((axis_index, scale, score_abs));
+            }
+        }
+
+        let (axis, scale, _) = best?;
+        Some(Self::axis_binding(axis, scale))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn infer_bend_binding(
+        bone: &str,
+        child: Option<&str>,
+        parent: Option<&str>,
+        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        global: &[[f32; 16]],
+        positions: &[[f32; 3]],
+        bone_to_node: &HashMap<String, String>,
+        node_name_to_index: &HashMap<String, usize>,
+    ) -> Option<String> {
+        let bone_index = Self::node_index_for_bone(bone, bone_to_node, node_name_to_index)?;
+        let bone_pos = positions.get(bone_index).copied()?;
+        let child_pos = child
+            .and_then(|child| Self::node_index_for_bone(child, bone_to_node, node_name_to_index))
+            .and_then(|index| positions.get(index).copied());
+        let parent_pos = parent
+            .and_then(|parent| Self::node_index_for_bone(parent, bone_to_node, node_name_to_index))
+            .and_then(|index| positions.get(index).copied());
+        let target = parent_pos
+            .and_then(|parent_pos| Self::vec3_normalize(Self::vec3_sub(parent_pos, bone_pos)))
+            .or_else(|| {
+                child_pos
+                    .and_then(|child_pos| Self::vec3_normalize(Self::vec3_sub(child_pos, bone_pos)))
+            })?;
+
+        Self::infer_movement_binding(
+            bone,
+            child,
+            parent,
+            target,
+            mesh,
+            global,
+            positions,
+            bone_to_node,
+            node_name_to_index,
+        )
+    }
+
+    fn infer_twist_binding(
+        bone: &str,
+        target: &[f32; 3],
+        _mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        global: &[[f32; 16]],
+        bone_to_node: &HashMap<String, String>,
+        node_name_to_index: &HashMap<String, usize>,
+    ) -> Option<String> {
+        let target = Self::vec3_normalize(*target)?;
+        let node_index = Self::node_index_for_bone(bone, bone_to_node, node_name_to_index)?;
+        let local_axes = Self::local_axes(global.get(node_index).copied()?);
+
+        let mut best = None::<(usize, f32, f32)>;
+        for (axis_index, axis_world) in local_axes.into_iter().enumerate() {
+            let score = Self::vec3_dot(axis_world, target);
+            let (scale, score_abs) = if score >= 0.0 {
+                (1.0, score)
+            } else {
+                (-1.0, -score)
+            };
+            if best.is_none_or(|(_, _, best_score)| score_abs > best_score) {
+                best = Some((axis_index, scale, score_abs));
+            }
+        }
+
+        let (axis, scale, _) = best?;
+        Some(Self::axis_binding(axis, scale))
+    }
+
+    fn bone_direction(
+        bone: &str,
+        other: Option<&str>,
+        positions: &[[f32; 3]],
+        bone_to_node: &HashMap<String, String>,
+        node_name_to_index: &HashMap<String, usize>,
+    ) -> Option<[f32; 3]> {
+        let bone_index = Self::node_index_for_bone(bone, bone_to_node, node_name_to_index)?;
+        let other_index = Self::node_index_for_bone(other?, bone_to_node, node_name_to_index)?;
+        let bone_pos = positions.get(bone_index).copied()?;
+        let other_pos = positions.get(other_index).copied()?;
+        Self::vec3_normalize(Self::vec3_sub(other_pos, bone_pos))
+    }
+
+    fn local_axes(matrix: [f32; 16]) -> [[f32; 3]; 3] {
+        [
+            Self::vec3_normalize([matrix[0], matrix[1], matrix[2]]).unwrap_or([1.0, 0.0, 0.0]),
+            Self::vec3_normalize([matrix[4], matrix[5], matrix[6]]).unwrap_or([0.0, 1.0, 0.0]),
+            Self::vec3_normalize([matrix[8], matrix[9], matrix[10]]).unwrap_or([0.0, 0.0, 1.0]),
+        ]
+    }
+
+    fn axis_binding(axis: usize, scale: f32) -> String {
+        let axis = match axis {
+            0 => "rotationX",
+            1 => "rotationY",
+            _ => "rotationZ",
+        };
+        let sign = if scale >= 0.0 { 1 } else { -1 };
+        format!("{axis}:{sign}")
+    }
+
+    fn glb_global_node_matrices(
+        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+    ) -> Vec<[f32; 16]> {
+        let local = nodes
+            .iter()
+            .map(|node| {
+                node.matrix.unwrap_or_else(|| {
+                    Self::mat4_from_trs(node.translation, node.rotation, node.scale)
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut global = vec![None; nodes.len()];
+        for index in 0..nodes.len() {
+            Self::compute_glb_global_node_matrix(index, nodes, &local, &mut global);
+        }
+        global
+            .into_iter()
+            .map(|matrix| matrix.unwrap_or_else(Self::identity_mat4))
+            .collect()
+    }
+
+    fn compute_glb_global_node_matrix(
+        index: usize,
+        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        local: &[[f32; 16]],
+        global: &mut [Option<[f32; 16]>],
+    ) -> [f32; 16] {
+        if let Some(matrix) = global.get(index).copied().flatten() {
+            return matrix;
+        }
+        let local_matrix = local
+            .get(index)
+            .copied()
+            .unwrap_or_else(Self::identity_mat4);
+        let matrix = nodes
+            .get(index)
+            .and_then(|node| node.parent)
+            .map(|parent| {
+                Self::mat4_mul(
+                    Self::compute_glb_global_node_matrix(parent, nodes, local, global),
+                    local_matrix,
+                )
+            })
+            .unwrap_or(local_matrix);
+        if let Some(slot) = global.get_mut(index) {
+            *slot = Some(matrix);
+        }
+        matrix
+    }
+
+    fn mat4_from_trs(translation: [f32; 3], rotation: [f32; 4], scale: [f32; 3]) -> [f32; 16] {
+        Self::mat4_mul(
+            Self::mat4_mul(
+                Self::mat4_translation(translation),
+                Self::mat4_from_quat(rotation),
+            ),
+            Self::mat4_scale(scale),
+        )
+    }
+
+    fn mat4_translation(translation: [f32; 3]) -> [f32; 16] {
+        [
+            1.0,
+            0.0,
+            0.0,
+            0.0, //
+            0.0,
+            1.0,
+            0.0,
+            0.0, //
+            0.0,
+            0.0,
+            1.0,
+            0.0, //
+            translation[0],
+            translation[1],
+            translation[2],
+            1.0,
+        ]
+    }
+
+    fn mat4_scale(scale: [f32; 3]) -> [f32; 16] {
+        [
+            scale[0], 0.0, 0.0, 0.0, //
+            0.0, scale[1], 0.0, 0.0, //
+            0.0, 0.0, scale[2], 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ]
+    }
+
+    fn mat4_from_quat(quat: [f32; 4]) -> [f32; 16] {
+        let [x, y, z, w] = quat;
+        let len = (x * x + y * y + z * z + w * w).sqrt();
+        if len <= f32::EPSILON {
+            return Self::identity_mat4();
+        }
+        let x = x / len;
+        let y = y / len;
+        let z = z / len;
+        let w = w / len;
+        let x2 = x + x;
+        let y2 = y + y;
+        let z2 = z + z;
+        let xx = x * x2;
+        let xy = x * y2;
+        let xz = x * z2;
+        let yy = y * y2;
+        let yz = y * z2;
+        let zz = z * z2;
+        let wx = w * x2;
+        let wy = w * y2;
+        let wz = w * z2;
+        [
+            1.0 - (yy + zz),
+            xy + wz,
+            xz - wy,
+            0.0,
+            xy - wz,
+            1.0 - (xx + zz),
+            yz + wx,
+            0.0,
+            xz + wy,
+            yz - wx,
+            1.0 - (xx + yy),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
+    }
+
+    fn mat4_mul(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
+        let mut out = [0.0f32; 16];
+        for col in 0..4 {
+            for row in 0..4 {
+                out[col * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[col * 4 + k]).sum();
+            }
+        }
+        out
+    }
+
+    fn mat4_transform_point(matrix: [f32; 16], point: [f32; 3]) -> [f32; 3] {
+        [
+            matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12],
+            matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2] + matrix[13],
+            matrix[2] * point[0] + matrix[6] * point[1] + matrix[10] * point[2] + matrix[14],
+        ]
+    }
+
+    fn vec3_sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+
+    fn vec3_scale(v: [f32; 3], scale: f32) -> [f32; 3] {
+        [v[0] * scale, v[1] * scale, v[2] * scale]
+    }
+
+    fn vec3_dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
+    fn vec3_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    }
+
+    fn vec3_add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+        [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+    }
+
+    fn rotate_vec3_around_axis(v: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
+        let axis = Self::vec3_normalize(axis).unwrap_or([0.0, 1.0, 0.0]);
+        let (sin, cos) = angle.sin_cos();
+        let term1 = Self::vec3_scale(v, cos);
+        let term2 = Self::vec3_scale(Self::vec3_cross(axis, v), sin);
+        let term3 = Self::vec3_scale(axis, Self::vec3_dot(axis, v) * (1.0 - cos));
+        Self::vec3_add(Self::vec3_add(term1, term2), term3)
+    }
+
+    fn vec3_normalize(v: [f32; 3]) -> Option<[f32; 3]> {
+        let len = Self::vec3_dot(v, v).sqrt();
+        if len <= 0.000001 {
+            return None;
+        }
+        Some([v[0] / len, v[1] / len, v[2] / len])
+    }
+
+    fn sanitize_xml_ident(value: &str) -> String {
+        let mut out = value
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        if out.is_empty() {
+            out = "model".to_string();
+        }
+        if out
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_digit() || ch == '-')
+        {
+            out.insert(0, '_');
+        }
+        out
+    }
+
+    fn guess_humanoid_retarget_maps(joint_names: &[String]) -> Vec<(String, String)> {
+        let candidates: &[(&str, &[&str])] = &[
+            ("hips", &["hips", "pelvis"]),
+            ("spine", &["spine"]),
+            ("chest", &["chest", "upperchest", "thorax"]),
+            ("neck", &["neck"]),
+            ("head", &["head"]),
+            ("shoulder_l", &["leftshoulder", "lshoulder", "shoulderl"]),
+            (
+                "upper_arm_l",
+                &["leftarm", "leftupperarm", "lupperarm", "upperarml"],
+            ),
+            (
+                "forearm_l",
+                &["leftelbow", "leftforearm", "llowerarm", "forearml"],
+            ),
+            ("hand_l", &["leftwrist", "lefthand", "handl"]),
+            ("shoulder_r", &["rightshoulder", "rshoulder", "shoulderr"]),
+            (
+                "upper_arm_r",
+                &["rightarm", "rightupperarm", "rupperarm", "upperarmr"],
+            ),
+            (
+                "forearm_r",
+                &["rightelbow", "rightforearm", "rlowerarm", "forearmr"],
+            ),
+            ("hand_r", &["rightwrist", "righthand", "handr"]),
+            (
+                "upper_leg_l",
+                &["leftleg", "leftupleg", "leftthigh", "thighl"],
+            ),
+            (
+                "lower_leg_l",
+                &["leftknee", "leftlowerleg", "leftshin", "calfl"],
+            ),
+            ("foot_l", &["leftankle", "leftfoot", "footl"]),
+            ("toe_l", &["lefttoe", "toel"]),
+            (
+                "upper_leg_r",
+                &["rightleg", "rightupleg", "rightthigh", "thighr"],
+            ),
+            (
+                "lower_leg_r",
+                &["rightknee", "rightlowerleg", "rightshin", "calfr"],
+            ),
+            ("foot_r", &["rightankle", "rightfoot", "footr"]),
+            ("toe_r", &["righttoe", "toer"]),
+        ];
+        let normalized = joint_names
+            .iter()
+            .map(|name| (name, Self::normalize_joint_name(name)))
+            .collect::<Vec<_>>();
+        let mut used = HashSet::<String>::new();
+        let mut out = Vec::<(String, String)>::new();
+        for (bone, patterns) in candidates {
+            let Some((name, _)) = normalized
+                .iter()
+                .filter(|(name, normalized)| {
+                    !used.contains(*name)
+                        && !Self::is_likely_accessory_joint(normalized)
+                        && Self::joint_name_matches_humanoid_bone(normalized, patterns)
+                })
+                .min_by_key(|(_, normalized)| Self::joint_match_score(normalized, patterns))
+            else {
+                continue;
+            };
+            used.insert((*name).clone());
+            out.push(((*name).clone(), (*bone).to_string()));
+        }
+        out
+    }
+
+    fn joint_name_matches_humanoid_bone(normalized: &str, patterns: &[&str]) -> bool {
+        patterns.iter().any(|pattern| normalized.contains(pattern))
+    }
+
+    fn joint_match_score(normalized: &str, patterns: &[&str]) -> usize {
+        patterns
+            .iter()
+            .filter(|pattern| normalized.contains(**pattern))
+            .map(|pattern| {
+                if normalized == *pattern {
+                    0
+                } else if normalized.ends_with(*pattern) || normalized.starts_with(*pattern) {
+                    1
+                } else {
+                    2
+                }
+            })
+            .min()
+            .unwrap_or(usize::MAX)
+    }
+
+    fn is_likely_accessory_joint(normalized: &str) -> bool {
+        [
+            "ribon", "ribbon", "twist", "hair", "skirt", "wing", "tail", "eye", "front", "kata",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+    }
+
+    fn normalize_joint_name(name: &str) -> String {
+        name.chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+
+    fn glb_joint_tree_lines(
+        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        joint_node_indices: &HashSet<usize>,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        for node in nodes {
+            if node.parent.is_none()
+                && Self::joint_subtree_contains_joint(node.index, nodes, joint_node_indices)
+            {
+                Self::push_glb_joint_tree_line(
+                    node.index,
+                    0,
+                    nodes,
+                    joint_node_indices,
+                    &mut lines,
+                );
+            }
+        }
+        if lines.is_empty() {
+            return vec!["No skin joint hierarchy found.".to_string()];
+        }
+        lines.truncate(260);
+        lines
+    }
+
+    fn joint_subtree_contains_joint(
+        index: usize,
+        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        joint_node_indices: &HashSet<usize>,
+    ) -> bool {
+        joint_node_indices.contains(&index)
+            || nodes.get(index).is_some_and(|node| {
+                node.children.iter().any(|child| {
+                    Self::joint_subtree_contains_joint(*child, nodes, joint_node_indices)
+                })
+            })
+    }
+
+    fn push_glb_joint_tree_line(
+        index: usize,
+        depth: usize,
+        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        joint_node_indices: &HashSet<usize>,
+        lines: &mut Vec<String>,
+    ) {
+        if lines.len() >= 260 {
+            return;
+        }
+        let Some(node) = nodes.get(index) else {
+            return;
+        };
+        let is_joint = joint_node_indices.contains(&index);
+        if is_joint {
+            let prefix = "  ".repeat(depth);
+            let name = node.name.as_deref().unwrap_or("(unnamed)");
+            lines.push(format!("{prefix}- {name} [node {}]", node.index));
+        }
+        let child_depth = if is_joint { depth + 1 } else { depth };
+        for child in &node.children {
+            if Self::joint_subtree_contains_joint(*child, nodes, joint_node_indices) {
+                Self::push_glb_joint_tree_line(
+                    *child,
+                    child_depth,
+                    nodes,
+                    joint_node_indices,
+                    lines,
+                );
+            }
+        }
+    }
+
+    fn build_retarget_draft(actors: &[GlbSkeletonActorReport]) -> String {
+        let mut out = String::new();
+        for actor in actors {
+            if actor.guessed_maps.is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push('\n');
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "<Retarget id=\"{}_humanoid_map\" actor=\"{}\" preset=\"humanoid_v1\">\n",
+                Self::xml_attr_escape(&actor.actor_id),
+                Self::xml_attr_escape(&actor.actor_id)
+            ));
+            for (from, to) in &actor.guessed_maps {
+                out.push_str(&format!(
+                    "  <Map from=\"{}\" to=\"{}\" />\n",
+                    Self::xml_attr_escape(from),
+                    Self::xml_attr_escape(to)
+                ));
+            }
+            out.push_str("</Retarget>");
+        }
+        out
+    }
+
+    fn xml_attr_escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    }
+
+    fn identity_mat4() -> [f32; 16] {
+        [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ]
+    }
+
+    fn render_glb_inspector_modal_overlay(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let report = self.glb_inspector_report.clone();
+        let draft = report
+            .as_ref()
+            .map(|report| report.retarget_draft.clone())
+            .unwrap_or_default();
+        let profile_draft = report
+            .as_ref()
+            .map(|report| report.model_profile_draft.clone())
+            .unwrap_or_default();
+        let calibrated_profile_draft = report
+            .as_ref()
+            .map(|report| report.calibrated_model_profile_draft.clone())
+            .unwrap_or_default();
+
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .bg(gpui_component::black().opacity(0.62))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.glb_inspector_modal_open = false;
+                    this.status_line = "GLB inspector closed.".to_string();
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(920.0))
+                    .max_h(px(760.0))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(white().opacity(0.16))
+                    .bg(rgb(0x111827))
+                    .shadow_2xl()
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| {
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(white().opacity(0.96))
+                                            .child("Inspect GLB Skeleton"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(white().opacity(0.58))
+                                            .child(report.as_ref().map(|r| r.summary.clone()).unwrap_or_else(|| "No report loaded.".to_string())),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Self::control_button("Copy Calibrated Profile")
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(move |this, _, _, cx| {
+                                                    if calibrated_profile_draft.trim().is_empty() {
+                                                        this.status_line =
+                                                            "No calibrated ModelProfile draft available to copy."
+                                                                .to_string();
+                                                    } else {
+                                                        cx.write_to_clipboard(
+                                                            ClipboardItem::new_string(
+                                                                calibrated_profile_draft.clone(),
+                                                            ),
+                                                        );
+                                                        this.status_line =
+                                                            "Copied calibrated GLB ModelProfile draft."
+                                                                .to_string();
+                                                    }
+                                                    cx.notify();
+                                                }),
+                                            ),
+                                    )
+                                    .child(Self::control_button("Copy ModelProfile").on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            if profile_draft.trim().is_empty() {
+                                                this.status_line =
+                                                    "No ModelProfile draft available to copy."
+                                                        .to_string();
+                                            } else {
+                                                cx.write_to_clipboard(
+                                                    ClipboardItem::new_string(
+                                                        profile_draft.clone(),
+                                                    ),
+                                                );
+                                                this.status_line =
+                                                    "Copied full GLB ModelProfile draft."
+                                                        .to_string();
+                                            }
+                                            cx.notify();
+                                        }),
+                                    ))
+                                    .child(
+                                        Self::control_button("Copy Retarget Draft").on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, _, cx| {
+                                                if draft.trim().is_empty() {
+                                                    this.status_line =
+                                                        "No retarget draft available to copy."
+                                                            .to_string();
+                                                } else {
+                                                    cx.write_to_clipboard(
+                                                        ClipboardItem::new_string(draft.clone()),
+                                                    );
+                                                    this.status_line =
+                                                        "Copied GLB retarget draft.".to_string();
+                                                }
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        Self::control_button("Close").on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                this.glb_inspector_modal_open = false;
+                                                this.status_line =
+                                                    "GLB inspector closed.".to_string();
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.66))
+                            .child("This reads the current animation DSL once, lists GLB skin joints, generates humanoid_v1 Retarget, simulates rotationX/Y/Z endpoint movement for Auto Calibration Preview, and builds copyable ModelProfile drafts. It does not affect frame preview/render speed."),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(280.0))
+                            .max_h(px(610.0))
+                            .overflow_y_scrollbar()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(white().opacity(0.10))
+                            .bg(white().opacity(0.025))
+                            .p_3()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .children(report.map(|report| {
+                                report
+                                    .actors
+                                    .into_iter()
+                                    .map(|actor| Self::render_glb_actor_report(actor, cx))
+                                    .collect::<Vec<_>>()
+                            }).unwrap_or_else(|| {
+                                vec![
+                                    div()
+                                        .text_sm()
+                                        .text_color(white().opacity(0.7))
+                                        .child("No GLB actor report available.")
+                                ]
+                            })),
+                    ),
+            )
+    }
+
+    fn render_glb_actor_report(actor: GlbSkeletonActorReport, cx: &mut Context<Self>) -> gpui::Div {
+        let mapped = if actor.mapped_bones.is_empty() {
+            "none".to_string()
+        } else {
+            actor.mapped_bones.join(", ")
+        };
+        let missing = if actor.missing_humanoid_bones.is_empty() {
+            "none".to_string()
+        } else {
+            actor.missing_humanoid_bones.join(", ")
+        };
+        let actor_id_for_guesses = actor.actor_id.clone();
+        let actor_id_for_tree = actor.actor_id.clone();
+        let actor_id_for_profile = actor.actor_id.clone();
+        let actor_id_for_calibration = actor.actor_id.clone();
+        let actor_id_for_calibrated_profile = actor.actor_id.clone();
+        let guessed_text = if actor.guessed_maps.is_empty() {
+            "No humanoid_v1 map guesses.".to_string()
+        } else {
+            actor
+                .guessed_maps
+                .iter()
+                .map(|(from, to)| format!("{from} -> {to}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let tree_text = if actor.joint_tree_lines.is_empty() {
+            "No skin joint hierarchy found.".to_string()
+        } else {
+            actor.joint_tree_lines.join("\n")
+        };
+        let profile_text = if actor.model_profile_draft.trim().is_empty() {
+            "No ModelProfile draft generated.".to_string()
+        } else {
+            actor.model_profile_draft.clone()
+        };
+        let calibrated_profile_text = if actor.calibrated_model_profile_draft.trim().is_empty() {
+            "No calibrated ModelProfile draft generated.".to_string()
+        } else {
+            actor.calibrated_model_profile_draft.clone()
+        };
+        let calibration_preview_text = if actor.calibration_preview_lines.is_empty() {
+            "No auto calibration preview generated.".to_string()
+        } else {
+            actor.calibration_preview_lines.join("\n")
+        };
+        let guessed = if actor.guessed_maps.is_empty() {
+            vec![
+                div()
+                    .font_family("Mono")
+                    .text_xs()
+                    .text_color(white().opacity(0.52))
+                    .child("No humanoid_v1 map guesses."),
+            ]
+        } else {
+            actor
+                .guessed_maps
+                .iter()
+                .map(|(from, to)| {
+                    div()
+                        .font_family("Mono")
+                        .text_xs()
+                        .text_color(white().opacity(0.72))
+                        .child(format!("{from} -> {to}"))
+                })
+                .collect::<Vec<_>>()
+        };
+        let tree_lines = actor
+            .joint_tree_lines
+            .iter()
+            .map(|line| {
+                div()
+                    .font_family("Mono")
+                    .text_xs()
+                    .text_color(white().opacity(0.70))
+                    .child(line.clone())
+            })
+            .collect::<Vec<_>>();
+        let profile_lines = profile_text
+            .lines()
+            .map(|line| {
+                div()
+                    .font_family("Mono")
+                    .text_xs()
+                    .text_color(white().opacity(0.70))
+                    .child(line.to_string())
+            })
+            .collect::<Vec<_>>();
+        let calibration_preview_lines = calibration_preview_text
+            .lines()
+            .map(|line| {
+                div()
+                    .font_family("Mono")
+                    .text_xs()
+                    .text_color(white().opacity(0.70))
+                    .child(line.to_string())
+            })
+            .collect::<Vec<_>>();
+        let calibrated_profile_lines = calibrated_profile_text
+            .lines()
+            .map(|line| {
+                div()
+                    .font_family("Mono")
+                    .text_xs()
+                    .text_color(white().opacity(0.70))
+                    .child(line.to_string())
+            })
+            .collect::<Vec<_>>();
+        let load_status = actor.error.clone();
+        let guessed_text_for_copy = guessed_text.clone();
+        let tree_text_for_copy = tree_text.clone();
+        let profile_text_for_copy = profile_text.clone();
+        let calibration_preview_text_for_copy = calibration_preview_text.clone();
+        let calibrated_profile_text_for_copy = calibrated_profile_text.clone();
+
+        div()
+            .w_full()
+            .rounded_md()
+            .border_1()
+            .border_color(white().opacity(0.10))
+            .bg(white().opacity(0.035))
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(white().opacity(0.92))
+                            .child(format!("Actor · {}", actor.actor_id)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if load_status.is_some() {
+                                rgba(0xff8a7acc)
+                            } else {
+                                rgba(0x8de5bacc)
+                            })
+                            .child(if load_status.is_some() {
+                                "load failed"
+                            } else {
+                                "loaded"
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .font_family("Mono")
+                    .text_xs()
+                    .text_color(white().opacity(0.58))
+                    .child(format!("model={} -> {}", actor.model, actor.resolved_path)),
+            )
+            .when_some(load_status, |el, error| {
+                el.child(div().text_xs().text_color(rgba(0xff8a7acc)).child(error))
+            })
+            .child(div().flex().flex_wrap().gap_2().children([
+                Self::glb_stat_chip(format!("nodes {}", actor.node_count)),
+                Self::glb_stat_chip(format!("joints {}", actor.joint_count)),
+                Self::glb_stat_chip(format!("vertices {}", actor.vertex_count)),
+                Self::glb_stat_chip(format!("triangles {}", actor.triangle_count)),
+                Self::glb_stat_chip(format!("weighted {}", actor.weighted_vertex_count)),
+                Self::glb_stat_chip(format!(
+                    "inverseBind {}",
+                    if actor.has_inverse_bind_matrices {
+                        "yes"
+                    } else {
+                        "unknown"
+                    }
+                )),
+            ]))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.66))
+                    .child(format!("Current mapped humanoid bones: {mapped}")),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.54))
+                    .child(format!(
+                        "Missing humanoid_v1 bones in current DSL: {missing}"
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.76))
+                            .child("Retarget guesses"),
+                    )
+                    .child(Self::control_button("Copy").on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                guessed_text_for_copy.clone(),
+                            ));
+                            this.status_line =
+                                format!("Copied retarget guesses for {actor_id_for_guesses}.");
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .rounded_sm()
+                    .bg(rgb(0x090d14))
+                    .border_1()
+                    .border_color(white().opacity(0.08))
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(guessed),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.76))
+                            .child("Joint hierarchy"),
+                    )
+                    .child(Self::control_button("Copy").on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                tree_text_for_copy.clone(),
+                            ));
+                            this.status_line =
+                                format!("Copied joint hierarchy for {actor_id_for_tree}.");
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .rounded_sm()
+                    .bg(rgb(0x090d14))
+                    .border_1()
+                    .border_color(white().opacity(0.08))
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(tree_lines),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.76))
+                            .child("Auto Calibration Preview"),
+                    )
+                    .child(Self::control_button("Copy").on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                calibration_preview_text_for_copy.clone(),
+                            ));
+                            this.status_line =
+                                format!("Copied auto calibration preview for {actor_id_for_calibration}.");
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .rounded_sm()
+                    .bg(rgb(0x090d14))
+                    .border_1()
+                    .border_color(white().opacity(0.08))
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(calibration_preview_lines),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.76))
+                            .child("Generated ModelProfile"),
+                    )
+                    .child(Self::control_button("Copy").on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                profile_text_for_copy.clone(),
+                            ));
+                            this.status_line =
+                                format!("Copied ModelProfile draft for {actor_id_for_profile}.");
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .rounded_sm()
+                    .bg(rgb(0x090d14))
+                    .border_1()
+                    .border_color(white().opacity(0.08))
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(profile_lines),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.76))
+                            .child("Calibrated ModelProfile"),
+                    )
+                    .child(Self::control_button("Copy").on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                calibrated_profile_text_for_copy.clone(),
+                            ));
+                            this.status_line = format!(
+                                "Copied calibrated ModelProfile draft for {actor_id_for_calibrated_profile}."
+                            );
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .rounded_sm()
+                    .bg(rgb(0x090d14))
+                    .border_1()
+                    .border_color(white().opacity(0.08))
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(calibrated_profile_lines),
+            )
+    }
+
+    fn glb_stat_chip(label: String) -> gpui::Div {
+        div()
+            .h(px(24.0))
+            .px_2()
+            .rounded_md()
+            .border_1()
+            .border_color(white().opacity(0.10))
+            .bg(white().opacity(0.055))
+            .text_xs()
+            .text_color(white().opacity(0.72))
+            .flex()
+            .items_center()
+            .child(label)
+    }
+
     fn open_import_modal(&mut self) {
         self.template_modal_open = false;
         self.asset_modal_open = false;
+        self.scene_template_modal_open = false;
+        self.glb_inspector_modal_open = false;
         self.import_modal_open = true;
         self.status_line = "Source/import panel opened.".to_string();
     }
@@ -2134,6 +5818,8 @@ impl MotionLoomPage {
     fn open_asset_modal(&mut self) {
         self.template_modal_open = false;
         self.import_modal_open = false;
+        self.scene_template_modal_open = false;
+        self.glb_inspector_modal_open = false;
         self.asset_modal_open = true;
         self.asset_context_menu = None;
         self.status_line = "VFX Assets browser opened.".to_string();
@@ -2589,15 +6275,6 @@ impl MotionLoomPage {
                     };
 
                     let _ = view.update_in(window, |this, _window, cx| {
-                        let (ffmpeg_path, cache_root, can_generate_video_thumbnail) = {
-                            let gs = this.global.read(cx);
-                            (
-                                gs.ffmpeg_path.clone(),
-                                gs.cache_root_dir(),
-                                gs.media_tools_ready_for_preview_gen(),
-                            )
-                        };
-
                         let mut imported = 0usize;
                         for path in paths {
                             let path_str = path.to_string_lossy().to_string();
@@ -2607,12 +6284,7 @@ impl MotionLoomPage {
                             if this.clips.iter().any(|item| item.path == path_str) {
                                 continue;
                             }
-                            let clip = Self::build_imported_clip(
-                                &path_str,
-                                &ffmpeg_path,
-                                &cache_root,
-                                can_generate_video_thumbnail,
-                            );
+                            let clip = Self::build_imported_clip(&path_str);
                             this.clips.push(clip);
                             imported += 1;
                         }
@@ -2690,7 +6362,9 @@ impl MotionLoomPage {
                         div()
                             .text_xs()
                             .text_color(white().opacity(0.65))
-                            .child("Import clips, then click a clip to use it in VFX Stage."),
+                            .child(
+                                "Import clips for media-input graphs. Scene Live Preview can play scene graphs directly.",
+                            ),
                     )
                     .child(
                         div()
@@ -3118,10 +6792,16 @@ impl Render for MotionLoomPage {
         self.sync_script_from_global(window, cx);
         self.sync_render_request_from_global(window, cx);
         self.ensure_script_input(window, cx);
-        let selected_idx = self.selected_idx;
+        self.ensure_scene_live_knob_input(window, cx);
+        self.sync_script_input_if_needed(window, cx);
+        self.sync_preview_frame_to_global(cx);
+        let scene_template_modal = if self.scene_template_modal_open {
+            Some(self.render_scene_template_modal_overlay(cx))
+        } else {
+            None
+        };
         let selected = self.current_clip().cloned();
         let imported_count = self.clips.len();
-        let runtime_active = self.graph_runtime.is_some();
         let selected_name = selected
             .as_ref()
             .map(|clip| clip.name.clone())
@@ -3157,47 +6837,12 @@ impl Render for MotionLoomPage {
         } else {
             860.0
         };
-        // VFX preview should be the first visual priority on this page.
-        // Scale panel heights continuously with viewport height.
-        let stage_panel_h = if viewport_w < 1080.0 {
-            (viewport_h * 0.36).clamp(220.0, 420.0)
-        } else if viewport_w < 1320.0 {
-            (viewport_h * 0.42).clamp(240.0, 520.0)
-        } else {
-            (viewport_h * 0.48).clamp(260.0, 620.0)
-        };
-        let preview_min_h = (stage_panel_h - 120.0).clamp(150.0, 420.0);
         let scene_live_preview_h = if viewport_w < 1080.0 {
-            (viewport_h * 0.30).clamp(180.0, 320.0)
+            (viewport_h * 0.34).clamp(220.0, 360.0)
         } else {
-            (viewport_h * 0.36).clamp(220.0, 430.0)
+            (viewport_h * 0.46).clamp(300.0, 560.0)
         };
-        let scene_live_panel_min_h = (scene_live_preview_h + 180.0).clamp(360.0, 640.0);
-
-        // Evaluate graph runtime output for current frame
-        let runtime_output = self
-            .graph_runtime
-            .as_ref()
-            .map(|runtime| runtime.evaluate_frame(self.preview_frame));
-        let runtime_target_size = self.runtime_target_size();
-        let runtime_mix = runtime_output.as_ref().map(|o| o.invert_mix).unwrap_or(0.0);
-        let runtime_brightness = 0.0_f32;
-        let runtime_contrast = 1.0_f32;
-        let runtime_saturation = 1.0_f32;
-        let runtime_blur = runtime_output
-            .as_ref()
-            .map(|o| {
-                o.layer_blur_sigma
-                    .or_else(|| o.layer_sharpen_sigma.map(|v| -v))
-                    .unwrap_or(0.0)
-            })
-            .unwrap_or(0.0);
-        let runtime_opacity = 1.0_f32;
-
-        // MotionLoom previews need deterministic CPU-side frames for graph effects and
-        // ProRes scene renders. Avoid the app-wide VideoElement fast path here; it can
-        // stay blank for sources that do not produce a stable surface frame.
-        let selected_video_waiting_for_first_frame = false;
+        let scene_live_panel_min_h = (scene_live_preview_h + 190.0).clamp(420.0, 760.0);
 
         // Build script editor element (expands in left column)
         let script_input_elem = if let Some(input) = self.script_input.as_ref() {
@@ -3222,159 +6867,10 @@ impl Render for MotionLoomPage {
                 .into_any_element()
         };
 
-        let preview_card = if let Some(clip) = selected {
-            if let Some(preview) = clip.preview {
-                let mut source_w = preview.width;
-                let mut source_h = preview.height;
-                let mut source_bgra = preview.bgra.as_ref().to_vec();
-                if clip.kind == ImportedClipKind::Video
-                    && let Some((bgra, w, h)) =
-                        self.video_preview_frame_bgra(&clip.path, self.preview_frame)
-                {
-                    source_bgra = bgra;
-                    source_w = w;
-                    source_h = h;
-                }
-                let (display_image, display_w, display_h) = if runtime_active {
-                    let idx = selected_idx.unwrap_or(0);
-                    let size = runtime_target_size.unwrap_or((preview.width, preview.height));
-                    self.runtime_preview_image(
-                        idx,
-                        &source_bgra,
-                        source_w,
-                        source_h,
-                        preview.image.clone(),
-                        self.preview_frame,
-                        runtime_mix,
-                        runtime_brightness,
-                        runtime_contrast,
-                        runtime_saturation,
-                        runtime_blur,
-                        runtime_opacity,
-                        size,
-                    )
-                } else {
-                    (
-                        Self::render_image_from_bgra(source_w, source_h, source_bgra)
-                            .unwrap_or_else(|_| preview.image.clone()),
-                        source_w,
-                        source_h,
-                    )
-                };
-                div()
-                    .w_full()
-                    .flex_1()
-                    .min_h(px(preview_min_h))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(white().opacity(0.14))
-                    .bg(rgb(0x05070c))
-                    .overflow_hidden()
-                    .child(FitPreviewImageElement::new(
-                        display_image,
-                        display_w,
-                        display_h,
-                    ))
-                    .into_any_element()
-            } else if clip.kind == ImportedClipKind::Video
-                && let Some((bgra, w, h)) =
-                    self.video_preview_frame_bgra(&clip.path, self.preview_frame)
-            {
-                let (display_image, display_w, display_h) = if runtime_active {
-                    let idx = selected_idx.unwrap_or(0);
-                    let size = runtime_target_size.unwrap_or((w, h));
-                    let fallback = Self::render_image_from_bgra(w, h, bgra.clone())
-                        .unwrap_or_else(|_| Arc::new(RenderImage::new(SmallVec::new())));
-                    self.runtime_preview_image(
-                        idx,
-                        &bgra,
-                        w,
-                        h,
-                        fallback,
-                        self.preview_frame,
-                        runtime_mix,
-                        runtime_brightness,
-                        runtime_contrast,
-                        runtime_saturation,
-                        runtime_blur,
-                        runtime_opacity,
-                        size,
-                    )
-                } else {
-                    (
-                        Self::render_image_from_bgra(w, h, bgra)
-                            .unwrap_or_else(|_| Arc::new(RenderImage::new(SmallVec::new()))),
-                        w,
-                        h,
-                    )
-                };
-                div()
-                    .w_full()
-                    .flex_1()
-                    .min_h(px(preview_min_h))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(white().opacity(0.14))
-                    .bg(rgb(0x05070c))
-                    .overflow_hidden()
-                    .child(FitPreviewImageElement::new(
-                        display_image,
-                        display_w,
-                        display_h,
-                    ))
-                    .into_any_element()
-            } else {
-                let no_preview_message = if clip.kind == ImportedClipKind::Video
-                    && selected_video_waiting_for_first_frame
-                {
-                    "Loading video preview frame...".to_string()
-                } else {
-                    clip.error
-                        .unwrap_or_else(|| "No preview available for this clip.".to_string())
-                };
-                div()
-                    .w_full()
-                    .flex_1()
-                    .min_h(px(preview_min_h))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(white().opacity(0.14))
-                    .bg(rgb(0x05070c))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(white().opacity(0.68))
-                            .child(no_preview_message),
-                    )
-                    .into_any_element()
-            }
-        } else {
-            div()
-                .w_full()
-                .flex_1()
-                .min_h(px(preview_min_h))
-                .rounded_lg()
-                .border_1()
-                .border_color(white().opacity(0.14))
-                .bg(rgb(0x05070c))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(white().opacity(0.55))
-                        .child("Import a clip to start the VFX stage."),
-                )
-                .into_any_element()
-        };
-
         let mut scene_live_targets = Self::extract_scene_live_targets(&self.script_text);
-        if self.scene_live_groups_only {
-            scene_live_targets.retain(|target| target.tag == "Group");
+        if !self.scene_live_tag_filters.is_empty() {
+            scene_live_targets
+                .retain(|target| self.scene_live_tag_filters.contains(target.tag.as_str()));
         }
         self.ensure_scene_live_selection(&scene_live_targets);
         let scene_live_attrs = scene_live_targets
@@ -3384,7 +6880,7 @@ impl Render for MotionLoomPage {
             .unwrap_or_else(|| vec![self.scene_live_knob_attr.clone()]);
 
         let mut scene_live_target_entries = Vec::<(String, String, Vec<String>, bool)>::new();
-        if !self.scene_live_groups_only
+        if self.scene_live_tag_filters.is_empty()
             && let Some(overall) = Self::overall_scene_live_target(&scene_live_targets)
         {
             scene_live_target_entries.push((
@@ -3445,6 +6941,39 @@ impl Render for MotionLoomPage {
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.select_scene_live_attr(attr_value.clone());
+                        cx.notify();
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let scene_live_tag_filter_chips = Self::scene_live_filter_tags()
+            .iter()
+            .map(|tag_label| {
+                let tag_label = *tag_label;
+                let tag_value = tag_label.to_string();
+                Self::scene_live_checkbox(
+                    tag_label,
+                    self.scene_live_tag_filters.contains(tag_label),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        if !this.scene_live_tag_filters.remove(tag_value.as_str()) {
+                            this.scene_live_tag_filters.insert(tag_value.clone());
+                        }
+                        this.scene_live_target_offset = 0;
+                        this.status_line = if this.scene_live_tag_filters.is_empty() {
+                            "Scene live tag filter: showing all target tags.".to_string()
+                        } else {
+                            let mut tags = this
+                                .scene_live_tag_filters
+                                .iter()
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            tags.sort();
+                            format!("Scene live tag filter: showing {}.", tags.join(", "))
+                        };
                         cx.notify();
                     }),
                 )
@@ -3548,56 +7077,85 @@ impl Render for MotionLoomPage {
                             .gap_2()
                             .children(scene_live_attr_chips),
                     ),
-            );
-
-        let scene_live_preview_card =
-            match self.scene_live_preview_image(self.preview_frame) {
-                Ok(Some((image, w, h))) => div()
+            )
+            .child(
+                div()
                     .w_full()
-                    .h(px(scene_live_preview_h))
-                    .flex_shrink_0()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(white().opacity(0.14))
-                    .bg(rgb(0x05070c))
-                    .overflow_hidden()
-                    .child(FitPreviewImageElement::new(image, w, h))
-                    .into_any_element(),
-                Ok(None) => div()
-                    .w_full()
-                    .h(px(scene_live_preview_h))
-                    .flex_shrink_0()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(white().opacity(0.14))
-                    .bg(rgb(0x05070c))
+                    .min_w_0()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .child(div().text_sm().text_color(white().opacity(0.62)).child(
-                        "Scene Live Preview renders the current <Graph scope=\"scene\"> frame.",
-                    ))
-                    .into_any_element(),
-                Err(message) => div()
-                    .w_full()
-                    .h(px(scene_live_preview_h))
-                    .flex_shrink_0()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgba(0xff6655cc))
-                    .bg(rgb(0x12080a))
-                    .p_3()
-                    .flex()
-                    .items_center()
-                    .justify_center()
+                    .gap_2()
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(white().opacity(0.78))
-                            .child(message),
+                            .w(px(48.0))
+                            .text_xs()
+                            .text_color(white().opacity(0.52))
+                            .child("Tag"),
                     )
-                    .into_any_element(),
-            };
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .children(scene_live_tag_filter_chips),
+                    ),
+            );
+
+        let scene_live_preview_label = self.scene_live_preview_label();
+        let scene_render_progress = self.scene_render_progress.clone();
+        let scene_live_preview_card = match self.scene_live_preview_image(self.preview_frame, cx) {
+            Ok(Some((image, w, h))) => div()
+                .w_full()
+                .h(px(scene_live_preview_h))
+                .flex_shrink_0()
+                .rounded_lg()
+                .border_1()
+                .border_color(white().opacity(0.14))
+                .bg(rgb(0x05070c))
+                .overflow_hidden()
+                .child(FitPreviewImageElement::new(image, w, h))
+                .into_any_element(),
+            Ok(None) => div()
+                .w_full()
+                .h(px(scene_live_preview_h))
+                .flex_shrink_0()
+                .rounded_lg()
+                .border_1()
+                .border_color(white().opacity(0.14))
+                .bg(rgb(0x05070c))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(white().opacity(0.62))
+                        .child("Preview rendering..."),
+                )
+                .into_any_element(),
+            Err(message) => div()
+                .w_full()
+                .h(px(scene_live_preview_h))
+                .flex_shrink_0()
+                .rounded_lg()
+                .border_1()
+                .border_color(rgba(0xff6655cc))
+                .bg(rgb(0x12080a))
+                .p_3()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(white().opacity(0.78))
+                        .child(message),
+                )
+                .into_any_element(),
+        };
 
         let scene_live_knob_target = format!(
             "{}.{}",
@@ -3607,13 +7165,33 @@ impl Render for MotionLoomPage {
             .scene_live_knob_current_value()
             .map(Self::format_live_number)
             .unwrap_or_else(|| {
-                format!(
-                    "{}*",
-                    Self::format_live_number(Self::scene_live_attr_default_value(
-                        &self.scene_live_knob_attr
-                    ))
-                )
+                Self::format_live_number(Self::scene_live_attr_default_value(
+                    &self.scene_live_knob_attr,
+                ))
             });
+        self.sync_scene_live_knob_input(scene_live_knob_value.clone(), window, cx);
+        let scene_live_knob_input_elem = if let Some(input) = self.scene_live_knob_input.as_ref() {
+            let input_for_focus = input.clone();
+            div()
+                .h(px(24.0))
+                .w(px(74.0))
+                .rounded_sm()
+                .border_1()
+                .border_color(white().opacity(0.10))
+                .bg(rgb(0x090d14))
+                .overflow_hidden()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |_, _, window, cx| {
+                        cx.stop_propagation();
+                        input_for_focus.read(cx).focus_handle(cx).focus(window);
+                    }),
+                )
+                .child(Input::new(input).h_full().w_full())
+                .into_any_element()
+        } else {
+            div().h(px(24.0)).w(px(74.0)).into_any_element()
+        };
         let scene_live_knob_scroll_label = format!("Scroll {}", self.scene_live_knob_attr);
         let scene_live_scroll_attr = self.scene_live_knob_attr.clone();
         let (
@@ -3625,6 +7203,45 @@ impl Render for MotionLoomPage {
             scene_live_pos_large_label,
         ) = Self::scene_live_step_labels(&self.scene_live_knob_attr);
         let scene_live_scroll_hint = Self::scene_live_scroll_hint(&self.scene_live_knob_attr);
+        let scene_live_preview_quality_chips = [
+            SceneLivePreviewQuality::P144,
+            SceneLivePreviewQuality::P360,
+            SceneLivePreviewQuality::P480,
+        ]
+        .into_iter()
+        .map(|quality| {
+            Self::scene_live_chip(
+                quality.label().to_string(),
+                self.scene_live_preview_quality == quality,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.scene_live_preview_quality = quality;
+                    this.invalidate_scene_live_preview_cache();
+                    this.status_line = format!(
+                        "Scene preview resolution: {} <= {}px.",
+                        quality.label(),
+                        quality.max_dim()
+                    );
+                    cx.notify();
+                }),
+            )
+        })
+        .collect::<Vec<_>>();
+        let scene_live_preview_quality_group = div()
+            .h(px(28.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.58))
+                    .child("Preview"),
+            )
+            .children(scene_live_preview_quality_chips);
         let scene_live_knob_scroll = div()
             .h(px(28.0))
             .min_w(px(148.0))
@@ -3645,7 +7262,7 @@ impl Render for MotionLoomPage {
                         return;
                     }
                     cx.stop_propagation();
-                    this.nudge_scene_live_knob(delta, window, cx);
+                    this.nudge_scene_live_knob(delta, window, cx, true);
                     cx.notify();
                 }),
             )
@@ -3655,12 +7272,7 @@ impl Render for MotionLoomPage {
                     .text_color(white().opacity(0.58))
                     .child(scene_live_knob_scroll_label),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(white().opacity(0.94))
-                    .child(scene_live_knob_value),
-            );
+            .child(scene_live_knob_input_elem);
         let scene_live_controls_row = div()
             .w_full()
             .min_w_0()
@@ -3668,20 +7280,44 @@ impl Render for MotionLoomPage {
             .flex_wrap()
             .items_center()
             .gap_2()
+            .child(scene_live_preview_quality_group)
             .child(
-                Self::scene_live_checkbox("Group tags", self.scene_live_groups_only).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.scene_live_groups_only = !this.scene_live_groups_only;
-                        this.scene_live_target_offset = 0;
-                        this.status_line = if this.scene_live_groups_only {
-                            "Scene live target filter: showing Group tags only.".to_string()
-                        } else {
-                            "Scene live target filter: showing all target tags.".to_string()
-                        };
-                        cx.notify();
-                    }),
-                ),
+                div()
+                    .h(px(28.0))
+                    .w(px(34.0))
+                    .flex_shrink_0()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(white().opacity(0.15))
+                    .bg(white().opacity(0.06))
+                    .hover(|s| s.bg(white().opacity(0.1)))
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(white().opacity(0.92))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(if self.preview_playing { "||" } else { "▶" })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.toggle_preview_playback(window, cx);
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(28.0))
+                    .px_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(white().opacity(0.14))
+                    .bg(white().opacity(0.035))
+                    .flex()
+                    .items_center()
+                    .text_xs()
+                    .text_color(white().opacity(0.86))
+                    .child(format!("Frame {}", self.preview_frame)),
             )
             .child(Self::control_button("Frame 0").on_mouse_down(
                 MouseButton::Left,
@@ -3711,7 +7347,7 @@ impl Render for MotionLoomPage {
                 Self::scene_live_chip(scene_live_neg_large_label, false).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
-                        this.nudge_scene_live_knob(-scene_live_large_step, window, cx);
+                        this.nudge_scene_live_knob(-scene_live_large_step, window, cx, false);
                         cx.notify();
                     }),
                 ),
@@ -3720,7 +7356,7 @@ impl Render for MotionLoomPage {
                 Self::scene_live_chip(scene_live_neg_small_label, false).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
-                        this.nudge_scene_live_knob(-scene_live_small_step, window, cx);
+                        this.nudge_scene_live_knob(-scene_live_small_step, window, cx, false);
                         cx.notify();
                     }),
                 ),
@@ -3730,7 +7366,7 @@ impl Render for MotionLoomPage {
                 Self::scene_live_chip(scene_live_pos_small_label, false).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
-                        this.nudge_scene_live_knob(scene_live_small_step, window, cx);
+                        this.nudge_scene_live_knob(scene_live_small_step, window, cx, false);
                         cx.notify();
                     }),
                 ),
@@ -3739,7 +7375,7 @@ impl Render for MotionLoomPage {
                 Self::scene_live_chip(scene_live_pos_large_label, false).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
-                        this.nudge_scene_live_knob(scene_live_large_step, window, cx);
+                        this.nudge_scene_live_knob(scene_live_large_step, window, cx, false);
                         cx.notify();
                     }),
                 ),
@@ -3798,14 +7434,7 @@ impl Render for MotionLoomPage {
                             .child(Self::control_button("Scene Template").on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, window, cx| {
-                                    this.set_script_text(
-                                        motionloom_templates::DEFAULT_SCENE_SCRIPT.to_string(),
-                                        window,
-                                        cx,
-                                    );
-                                    this.status_line =
-                                        "Loaded MotionLoom scene template.".to_string();
-                                    cx.notify();
+                                    this.open_scene_template_dialog(window, cx);
                                 }),
                             ))
                             .child(Self::control_button("Template Picker").on_mouse_down(
@@ -3813,6 +7442,12 @@ impl Render for MotionLoomPage {
                                 cx.listener(move |this, _, _, cx| {
                                     this.open_template_modal();
                                     cx.notify();
+                                }),
+                            ))
+                            .child(Self::control_button("Inspect GLB").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.open_glb_inspector_modal(cx);
                                 }),
                             ))
                             .child(Self::control_button("Apply Effect").on_mouse_down(
@@ -3857,112 +7492,9 @@ impl Render for MotionLoomPage {
                     ),
             )
             .child(div().text_xs().text_color(white().opacity(0.68)).child(
-                "VFX stage on top, graph editor below. Use Source / Import to open clip manager.",
+                "Use Scene Live Preview for direct frame playback. Use Source / Import only when the graph needs media inputs.",
             ))
             .child(script_input_elem);
-
-        // --- Right column: VFX Stage (video) ---
-        let mut stage_panel = div()
-            .w_full()
-            .h(px(stage_panel_h))
-            .flex_shrink_0()
-            .min_h(px(220.0))
-            .rounded_lg()
-            .border_1()
-            .border_color(white().opacity(0.12))
-            .bg(rgb(0x0c111b))
-            .p_3()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_w_0()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(white().opacity(0.95))
-                                    .child("VFX Stage"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(white().opacity(0.55))
-                                    .truncate()
-                                    .child(format!(
-                                        "{} · {} · {}",
-                                        selected_name, selected_kind_label, selected_duration_label
-                                    )),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(white().opacity(0.75))
-                                    .child("Frame"),
-                            )
-                            .child(
-                                Self::control_button(if self.preview_playing {
-                                    "Pause"
-                                } else {
-                                    "Play"
-                                })
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _, window, cx| {
-                                        this.toggle_preview_playback(window, cx);
-                                    }),
-                                ),
-                            )
-                            .child(Self::control_button("-1").on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.step_preview_frame(-1);
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(white().opacity(0.9))
-                                    .child(format!("{}", self.preview_frame)),
-                            )
-                            .child(Self::control_button("+1").on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.step_preview_frame(1);
-                                    cx.notify();
-                                }),
-                            )),
-                    ),
-            );
-
-        stage_panel = stage_panel.child(preview_card).child(
-            div().w_full().min_w_0().overflow_x_scrollbar().child(
-                div()
-                    .text_xs()
-                    .text_color(white().opacity(0.66))
-                    .whitespace_nowrap()
-                    .child(self.status_line.clone()),
-            ),
-        );
 
         // --- Scene Live Preview: direct single-frame scene raster, no FFmpeg ---
         let scene_live_panel = div()
@@ -4004,8 +7536,10 @@ impl Render for MotionLoomPage {
                                     .text_color(white().opacity(0.56))
                                     .truncate()
                                     .child(format!(
-                                        "Direct frame {} · no FFmpeg · target {}",
-                                        self.preview_frame, scene_live_knob_target
+                                        "Direct frame {} · no FFmpeg · {} · target {}",
+                                        self.preview_frame,
+                                        scene_live_preview_label,
+                                        scene_live_knob_target
                                     )),
                             ),
                     ),
@@ -4015,9 +7549,58 @@ impl Render for MotionLoomPage {
             .child(scene_live_preview_card)
             .child(
                 div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
                     .text_xs()
-                    .text_color(white().opacity(0.58))
-                    .child(scene_live_scroll_hint),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(white().opacity(0.58))
+                            .truncate()
+                            .child(scene_live_scroll_hint),
+                    )
+                    .when_some(scene_render_progress, |el, progress| {
+                        let pct = progress.percent();
+                        el.child(
+                            div()
+                                .flex_shrink_0()
+                                .w(px(250.0))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w(px(88.0))
+                                        .text_color(white().opacity(0.72))
+                                        .child(format!("{} {}%", progress.label, pct)),
+                                )
+                                .child(
+                                    div()
+                                        .h(px(6.0))
+                                        .flex_1()
+                                        .rounded_full()
+                                        .bg(white().opacity(0.10))
+                                        .overflow_hidden()
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .w(px((pct as f32 / 100.0) * 96.0))
+                                                .rounded_full()
+                                                .bg(rgba(0x79c7ffcc)),
+                                        ),
+                                )
+                                .child(div().w(px(58.0)).text_color(white().opacity(0.54)).child(
+                                    format!(
+                                        "{}/{}",
+                                        progress.rendered_frames, progress.total_frames
+                                    ),
+                                )),
+                        )
+                    }),
             );
 
         // --- Template picker modal overlay (rendered on top when open) ---
@@ -4042,6 +7625,11 @@ impl Render for MotionLoomPage {
         };
         let asset_modal = if self.asset_modal_open {
             Some(self.render_vfx_asset_modal_overlay(window, cx))
+        } else {
+            None
+        };
+        let glb_inspector_modal = if self.glb_inspector_modal_open {
+            Some(self.render_glb_inspector_modal_overlay(cx))
         } else {
             None
         };
@@ -4083,7 +7671,7 @@ impl Render for MotionLoomPage {
                                 div()
                                     .text_lg()
                                     .text_color(white().opacity(0.96))
-                                    .child("MotionLoom · VFX Studio (UI Simplified)"),
+                                    .child("MotionLoom · VFX Studio"),
                             )
                             .child(
                                 div()
@@ -4122,13 +7710,15 @@ impl Render for MotionLoomPage {
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .child(stage_panel)
                             .child(scene_live_panel)
                             .child(graph_lab_panel),
                     ),
             )
             .when(self.import_modal_open, |el| el.child(import_modal.unwrap()))
             .when(self.asset_modal_open, |el| el.child(asset_modal.unwrap()))
+            .when(self.glb_inspector_modal_open, |el| {
+                el.child(glb_inspector_modal.unwrap())
+            })
             .when(self.template_modal_open, |el| {
                 el.child(template_modal.unwrap())
             })
@@ -4136,5 +7726,6 @@ impl Render for MotionLoomPage {
                 window.request_animation_frame();
                 el
             })
+            .when_some(scene_template_modal, |el, modal| el.child(modal))
     }
 }

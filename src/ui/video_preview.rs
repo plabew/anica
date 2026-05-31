@@ -1071,6 +1071,8 @@ impl VideoPreview {
             self.video_blur_keys.remove(&clip_id);
             #[cfg(target_os = "macos")]
             self.mac_video_effect_keys.remove(&clip_id);
+            #[cfg(target_os = "macos")]
+            self.mac_surface_mode_keys.remove(&clip_id);
         }
 
         if self.visual_players.len() > visual_cache_limit {
@@ -1294,6 +1296,123 @@ impl VideoPreview {
                 self.memory_tuning.budget_mb
             );
         }
+    }
+
+    fn collect_timeline_media_ids(gs: &GlobalState) -> (HashSet<u64>, HashSet<u64>, HashSet<u64>) {
+        let mut video_ids = HashSet::new();
+        let mut image_ids = HashSet::new();
+        let mut audio_ids = HashSet::new();
+
+        for clip in &gs.v1_clips {
+            if is_image_ext(&clip.file_path) {
+                image_ids.insert(clip.id);
+            } else {
+                video_ids.insert(clip.id);
+            }
+        }
+        for track in &gs.video_tracks {
+            for clip in &track.clips {
+                if is_image_ext(&clip.file_path) {
+                    image_ids.insert(clip.id);
+                } else {
+                    video_ids.insert(clip.id);
+                }
+            }
+        }
+        for track in &gs.audio_tracks {
+            for clip in &track.clips {
+                audio_ids.insert(clip.id);
+            }
+        }
+
+        (video_ids, image_ids, audio_ids)
+    }
+
+    fn remove_visual_cache_entry(&mut self, clip_id: u64) -> bool {
+        let mut removed = self.visual_players.remove(&clip_id).is_some();
+        removed |= self.video_cache_paths.remove(&clip_id).is_some();
+        removed |= self.visual_last_used.remove(&clip_id).is_some();
+        removed |= self.visual_paused_state.remove(&clip_id).is_some();
+        removed |= self.last_seek_requests.remove(&clip_id).is_some();
+        removed |= self.video_blur_keys.remove(&clip_id).is_some();
+        removed |= self.last_clip_blur_sigmas.remove(&clip_id).is_some();
+        removed |= self.last_video_frame_counters.remove(&clip_id).is_some();
+        #[cfg(target_os = "macos")]
+        {
+            removed |= self.mac_video_effect_keys.remove(&clip_id).is_some();
+            removed |= self.mac_surface_mode_keys.remove(&clip_id).is_some();
+        }
+        removed
+    }
+
+    fn remove_image_cache_entry(&mut self, clip_id: u64) -> bool {
+        self.queue_cached_image_drop(clip_id);
+        let mut removed = self.image_cache.remove(&clip_id).is_some();
+        removed |= self.image_cache_paths.remove(&clip_id).is_some();
+        removed |= self.image_last_used.remove(&clip_id).is_some();
+        removed |= self.image_decode_in_flight.remove(&clip_id);
+        removed |= self.last_clip_blur_sigmas.remove(&clip_id).is_some();
+        removed
+    }
+
+    fn remove_audio_cache_entry(&mut self, clip_id: u64) -> bool {
+        let mut removed = self.audio_players.remove(&clip_id).is_some();
+        removed |= self.audio_last_used.remove(&clip_id).is_some();
+        removed |= self.audio_paused_state.remove(&clip_id).is_some();
+        removed |= self.last_seek_requests.remove(&clip_id).is_some();
+        removed
+    }
+
+    fn drop_removed_timeline_media_caches(
+        &mut self,
+        timeline_video_ids: &HashSet<u64>,
+        timeline_image_ids: &HashSet<u64>,
+        timeline_audio_ids: &HashSet<u64>,
+    ) -> bool {
+        let mut changed = false;
+
+        let stale_visual_ids: Vec<u64> = self
+            .visual_players
+            .keys()
+            .filter(|clip_id| !timeline_video_ids.contains(clip_id))
+            .copied()
+            .collect();
+        for clip_id in stale_visual_ids {
+            if self.remove_visual_cache_entry(clip_id) {
+                log::debug!("[Preview][Cache] drop removed visual clip={}", clip_id);
+                changed = true;
+            }
+        }
+
+        let stale_image_ids: Vec<u64> = self
+            .image_cache
+            .keys()
+            .chain(self.image_cache_paths.keys())
+            .chain(self.image_decode_in_flight.iter())
+            .filter(|clip_id| !timeline_image_ids.contains(clip_id))
+            .copied()
+            .collect();
+        for clip_id in stale_image_ids {
+            if self.remove_image_cache_entry(clip_id) {
+                log::debug!("[Preview][Cache] drop removed image clip={}", clip_id);
+                changed = true;
+            }
+        }
+
+        let stale_audio_ids: Vec<u64> = self
+            .audio_players
+            .keys()
+            .filter(|clip_id| !timeline_audio_ids.contains(clip_id))
+            .copied()
+            .collect();
+        for clip_id in stale_audio_ids {
+            if self.remove_audio_cache_entry(clip_id) {
+                log::debug!("[Preview][Cache] drop removed audio clip={}", clip_id);
+                changed = true;
+            }
+        }
+
+        changed
     }
 
     /// Emit cache growth milestones so RAM buildup can be correlated with cache-map sizes.
@@ -2505,8 +2624,20 @@ impl VideoPreview {
 
     fn sync_video_engine(&mut self, cx: &mut Context<Self>) -> bool {
         let sync_started = Instant::now();
-        let (playhead, visual_clips, preview_fps, preview_quality, canvas_w, canvas_h) = {
+        let (
+            playhead,
+            visual_clips,
+            preview_fps,
+            preview_quality,
+            canvas_w,
+            canvas_h,
+            timeline_video_ids,
+            timeline_image_ids,
+            timeline_audio_ids,
+        ) = {
             let gs = self.global.read(cx);
+            let (timeline_video_ids, timeline_image_ids, timeline_audio_ids) =
+                Self::collect_timeline_media_ids(gs);
             (
                 gs.playhead,
                 Self::resolve_visible_clips(gs, gs.playhead),
@@ -2514,6 +2645,9 @@ impl VideoPreview {
                 gs.preview_quality,
                 gs.canvas_w,
                 gs.canvas_h,
+                timeline_video_ids,
+                timeline_image_ids,
+                timeline_audio_ids,
             )
         };
         let lookahead = Duration::from_millis(AUDIO_PREWARM_LOOKAHEAD_MS);
@@ -2535,6 +2669,14 @@ impl VideoPreview {
         let mut next_order = Vec::new();
         let full_preview_max_dim =
             (canvas_w.max(canvas_h) as u32).clamp(1, DEFAULT_IMAGE_MAX_DIM_FULL);
+
+        if self.drop_removed_timeline_media_caches(
+            &timeline_video_ids,
+            &timeline_image_ids,
+            &timeline_audio_ids,
+        ) {
+            changed = true;
+        }
 
         if preview_fps != self.last_preview_fps || preview_quality != self.last_preview_quality {
             // Reset decode caches when preview settings change so old resolution/fps resources can be released.

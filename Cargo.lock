@@ -4412,6 +4412,7 @@ dependencies = [
  "pollster 0.4.0",
  "resvg",
  "serde",
+ "serde_json",
  "thiserror 2.0.17",
  "ureq 2.12.1",
  "url",

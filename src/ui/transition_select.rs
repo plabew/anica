@@ -6,15 +6,8 @@ use gpui_component::{scroll::ScrollableElement, white};
 
 use crate::core::global_state::{GlobalState, TransitionType};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TransitionMode {
-    ClipBased,
-    LayerFx,
-}
-
 pub struct TransitionSelect {
     pub global: Entity<GlobalState>,
-    mode: TransitionMode,
 }
 
 impl TransitionSelect {
@@ -25,10 +18,7 @@ impl TransitionSelect {
         })
         .detach();
 
-        Self {
-            global,
-            mode: TransitionMode::ClipBased,
-        }
+        Self { global }
     }
 
     fn list_card(title: &'static str, desc: &'static str, color: u32, active: bool) -> gpui::Div {
@@ -79,23 +69,6 @@ impl TransitionSelect {
             cx.notify();
         });
     }
-
-    fn mode_chip(label: &'static str, active: bool) -> gpui::Div {
-        div()
-            .h(px(28.0))
-            .px_2()
-            .rounded_md()
-            .border_1()
-            .border_color(white().opacity(if active { 0.42 } else { 0.16 }))
-            .bg(white().opacity(if active { 0.12 } else { 0.04 }))
-            .text_xs()
-            .text_color(white().opacity(if active { 0.95 } else { 0.65 }))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .child(label)
-    }
 }
 
 impl Render for TransitionSelect {
@@ -105,100 +78,15 @@ impl Render for TransitionSelect {
             gs.pending_transition
         };
 
-        let clip_mode_active = matches!(self.mode, TransitionMode::ClipBased);
-        let layer_mode_active = matches!(self.mode, TransitionMode::LayerFx);
-
         let fade_active = matches!(pending_transition, Some(TransitionType::Fade));
-        let dissolve_active = matches!(pending_transition, Some(TransitionType::Dissolve));
         let slide_active = matches!(pending_transition, Some(TransitionType::Slide));
         let zoom_active = matches!(pending_transition, Some(TransitionType::Zoom));
         let shock_zoom_active = matches!(pending_transition, Some(TransitionType::ShockZoom));
 
-        let global_for_clip_mode = self.global.clone();
-        let global_for_layer_mode = self.global.clone();
         let global_for_fade = self.global.clone();
-        let global_for_dissolve = self.global.clone();
         let global_for_slide = self.global.clone();
         let global_for_zoom = self.global.clone();
         let global_for_shock_zoom = self.global.clone();
-
-        let mode_hint = if layer_mode_active {
-            "Layer FX fade cards were removed. Use MotionLoom script in Inspector."
-        } else {
-            "Clip Based mode: drop transition on V1/V2+ clips."
-        };
-
-        let content = if layer_mode_active {
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(white().opacity(0.55))
-                        .child("No Layer FX transition cards."),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    Self::list_card("Fade", "Basic crossfade", 0x2dd4bf, fade_active)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |_this, _, _, cx| {
-                                Self::toggle_transition(&global_for_fade, TransitionType::Fade, cx);
-                            }),
-                        ),
-                )
-                .child(
-                    Self::list_card("Dissolve", "Soft blend", 0x60a5fa, dissolve_active)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |_this, _, _, cx| {
-                                Self::toggle_transition(
-                                    &global_for_dissolve,
-                                    TransitionType::Dissolve,
-                                    cx,
-                                );
-                            }),
-                        ),
-                )
-                .child(
-                    Self::list_card("Slide", "Directional", 0xf472b6, slide_active).on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |_this, _, _, cx| {
-                            Self::toggle_transition(&global_for_slide, TransitionType::Slide, cx);
-                        }),
-                    ),
-                )
-                .child(
-                    Self::list_card("Zoom", "Push zoom", 0xf59e0b, zoom_active).on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |_this, _, _, cx| {
-                            Self::toggle_transition(&global_for_zoom, TransitionType::Zoom, cx);
-                        }),
-                    ),
-                )
-                .child(
-                    Self::list_card("Shock Zoom", "Punch zoom", 0x22c55e, shock_zoom_active)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |_this, _, _, cx| {
-                                Self::toggle_transition(
-                                    &global_for_shock_zoom,
-                                    TransitionType::ShockZoom,
-                                    cx,
-                                );
-                            }),
-                        ),
-                )
-                .child(Self::list_card("Spin", "Fast rotate", 0xa78bfa, false))
-                .into_any_element()
-        };
 
         div()
             .flex_1()
@@ -219,40 +107,55 @@ impl Render for TransitionSelect {
             .child(
                 div()
                     .flex()
+                    .flex_col()
                     .gap_2()
                     .child(
-                        Self::mode_chip("Clip Based", clip_mode_active).on_mouse_down(
+                        Self::list_card("Fade", "Basic crossfade", 0x2dd4bf, fade_active)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_this, _, _, cx| {
+                                    Self::toggle_transition(
+                                        &global_for_fade,
+                                        TransitionType::Fade,
+                                        cx,
+                                    );
+                                }),
+                            ),
+                    )
+                    .child(
+                        Self::list_card("Slide", "Directional", 0xf472b6, slide_active)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_this, _, _, cx| {
+                                    Self::toggle_transition(
+                                        &global_for_slide,
+                                        TransitionType::Slide,
+                                        cx,
+                                    );
+                                }),
+                            ),
+                    )
+                    .child(
+                        Self::list_card("Zoom", "Push zoom", 0xf59e0b, zoom_active).on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.mode = TransitionMode::ClipBased;
-                                global_for_clip_mode.update(cx, |gs, cx| {
-                                    gs.clear_transition_drag();
-                                    cx.notify();
-                                });
-                                cx.notify();
+                            cx.listener(move |_this, _, _, cx| {
+                                Self::toggle_transition(&global_for_zoom, TransitionType::Zoom, cx);
                             }),
                         ),
                     )
                     .child(
-                        Self::mode_chip("Layer FX", layer_mode_active).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.mode = TransitionMode::LayerFx;
-                                global_for_layer_mode.update(cx, |gs, cx| {
-                                    gs.clear_transition_drag();
-                                    cx.notify();
-                                });
-                                cx.notify();
-                            }),
-                        ),
+                        Self::list_card("Shock Zoom", "Punch zoom", 0x22c55e, shock_zoom_active)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_this, _, _, cx| {
+                                    Self::toggle_transition(
+                                        &global_for_shock_zoom,
+                                        TransitionType::ShockZoom,
+                                        cx,
+                                    );
+                                }),
+                            ),
                     ),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(white().opacity(0.55))
-                    .child(mode_hint),
-            )
-            .child(content)
     }
 }

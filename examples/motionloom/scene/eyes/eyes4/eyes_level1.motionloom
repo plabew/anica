@@ -1,0 +1,176 @@
+<Graph fps={30} duration="3s" size={[218,202]} renderSize={[218,202]}>
+  <Background color="#FBE7DD" />
+
+  <Scene id="anime_eye_closeup">
+    <Defs>
+      <LinearGradient id="skin_bg" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FCE5DA, 0.55:#FBE9DD, 1:#F7D9CD" />
+      <LinearGradient id="iris_purple" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#4D3998, 0.42:#6F54D8, 0.72:#A982F1, 1:#EAB7E9" />
+      <LinearGradient id="sclera_soft" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFFFFF, 0.75:#FFF8F7, 1:#F5D9D1" />
+      <LinearGradient id="upper_shadow" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#6B4B43, 1:#302A34" />
+    </Defs>
+
+    <Rect x="0" y="0" width="218" height="202" color="url(#skin_bg)" />
+
+    <!-- pink hair crossing top-left -->
+    <Path id="pink_hair_left"
+          d="M 0 0
+             L 104 0
+             C 93 22 78 48 66 72
+             C 45 61 26 46 8 26
+             Z"
+          fill="#F5A0B6"
+          opacity="0.95" />
+
+    <Path id="hair_shadow"
+          d="M 0 0
+             L 42 0
+             C 34 31 24 61 9 91
+             L 0 106 Z"
+          fill="#E78EA8"
+          opacity="0.9" />
+
+    <!-- eyelid crease / top skin fold -->
+    <Path id="top_crease"
+          d="M 72 24
+             C 99 11 145 8 180 26
+             C 195 34 207 45 216 58"
+          stroke="#A87D73"
+          strokeWidth="4"
+          lineCap="round"
+          fill="none"
+          opacity="0.55" />
+
+    <!-- outer eye white -->
+    <Path id="eye_white"
+          d="M 50 93
+             C 60 48 96 22 133 27
+             C 171 32 199 67 201 111
+             C 199 161 166 193 123 190
+             C 82 187 50 151 48 111
+             C 47 104 48 98 50 93 Z"
+          fill="url(#sclera_soft)"
+          stroke="#3A3030"
+          strokeWidth="5" />
+
+    <!-- iris -->
+    <Path id="iris"
+          d="M 89 92
+             C 94 50 123 29 152 39
+             C 183 49 199 83 194 123
+             C 189 166 159 191 126 184
+             C 96 178 80 136 89 92 Z"
+          fill="url(#iris_purple)"
+          stroke="#4A3B91"
+          strokeWidth="3" />
+
+    <!-- iris lower pink plane -->
+    <Path id="iris_lower_pink"
+          d="M 101 143
+             C 120 135 155 134 182 143
+             C 171 174 146 190 123 184
+             C 111 180 103 164 101 143 Z"
+          fill="#ECA6DD"
+          opacity="0.8" />
+
+    <!-- pupil -->
+    <Path id="pupil"
+          d="M 133 83
+             C 151 83 162 102 159 127
+             C 156 150 142 163 127 158
+             C 114 153 109 131 113 111
+             C 116 94 123 84 133 83 Z"
+          fill="#3B2B86"
+          opacity="0.82" />
+
+    <!-- upper dark lid -->
+    <Path id="upper_lid"
+          d="M 45 92
+             C 57 45 95 19 135 23
+             C 173 27 202 57 213 96
+             C 197 72 169 52 137 49
+             C 101 45 70 61 45 92 Z"
+          fill="url(#upper_shadow)"
+          opacity="0.9" />
+
+    <!-- dark lash line -->
+    <Path id="lash_top"
+          d="M 45 94
+             C 58 43 97 17 138 22
+             C 177 27 204 58 215 99"
+          stroke="#302630"
+          strokeWidth="7"
+          lineCap="round"
+          fill="none" />
+
+    <!-- outer lashes -->
+    <Path id="upper_lashes"
+          d="M 97 23 C 94 9 90 0 84 -9
+             M 124 20 C 123 6 121 -5 117 -15
+             M 154 25 C 157 12 162 2 170 -8
+             M 188 51 C 200 39 211 31 224 26"
+          stroke="#5B3D42"
+          strokeWidth="3"
+          lineCap="round"
+          fill="none"
+          opacity="0.75" />
+
+    <!-- lower lash line -->
+    <Path id="lower_lid"
+          d="M 55 141
+             C 75 185 126 205 165 177
+             C 181 166 193 147 199 126"
+          stroke="#BA8B83"
+          strokeWidth="3"
+          lineCap="round"
+          fill="none"
+          opacity="0.45" />
+
+    <!-- highlights -->
+    <Circle id="big_highlight" x="96" y="62" radius="19" color="#FFFFFF" opacity="0.98" />
+    <Circle id="small_highlight" x="116" y="43" radius="7" color="#FFFFFF" opacity="0.85" />
+
+    <Path id="highlight_bottom"
+          d="M 134 166
+             C 145 159 165 158 176 167"
+          stroke="#FBD7F0"
+          strokeWidth="7"
+          lineCap="round"
+          fill="none"
+          opacity="0.75" />
+
+    <!-- subtle iris rings -->
+    <Path id="iris_ring_left"
+          d="M 102 73
+             C 90 107 93 151 116 176"
+          stroke="#5A42B4"
+          strokeWidth="4"
+          lineCap="round"
+          fill="none"
+          opacity="0.6" />
+
+    <Path id="iris_ring_right"
+          d="M 172 61
+             C 194 95 191 144 164 174"
+          stroke="#5A42B4"
+          strokeWidth="3"
+          lineCap="round"
+          fill="none"
+          opacity="0.45" />
+
+    <!-- cheek / skin edge on lower-left -->
+    <Path id="skin_soft_shadow"
+          d="M 0 132
+             C 20 151 44 165 75 171"
+          stroke="#F0C9C0"
+          strokeWidth="16"
+          lineCap="round"
+          fill="none"
+          opacity="0.35" />
+  </Scene>
+
+  <Present from="anime_eye_closeup" />
+</Graph>

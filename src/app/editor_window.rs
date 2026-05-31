@@ -7,6 +7,7 @@ use crate::core::global_state::{GlobalState, MediaPoolUiEvent};
 use crate::ui::ai_agents_page::AiAgentsPage;
 use crate::ui::ai_srt_page::AiSrtPage;
 use crate::ui::app_root::AppRoot;
+use crate::ui::character_design_page::CharacterDesignPage;
 use crate::ui::editor_shell::EditorShell;
 use crate::ui::inspector_panel::InspectorPanel;
 use crate::ui::motionloom_page::MotionLoomPage;
@@ -77,6 +78,9 @@ pub fn open_editor_window(cx: &mut App) -> gpui::Entity<GlobalState> {
             let global_for_vector_lab = global.clone();
             let vector_lab_page =
                 cx.new(move |cx| VectorLabPage::new(global_for_vector_lab.clone(), cx));
+            let global_for_character_design = global.clone();
+            let character_design_page =
+                cx.new(move |cx| CharacterDesignPage::new(global_for_character_design.clone(), cx));
 
             let global_for_app_root = global.clone();
             let app_root = cx.new(|cx| {
@@ -103,6 +107,7 @@ pub fn open_editor_window(cx: &mut App) -> gpui::Entity<GlobalState> {
                     ai_agents_page,
                     motionloom_page,
                     vector_lab_page,
+                    character_design_page,
                     ai_chat_widget_open: false,
                     ai_chat_input_text: String::new(),
                     ai_chat_input: None,

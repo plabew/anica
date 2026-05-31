@@ -1,0 +1,27 @@
+<Graph fps={60} duration="2s" size={[1920,1080]}>
+  <Background color="#05070B" />
+
+  <Scene id="aa_test_01_direct_text">
+    <!-- Baseline: direct scene Text only. If this has jagged edges, the issue is Text rasterization/preview scaling, not mask/matte. -->
+    <Text value="DIRECT TEXT"
+          x="140"
+          y="320"
+          fontSize="156"
+          color="#FFFFFF"
+          opacity="1" />
+
+    <Text value="small direct subtitle 1920x1080"
+          x="148"
+          y="405"
+          fontSize="42"
+          color="#7DEBFF"
+          opacity="1" />
+
+    <Line x1="140" y1="470" x2="1780" y2="470"
+          stroke="#FFFFFF"
+          strokeWidth="2"
+          opacity="0.55" />
+  </Scene>
+
+  <Present from="aa_test_01_direct_text" />
+</Graph>

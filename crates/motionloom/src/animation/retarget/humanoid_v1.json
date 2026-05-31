@@ -1,0 +1,180 @@
+{
+  "id": "humanoid_v1",
+  "version": 1,
+  "coordinate_system": {
+    "up": "+Y",
+    "right": "+X",
+    "forward": "-Z"
+  },
+  "canonical_neutral": "arms_down",
+  "bones": [
+    { "id": "hips", "parent": null, "roles": ["turn"] },
+    { "id": "spine", "parent": "hips", "roles": ["turn", "bend"] },
+    { "id": "chest", "parent": "spine", "roles": ["turn", "bend"] },
+    { "id": "neck", "parent": "chest", "roles": [] },
+    { "id": "head", "parent": "neck", "roles": ["turn", "bend"] },
+    { "id": "shoulder_l", "parent": "chest", "roles": [] },
+    { "id": "upper_arm_l", "parent": "shoulder_l", "roles": ["forward", "side", "twist"] },
+    { "id": "forearm_l", "parent": "upper_arm_l", "roles": ["bend", "twist"] },
+    { "id": "hand_l", "parent": "forearm_l", "roles": ["twist", "bend"] },
+    { "id": "shoulder_r", "parent": "chest", "roles": [] },
+    { "id": "upper_arm_r", "parent": "shoulder_r", "roles": ["forward", "side", "twist"] },
+    { "id": "forearm_r", "parent": "upper_arm_r", "roles": ["bend", "twist"] },
+    { "id": "hand_r", "parent": "forearm_r", "roles": ["twist", "bend"] },
+    { "id": "upper_leg_l", "parent": "hips", "roles": ["forward", "side"] },
+    { "id": "lower_leg_l", "parent": "upper_leg_l", "roles": ["bend"] },
+    { "id": "foot_l", "parent": "lower_leg_l", "roles": ["bend"] },
+    { "id": "toe_l", "parent": "foot_l", "roles": [] },
+    { "id": "upper_leg_r", "parent": "hips", "roles": ["forward", "side"] },
+    { "id": "lower_leg_r", "parent": "upper_leg_r", "roles": ["bend"] },
+    { "id": "foot_r", "parent": "lower_leg_r", "roles": ["bend"] },
+    { "id": "toe_r", "parent": "foot_r", "roles": [] }
+  ],
+  "semantics": {
+    "turn": "rotate around the vertical body turn direction",
+    "bend": "flex the joint, for example elbow bend or knee bend",
+    "forward": "raise or swing a limb toward character forward",
+    "side": "abduct a limb away from the body; for arms, positive side moves from arms down toward A-pose and T-pose",
+    "twist": "roll around the limb long axis"
+  },
+  "source_rest_presets": {
+    "arms_down": {
+      "bone_axis_rest_offsets": []
+    },
+    "a_pose": {
+      "bone_axis_rest_offsets": [
+        { "axis": "upper_arm_l", "restSide": -35 },
+        { "axis": "upper_arm_r", "restSide": -35 }
+      ]
+    },
+    "t_pose": {
+      "bone_axis_rest_offsets": [
+        { "axis": "upper_arm_l", "restSide": -90 },
+        { "axis": "upper_arm_r", "restSide": -90 }
+      ]
+    }
+  },
+  "actions": {
+    "original": {
+      "kind": "raw",
+      "uses_bone_axis_rest": false,
+      "bones": []
+    },
+    "arms_down": {
+      "kind": "action_preview",
+      "uses_bone_axis_rest": true,
+      "bones": []
+    },
+    "a_pose": {
+      "kind": "action_preview",
+      "uses_bone_axis_rest": true,
+      "bones": [
+        { "id": "upper_arm_l", "side": 35 },
+        { "id": "upper_arm_r", "side": 35 }
+      ]
+    },
+    "t_pose": {
+      "kind": "action_preview",
+      "uses_bone_axis_rest": true,
+      "bones": [
+        { "id": "upper_arm_l", "side": 90 },
+        { "id": "upper_arm_r", "side": 90 }
+      ]
+    },
+    "walk": {
+      "kind": "action_preview",
+      "uses_bone_axis_rest": true,
+      "duration": "1s",
+      "poses": [
+        {
+          "t": 0.0,
+          "bones": [
+            { "id": "upper_leg_l", "forward": 25 },
+            { "id": "lower_leg_l", "bend": 35 },
+            { "id": "upper_leg_r", "forward": -25 },
+            { "id": "lower_leg_r", "bend": -15 }
+          ]
+        },
+        {
+          "t": 0.5,
+          "bones": [
+            { "id": "upper_leg_l", "forward": -25 },
+            { "id": "lower_leg_l", "bend": -15 },
+            { "id": "upper_leg_r", "forward": 25 },
+            { "id": "lower_leg_r", "bend": 35 }
+          ]
+        },
+        {
+          "t": 1.0,
+          "bones": [
+            { "id": "upper_leg_l", "forward": 25 },
+            { "id": "lower_leg_l", "bend": 35 },
+            { "id": "upper_leg_r", "forward": -25 },
+            { "id": "lower_leg_r", "bend": -15 }
+          ]
+        }
+      ]
+    },
+    "jump": {
+      "kind": "action_preview",
+      "uses_bone_axis_rest": true,
+      "duration": "1.6s",
+      "source": "examples/motionloom/world/actions/humanoid_jump.motionloom"
+    },
+    "wave_hand": {
+      "kind": "action_preview",
+      "uses_bone_axis_rest": true,
+      "duration": "2s",
+      "uses_semantic_roles": true,
+      "primary_bones": ["upper_arm_r", "forearm_r", "hand_r"]
+    },
+    "side_plus_20": {
+      "kind": "raw_axis_test",
+      "uses_bone_axis_rest": false,
+      "bones": [
+        { "id": "upper_arm_l", "side": 20 },
+        { "id": "upper_arm_r", "side": 20 }
+      ]
+    },
+    "side_minus_20": {
+      "kind": "raw_axis_test",
+      "uses_bone_axis_rest": false,
+      "bones": [
+        { "id": "upper_arm_l", "side": -20 },
+        { "id": "upper_arm_r", "side": -20 }
+      ]
+    },
+    "forward_plus_20": {
+      "kind": "raw_axis_test",
+      "uses_bone_axis_rest": false,
+      "bones": [
+        { "id": "upper_arm_l", "forward": 20 },
+        { "id": "upper_arm_r", "forward": 20 },
+        { "id": "upper_leg_l", "forward": 20 },
+        { "id": "upper_leg_r", "forward": 20 }
+      ]
+    },
+    "bend_plus_20": {
+      "kind": "raw_axis_test",
+      "uses_bone_axis_rest": false,
+      "bones": [
+        { "id": "forearm_l", "bend": 20 },
+        { "id": "forearm_r", "bend": 20 },
+        { "id": "lower_leg_l", "bend": 20 },
+        { "id": "lower_leg_r", "bend": 20 }
+      ]
+    },
+    "twist_plus_20": {
+      "kind": "raw_axis_test",
+      "uses_bone_axis_rest": false,
+      "bones": [
+        { "id": "upper_arm_l", "twist": 20 },
+        { "id": "forearm_l", "twist": 20 },
+        { "id": "hand_l", "twist": 20 },
+        { "id": "upper_arm_r", "twist": 20 },
+        { "id": "forearm_r", "twist": 20 },
+        { "id": "hand_r", "twist": 20 }
+      ]
+    }
+  }
+}

@@ -1,0 +1,39 @@
+<Graph fps={60} duration="2s" size={[1920,1080]}>
+  <Background color="#05070B" />
+
+  <Scene id="aa_test_05_primitive_edges">
+    <!-- Primitive edge baseline: diagonal lines, circles, and curves. If these are jagged, primitive anti-aliasing/MSAA is weak. -->
+    <Circle x="360" y="330" radius="180"
+            color="#7DEBFF"
+            opacity="1" />
+    <Circle x="780" y="330" radius="180"
+            color="#FFFFFF"
+            opacity="1" />
+
+    <Line x1="1040" y1="160" x2="1700" y2="530"
+          stroke="#FFFFFF"
+          strokeWidth="13"
+          lineCap="round"
+          opacity="1" />
+    <Line x1="1040" y1="530" x2="1700" y2="160"
+          stroke="#7DEBFF"
+          strokeWidth="7"
+          lineCap="round"
+          opacity="1" />
+
+    <Path d="M 160 780 C 420 560 680 980 960 760 C 1240 540 1480 640 1770 760"
+          stroke="#FFFFFF"
+          strokeWidth="28"
+          lineCap="round"
+          fill="none"
+          opacity="1" />
+    <Path d="M 160 780 C 420 560 680 980 960 760 C 1240 540 1480 640 1770 760"
+          stroke="#7DEBFF"
+          strokeWidth="8"
+          lineCap="round"
+          fill="none"
+          opacity="1" />
+  </Scene>
+
+  <Present from="aa_test_05_primitive_edges" />
+</Graph>

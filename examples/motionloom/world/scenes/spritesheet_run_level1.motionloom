@@ -1,0 +1,28 @@
+<Graph fps={12} duration="2.4s" size={[1280,720]} renderSize={[1280,720]}>
+  <World id="sprite_run_stage">
+    <Background color="#101827" />
+
+    <Camera yaw="0" pitch="0" zoom="1" />
+
+    <DirectionalCharacter id="runner"
+                          pathstyle="relative"
+                          sheet="../sample_assets/sprite_sheets/runner_sheet.png"
+                          x="640"
+                          y="560"
+                          scale="3"
+                          yaw="0"
+                          opacity="1">
+      <PlaySprite fps="12"
+                  loop="true"
+                  frameSize={[74,86]}
+                  columns="7"
+                  frames="28" />
+
+      <DirectionMap mode="nearest">
+        <Direction angle="0" rect={[0,0,74,86]} anchor={[37,78]} />
+      </DirectionMap>
+    </DirectionalCharacter>
+  </World>
+
+  <Present from="sprite_run_stage" />
+</Graph>

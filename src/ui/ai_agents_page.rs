@@ -9,8 +9,8 @@ use std::sync::{Arc, atomic::AtomicBool, mpsc};
 use std::time::Duration;
 
 use gpui::{
-    ClipboardItem, Context, Entity, Focusable, MouseButton, Render, SharedString, Subscription,
-    Timer, Window, div, prelude::*, px, rgb,
+    ClipboardItem, Context, Entity, Focusable, KeyDownEvent, MouseButton, Render, SharedString,
+    Subscription, Timer, Window, div, img, prelude::*, px, rgb,
 };
 use gpui_component::{
     input::{Input, InputEvent, InputState},
@@ -18,7 +18,7 @@ use gpui_component::{
     text::TextView,
     white,
 };
-use motionloom::{GraphScope, compile_runtime_program, is_graph_script, parse_graph_script};
+use motionloom::{compile_runtime_program, is_graph_script, parse_graph_script};
 use regex::Regex;
 use serde_json::Value;
 
@@ -37,15 +37,22 @@ use crate::api::timeline::{
     get_subtitle_gap_map, get_subtitle_semantic_repeats, get_timeline_snapshot,
     get_transcript_low_confidence_map, validate_edit_plan,
 };
-use crate::api::transport_acp::{AcpToolBridgeRequest, AcpUiEvent, AcpWorker};
+use crate::api::transport_acp::{
+    AcpPromptImageAttachment, AcpToolBridgeRequest, AcpUiEvent, AcpWorker,
+};
 use crate::core::export::{FfmpegExporter, is_cancelled_export_error};
 use crate::core::global_state::{
-    AiChatMessage, AiChatRole, AppPage, GlobalState, MediaPoolItem, MediaPoolUiEvent,
-    SilencePreviewCandidate, SilencePreviewModalState,
+    AiChatImageAttachment, AiChatMessage, AiChatRole, AppPage, GlobalState, MediaPoolItem,
+    MediaPoolUiEvent, SilencePreviewCandidate, SilencePreviewModalState,
 };
 use crate::core::user_settings::{
     SettingsScope, load_settings, resolve_workspace_root, save_acp_cli_paths, save_auto_connect,
 };
+use crate::ui::chat_attachments::{
+    append_image_references, attachment_display_name, attachment_size_label,
+    clipboard_text_path_attachment, image_path_attachment, save_clipboard_images,
+};
+use crate::ui::chat_markdown::{ChatMarkdownSegment, split_markdown_code_blocks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AcpAgentProvider {
@@ -2156,10 +2163,198 @@ impl AiAgentsPage {
                     .text_xs()
                     .text_color(white().opacity(0.92))
                     .whitespace_normal()
+                    .child(Self::render_chat_message_body(
+                        "ai-agents-msg-body",
+                        bubble_index,
+                        &text,
+                        window,
+                        cx,
+                    )),
+            )
+            .child(Self::chat_image_attachment_list(&msg.image_attachments))
+    }
+
+    fn chat_image_attachment_list(attachments: &[AiChatImageAttachment]) -> gpui::Div {
+        let mut row = div().flex().flex_wrap().gap_2();
+        if attachments.is_empty() {
+            return row;
+        }
+
+        for attachment in attachments {
+            let name = attachment_display_name(attachment);
+            let size = attachment_size_label(attachment);
+            row = row.child(
+                div()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(white().opacity(0.14))
+                    .bg(white().opacity(0.05))
+                    .p_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .child(
-                        TextView::markdown(("ai-agents-msg-body", bubble_index), text, window, cx)
-                            .selectable(true)
-                            .w_full(),
+                        div()
+                            .w(px(46.0))
+                            .h(px(34.0))
+                            .rounded_sm()
+                            .overflow_hidden()
+                            .bg(white().opacity(0.08))
+                            .child(img(attachment.path.clone()).size_full()),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(180.0))
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.84))
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.48))
+                                    .child(size),
+                            ),
+                    ),
+            );
+        }
+        row
+    }
+
+    fn render_chat_message_body(
+        id_prefix: &'static str,
+        bubble_index: usize,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let mut body = div().w_full().min_w_0().flex().flex_col().gap_2();
+
+        for (segment_index, segment) in split_markdown_code_blocks(text).into_iter().enumerate() {
+            body = match segment {
+                ChatMarkdownSegment::Markdown(markdown) => body.child(
+                    TextView::markdown(
+                        gpui::ElementId::from((
+                            gpui::ElementId::from((id_prefix, bubble_index)),
+                            format!("md-{segment_index}"),
+                        )),
+                        markdown,
+                        window,
+                        cx,
+                    )
+                    .selectable(true)
+                    .w_full(),
+                ),
+                ChatMarkdownSegment::Code { language, code } => {
+                    body.child(Self::render_chat_code_block(
+                        id_prefix,
+                        bubble_index,
+                        segment_index,
+                        language,
+                        code,
+                        window,
+                        cx,
+                    ))
+                }
+            };
+        }
+
+        body
+    }
+
+    fn render_chat_code_block(
+        id_prefix: &'static str,
+        bubble_index: usize,
+        segment_index: usize,
+        language: String,
+        code: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let language_label = if language.trim().is_empty() {
+            "code".to_string()
+        } else {
+            language.trim().to_string()
+        };
+        let fenced = format!("```{}\n{}\n```", language_label, code);
+        let copy_code = code.clone();
+
+        div()
+            .w_full()
+            .min_w_0()
+            .rounded_md()
+            .border_1()
+            .border_color(white().opacity(0.16))
+            .bg(gpui::Hsla::from(rgb(0x111827)).opacity(0.74))
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(white().opacity(0.10))
+                    .bg(white().opacity(0.04))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family("Mono")
+                            .text_color(white().opacity(0.56))
+                            .child(language_label),
+                    )
+                    .child(
+                        div()
+                            .h(px(22.0))
+                            .px_2()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(white().opacity(0.18))
+                            .bg(white().opacity(0.05))
+                            .text_xs()
+                            .text_color(white().opacity(0.78))
+                            .hover(|s| s.bg(white().opacity(0.10)))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("Copy Code")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_this, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_code.clone(),
+                                    ));
+                                }),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_x_scrollbar()
+                    .px_2()
+                    .py_1()
+                    .child(
+                        TextView::markdown(
+                            gpui::ElementId::from((
+                                gpui::ElementId::from((id_prefix, bubble_index)),
+                                format!("code-{segment_index}"),
+                            )),
+                            fenced,
+                            window,
+                            cx,
+                        )
+                        .selectable(true)
+                        .w_full(),
                     ),
             )
     }
@@ -2171,6 +2366,17 @@ impl AiAgentsPage {
         pending: bool,
         cx: &mut Context<Self>,
     ) -> usize {
+        self.push_chat_message_with_attachments(role, text, pending, Vec::new(), cx)
+    }
+
+    fn push_chat_message_with_attachments(
+        &mut self,
+        role: AiChatRole,
+        text: impl Into<String>,
+        pending: bool,
+        image_attachments: Vec<AiChatImageAttachment>,
+        cx: &mut Context<Self>,
+    ) -> usize {
         let text = text.into();
         let mut removed_prefix = 0usize;
         let mut remaining_len = 0usize;
@@ -2180,6 +2386,7 @@ impl AiAgentsPage {
                 role,
                 text: text.clone(),
                 pending,
+                image_attachments: image_attachments.clone(),
             });
             removed_prefix = prune_ai_chat_history(&mut gs.ai_chat_messages);
             remaining_len = gs.ai_chat_messages.len();
@@ -2210,6 +2417,7 @@ impl AiAgentsPage {
                         role: AiChatRole::System,
                         text: text.clone(),
                         pending: false,
+                        image_attachments: Vec::new(),
                     },
                 );
                 inserted_before_assistant = true;
@@ -2218,6 +2426,7 @@ impl AiAgentsPage {
                     role: AiChatRole::System,
                     text: text.clone(),
                     pending: false,
+                    image_attachments: Vec::new(),
                 });
             }
 
@@ -2233,6 +2442,77 @@ impl AiAgentsPage {
         };
         self.active_assistant_idx =
             rebase_ai_chat_index(rebased_active, removed_prefix, remaining_len);
+    }
+
+    fn paste_chat_images_from_clipboard(
+        &mut self,
+        show_errors: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(item) = cx.read_from_clipboard() else {
+            if show_errors {
+                self.push_system_message("Clipboard is empty.", cx);
+            }
+            return false;
+        };
+
+        let mut attachments = match save_clipboard_images(&item) {
+            Ok(images) => images,
+            Err(err) => {
+                if show_errors {
+                    self.push_system_message(err, cx);
+                }
+                return false;
+            }
+        };
+
+        if attachments.is_empty()
+            && let Some(path) = clipboard_text_path_attachment(&item)
+        {
+            match image_path_attachment(path) {
+                Ok(attachment) => attachments.push(attachment),
+                Err(err) => {
+                    if show_errors {
+                        self.push_system_message(err, cx);
+                    }
+                    return false;
+                }
+            }
+        }
+
+        if attachments.is_empty() {
+            if show_errors {
+                self.push_system_message("Clipboard has no supported image.", cx);
+            }
+            return false;
+        }
+
+        self.global.update(cx, |gs, cx| {
+            gs.ai_chat_pending_images.extend(attachments);
+            cx.notify();
+        });
+        true
+    }
+
+    fn remove_pending_chat_image(&mut self, image_id: &str, cx: &mut Context<Self>) {
+        self.global.update(cx, |gs, cx| {
+            gs.ai_chat_pending_images
+                .retain(|attachment| attachment.id != image_id);
+            cx.notify();
+        });
+    }
+
+    fn handle_chat_paste_shortcut(&mut self, evt: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = evt.keystroke.key.as_str();
+        let modifiers = evt.keystroke.modifiers;
+        if (modifiers.platform || modifiers.control)
+            && !modifiers.shift
+            && key.eq_ignore_ascii_case("v")
+            && self.paste_chat_images_from_clipboard(false, cx)
+        {
+            cx.stop_propagation();
+            cx.notify();
+        }
     }
 
     fn ensure_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2982,19 +3262,13 @@ impl AiAgentsPage {
                                 apply_revision: gs.motionloom_scene_apply_revision(),
                                 message: if updated {
                                     if apply_requested {
-                                        let base = format!(
-                                            "MotionLoom script updated, validated (scope={:?}), and apply requested.",
-                                            graph.scope
-                                        );
+                                        let base = "MotionLoom script updated, validated, and apply requested.".to_string();
                                         Self::append_motionloom_normalization_message(
                                             base,
                                             &normalization,
                                         )
                                     } else {
-                                        let base = format!(
-                                            "MotionLoom script updated and validated (scope={:?}).",
-                                            graph.scope
-                                        );
+                                        let base = "MotionLoom script updated and validated.".to_string();
                                         Self::append_motionloom_normalization_message(
                                             base,
                                             &normalization,
@@ -3035,16 +3309,9 @@ impl AiAgentsPage {
                                 continue;
                             }
                         };
-                        if graph.scope != GraphScope::Scene {
-                            let _ = reply_tx.send(Err(
-                                "motionloom/render_scene requires <Graph scope=\"scene\" ...>."
-                                    .to_string(),
-                            ));
-                            continue;
-                        }
                         if !graph.has_scene_nodes() {
                             let _ = reply_tx.send(Err(
-                                "motionloom/render_scene requires at least one scene node: <Scene>, <Solid>, <Text>, <Image>, <Svg>, <Rect>, <Circle>, <Line>, <Polyline>, <Path>, <Camera>, or <Group>."
+                                "motionloom/render_scene requires at least one node: <Background>, <Scene>, <Text>, <Image>, <Svg>, <Rect>, <Circle>, <Line>, <Polyline>, <Path>, <Camera>, or <Group>."
                                     .to_string(),
                             ));
                             continue;
@@ -3250,7 +3517,8 @@ impl AiAgentsPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if prompt.is_empty() {
+        let pending_images = self.global.read(cx).ai_chat_pending_images.clone();
+        if prompt.is_empty() && pending_images.is_empty() {
             return false;
         }
 
@@ -3260,11 +3528,38 @@ impl AiAgentsPage {
             return false;
         }
 
-        let _ = self.push_chat_message(AiChatRole::User, prompt.clone(), false, cx);
+        let display_prompt = if prompt.trim().is_empty() {
+            "Please review the attached image(s).".to_string()
+        } else {
+            prompt.clone()
+        };
+        let prompt_for_agent = append_image_references(&display_prompt, &pending_images);
+
+        let acp_image_attachments = pending_images
+            .iter()
+            .map(|attachment| AcpPromptImageAttachment {
+                path: attachment.path.clone(),
+                mime_type: attachment.mime_type.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let _ = self.push_chat_message_with_attachments(
+            AiChatRole::User,
+            display_prompt,
+            false,
+            pending_images,
+            cx,
+        );
         let pending_idx = self.push_chat_message(AiChatRole::Assistant, String::new(), true, cx);
         self.active_assistant_idx = Some(pending_idx);
 
-        self.worker.send_prompt(prompt);
+        self.global.update(cx, |gs, cx| {
+            gs.ai_chat_pending_images.clear();
+            cx.notify();
+        });
+
+        self.worker
+            .send_prompt_with_images(prompt_for_agent, acp_image_attachments);
         self.busy = true;
         if clear_main_prompt {
             self.clear_prompt_input(window, cx);
@@ -3370,6 +3665,73 @@ impl Render for AiAgentsPage {
                 .into_any_element()
         };
 
+        let pending_chat_images = self.global.read(cx).ai_chat_pending_images.clone();
+        let mut pending_images_row = div().flex().flex_wrap().gap_2();
+        for attachment in pending_chat_images.iter().cloned() {
+            let id = attachment.id.clone();
+            pending_images_row = pending_images_row.child(
+                div()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(gpui::Hsla::from(rgb(0x3b82f6)).opacity(0.38))
+                    .bg(gpui::Hsla::from(rgb(0x172554)).opacity(0.38))
+                    .p_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(52.0))
+                            .h(px(38.0))
+                            .rounded_sm()
+                            .overflow_hidden()
+                            .bg(white().opacity(0.08))
+                            .child(img(attachment.path.clone()).size_full()),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(180.0))
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.86))
+                                    .child(attachment_display_name(&attachment)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.50))
+                                    .child(attachment_size_label(&attachment)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h(px(22.0))
+                            .px_2()
+                            .rounded_sm()
+                            .bg(white().opacity(0.07))
+                            .text_xs()
+                            .text_color(white().opacity(0.7))
+                            .hover(|s| s.bg(white().opacity(0.14)))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("Remove")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.remove_pending_chat_image(&id, cx);
+                                }),
+                            ),
+                    ),
+            );
+        }
+
         let chat_messages = self.global.read(cx).ai_chat_messages.clone();
         let system_count = chat_messages
             .iter()
@@ -3400,7 +3762,9 @@ impl Render for AiAgentsPage {
         }
 
         let is_logged_in = matches!(self.agent_status, AgentLoginStatus::LoggedIn { .. });
-        let can_send = self.connected && !self.busy;
+        let can_send = self.connected
+            && !self.busy
+            && (!self.prompt_text.trim().is_empty() || !pending_chat_images.is_empty());
         let mut system_toggle_button = Self::action_button(if self.show_system_messages {
             format!("Hide System ({})", system_count)
         } else {
@@ -3878,6 +4242,57 @@ impl Render for AiAgentsPage {
                 ),
             ));
 
+        let prompt_input_row = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().flex_1().min_w_0().child(prompt_input_elem))
+            .child(
+                Self::action_button("Paste Image")
+                    .h(px(46.0))
+                    .w(px(118.0))
+                    .flex_shrink_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.paste_chat_images_from_clipboard(true, cx);
+                        }),
+                    ),
+            )
+            .child(
+                div().w(px(86.0)).flex_shrink_0().child(
+                    if can_send {
+                        Self::action_button("Send")
+                    } else {
+                        Self::action_button(if self.busy { "Sending..." } else { "Send" })
+                            .opacity(0.55)
+                    }
+                    .h(px(46.0))
+                    .w_full()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            if this.connected && !this.busy {
+                                this.on_send_prompt(window, cx);
+                            }
+                        }),
+                    ),
+                ),
+            );
+
+        let prompt_controls = if pending_chat_images.is_empty() {
+            prompt_input_row
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap_2()
+                .child(pending_images_row)
+                .child(prompt_input_row)
+        };
+
         div()
             .size_full()
             .bg(gpui::rgb(0x09090b))
@@ -3885,6 +4300,9 @@ impl Render for AiAgentsPage {
             .flex()
             .flex_col()
             .overflow_y_scrollbar()
+            .on_key_down(cx.listener(|this, evt: &KeyDownEvent, _window, cx| {
+                this.handle_chat_paste_shortcut(evt, cx);
+            }))
             .gap_4()
             .child(
                 div()
@@ -4069,36 +4487,7 @@ impl Render for AiAgentsPage {
                     .overflow_y_scrollbar()
                     .child(message_list),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().flex_1().min_w_0().child(prompt_input_elem))
-                    .child(
-                        div()
-                            .w(px(86.0))
-                            .flex_shrink_0()
-                            .child(
-                                if can_send {
-                                    Self::action_button("Send")
-                                } else {
-                                    Self::action_button(if self.busy { "Sending..." } else { "Send" })
-                                        .opacity(0.55)
-                                }
-                                .h(px(46.0))
-                                .w_full()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _, window, cx| {
-                                        if this.connected && !this.busy {
-                                            this.on_send_prompt(window, cx);
-                                        }
-                                    }),
-                                ),
-                        ),
-                    ),
-            )
+            .child(prompt_controls)
     }
 }
 
@@ -4113,6 +4502,7 @@ mod tests {
             role,
             text: text.to_string(),
             pending: false,
+            image_attachments: Vec::new(),
         }
     }
 
@@ -4156,8 +4546,8 @@ mod tests {
     #[test]
     fn normalize_motionloom_scene_defaults_fps_and_size() {
         let input = r##"
-<Graph scope="scene" duration="3s">
-  <Solid color="#000000" />
+<Graph duration="3s">
+  <Background color="#000000" />
   <Present from="scene" />
 </Graph>
 "##;
@@ -4172,8 +4562,8 @@ mod tests {
     #[test]
     fn normalize_motionloom_scene_rewrites_animate_opacity_and_duration_ms() {
         let input = r##"
-<Graph scope="scene" fps={60} size={[1920,1080]}>
-  <Solid color="#000000" />
+<Graph fps={60} size={[1920,1080]}>
+  <Background color="#000000" />
   <Text id="title" value="HELLO WORLD" color="#FFFFFF" fontSize={120} x={960} y={540} opacity={0} />
   <Animate target="title.opacity" from={0} to={1} start_ms={0} end_ms={1200} />
   <Present from="scene" duration_ms={3000} />
@@ -4193,8 +4583,8 @@ mod tests {
     #[test]
     fn normalize_motionloom_scene_rewrites_text_alias_to_value() {
         let input = r##"
-<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
-  <Solid color="#000000" />
+<Graph fps={60} duration="3s" size={[1920,1080]}>
+  <Background color="#000000" />
   <Text id="title" text="HELLO WORLD" color="#FFFFFF" fontSize={120} x="center" y="center" opacity="1" />
   <Present from="scene" />
 </Graph>
@@ -4208,8 +4598,8 @@ mod tests {
     #[test]
     fn normalize_motionloom_scene_rewrites_text_body_to_value() {
         let input = r##"
-<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
-  <Solid color="#000000" />
+<Graph fps={60} duration="3s" size={[1920,1080]}>
+  <Background color="#000000" />
   <Text id="title" color="#FFFFFF" fontSize={120} x="center" y="center" opacity="1">HELLO WORLD</Text>
   <Present from="scene" />
 </Graph>

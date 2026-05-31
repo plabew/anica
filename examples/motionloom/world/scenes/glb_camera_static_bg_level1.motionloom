@@ -1,0 +1,33 @@
+<Graph fps={30} duration="4s" size={[1280,720]} renderSize={[1280,720]}>
+  <World id="forest_stage">
+    <Background id="forest_bg"
+                src="../sample_assets/backgrounds/forest_path_static.png"
+                fit="cover"
+                color="#87c9ff"
+                opacity="1" />
+
+    <Camera id="orbit_camera"
+            mode="orbit"
+            target="anime"
+            yaw={curve("0:0:linear, 4:360:linear")}
+            pitch="0"
+            distance="3.4"
+            fov="35" />
+
+    <Actor id="anime"
+           model="../sample_assets/glb/your_character.glb"
+           x="0"
+           y="0"
+           z="0"
+           yaw="0"
+           pitch="0"
+           roll="0"
+           scale="1"
+           opacity="1">
+      <Material style="toon" outline="true" outlineWidth="2" />
+      <Play clip="Idle" loop="true" speed="1" />
+    </Actor>
+  </World>
+
+  <Present from="forest_stage" />
+</Graph>

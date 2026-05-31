@@ -1,20 +1,31 @@
 // src/ui/vector_lab_page.rs - lightweight MotionLoom path tracing workspace.
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex, mpsc},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, Context, Element, Entity, FocusHandle, Focusable,
-    GlobalElementId, ImageFormat as GpuiImageFormat, InspectorElementId, IntoElement, KeyDownEvent,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder,
-    PathPromptOptions, Pixels, Render, RenderImage, Style, Window, canvas, div, point, prelude::*,
-    px, rgb, rgba,
+    GlobalElementId, Hsla, ImageFormat as GpuiImageFormat, InspectorElementId, IntoElement,
+    KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder,
+    PathPromptOptions, Pixels, Render, RenderImage, Style, Subscription, Timer, Window, canvas,
+    div, point, prelude::*, px, rgb, rgba,
 };
-use gpui_component::{scroll::ScrollableElement, white};
+use gpui_component::{
+    Colorize, Sizable,
+    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
+    input::{Input, InputEvent, InputState},
+    scroll::ScrollableElement,
+    white,
+};
 use image::{ImageBuffer, Rgba};
+use motionloom::{
+    AnimationFrameRenderer, SceneRenderProfile, is_animation_graph_script, is_graph_script,
+    parse_animation_graph_script, parse_graph_script, render_scene_graph_frame,
+};
 use smallvec::SmallVec;
 
 use crate::core::global_state::{AppPage, GlobalState};
@@ -219,7 +230,7 @@ impl BrushSettings {
 
 impl Default for BrushSettings {
     fn default() -> Self {
-        Self::for_preset(BrushPreset::Sketch)
+        Self::for_preset(BrushPreset::Pencil)
     }
 }
 
@@ -232,11 +243,36 @@ struct VectorPathDraft {
     export_simplify_epsilon: f32,
 }
 
+#[derive(Clone, Debug)]
+struct VectorBrushDef {
+    id: String,
+    brush: BrushSettings,
+}
+
+#[derive(Clone, Debug)]
+struct VectorGroupExport {
+    brush_defs: Vec<VectorBrushDef>,
+    group_block: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReferenceImageSource {
+    Imported,
+    VfxPreview,
+}
+
+impl Default for ReferenceImageSource {
+    fn default() -> Self {
+        Self::Imported
+    }
+}
+
 #[derive(Clone)]
 struct ReferenceImageLayer {
     image: Arc<RenderImage>,
     width: u32,
     height: u32,
+    source: ReferenceImageSource,
 }
 
 struct ReferenceImageElement {
@@ -369,6 +405,9 @@ pub struct VectorLabPage {
     reference_opacity: f32,
     reference_zoom: f32,
     reference_offset: VectorPoint,
+    canvas_bg_color: Hsla,
+    canvas_bg_picker: Option<Entity<ColorPickerState>>,
+    canvas_bg_picker_sub: Option<Subscription>,
     paths: Vec<VectorPathDraft>,
     selected_path: Option<usize>,
     current_pen_points: Vec<VectorPoint>,
@@ -377,6 +416,10 @@ pub struct VectorLabPage {
     current_brush: BrushSettings,
     simplify_epsilon: f32,
     path_counter: usize,
+    motionloom_group_id_text: String,
+    motionloom_group_id_input: Option<Entity<InputState>>,
+    motionloom_group_id_input_sub: Option<Subscription>,
+    group_picker_open: bool,
     status_line: String,
     board_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
 }
@@ -394,6 +437,9 @@ impl VectorLabPage {
             reference_opacity: 0.42,
             reference_zoom: 1.0,
             reference_offset: VectorPoint::default(),
+            canvas_bg_color: Hsla::from(rgb(0x0f1624)),
+            canvas_bg_picker: None,
+            canvas_bg_picker_sub: None,
             paths: Vec::new(),
             selected_path: None,
             current_pen_points: Vec::new(),
@@ -402,6 +448,10 @@ impl VectorLabPage {
             current_brush: BrushSettings::default(),
             simplify_epsilon: 2.2,
             path_counter: 1,
+            motionloom_group_id_text: String::new(),
+            motionloom_group_id_input: None,
+            motionloom_group_id_input_sub: None,
+            group_picker_open: false,
             status_line:
                 "Vector Lab ready. Upload/paste a reference image, then trace with Pen or Freehand."
                     .to_string(),
@@ -653,7 +703,155 @@ impl VectorLabPage {
             image: Arc::new(RenderImage::new(frames)),
             width,
             height,
+            source: ReferenceImageSource::Imported,
         })
+    }
+
+    fn reference_layer_from_bgra(
+        width: u32,
+        height: u32,
+        bgra: Vec<u8>,
+    ) -> Result<ReferenceImageLayer, String> {
+        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, bgra)
+            .ok_or_else(|| "Failed to construct VFX preview reference image buffer.".to_string())?;
+        let frames = SmallVec::from_elem(image::Frame::new(image_buffer), 1);
+        Ok(ReferenceImageLayer {
+            image: Arc::new(RenderImage::new(frames)),
+            width,
+            height,
+            source: ReferenceImageSource::VfxPreview,
+        })
+    }
+
+    fn animation_asset_root() -> PathBuf {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        for candidate in [
+            cwd.join("examples/motionloom/world"),
+            cwd.join("anica/examples/motionloom/world"),
+            PathBuf::from("examples/motionloom/world"),
+            PathBuf::from("anica/examples/motionloom/world"),
+        ] {
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+        PathBuf::from("examples/motionloom/world")
+    }
+
+    fn uses_pure_animation_renderer(raw: &str) -> bool {
+        is_animation_graph_script(raw)
+            && !raw.contains("<Tex")
+            && !raw.contains("<Pass")
+            && !raw.contains("<Layer")
+            && !raw.contains("<Scene")
+            && !raw.contains("<Clip")
+    }
+
+    fn render_vfx_preview_reference_frame(
+        raw: String,
+        frame: u32,
+    ) -> Result<(u32, u32, Vec<u8>), String> {
+        if raw.trim().is_empty() {
+            return Err("VFX Studio has no MotionLoom script to import.".to_string());
+        }
+        if !is_graph_script(&raw) {
+            return Err(
+                "VFX Studio preview import requires a <Graph> MotionLoom DSL block.".to_string(),
+            );
+        }
+
+        let rgba = if Self::uses_pure_animation_renderer(&raw) {
+            let graph = parse_animation_graph_script(&raw).map_err(|err| {
+                format!(
+                    "VFX animation parse error at line {}: {}",
+                    err.line, err.message
+                )
+            })?;
+            let mut renderer = AnimationFrameRenderer::new();
+            renderer
+                .render_frame_gpu(&graph, frame, Self::animation_asset_root())
+                .or_else(|_| renderer.render_frame(&graph, frame, Self::animation_asset_root()))
+                .map_err(|err| format!("VFX animation render error: {err}"))?
+        } else {
+            let graph = parse_graph_script(&raw).map_err(|err| {
+                format!(
+                    "VFX scene parse error at line {}: {}",
+                    err.line, err.message
+                )
+            })?;
+            if !graph.has_scene_nodes() {
+                return Err("VFX scene preview needs at least one <Scene> node.".to_string());
+            }
+            render_scene_graph_frame(&graph, frame, SceneRenderProfile::Gpu)
+                .or_else(|_| render_scene_graph_frame(&graph, frame, SceneRenderProfile::Cpu))
+                .map_err(|err| format!("VFX scene render error: {err}"))?
+        };
+
+        let (width, height) = rgba.dimensions();
+        let mut bgra = rgba.into_raw();
+        for px in bgra.chunks_mut(4) {
+            px.swap(0, 2);
+        }
+        Ok((width, height, bgra))
+    }
+
+    fn import_vfx_preview_reference(&mut self, cx: &mut Context<Self>) {
+        let (raw, frame) = {
+            let gs = self.global.read(cx);
+            (
+                gs.motionloom_scene_script().to_string(),
+                gs.motionloom_scene_preview_frame(),
+            )
+        };
+
+        self.status_line = format!("Importing VFX Studio preview frame {frame}...");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = Self::render_vfx_preview_reference_frame(raw, frame);
+            let _ = tx.send((frame, result));
+        });
+
+        cx.spawn(async move |view, cx| {
+            loop {
+                Timer::after(Duration::from_millis(16)).await;
+                let mut done = false;
+                let _ = view.update(cx, |this, cx| match rx.try_recv() {
+                    Ok((frame, Ok((width, height, bgra)))) => {
+                        match Self::reference_layer_from_bgra(width, height, bgra) {
+                            Ok(layer) => {
+                                this.reference_image = Some(layer);
+                                this.reference_zoom = 1.0;
+                                this.reference_offset = VectorPoint::default();
+                                this.status_line = format!(
+                                    "Imported VFX Studio preview frame {frame} as reference ({width}x{height})."
+                                );
+                            }
+                            Err(err) => {
+                                this.status_line = err;
+                            }
+                        }
+                        done = true;
+                        cx.notify();
+                    }
+                    Ok((_frame, Err(err))) => {
+                        this.status_line = err;
+                        done = true;
+                        cx.notify();
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        this.status_line =
+                            "VFX Studio preview import was interrupted.".to_string();
+                        done = true;
+                        cx.notify();
+                    }
+                });
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn zoom_reference(&mut self, factor: f32) {
@@ -967,50 +1165,446 @@ impl VectorLabPage {
             .unwrap_or_else(|| "<!-- No selected path yet. -->".to_string())
     }
 
-    fn all_paths_dsl(&self) -> String {
-        if self.paths.is_empty() {
-            return "<!-- No vector paths yet. -->".to_string();
-        }
-        self.paths
-            .iter()
-            .map(Self::path_to_dsl)
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     fn copy_selected_path_dsl(&mut self, cx: &mut Context<Self>) {
         let dsl = self.selected_path_dsl();
         cx.write_to_clipboard(ClipboardItem::new_string(dsl));
         self.status_line = "Copied selected Path DSL to clipboard.".to_string();
     }
 
-    fn send_to_motionloom(&mut self, cx: &mut Context<Self>) {
+    fn copy_group_dsl(&mut self, cx: &mut Context<Self>) {
         if self.paths.is_empty() {
-            self.status_line = "Nothing to send. Create at least one path first.".to_string();
+            self.status_line = "No vector paths to copy.".to_string();
             return;
         }
-        let (width, height) = self.current_board_size().unwrap_or((1080, 720));
-        let script = format!(
-            r##"<Graph scope="scene" fps={{60}} duration="1s" size={{[{width},{height}]}}>
-  <Scene id="vector_lab_trace">
-    <Solid color="#ffffff" />
-    <Group id="vector_lab_paths" x="0" y="0" opacity="1">
+        let group_id = if self.motionloom_group_id_text.trim().is_empty() {
+            "vector_group_preview".to_string()
+        } else {
+            self.motionloom_group_id_text.trim().to_string()
+        };
+        let export_paths = self.paths_for_motionloom_export();
+        let export = Self::vector_group_export(&group_id, &export_paths);
+        let dsl = format!(
+            "{}\n{}",
+            Self::brush_defs_block(&export.brush_defs),
+            export.group_block
+        );
+        cx.write_to_clipboard(ClipboardItem::new_string(dsl));
+        self.status_line = format!("Copied compact group DSL for '{group_id}'.");
+    }
+
+    fn ensure_group_id_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.motionloom_group_id_input.is_some() {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("group id, optional"));
+        let initial = self.motionloom_group_id_text.clone();
+        input.update(cx, |this, cx| {
+            this.set_value(initial, window, cx);
+        });
+        let sub = cx.subscribe(&input, |this, input, ev, cx| match ev {
+            InputEvent::Change | InputEvent::PressEnter { .. } => {
+                this.motionloom_group_id_text = input.read(cx).value().to_string();
+            }
+            _ => {}
+        });
+        self.motionloom_group_id_input = Some(input);
+        self.motionloom_group_id_input_sub = Some(sub);
+    }
+
+    fn ensure_canvas_bg_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.canvas_bg_picker.is_some() {
+            return;
+        }
+
+        let initial = self.canvas_bg_color;
+        let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(initial));
+        let sub = cx.subscribe(&picker, |this, _picker, ev, cx| {
+            let ColorPickerEvent::Change(value) = ev;
+            if let Some(color) = *value {
+                this.canvas_bg_color = color;
+                this.status_line = format!("Vector Lab background: {}.", color.to_hex());
+                cx.notify();
+            }
+        });
+        self.canvas_bg_picker = Some(picker);
+        self.canvas_bg_picker_sub = Some(sub);
+    }
+
+    fn set_group_id_input_value(
+        &mut self,
+        value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.motionloom_group_id_text = value.clone();
+        if let Some(input) = self.motionloom_group_id_input.as_ref() {
+            input.update(cx, |input, cx| {
+                input.set_value(value, window, cx);
+            });
+        }
+    }
+
+    fn attach_to_motionloom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.paths.is_empty() {
+            self.status_line = "Nothing to attach. Create at least one path first.".to_string();
+            return;
+        }
+        if let Some(input) = self.motionloom_group_id_input.as_ref() {
+            self.motionloom_group_id_text = input.read(cx).value().to_string();
+        }
+        let (width, height) = self.motionloom_export_size();
+        let existing_script = self
+            .global
+            .read(cx)
+            .motionloom_scene_script()
+            .trim()
+            .to_string();
+        let existing_group_ids = Self::extract_group_ids(&existing_script);
+        let typed_group_id = self.motionloom_group_id_text.trim();
+        let group_id = if typed_group_id.is_empty() {
+            Self::next_vector_group_id(&existing_group_ids)
+        } else {
+            typed_group_id.to_string()
+        };
+        let existed = existing_group_ids.iter().any(|id| id == &group_id);
+        let export_paths = self.paths_for_motionloom_export();
+        let export = Self::vector_group_export(&group_id, &export_paths);
+        let updated_script = Self::patch_motionloom_group_script(
+            &existing_script,
+            &group_id,
+            &export,
+            width.max(1),
+            height.max(1),
+        );
+        self.global.update(cx, |gs, cx| {
+            gs.set_motionloom_scene_script(updated_script, true);
+            gs.set_active_page(AppPage::MotionLoom);
+            cx.notify();
+        });
+        self.set_group_id_input_value(group_id.clone(), window, cx);
+        self.status_line = if existed {
+            format!("Replaced existing MotionLoom group '{group_id}'.")
+        } else {
+            format!("Attached vector paths as new MotionLoom group '{group_id}'.")
+        };
+    }
+
+    fn motionloom_export_size(&self) -> (u32, u32) {
+        if let Some(layer) = self.reference_image.as_ref()
+            && layer.source == ReferenceImageSource::VfxPreview
+        {
+            return (layer.width.max(1), layer.height.max(1));
+        }
+        self.current_board_size().unwrap_or((1080, 720))
+    }
+
+    fn paths_for_motionloom_export(&self) -> Vec<VectorPathDraft> {
+        let Some(layer) = self.reference_image.as_ref() else {
+            return self.paths.clone();
+        };
+        if layer.source != ReferenceImageSource::VfxPreview {
+            return self.paths.clone();
+        }
+        let Some((offset_x, offset_y, scale)) = self.reference_image_canvas_transform(layer) else {
+            return self.paths.clone();
+        };
+        if scale <= 0.0001 {
+            return self.paths.clone();
+        }
+
+        self.paths
+            .iter()
+            .map(|path| {
+                let mut mapped = path.clone();
+                mapped.points = path
+                    .points
+                    .iter()
+                    .map(|point| VectorPoint {
+                        x: (point.x - offset_x) / scale,
+                        y: (point.y - offset_y) / scale,
+                        pressure: point.pressure,
+                    })
+                    .collect();
+                mapped
+            })
+            .collect()
+    }
+
+    fn reference_image_canvas_transform(
+        &self,
+        layer: &ReferenceImageLayer,
+    ) -> Option<(f32, f32, f32)> {
+        let (container_w, container_h) = self.current_board_size()?;
+        let container_w = container_w as f32;
+        let container_h = container_h as f32;
+        let frame_w = layer.width.max(1) as f32;
+        let frame_h = layer.height.max(1) as f32;
+        let fit_scale = (container_w / frame_w).min(container_h / frame_h);
+        let scale = fit_scale * self.reference_zoom.max(0.05);
+        let dest_w = frame_w * scale;
+        let dest_h = frame_h * scale;
+        Some((
+            (container_w - dest_w) * 0.5 + self.reference_offset.x,
+            (container_h - dest_h) * 0.5 + self.reference_offset.y,
+            scale,
+        ))
+    }
+
+    fn vector_group_export(group_id: &str, paths: &[VectorPathDraft]) -> VectorGroupExport {
+        let mut brush_defs = Vec::<VectorBrushDef>::new();
+        let mut brush_ids_by_key = HashMap::<String, String>::new();
+        let mut path_brush_ids = Vec::<String>::with_capacity(paths.len());
+        let brush_prefix = Self::brush_id_prefix(group_id);
+
+        for path in paths {
+            let key = Self::brush_key(&path.brush);
+            let brush_id = if let Some(existing) = brush_ids_by_key.get(&key) {
+                existing.clone()
+            } else {
+                let id = format!("{}_brush_{:02}", brush_prefix, brush_defs.len() + 1);
+                brush_defs.push(VectorBrushDef {
+                    id: id.clone(),
+                    brush: path.brush.clone(),
+                });
+                brush_ids_by_key.insert(key, id.clone());
+                id
+            };
+            path_brush_ids.push(brush_id);
+        }
+
+        let group_brush = if path_brush_ids
+            .first()
+            .is_some_and(|first| path_brush_ids.iter().all(|id| id == first))
+        {
+            path_brush_ids.first().cloned()
+        } else {
+            None
+        };
+        let path_lines = paths
+            .iter()
+            .zip(path_brush_ids.iter())
+            .map(|(path, brush_id)| {
+                Self::path_to_compact_dsl(path, group_brush.as_deref(), brush_id)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        VectorGroupExport {
+            brush_defs,
+            group_block: Self::vector_group_dsl(group_id, group_brush.as_deref(), &path_lines),
+        }
+    }
+
+    fn vector_group_dsl(group_id: &str, brush: Option<&str>, paths: &str) -> String {
+        let brush_attr = brush
+            .map(|brush| format!(r#" brush="{}""#, Self::escape_attr(brush)))
+            .unwrap_or_default();
+        format!(
+            r##"<Group id="{group_id}"{brush_attr} x="0" y="0" opacity="1">
 {paths}
-    </Group>
+</Group>"##,
+            group_id = Self::escape_attr(group_id),
+            brush_attr = brush_attr,
+            paths = Self::indent_block(paths, 2),
+        )
+    }
+
+    fn new_vector_scene_script(width: u32, height: u32, export: &VectorGroupExport) -> String {
+        let defs_block = Self::brush_defs_block(&export.brush_defs);
+        format!(
+            r##"<Graph fps={{60}} duration="1s" size={{[{width},{height}]}}>
+  <Background color="#ffffff" />
+
+  <Scene id="vector_lab_trace">
+{defs}
+{group}
   </Scene>
 
   <Present from="vector_lab_trace" />
 </Graph>"##,
             width = width.max(1),
             height = height.max(1),
-            paths = Self::indent_block(&self.all_paths_dsl(), 6),
-        );
-        self.global.update(cx, |gs, cx| {
-            gs.set_motionloom_scene_script(script, true);
-            gs.set_active_page(AppPage::MotionLoom);
-            cx.notify();
-        });
-        self.status_line = "Sent vector paths to MotionLoom VFX editor.".to_string();
+            defs = Self::indent_block(&defs_block, 4),
+            group = Self::indent_block(&export.group_block, 4),
+        )
+    }
+
+    fn patch_motionloom_group_script(
+        existing_script: &str,
+        group_id: &str,
+        export: &VectorGroupExport,
+        width: u32,
+        height: u32,
+    ) -> String {
+        let trimmed = existing_script.trim();
+        if trimmed.is_empty() || !trimmed.contains("<Scene") || !trimmed.contains("</Scene>") {
+            return Self::new_vector_scene_script(width, height, export);
+        }
+
+        let trimmed = Self::patch_motionloom_brush_defs(trimmed, &export.brush_defs);
+        if let Some((start, end)) = Self::find_group_block_range(&trimmed, group_id) {
+            let mut out = trimmed.to_string();
+            out.replace_range(start..end, &export.group_block);
+            return out;
+        }
+
+        if let Some(scene_close) = trimmed.rfind("</Scene>") {
+            let mut out = String::with_capacity(trimmed.len() + export.group_block.len() + 16);
+            out.push_str(&trimmed[..scene_close]);
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&Self::indent_block(&export.group_block, 4));
+            out.push('\n');
+            out.push_str(&trimmed[scene_close..]);
+            return out;
+        }
+
+        Self::new_vector_scene_script(width, height, export)
+    }
+
+    fn brush_key(brush: &BrushSettings) -> String {
+        format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            brush.preset.dsl_style(),
+            brush.color,
+            Self::format_coord(brush.stroke_width),
+            Self::format_coord(brush.opacity),
+            Self::format_coord(brush.roughness),
+            brush.copies,
+            Self::format_coord(brush.texture_strength),
+            brush.bristle_count,
+            Self::format_coord(brush.pressure_min),
+            Self::format_coord(brush.pressure_curve),
+        )
+    }
+
+    fn brush_id_prefix(group_id: &str) -> String {
+        let sanitized = group_id
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('_')
+            .to_string();
+        if sanitized.is_empty() {
+            "vector_group".to_string()
+        } else {
+            format!("vector_{sanitized}")
+        }
+    }
+
+    fn brush_to_dsl(def: &VectorBrushDef) -> String {
+        format!(
+            r##"<Brush id="{}"
+       stroke="{}"
+       strokeWidth="{}"
+       strokeStyle="{}"
+       strokeRoughness="{}"
+       strokeCopies="{}"
+       strokeTexture="{}"
+       strokeBristles="{}"
+       strokePressure="auto"
+       strokePressureMin="{}"
+       strokePressureCurve="{}"
+       opacity="{}"
+       lineCap="round"
+       lineJoin="round"
+       fill="none" />"##,
+            Self::escape_attr(&def.id),
+            Self::escape_attr(&def.brush.color),
+            Self::format_coord(def.brush.stroke_width),
+            def.brush.preset.dsl_style(),
+            Self::format_coord(def.brush.roughness),
+            def.brush.copies,
+            Self::format_coord(def.brush.texture_strength),
+            def.brush.bristle_count,
+            Self::format_coord(def.brush.pressure_min),
+            Self::format_coord(def.brush.pressure_curve),
+            Self::format_coord(def.brush.opacity),
+        )
+    }
+
+    fn brush_defs_block(brush_defs: &[VectorBrushDef]) -> String {
+        let brushes = brush_defs
+            .iter()
+            .map(Self::brush_to_dsl)
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r##"<Defs>
+{brushes}
+</Defs>"##,
+            brushes = Self::indent_block(&brushes, 2)
+        )
+    }
+
+    fn patch_motionloom_brush_defs(script: &str, brush_defs: &[VectorBrushDef]) -> String {
+        if brush_defs.is_empty() {
+            return script.to_string();
+        }
+        let mut out = script.to_string();
+        let mut missing = Vec::<VectorBrushDef>::new();
+        for def in brush_defs {
+            if let Some((start, end)) = Self::find_brush_block_range(&out, &def.id) {
+                out.replace_range(start..end, &Self::brush_to_dsl(def));
+            } else {
+                missing.push(def.clone());
+            }
+        }
+        if missing.is_empty() {
+            return out;
+        }
+
+        let missing_block = missing
+            .iter()
+            .map(Self::brush_to_dsl)
+            .map(|brush| Self::indent_block(&brush, 6))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(defs_close) = Self::find_ascii_case_insensitive(&out, "</Defs>", 0) {
+            let mut next = String::with_capacity(out.len() + missing_block.len() + 2);
+            next.push_str(&out[..defs_close]);
+            if !next.ends_with('\n') {
+                next.push('\n');
+            }
+            next.push_str(&missing_block);
+            next.push('\n');
+            next.push_str(&out[defs_close..]);
+            return next;
+        }
+
+        if let Some(scene_start) = Self::find_ascii_case_insensitive(&out, "<Scene", 0)
+            && let Some(scene_open_end) = Self::find_tag_end(&out, scene_start)
+        {
+            let defs_block = Self::indent_block(&Self::brush_defs_block(&missing), 4);
+            let insert_at = scene_open_end.saturating_add(1);
+            let mut next = String::with_capacity(out.len() + defs_block.len() + 2);
+            next.push_str(&out[..insert_at]);
+            next.push('\n');
+            next.push_str(&defs_block);
+            next.push_str(&out[insert_at..]);
+            return next;
+        }
+
+        out
+    }
+
+    fn find_brush_block_range(script: &str, brush_id: &str) -> Option<(usize, usize)> {
+        let mut cursor = 0usize;
+        while let Some(start) = Self::find_ascii_case_insensitive(script, "<Brush", cursor) {
+            let tag_end = Self::find_tag_end(script, start)?;
+            let tag = &script[start..=tag_end];
+            if Self::extract_attr(tag, "id").as_deref() == Some(brush_id) {
+                return Some((start, tag_end.saturating_add(1)));
+            }
+            cursor = tag_end.saturating_add(1);
+        }
+        None
     }
 
     fn current_board_size(&self) -> Option<(u32, u32)> {
@@ -1026,6 +1620,496 @@ impl VectorLabPage {
             .map(|line| format!("{prefix}{line}"))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn escape_attr(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    }
+
+    fn next_vector_group_id(existing_ids: &[String]) -> String {
+        let mut index = 1usize;
+        loop {
+            let candidate = format!("vector_group_{index:02}");
+            if !existing_ids.iter().any(|id| id == &candidate) {
+                return candidate;
+            }
+            index = index.saturating_add(1);
+        }
+    }
+
+    fn extract_group_ids(script: &str) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut cursor = 0usize;
+        while let Some(start) = Self::find_ascii_case_insensitive(script, "<Group", cursor) {
+            let Some(tag_end) = Self::find_tag_end(script, start) else {
+                break;
+            };
+            let tag = &script[start..=tag_end];
+            if let Some(id) = Self::extract_attr(tag, "id") {
+                if !ids.iter().any(|existing| existing == &id) {
+                    ids.push(id);
+                }
+            }
+            cursor = tag_end.saturating_add(1);
+        }
+        ids
+    }
+
+    fn extract_attr(tag: &str, name: &str) -> Option<String> {
+        let bytes = tag.as_bytes();
+        let name_bytes = name.as_bytes();
+        let mut cursor = 0usize;
+        while cursor + name_bytes.len() < bytes.len() {
+            let rel = tag[cursor..].find(name)?;
+            let name_start = cursor + rel;
+            let name_end = name_start + name_bytes.len();
+            let before_ok = name_start == 0
+                || bytes
+                    .get(name_start.saturating_sub(1))
+                    .is_some_and(|b| b.is_ascii_whitespace() || *b == b'<');
+            let after_ok = bytes
+                .get(name_end)
+                .is_some_and(|b| b.is_ascii_whitespace() || *b == b'=');
+            if !before_ok || !after_ok {
+                cursor = name_end;
+                continue;
+            }
+
+            let mut eq = name_end;
+            while bytes.get(eq).is_some_and(|b| b.is_ascii_whitespace()) {
+                eq += 1;
+            }
+            if bytes.get(eq) != Some(&b'=') {
+                cursor = name_end;
+                continue;
+            }
+
+            let mut value_start = eq + 1;
+            while bytes
+                .get(value_start)
+                .is_some_and(|b| b.is_ascii_whitespace())
+            {
+                value_start += 1;
+            }
+            let quote = *bytes.get(value_start)?;
+            if quote != b'"' && quote != b'\'' {
+                cursor = value_start.saturating_add(1);
+                continue;
+            }
+            let attr_value_start = value_start + 1;
+            let value_end = tag[attr_value_start..]
+                .find(quote as char)
+                .map(|offset| attr_value_start + offset)?;
+            return Some(tag[attr_value_start..value_end].to_string());
+        }
+        None
+    }
+
+    fn find_tag_end(script: &str, tag_start: usize) -> Option<usize> {
+        let mut quote: Option<u8> = None;
+        for (offset, byte) in script.as_bytes().iter().enumerate().skip(tag_start) {
+            match (quote, *byte) {
+                (None, b'"') | (None, b'\'') => quote = Some(*byte),
+                (Some(q), b) if b == q => quote = None,
+                (None, b'>') => return Some(offset),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn find_ascii_case_insensitive(haystack: &str, needle: &str, from: usize) -> Option<usize> {
+        if from >= haystack.len() {
+            return None;
+        }
+        let lower_haystack = haystack[from..].to_ascii_lowercase();
+        let lower_needle = needle.to_ascii_lowercase();
+        lower_haystack
+            .find(lower_needle.as_str())
+            .map(|offset| from + offset)
+    }
+
+    fn find_group_block_range(script: &str, group_id: &str) -> Option<(usize, usize)> {
+        let mut cursor = 0usize;
+        while let Some(start) = Self::find_ascii_case_insensitive(script, "<Group", cursor) {
+            let tag_end = Self::find_tag_end(script, start)?;
+            let tag = &script[start..=tag_end];
+            if Self::extract_attr(tag, "id").as_deref() == Some(group_id) {
+                if tag.trim_end().ends_with("/>") {
+                    return Some((start, tag_end.saturating_add(1)));
+                }
+                let end = Self::find_matching_group_end(script, start)?;
+                return Some((start, end));
+            }
+            cursor = tag_end.saturating_add(1);
+        }
+        None
+    }
+
+    fn find_matching_group_end(script: &str, group_start: usize) -> Option<usize> {
+        let mut cursor = Self::find_tag_end(script, group_start)?.saturating_add(1);
+        let mut depth = 1usize;
+        while cursor < script.len() {
+            let next_open = Self::find_ascii_case_insensitive(script, "<Group", cursor);
+            let next_close = Self::find_ascii_case_insensitive(script, "</Group>", cursor);
+            match (next_open, next_close) {
+                (Some(open), Some(close)) if open < close => {
+                    depth = depth.saturating_add(1);
+                    cursor = Self::find_tag_end(script, open)?.saturating_add(1);
+                }
+                (_, Some(close)) => {
+                    depth = depth.saturating_sub(1);
+                    let end = Self::find_tag_end(script, close)?.saturating_add(1);
+                    if depth == 0 {
+                        return Some(end);
+                    }
+                    cursor = end;
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    fn import_motionloom_group(
+        &mut self,
+        group_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let script = self
+            .global
+            .read(cx)
+            .motionloom_scene_script()
+            .trim()
+            .to_string();
+        let Some((start, end)) = Self::find_group_block_range(&script, &group_id) else {
+            self.status_line = format!("MotionLoom group '{group_id}' was not found.");
+            return;
+        };
+        let group_block = &script[start..end];
+        let brush_defs = Self::brush_defs_from_script(&script);
+        let imported = Self::paths_from_group_block_with_brushes(group_block, &brush_defs);
+        if imported.is_empty() {
+            self.paths.clear();
+            self.selected_path = None;
+            self.current_pen_points.clear();
+            self.current_freehand.clear();
+            self.is_drawing_freehand = false;
+            self.set_group_id_input_value(group_id.clone(), window, cx);
+            self.group_picker_open = false;
+            self.status_line = format!(
+                "Selected MotionLoom group '{group_id}'. It has no editable Path nodes yet; new Vector Lab strokes will replace it on attach."
+            );
+            return;
+        }
+        let max_index = imported
+            .iter()
+            .filter_map(|path| path.id.strip_prefix("vector_path_"))
+            .filter_map(|suffix| suffix.parse::<usize>().ok())
+            .max()
+            .unwrap_or(imported.len());
+        self.paths = imported;
+        self.selected_path = self.paths.len().checked_sub(1);
+        self.current_pen_points.clear();
+        self.current_freehand.clear();
+        self.is_drawing_freehand = false;
+        self.path_counter = max_index.saturating_add(1).max(self.paths.len() + 1);
+        self.current_brush = self
+            .selected_path
+            .and_then(|idx| self.paths.get(idx))
+            .map(|path| path.brush.clone())
+            .unwrap_or_else(BrushSettings::default);
+        self.set_group_id_input_value(group_id.clone(), window, cx);
+        self.group_picker_open = false;
+        self.status_line = format!(
+            "Loaded MotionLoom group '{group_id}' into Vector Lab: {} editable path(s).",
+            self.paths.len()
+        );
+    }
+
+    fn paths_from_group_block(group_block: &str) -> Vec<VectorPathDraft> {
+        Self::paths_from_group_block_with_brushes(group_block, &HashMap::new())
+    }
+
+    fn paths_from_group_block_with_brushes(
+        group_block: &str,
+        brush_defs: &HashMap<String, BrushSettings>,
+    ) -> Vec<VectorPathDraft> {
+        Self::paths_from_group_block_with_inherited(group_block, brush_defs, None)
+    }
+
+    fn paths_from_group_block_with_inherited(
+        group_block: &str,
+        brush_defs: &HashMap<String, BrushSettings>,
+        inherited_brush: Option<&BrushSettings>,
+    ) -> Vec<VectorPathDraft> {
+        let mut paths = Vec::new();
+        let Some(group_start) = Self::find_ascii_case_insensitive(group_block, "<Group", 0) else {
+            return paths;
+        };
+        let Some(group_tag_end) = Self::find_tag_end(group_block, group_start) else {
+            return paths;
+        };
+        let group_tag = &group_block[group_start..=group_tag_end];
+        let group_brush = Self::extract_attr(group_tag, "brush")
+            .and_then(|id| brush_defs.get(&id))
+            .cloned()
+            .or_else(|| inherited_brush.cloned());
+        let body_start = group_tag_end.saturating_add(1);
+        let body_end = group_block
+            .rfind("</Group>")
+            .unwrap_or(group_block.len())
+            .max(body_start);
+        Self::collect_paths_from_group_body(
+            &group_block[body_start..body_end],
+            brush_defs,
+            group_brush.as_ref(),
+            &mut paths,
+        );
+        paths
+    }
+
+    fn collect_paths_from_group_body(
+        body: &str,
+        brush_defs: &HashMap<String, BrushSettings>,
+        inherited_brush: Option<&BrushSettings>,
+        paths: &mut Vec<VectorPathDraft>,
+    ) {
+        let mut cursor = 0usize;
+        while cursor < body.len() {
+            let next_path = Self::find_ascii_case_insensitive(body, "<Path", cursor);
+            let next_group = Self::find_ascii_case_insensitive(body, "<Group", cursor);
+            match (next_path, next_group) {
+                (Some(path_start), Some(group_start)) if group_start < path_start => {
+                    let Some(group_end) = Self::find_matching_group_end(body, group_start) else {
+                        break;
+                    };
+                    let nested = &body[group_start..group_end];
+                    paths.extend(Self::paths_from_group_block_with_inherited(
+                        nested,
+                        brush_defs,
+                        inherited_brush,
+                    ));
+                    cursor = group_end;
+                }
+                (Some(path_start), _) => {
+                    let Some(tag_end) = Self::find_tag_end(body, path_start) else {
+                        break;
+                    };
+                    let tag = &body[path_start..=tag_end];
+                    let path_brush = Self::extract_attr(tag, "brush")
+                        .and_then(|id| brush_defs.get(&id))
+                        .or(inherited_brush);
+                    if let Some(path) = Self::path_from_dsl_tag(tag, paths.len() + 1, path_brush) {
+                        paths.push(path);
+                    }
+                    cursor = tag_end.saturating_add(1);
+                }
+                (None, Some(group_start)) => {
+                    let Some(group_end) = Self::find_matching_group_end(body, group_start) else {
+                        break;
+                    };
+                    let nested = &body[group_start..group_end];
+                    paths.extend(Self::paths_from_group_block_with_inherited(
+                        nested,
+                        brush_defs,
+                        inherited_brush,
+                    ));
+                    cursor = group_end;
+                }
+                (None, None) => break,
+            }
+        }
+    }
+
+    fn group_path_count(script: &str, group_id: &str) -> usize {
+        Self::find_group_block_range(script, group_id)
+            .map(|(start, end)| Self::paths_from_group_block(&script[start..end]).len())
+            .unwrap_or(0)
+    }
+
+    fn brush_defs_from_script(script: &str) -> HashMap<String, BrushSettings> {
+        let mut defs = HashMap::<String, BrushSettings>::new();
+        let mut cursor = 0usize;
+        while let Some(start) = Self::find_ascii_case_insensitive(script, "<Brush", cursor) {
+            let Some(tag_end) = Self::find_tag_end(script, start) else {
+                break;
+            };
+            let tag = &script[start..=tag_end];
+            if let Some(id) = Self::extract_attr(tag, "id") {
+                defs.insert(id, Self::brush_from_dsl_attrs(tag, None));
+            }
+            cursor = tag_end.saturating_add(1);
+        }
+        defs
+    }
+
+    fn path_from_dsl_tag(
+        tag: &str,
+        fallback_index: usize,
+        inherited_brush: Option<&BrushSettings>,
+    ) -> Option<VectorPathDraft> {
+        let d = Self::extract_attr(tag, "d")?;
+        let points = Self::points_from_path_d(&d);
+        if points.len() < 2 {
+            return None;
+        }
+        let brush = Self::brush_from_dsl_attrs(tag, inherited_brush);
+        Some(VectorPathDraft {
+            id: Self::extract_attr(tag, "id")
+                .unwrap_or_else(|| format!("vector_path_{fallback_index:02}")),
+            kind: VectorPathKind::Freehand,
+            points,
+            brush,
+            export_simplify_epsilon: 0.2,
+        })
+    }
+
+    fn brush_from_dsl_attrs(tag: &str, inherited_brush: Option<&BrushSettings>) -> BrushSettings {
+        let mut brush = if let Some(style) =
+            Self::extract_attr(tag, "strokeStyle").or_else(|| Self::extract_attr(tag, "style"))
+        {
+            BrushSettings::for_preset(Self::brush_preset_from_style(&style))
+        } else {
+            inherited_brush
+                .cloned()
+                .unwrap_or_else(|| BrushSettings::for_preset(BrushPreset::Sketch))
+        };
+        if let Some(stroke) =
+            Self::extract_attr(tag, "stroke").or_else(|| Self::extract_attr(tag, "color"))
+        {
+            brush.color = stroke;
+        }
+        if let Some(width) =
+            Self::extract_attr(tag, "strokeWidth").and_then(|value| value.parse::<f32>().ok())
+        {
+            brush.stroke_width = width;
+        }
+        if let Some(opacity) =
+            Self::extract_attr(tag, "opacity").and_then(|value| value.parse::<f32>().ok())
+        {
+            brush.opacity = opacity;
+        }
+        if let Some(roughness) =
+            Self::extract_attr(tag, "strokeRoughness").and_then(|value| value.parse::<f32>().ok())
+        {
+            brush.roughness = roughness;
+        }
+        if let Some(copies) =
+            Self::extract_attr(tag, "strokeCopies").and_then(|value| value.parse::<u32>().ok())
+        {
+            brush.copies = copies.clamp(1, 12);
+        }
+        if let Some(texture) =
+            Self::extract_attr(tag, "strokeTexture").and_then(|value| value.parse::<f32>().ok())
+        {
+            brush.texture_strength = texture.clamp(0.0, 1.0);
+        }
+        if let Some(bristles) =
+            Self::extract_attr(tag, "strokeBristles").and_then(|value| value.parse::<u32>().ok())
+        {
+            brush.bristle_count = bristles.min(24);
+        }
+        if let Some(pressure_min) =
+            Self::extract_attr(tag, "strokePressureMin").and_then(|value| value.parse::<f32>().ok())
+        {
+            brush.pressure_min = pressure_min.clamp(0.05, 1.0);
+        }
+        if let Some(pressure_curve) = Self::extract_attr(tag, "strokePressureCurve")
+            .and_then(|value| value.parse::<f32>().ok())
+        {
+            brush.pressure_curve = pressure_curve.clamp(0.25, 3.0);
+        }
+        brush
+    }
+
+    fn brush_preset_from_style(style: &str) -> BrushPreset {
+        match style.trim().to_ascii_lowercase().as_str() {
+            "ink" => BrushPreset::CleanInk,
+            "pencil" => BrushPreset::Pencil,
+            "rough" => BrushPreset::Rough,
+            "charcoal" => BrushPreset::Charcoal,
+            "marker" => BrushPreset::Marker,
+            "hairline" => BrushPreset::Hairline,
+            _ => BrushPreset::Sketch,
+        }
+    }
+
+    fn points_from_path_d(d: &str) -> Vec<VectorPoint> {
+        let tokens = Self::path_d_tokens(d);
+        let mut points = Vec::new();
+        let mut cursor = 0usize;
+        let mut command = 'M';
+        while cursor < tokens.len() {
+            if tokens[cursor].len() == 1 {
+                let ch = tokens[cursor].chars().next().unwrap_or(' ');
+                if ch.is_ascii_alphabetic() {
+                    command = ch;
+                    cursor += 1;
+                    continue;
+                }
+            }
+            match command {
+                'M' | 'L' => {
+                    if cursor + 1 >= tokens.len() {
+                        break;
+                    }
+                    if let (Ok(x), Ok(y)) = (
+                        tokens[cursor].parse::<f32>(),
+                        tokens[cursor + 1].parse::<f32>(),
+                    ) {
+                        points.push(VectorPoint::new(x, y));
+                    }
+                    cursor += 2;
+                    command = if command == 'M' { 'L' } else { command };
+                }
+                'C' => {
+                    if cursor + 5 >= tokens.len() {
+                        break;
+                    }
+                    if let (Ok(x), Ok(y)) = (
+                        tokens[cursor + 4].parse::<f32>(),
+                        tokens[cursor + 5].parse::<f32>(),
+                    ) {
+                        points.push(VectorPoint::new(x, y));
+                    }
+                    cursor += 6;
+                }
+                _ => {
+                    cursor += 1;
+                }
+            }
+        }
+        points
+    }
+
+    fn path_d_tokens(d: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+        for ch in d.chars() {
+            if ch.is_ascii_alphabetic() {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                tokens.push(ch.to_string());
+            } else if ch.is_ascii_digit() || ch == '.' || ch == '-' || ch == '+' {
+                if (ch == '-' || ch == '+') && !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                current.push(ch);
+            } else if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        }
+        if !current.is_empty() {
+            tokens.push(current);
+        }
+        tokens
     }
 
     fn path_to_dsl(path: &VectorPathDraft) -> String {
@@ -1058,6 +2142,24 @@ impl VectorLabPage {
             Self::format_coord(path.brush.pressure_min),
             Self::format_coord(path.brush.pressure_curve),
             Self::format_coord(path.brush.opacity)
+        )
+    }
+
+    fn path_to_compact_dsl(
+        path: &VectorPathDraft,
+        group_brush: Option<&str>,
+        path_brush: &str,
+    ) -> String {
+        let brush_attr = if group_brush == Some(path_brush) {
+            String::new()
+        } else {
+            format!(r#" brush="{}""#, Self::escape_attr(path_brush))
+        };
+        format!(
+            r##"<Path id="{}"{} d="{}" />"##,
+            Self::escape_attr(&path.id),
+            brush_attr,
+            Self::escape_attr(&Self::path_d(path)),
         )
     }
 
@@ -1758,6 +2860,145 @@ impl VectorLabPage {
         }
         list
     }
+
+    fn render_group_picker_modal(
+        &self,
+        group_options: Vec<(String, usize)>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let mut group_list = div().flex().flex_col().gap_2();
+        if group_options.is_empty() {
+            group_list = group_list.child(
+                div()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(white().opacity(0.10))
+                    .bg(rgb(0x090d14))
+                    .p_3()
+                    .text_sm()
+                    .text_color(white().opacity(0.58))
+                    .child("No MotionLoom groups found in the current DSL."),
+            );
+        } else {
+            for (group_id, path_count) in group_options {
+                let label = group_id.clone();
+                let group_id_for_down = group_id.clone();
+                let group_id_for_up = group_id;
+                group_list = group_list.child(
+                    div()
+                        .h(px(34.0))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(white().opacity(0.14))
+                        .bg(white().opacity(0.06))
+                        .hover(|s| s.bg(white().opacity(0.12)))
+                        .cursor_pointer()
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .text_sm()
+                        .text_color(white().opacity(0.86))
+                        .child(label)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(white().opacity(if path_count > 0 {
+                                    0.62
+                                } else {
+                                    0.36
+                                }))
+                                .child(if path_count == 1 {
+                                    "1 path".to_string()
+                                } else {
+                                    format!("{path_count} paths")
+                                }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.import_motionloom_group(group_id_for_down.clone(), window, cx);
+                                cx.notify();
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.import_motionloom_group(group_id_for_up.clone(), window, cx);
+                                cx.notify();
+                            }),
+                        ),
+                );
+            }
+        }
+
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .bg(rgba(0x00000099))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(460.0))
+                    .max_h(px(560.0))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(white().opacity(0.18))
+                    .bg(rgb(0x10151f))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .px_4()
+                            .py_3()
+                            .border_b_1()
+                            .border_color(white().opacity(0.10))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .text_color(white().opacity(0.94))
+                                            .child("Load MotionLoom Group"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(white().opacity(0.52))
+                                            .child("Choose a MotionLoom group. Groups with Path nodes load back as editable Vector Lab strokes."),
+                                    ),
+                            )
+                            .child(Self::control_button("Close").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.group_picker_open = false;
+                                    cx.notify();
+                                }),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .p_4()
+                            .max_h(px(470.0))
+                            .overflow_y_scrollbar()
+                            .child(group_list),
+                    ),
+            )
+    }
 }
 
 impl Focusable for VectorLabPage {
@@ -1767,7 +3008,9 @@ impl Focusable for VectorLabPage {
 }
 
 impl Render for VectorLabPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_group_id_input(window, cx);
+        self.ensure_canvas_bg_picker(window, cx);
         let snapshot = VectorCanvasSnapshot {
             paths: self.paths.clone(),
             selected_path: self.selected_path,
@@ -1782,6 +3025,7 @@ impl Render for VectorLabPage {
         let reference_opacity = self.reference_opacity;
         let reference_zoom = self.reference_zoom;
         let reference_offset = self.reference_offset;
+        let canvas_bg_color = self.canvas_bg_color;
         let tool_label = self.tool.label();
         let path_count = self.paths.len();
         let brush_summary = self.current_brush.summary();
@@ -1808,9 +3052,70 @@ impl Render for VectorLabPage {
         } else {
             "Advanced brush v"
         };
+        let motionloom_group_options = {
+            let gs = self.global.read(cx);
+            let script = gs.motionloom_scene_script();
+            Self::extract_group_ids(script)
+                .into_iter()
+                .map(|group_id| {
+                    let path_count = Self::group_path_count(script, &group_id);
+                    (group_id, path_count)
+                })
+                .collect::<Vec<_>>()
+        };
+        let group_picker_modal = self
+            .group_picker_open
+            .then(|| self.render_group_picker_modal(motionloom_group_options.clone(), cx));
+        let group_id_input_elem = if let Some(input) = self.motionloom_group_id_input.as_ref() {
+            let input_for_focus = input.clone();
+            div()
+                .h(px(30.0))
+                .w(px(190.0))
+                .rounded_md()
+                .border_1()
+                .border_color(white().opacity(0.16))
+                .bg(rgb(0x090d14))
+                .overflow_hidden()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |_, _, window, cx| {
+                        cx.stop_propagation();
+                        input_for_focus.read(cx).focus_handle(cx).focus(window);
+                    }),
+                )
+                .child(Input::new(input).h_full().w_full())
+                .into_any_element()
+        } else {
+            div().h(px(30.0)).w(px(190.0)).into_any_element()
+        };
+        let bg_color_picker_elem = if let Some(picker) = self.canvas_bg_picker.as_ref() {
+            div()
+                .h(px(30.0))
+                .flex()
+                .items_center()
+                .child(
+                    ColorPicker::new(picker)
+                        .small()
+                        .label("BG Color")
+                        .featured_colors(vec![
+                            Hsla::from(rgb(0x0f1624)),
+                            Hsla::from(rgb(0x111827)),
+                            Hsla::from(rgb(0xffffff)),
+                            Hsla::from(rgb(0xf7f7f7)),
+                            Hsla::from(rgb(0xf8f3ed)),
+                            Hsla::from(rgb(0x0b1220)),
+                            Hsla::from(rgb(0x1f2937)),
+                            Hsla::from(rgb(0x3f79c5)),
+                        ]),
+                )
+                .into_any_element()
+        } else {
+            div().h(px(30.0)).into_any_element()
+        };
 
         div()
             .size_full()
+            .relative()
             .track_focus(&self.focus_handle)
             .bg(rgb(0x0b0f18))
             .text_color(white().opacity(0.9))
@@ -1922,6 +3227,14 @@ impl Render for VectorLabPage {
                                     cx.notify();
                                 }),
                             ))
+                            .child(Self::control_button("Import VFX Preview").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.import_vfx_preview_reference(cx);
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(bg_color_picker_elem)
                             .child(
                                 Self::dynamic_button(
                                     image_controls_label.to_string(),
@@ -2256,10 +3569,26 @@ impl Render for VectorLabPage {
                                     cx.notify();
                                 }),
                             ))
-                            .child(Self::control_button("Send to MotionLoom").on_mouse_down(
+                            .child(Self::control_button("Copy Group DSL").on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
-                                    this.send_to_motionloom(cx);
+                                    this.copy_group_dsl(cx);
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(Self::section_label("GROUP ID"))
+                            .child(group_id_input_elem)
+                            .child(Self::control_button("Load Group").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.group_picker_open = true;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(Self::control_button("Attach / Replace Group").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.attach_to_motionloom(window, cx);
                                     cx.notify();
                                 }),
                             )),
@@ -2311,7 +3640,7 @@ impl Render for VectorLabPage {
                                     .bottom_0()
                                     .left_0()
                                     .right_0()
-                                    .bg(rgb(0x0f1624)),
+                                    .bg(canvas_bg_color),
                             )
                             .children(reference_image.map(|layer| {
                                 div()
@@ -2445,5 +3774,145 @@ impl Render for VectorLabPage {
                     .text_color(white().opacity(0.62))
                     .child(self.status_line.clone()),
             )
+            .children(group_picker_modal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vector_lab_group_parser_reads_path_d_not_id() {
+        let group = r##"<Group id="7" x="0" y="0" opacity="1">
+      <Path id="vector_path_01"
+            d="M 448.9 101.5 L 403.7 165 L 381.8 214"
+            stroke="#111111"
+            strokeWidth="2.6"
+            strokeStyle="sketch"
+            strokeRoughness="1.3"
+            strokeCopies="5"
+            strokeTexture="0.4"
+            strokeBristles="4"
+            strokePressure="auto"
+            strokePressureMin="0.3"
+            strokePressureCurve="1.3"
+            opacity="0.6"
+            lineCap="round"
+            lineJoin="round"
+            fill="none" />
+    </Group>"##;
+
+        let paths = VectorLabPage::paths_from_group_block(group);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].id, "vector_path_01");
+        assert_eq!(paths[0].points.len(), 3);
+        assert_eq!(paths[0].brush.stroke_width, 2.6);
+    }
+
+    #[test]
+    fn vector_lab_compact_export_uses_shared_brush_defs() {
+        let brush = BrushSettings::for_preset(BrushPreset::Pencil);
+        let paths = vec![
+            VectorPathDraft {
+                id: "vector_path_01".to_string(),
+                kind: VectorPathKind::Freehand,
+                points: vec![VectorPoint::new(0.0, 0.0), VectorPoint::new(10.0, 10.0)],
+                brush: brush.clone(),
+                export_simplify_epsilon: 0.0,
+            },
+            VectorPathDraft {
+                id: "vector_path_02".to_string(),
+                kind: VectorPathKind::Freehand,
+                points: vec![VectorPoint::new(4.0, 2.0), VectorPoint::new(14.0, 12.0)],
+                brush,
+                export_simplify_epsilon: 0.0,
+            },
+        ];
+        let export = VectorLabPage::vector_group_export("eyebrow_left", &paths);
+        assert_eq!(export.brush_defs.len(), 1);
+        assert!(
+            export
+                .group_block
+                .contains(r#"brush="vector_eyebrow_left_brush_01""#)
+        );
+        assert!(
+            export
+                .group_block
+                .contains(r#"<Path id="vector_path_01" d="M 0 0 L 10 10" />"#)
+        );
+        assert!(!export.group_block.contains("strokeWidth"));
+        assert!(VectorLabPage::brush_defs_block(&export.brush_defs).contains("<Brush"));
+    }
+
+    #[test]
+    fn vector_lab_group_parser_reads_compact_group_brush() {
+        let script = r##"
+<Graph fps={60} duration="1s" size={[734,517]}>
+  <Scene id="vector_lab_trace">
+    <Defs>
+      <Brush id="vector_eyebrow_brush_01"
+             stroke="#111111"
+             strokeWidth="1.6"
+             strokeStyle="pencil"
+             strokeRoughness="1.8"
+             strokeCopies="6"
+             strokeTexture="0.7"
+             strokeBristles="5"
+             strokePressure="auto"
+             strokePressureMin="0.2"
+             strokePressureCurve="1.7"
+             opacity="0.4"
+             fill="none" />
+    </Defs>
+    <Group id="eyebrow" brush="vector_eyebrow_brush_01" x="0" y="0" opacity="1">
+      <Path id="vector_path_01" d="M 268 293.6 L 266.7 287.3 L 270.4 289.8" />
+    </Group>
+  </Scene>
+  <Present from="vector_lab_trace" />
+</Graph>
+"##;
+        let brush_defs = VectorLabPage::brush_defs_from_script(script);
+        let (start, end) = VectorLabPage::find_group_block_range(script, "eyebrow").unwrap();
+        let paths =
+            VectorLabPage::paths_from_group_block_with_brushes(&script[start..end], &brush_defs);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].brush.preset, BrushPreset::Pencil);
+        assert_eq!(paths[0].brush.copies, 6);
+        assert_eq!(paths[0].brush.bristle_count, 5);
+        assert!((paths[0].brush.stroke_width - 1.6).abs() < 0.001);
+    }
+
+    #[test]
+    fn vector_lab_group_parser_reads_nested_group_brush_override() {
+        let script = r##"
+<Graph fps={60} duration="1s" size={[734,517]}>
+  <Scene id="vector_lab_trace">
+    <Defs>
+      <Brush id="outer_brush" stroke="#111111" strokeWidth="1.6" strokeStyle="pencil" />
+      <Brush id="inner_brush" stroke="#3f79c5" strokeWidth="2.4" strokeStyle="marker" />
+    </Defs>
+    <Group id="root_lines" brush="outer_brush" x="0" y="0" opacity="1">
+      <Path id="outer_path" d="M 0 0 L 10 10" />
+      <Group id="nested_lines" brush="inner_brush" x="0" y="0">
+        <Path id="inner_path" d="M 4 0 L 14 10" />
+      </Group>
+    </Group>
+  </Scene>
+  <Present from="vector_lab_trace" />
+</Graph>
+"##;
+        let brush_defs = VectorLabPage::brush_defs_from_script(script);
+        let (start, end) = VectorLabPage::find_group_block_range(script, "root_lines").unwrap();
+        let paths =
+            VectorLabPage::paths_from_group_block_with_brushes(&script[start..end], &brush_defs);
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].id, "outer_path");
+        assert_eq!(paths[0].brush.preset, BrushPreset::Pencil);
+        assert!((paths[0].brush.stroke_width - 1.6).abs() < 0.001);
+        assert_eq!(paths[1].id, "inner_path");
+        assert_eq!(paths[1].brush.preset, BrushPreset::Marker);
+        assert_eq!(paths[1].brush.color, "#3f79c5");
+        assert!((paths[1].brush.stroke_width - 2.4).abs() < 0.001);
     }
 }

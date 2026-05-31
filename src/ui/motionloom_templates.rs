@@ -16,35 +16,46 @@ pub enum LayerEffectTemplateKind {
     TransitionFadeInOut,
 }
 
-pub const DEFAULT_GRAPH_SCRIPT: &str = r#"<Graph scope="clip" fps={60} size={[1920,1080]}>
-  <Input id="clip0" type="video" from="input:clip0" />
-  <Tex id="src" fmt="rgba16f" from="clip0" />
-  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
-  <Pass id="fx_blur" kind="compute" effect="gaussian_5tap_h"
-        in={["src"]} out={["out"]}
-        params={{ sigma: "10.0" }} />
-  <Present from="out" />
-</Graph>"#;
+pub struct SceneTemplate {
+    pub label: &'static str,
+    pub description: &'static str,
+    pub script: &'static str,
+}
 
-pub const DEFAULT_SCENE_SCRIPT: &str = r##"<Graph scope="scene" fps={60} duration="3s" size={[1920,1080]}>
-  <Solid color="#000000" />
-  <Text value="hello world"
-        x="center"
-        y="center"
-        fontSize="96"
-        color="#ffffff"
-        opacity="min($time.sec / 1.0, 1.0)" />
-  <Present from="scene" />
-</Graph>"##;
+pub const BUSINESS_BARCHART_SCRIPT: &str =
+    include_str!("motionloom_templates/scene/business_barchart_animated_easein.motionloom");
+pub const HELLO_WORLD_SCRIPT: &str =
+    include_str!("motionloom_templates/scene/hello_world.motionloom");
+
+pub const SCENE_TEMPLATES: &[SceneTemplate] = &[
+    SceneTemplate {
+        label: "Hello World",
+        description: "Minimal scene graph with one centered text group.",
+        script: HELLO_WORLD_SCRIPT,
+    },
+    SceneTemplate {
+        label: "Business Bar Chart",
+        description: "Animated quarterly revenue chart with gradients, labels, grid, and eased bar growth.",
+        script: BUSINESS_BARCHART_SCRIPT,
+    },
+];
+
+pub fn first_scene_template() -> Option<&'static SceneTemplate> {
+    SCENE_TEMPLATES.first()
+}
+
+pub fn scene_template_by_label(label: &str) -> Option<&'static SceneTemplate> {
+    SCENE_TEMPLATES
+        .iter()
+        .find(|template| template.label == label)
+}
 
 fn begin_layer_graph(add_time_parameter: bool) -> String {
     let mut script = String::new();
     if add_time_parameter {
-        script.push_str(
-            "<Graph scope=\"layer\" fps={60} apply=\"graph\" duration=\"5s\" size={[1920,1080]}>\n",
-        );
+        script.push_str("<Graph fps={60} apply=\"graph\" duration=\"5s\" size={[1920,1080]}>\n");
     } else {
-        script.push_str("<Graph scope=\"layer\" fps={60} size={[1920,1080]}>\n");
+        script.push_str("<Graph fps={60} size={[1920,1080]}>\n");
     }
     script.push_str(LAYER_GRAPH_INPUTS);
     script
@@ -307,7 +318,7 @@ pub fn append_layer_effect_template_script(
         }
     }
 
-    if !existing_script.contains("<Graph scope=\"layer\"")
+    if !existing_script.contains("<Graph")
         || !existing_script.contains("<Tex id=\"src\"")
         || !existing_script.contains("<Tex id=\"out\"")
     {

@@ -1,0 +1,145 @@
+<Graph fps={30} duration="5s" size={[1280,720]}>
+  <Background color="#0b1220" />
+
+  <Scene id="business_barchart_animated_easeinout">
+
+    <Defs>
+      <LinearGradient id="bg_glow" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#111c31, 0.55:#0b1220, 1:#09101c" />
+      <LinearGradient id="panel_grad" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#182743, 1:#101b30" />
+      <LinearGradient id="bar_q1" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#58c6ff, 1:#2f68ff" />
+      <LinearGradient id="bar_q2" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#6fe7c6, 1:#1f9b7d" />
+      <LinearGradient id="bar_q3" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#ffd277, 1:#ff8a3d" />
+      <LinearGradient id="bar_q4" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#f7a5ff, 1:#b25fff" />
+      <LinearGradient id="bar_gloss" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#ffffff66, 1:#ffffff00" />
+    </Defs>
+
+    <Rect x="0" y="0" width="1280" height="720" fill="url(#bg_glow)" />
+    <Rect x="140" y="80" width="1000" height="560" fill="url(#panel_grad)" stroke="#3c5b86" strokeWidth="2" />
+
+    <Group id="chart_labels" x="0" y="0" opacity="1">
+      <Text x="190" y="130" value="Quarterly Revenue" fontFamily="Arial" fontSize="46" color="#eaf2ff" />
+      <Text x="190" y="170" value="FY2026 (USD, Millions)" fontFamily="Arial" fontSize="22" color="#a9bddb" />
+      <Text x="160" y="560" value="0" fontFamily="Arial" fontSize="20" color="#8ea7c8" />
+      <Text x="146" y="500" value="20" fontFamily="Arial" fontSize="20" color="#8ea7c8" />
+      <Text x="146" y="440" value="40" fontFamily="Arial" fontSize="20" color="#8ea7c8" />
+      <Text x="146" y="380" value="60" fontFamily="Arial" fontSize="20" color="#8ea7c8" />
+      <Text x="146" y="320" value="80" fontFamily="Arial" fontSize="20" color="#8ea7c8" />
+      <Text x="132" y="260" value="100" fontFamily="Arial" fontSize="20" color="#8ea7c8" />
+      <Text x="336" y="598" value="Q1" fontFamily="Arial" fontSize="26" color="#d9e5ff" />
+      <Text x="516" y="598" value="Q2" fontFamily="Arial" fontSize="26" color="#d9e5ff" />
+      <Text x="696" y="598" value="Q3" fontFamily="Arial" fontSize="26" color="#d9e5ff" />
+      <Text x="876" y="598" value="Q4" fontFamily="Arial" fontSize="26" color="#d9e5ff" />
+    </Group>
+
+    <Group id="chart_grid" x="0" y="0" opacity="1">
+      <Line x1="220" y1="560" x2="1050" y2="560" stroke="#d9e5ff" strokeWidth="3" />
+      <Line x1="220" y1="220" x2="220" y2="560" stroke="#d9e5ff" strokeWidth="3" />
+      <Line x1="220" y1="500" x2="1050" y2="500" stroke="#9fb5d344" strokeWidth="2" />
+      <Line x1="220" y1="440" x2="1050" y2="440" stroke="#9fb5d344" strokeWidth="2" />
+      <Line x1="220" y1="380" x2="1050" y2="380" stroke="#9fb5d344" strokeWidth="2" />
+      <Line x1="220" y1="320" x2="1050" y2="320" stroke="#9fb5d344" strokeWidth="2" />
+      <Line x1="220" y1="260" x2="1050" y2="260" stroke="#9fb5d344" strokeWidth="2" />
+    </Group>
+
+    <Group id="bar_group_q1" x="0" y="0" opacity="1">
+      <Rect x="300"
+            y={curve("0:560:linear, 0.35:560:ease_in_out, 1.25:390:linear, 5:390:linear")}
+            width="120"
+            height={curve("0:0:linear, 0.35:0:ease_in_out, 1.25:170:linear, 5:170:linear")}
+            fill="url(#bar_q1)" />
+
+      <Rect x="300"
+            y={curve("0:560:linear, 0.35:560:ease_in_out, 1.25:390:linear, 5:390:linear")}
+            width="120"
+            height={curve("0:0:linear, 0.35:0:ease_in_out, 1.25:42:linear, 5:42:linear")}
+            fill="url(#bar_gloss)"
+            blend="screen" />
+
+      <Text x="320"
+            y={curve("0:358:linear, 0.35:358:ease_in_out, 1.25:372:linear, 5:372:linear")}
+            value="$34M"
+            fontFamily="Arial"
+            fontSize="22"
+            color="#cfe6ff"
+            opacity={curve("0:0:linear, 1.05:0:ease_in_out, 1.27:1:linear, 5:1:linear")} />
+    </Group>
+
+    <Group id="bar_group_q2" x="0" y="0" opacity="1">
+      <Rect x="480"
+            y={curve("0:560:linear, 1.35:560:ease_in_out, 2.25:340:linear, 5:340:linear")}
+            width="120"
+            height={curve("0:0:linear, 1.35:0:ease_in_out, 2.25:220:linear, 5:220:linear")}
+            fill="url(#bar_q2)" />
+
+      <Rect x="480"
+            y={curve("0:560:linear, 1.35:560:ease_in_out, 2.25:340:linear, 5:340:linear")}
+            width="120"
+            height={curve("0:0:linear, 1.35:0:ease_in_out, 2.25:48:linear, 5:48:linear")}
+            fill="url(#bar_gloss)"
+            blend="screen" />
+
+      <Text x="500"
+            y={curve("0:308:linear, 1.35:308:ease_in_out, 2.25:322:linear, 5:322:linear")}
+            value="$44M"
+            fontFamily="Arial"
+            fontSize="22"
+            color="#cfe6ff"
+            opacity={curve("0:0:linear, 2.05:0:ease_in_out, 2.27:1:linear, 5:1:linear")} />
+    </Group>
+
+    <Group id="bar_group_q3" x="0" y="0" opacity="1">
+      <Rect x="660"
+            y={curve("0:560:linear, 2.35:560:ease_in_out, 3.25:290:linear, 5:290:linear")}
+            width="120"
+            height={curve("0:0:linear, 2.35:0:ease_in_out, 3.25:270:linear, 5:270:linear")}
+            fill="url(#bar_q3)" />
+
+      <Rect x="660"
+            y={curve("0:560:linear, 2.35:560:ease_in_out, 3.25:290:linear, 5:290:linear")}
+            width="120"
+            height={curve("0:0:linear, 2.35:0:ease_in_out, 3.25:54:linear, 5:54:linear")}
+            fill="url(#bar_gloss)"
+            blend="screen" />
+
+      <Text x="680"
+            y={curve("0:258:linear, 2.35:258:ease_in_out, 3.25:272:linear, 5:272:linear")}
+            value="$54M"
+            fontFamily="Arial"
+            fontSize="22"
+            color="#cfe6ff"
+            opacity={curve("0:0:linear, 3.05:0:ease_in_out, 3.27:1:linear, 5:1:linear")} />
+    </Group>
+
+    <Group id="bar_group_q4" x="0" y="0" opacity="1">
+      <Rect x="840"
+            y={curve("0:560:linear, 3.35:560:ease_in_out, 4.35:250:linear, 5:250:linear")}
+            width="120"
+            height={curve("0:0:linear, 3.35:0:ease_in_out, 4.35:310:linear, 5:310:linear")}
+            fill="url(#bar_q4)" />
+
+      <Rect x="840"
+            y={curve("0:560:linear, 3.35:560:ease_in_out, 4.35:250:linear, 5:250:linear")}
+            width="120"
+            height={curve("0:0:linear, 3.35:0:ease_in_out, 4.35:62:linear, 5:62:linear")}
+            fill="url(#bar_gloss)"
+            blend="screen" />
+
+      <Text x="860"
+            y={curve("0:218:linear, 3.35:218:ease_in_out, 4.35:232:linear, 5:232:linear")}
+            value="$62M"
+            fontFamily="Arial"
+            fontSize="22"
+            color="#cfe6ff"
+            opacity={curve("0:0:linear, 4.15:0:ease_in_out, 4.37:1:linear, 5:1:linear")} />
+    </Group>
+  </Scene>
+
+  <Present from="business_barchart_animated_easeinout" />
+</Graph>

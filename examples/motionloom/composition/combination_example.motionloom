@@ -1,0 +1,116 @@
+<Graph fps={30} duration="4s" size={[1280,720]} renderSize={[1280,720]}>
+
+  <Background color="#000000" />
+
+  <Camera id="main_camera"
+          target="main_actor"
+          x={curve("0:-0.35:ease_in_out, 2:0.35:ease_in_out, 4:0:ease_in_out")}
+          y="0"
+          zoom={curve("0:1.0:linear, 2:1.18:ease_in_out, 4:1.0:ease_in_out")}
+          fov="35" />
+
+  <Scene id="hello_scene">
+    <Group id="title_group" x="0" y="0" opacity="1">
+      <Text id="hello_text"
+            value="hello world"
+            x="center"
+            y="center"
+            fontSize="76"
+            color="#ffffff"
+            opacity={curve("0:0:linear, 1:1:ease_in_out, 4:1:linear")} />
+    </Group>
+    <Circle id="accent_orb"
+            x="640"
+            y="360"
+            radius="180"
+            color="#3B82F6"
+            opacity="0.35" />
+  </Scene>
+
+  <Animation id="character_animation">
+    <Actor id="main_actor"
+           model="../sample_assets/glb/mammuthus_primigenius_blumbach.glb"
+           rig="humanoid_v1"
+           retarget="main_actor_humanoid_map"
+           x="0"
+           y="0"
+           z="0"
+           scale="1">
+      <Material style="toon" outline="true" outlineWidth="2" />
+    </Actor>
+
+    <Retarget id="main_actor_humanoid_map" actor="main_actor" preset="humanoid_v1">
+      <Map from="Hips_183" to="hips" />
+      <Map from="Spine_104" to="spine" />
+      <Map from="Chest_77" to="chest" />
+      <Map from="Neck_48" to="neck" />
+      <Map from="Head_47" to="head" />
+      <Map from="Right shoulder_70" to="shoulder_r" />
+      <Map from="Right arm_68" to="upper_arm_r" />
+      <Map from="Right elbow_67" to="forearm_r" />
+      <Map from="Right wrist_64" to="hand_r" />
+    </Retarget>
+
+    <Action id="wave_hand" skeleton="humanoid_v1" duration="2s">
+      <Pose t="0.0">
+        <Bone id="upper_arm_r" rotationZ="8" />
+        <Bone id="forearm_r" rotationZ="0" />
+        <Bone id="hand_r" rotationZ="0" />
+      </Pose>
+      <Pose t="0.5">
+        <Bone id="upper_arm_r" rotationZ="-48" />
+        <Bone id="forearm_r" rotationZ="-42" />
+        <Bone id="hand_r" rotationZ="-18" />
+      </Pose>
+      <Pose t="1.0">
+        <Bone id="upper_arm_r" rotationZ="-46" />
+        <Bone id="forearm_r" rotationZ="-18" />
+        <Bone id="hand_r" rotationZ="18" />
+      </Pose>
+      <Pose t="1.5">
+        <Bone id="upper_arm_r" rotationZ="-48" />
+        <Bone id="forearm_r" rotationZ="-42" />
+        <Bone id="hand_r" rotationZ="-18" />
+      </Pose>
+      <Pose t="2.0">
+        <Bone id="upper_arm_r" rotationZ="8" />
+        <Bone id="forearm_r" rotationZ="0" />
+        <Bone id="hand_r" rotationZ="0" />
+      </Pose>
+    </Action>
+
+    <ApplyAction target="main_actor" action="wave_hand" at="0s" loop="true" />
+  </Animation>
+
+  <Layer id="global_layer">
+    <Effect id="soft_blur"
+            type="blur"
+            sigma="2.0" />
+    <Effect id="blue_hsla"
+            type="hsla"
+            hue="218"
+            saturation="0.62"
+            lightness="0.26"
+            alpha="0.78" />
+  </Layer>
+
+  <Tex id="background_tex" from="scene" fmt="rgba16f" />
+  <Tex id="scene_tex" from="hello_scene" fmt="rgba16f" />
+  <Tex id="character_tex" from="character_animation" fmt="rgba16f" />
+
+  <Tex id="comp_01" fmt="rgba16f" size={[1280,720]} />
+  <Pass id="character_over_background"
+        effect="over"
+        in={["background_tex", "character_tex"]}
+        out={["comp_01"]} />
+
+  <Tex id="comp_02" fmt="rgba16f" size={[1280,720]} />
+  <Pass id="text_over_character"
+        effect="over"
+        in={["comp_01", "scene_tex"]}
+        out={["comp_02"]} />
+
+  <Tex id="final" from="global_layer" input="comp_02" fmt="rgba16f" />
+
+  <Present from="final" />
+</Graph>

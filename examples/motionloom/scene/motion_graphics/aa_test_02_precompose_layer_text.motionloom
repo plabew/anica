@@ -1,0 +1,32 @@
+<Graph fps={60} duration="2s" size={[1920,1080]}>
+  <Background color="#05070B" />
+
+  <Scene id="aa_test_02_precompose_layer_text">
+    <!-- Same text as test 01, but rendered through Precompose + Layer source. If this is worse than test 01, source texture sampling/composite is the issue. -->
+    <Precompose id="text_source" size={[1920,1080]}>
+      <Rect x="0" y="0" width="1920" height="1080" color="#000000" opacity="0" />
+      <Text value="LAYER TEXT"
+            x="140"
+            y="320"
+            fontSize="156"
+            color="#FFFFFF"
+            opacity="1" />
+      <Text value="small layer subtitle 1920x1080"
+            x="148"
+            y="405"
+            fontSize="42"
+            color="#7DEBFF"
+            opacity="1" />
+      <Line x1="140" y1="470" x2="1780" y2="470"
+            stroke="#FFFFFF"
+            strokeWidth="2"
+            opacity="0.55" />
+    </Precompose>
+
+    <Layer id="text_layer"
+           source="text_source"
+           opacity="1" />
+  </Scene>
+
+  <Present from="aa_test_02_precompose_layer_text" />
+</Graph>

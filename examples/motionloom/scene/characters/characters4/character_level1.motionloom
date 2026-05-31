@@ -1,0 +1,115 @@
+<Graph fps={60} duration="1s" size={[734,517]}>
+  <Background color="#ffffff" />
+
+  <Scene id="vector_lab_trace">
+
+    <Defs>
+      <Brush id="pencil_trace"
+             stroke="#111111"
+             strokeWidth="1.6"
+             strokeStyle="pencil"
+             strokeRoughness="1.8"
+             strokeCopies="6"
+             strokeTexture="0.7"
+             strokeBristles="5"
+             strokePressure="auto"
+             strokePressureMin="0.2"
+             strokePressureCurve="1.7"
+             opacity="0.4"
+             lineCap="round"
+             lineJoin="round"
+             fill="none" />
+    </Defs>
+
+    <Group id="vector_lab_paths" x="0" y="0" opacity="1" brush="pencil_trace">
+      <Path id="vector_path_06" d="M 337 184.6 L 337 192.4" />
+      <Path id="vector_path_07" d="M 337 181.7 L 336.6 198.3 L 328.4 228.7" />
+      <Path id="vector_path_08" d="M 328.4 229.3 L 328.4 247.8" />
+      <Path id="vector_path_09" d="M 328.4 254.5 L 328.4 274.8" />
+      <Path id="vector_path_10" d="M 328.4 278.9 L 328.4 252.4" />
+      <Path id="vector_path_11" d="M 325.5 240.9 L 324.4 293.3" />
+      <Path id="vector_path_12" d="M 321.7 280.9 L 319.8 246.6" />
+      <Path id="vector_path_13" d="M 309.8 232.1 L 308.3 268.1 L 301 284.4" />
+      <Path id="vector_path_14" d="M 314.1 198.4 L 313.4 221.5" />
+      <Path id="vector_path_15" d="M 312.5 214.6 L 312.5 221.2" />
+      <Path id="vector_path_16" d="M 313.4 215.9 L 293.2 267.7" />
+      <Path id="vector_path_17" d="M 297.4 265 L 295 272.8" />
+      <Path id="vector_path_18" d="M 289.7 237.7 L 289.7 265.1" />
+      <Path id="vector_path_19" d="M 289.7 274.2 L 289.7 286.8" />
+      <Path id="vector_path_20" d="M 340.3 183.6 L 345.6 210.1" />
+      <Path id="vector_path_21" d="M 348.3 210.9 L 350.2 201" />
+      <Path id="vector_path_22" d="M 351.1 203.5 L 351.5 197.2 L 360.6 189" />
+      <Path id="vector_path_23" d="M 364 188 L 364 199.6" />
+      <Path id="vector_path_24" d="M 357.5 209.6 L 357.5 198.8" />
+      <Path id="vector_path_25" d="M 368.8 190.9 L 372.8 209.6 L 372.8 241.8 L 364.7 289.2" />
+      <Path id="vector_path_26" d="M 365.5 290.1 L 364.3 252.3" />
+      <Path id="vector_path_27" d="M 370.6 241.5 L 370.6 238.7" />
+      <Path id="vector_path_28" d="M 368.4 256.7 L 369.3 275.7 L 372.1 281 L 377.7 281.2" />
+      <Path id="vector_path_29" d="M 381.7 286.9 L 381.7 282.8" />
+      <Path id="vector_path_30" d="M 381.7 281.7 L 394.7 281.7 L 403.8 262.6 L 407.9 242.9" />
+      <Path id="vector_path_31" d="M 281.1 139.9 L 273.2 139.9 L 252.5 149 L 220.9 171.8" />
+      <Path id="vector_path_32" d="M 229.9 174.4 L 236.4 161.9 L 251.3 150.3" />
+      <Path id="vector_path_33" d="M 251.8 149.6 L 248.7 183.4 L 234.6 211.2" />
+      <Path id="vector_path_34" d="M 246.9 193.7 L 228.1 197.1 L 214 204.1" />
+      <Path id="vector_path_35" d="M 213.8 204.5 L 240.6 203.1 L 257.7 192.3" />
+      <Path id="vector_path_36" d="M 243.9 203.5 L 238.8 254.7 L 234.3 254" />
+      <Path id="vector_path_37" d="M 226.1 257.1 L 232.1 241.1 L 253.7 211.5" />
+      <Path id="vector_path_38" d="M 241.2 241.8 L 242.5 284.9 L 247.2 291.6 L 260.8 246.2 L 277.6 221.3" />
+      <Path id="vector_path_39" d="M 331.2 163.3 L 331.2 159.5 L 321.4 156.4 L 311.7 163 L 291.1 220.9 L 283.6 229.5 L 242.4 244" />
+      <Path id="vector_path_40" d="M 316 196.9 L 290.3 208.4 L 272.6 221.3" />
+      <Path id="vector_path_41" d="M 328.2 151.3 L 313 160.5 L 300.1 197.4 L 291.7 207.2 L 271.7 224.8 L 256.7 232.1" />
+      <Path id="vector_path_42" d="M 274.3 234.7 L 272.3 279.5 L 277.7 246.1 L 291.1 298.2 L 290.7 265.4" />
+      <Path id="vector_path_43" d="M 257.5 144.8 L 264.7 131.5 L 276.3 121.3" />
+      <Path id="vector_path_44" d="M 276.9 121.3 L 251.2 123.7 L 251.5 113.7 L 283.9 116.9" />
+      <Path id="vector_path_45" d="M 294.1 107.5 L 275.9 111 L 290.6 103.9 L 306.8 101.5 L 323.5 117.8" />
+      <Path id="vector_path_46" d="M 309.8 102.9 L 340.3 105.9" />
+      <Path id="vector_path_47" d="M 340.3 105.9 L 342.2 75.4 L 347.3 69.5 L 355 69.1" />
+      <Path id="vector_path_48" d="M 355.4 69.5 L 344.3 102" />
+      <Path id="vector_path_49" d="M 344.3 102 L 359 99.4 L 374.9 91.6 L 416.1 93.5" />
+      <Path id="vector_path_50" d="M 416.1 93.5 L 452.3 117.3" />
+      <Path id="vector_path_51" d="M 426.5 97.1 L 446.9 97.1" />
+      <Path id="vector_path_52" d="M 447.6 97.1 L 429.7 97.4" />
+      <Path id="vector_path_53" d="M 428.8 100.1 L 477.2 137.3" />
+      <Path id="vector_path_54" d="M 463.8 132.7 L 483.7 145.6 L 491.4 155.6" />
+      <Path id="vector_path_55" d="M 493.4 156.9 L 462.4 133.5" />
+      <Path id="vector_path_56" d="M 461.6 133.1 L 486.4 171.2 L 501 181.3" />
+      <Path id="vector_path_57" d="M 471.3 161.5 L 484.4 163.4 L 517 179.8 L 510.5 186.7" />
+      <Path id="vector_path_58" d="M 498.1 177.6 L 495.5 238.8 L 495.3 236" />
+      <Path id="vector_path_59" d="M 475.3 207.3 L 491.2 231.4 L 503.1 242.8" />
+      <Path id="vector_path_60" d="M 492 240 L 488.6 258.9" />
+      <Path id="vector_path_61" d="M 346.1 144.8 L 342.1 136.2 L 333.5 132.2" />
+      <Path id="vector_path_62" d="M 345 137.1 L 336.9 122.8" />
+      <Path id="vector_path_63" d="M 349.7 141.7 L 349.9 138.6 L 362.2 134.2" />
+      <Path id="vector_path_64" d="M 352 160 L 314.2 136.6" />
+      <Path id="vector_path_65" d="M 353.4 158.9 L 368.2 141.7 L 382.7 131.3 L 397.8 131.6 L 415.8 165.9" />
+      <Path id="vector_path_66" d="M 438.4 146.8 L 457.3 193.3" />
+      <Path id="vector_path_67" d="M 460.7 215.2 L 459.8 248.1" />
+      <Path id="vector_path_68" d="M 414.9 190.8 L 415.8 236 L 421 259.1" />
+      <Path id="vector_path_69" d="M 420.6 259.5 L 417 271.4 L 406.9 280" />
+      <Path id="vector_path_70" d="M 406.5 254.7 L 407.3 279.7" />
+      <Path id="vector_path_71" d="M 424.1 254.9 L 421.6 291.5" />
+      <Path id="vector_path_72" d="M 421.1 291 L 436.7 268.8" />
+      <Path id="vector_path_73" d="M 436.7 268.8 L 448.5 235.8" />
+      <Path id="vector_path_74" d="M 448.5 235.8 L 446.9 258.7 L 437.6 294.4 L 436 289.8" />
+      <Path id="vector_path_75" d="M 436 288.9 L 447.4 266.4 L 464.2 246.9" />
+      <Path id="vector_path_76" d="M 482.4 245.3 L 474.1 262 L 448.8 284.1" />
+      <Path id="vector_path_77" d="M 279.2 262.8 L 279.1 273 L 288.5 307" />
+      <Path id="vector_path_78" d="M 285.2 284.4 L 291.1 332.6" />
+      <Path id="vector_path_79" d="M 294 324.1 L 299.5 354.1 L 310.1 367.4" />
+      <Path id="vector_path_80" d="M 294.3 326.2 L 299.3 354.7" />
+      <Path id="vector_path_81" d="M 290.4 315.2 L 292.1 337.9 L 303 354.3" />
+      <Path id="vector_path_82" d="M 306.6 360.4 L 332.9 391.8" />
+      <Path id="vector_path_83" d="M 304.6 356.7 L 338 395.3 L 351.2 405.7" />
+      <Path id="vector_path_84" d="M 351.5 406 L 362.7 406.2" />
+      <Path id="vector_path_85" d="M 350.8 404.3 L 361.4 405.8 L 373.2 415.9 L 371.6 413.1 L 387.8 398.9" />
+      <Path id="vector_path_86" d="M 386.3 398.6 L 421.9 364 L 445.4 291.1" />
+      <Path id="vector_path_87" d="M 273.6 276.8 L 264.7 282.7 L 262.5 307.7 L 293.2 334.2" />
+      <Path id="vector_path_88" d="M 287.5 300.1 L 273.7 292.4 L 272.1 307.7 L 286.6 326" />
+      <Path id="vector_path_90" d="M 446.4 293.6 L 462.1 280.2 L 468.3 281.7 L 467 310.5 L 458.2 328.1 L 447.8 334.7 L 434.2 337.6" />
+      <Path id="vector_path_96" d="M 358.9 365.9 L 371.6 365.9" />
+      <Path id="vector_path_97" d="M 363.8 365.3 L 376.1 365.8" />
+    </Group>
+  </Scene>
+
+  <Present from="vector_lab_trace" />
+</Graph>

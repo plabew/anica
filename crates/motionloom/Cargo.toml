@@ -2,10 +2,17 @@
 name = "motionloom"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 license = "Apache-2.0"
+description = "MotionLoom DSL parser and renderer for video effects, scene graphs, motion graphics, and animation graphs."
+repository = "https://github.com/LOVELYZOMBIEYHO/anica"
+homepage = "https://github.com/LOVELYZOMBIEYHO/anica"
+documentation = "https://docs.rs/motionloom"
+readme = "README.md"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.133"
 exmex = "0.20"
 thiserror = "2.0.17"
 base64 = "0.22.1"

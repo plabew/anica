@@ -1,0 +1,160 @@
+<Graph fps={30} duration="4s" size={[1280,720]} renderSize={[1280,720]}>
+  <ModelProfile id="anime_profile"
+                model="../sample_assets/glb/your_character.glb"
+                preset="humanoid_v1">
+    <Retarget>
+      <Map from="Hips_183" to="hips" />
+      <Map from="Spine_104" to="spine" />
+      <Map from="Chest_77" to="chest" />
+      <Map from="Neck_48" to="neck" />
+      <Map from="Head_47" to="head" />
+
+      <Map from="Left shoulder_22" to="shoulder_l" />
+      <Map from="Left arm_20" to="upper_arm_l" />
+      <Map from="Left elbow_19" to="forearm_l" />
+      <Map from="Left wrist_16" to="hand_l" />
+
+      <Map from="Right shoulder_70" to="shoulder_r" />
+      <Map from="Right arm_68" to="upper_arm_r" />
+      <Map from="Right elbow_67" to="forearm_r" />
+      <Map from="Right wrist_64" to="hand_r" />
+
+      <Map from="Left leg_108" to="upper_leg_l" />
+      <Map from="Left knee_107" to="lower_leg_l" />
+      <Map from="Left ankle_106" to="foot_l" />
+      <Map from="Left toe_105" to="toe_l" />
+
+      <Map from="Right leg_112" to="upper_leg_r" />
+      <Map from="Right knee_111" to="lower_leg_r" />
+      <Map from="Right ankle_110" to="foot_r" />
+      <Map from="Right toe_109" to="toe_r" />
+    </Retarget>
+
+    <!-- Model-specific semantic axes. Tune this once per GLB, then reuse actions. -->
+    <BoneAxisMap>
+      <Axis bone="hips" turn="rotationY:1" />
+      <Axis bone="spine" turn="rotationY:1" bend="rotationZ:1" />
+      <Axis bone="chest" turn="rotationY:1" bend="rotationZ:1" />
+      <Axis bone="head" turn="rotationY:1" bend="rotationZ:1" />
+
+      <Axis bone="upper_arm_r" forward="rotationY:-1" side="rotationZ:1" twist="rotationX:1" restSide="6" />
+      <Axis bone="forearm_r" bend="rotationZ:-1" twist="rotationX:1" restBend="10" />
+      <Axis bone="hand_r" twist="rotationX:1" bend="rotationZ:-1" />
+
+      <Axis bone="upper_arm_l" forward="rotationY:1" side="rotationZ:-1" twist="rotationX:1" restSide="6" />
+      <Axis bone="forearm_l" bend="rotationZ:1" twist="rotationX:1" restBend="10" />
+      <Axis bone="hand_l" twist="rotationX:1" bend="rotationZ:1" />
+
+      <Axis bone="upper_leg_r" forward="rotationZ:-1" side="rotationY:1" />
+      <Axis bone="lower_leg_r" bend="rotationZ:1" />
+      <Axis bone="foot_r" bend="rotationZ:1" />
+      <Axis bone="upper_leg_l" forward="rotationZ:1" side="rotationY:-1" />
+      <Axis bone="lower_leg_l" bend="rotationZ:-1" />
+      <Axis bone="foot_l" bend="rotationZ:-1" />
+    </BoneAxisMap>
+  </ModelProfile>
+
+  <World id="forest_stage">
+    <Background id="forest_bg"
+                src="../sample_assets/backgrounds/forest_path_static.png"
+                fit="cover"
+                color="#87c9ff"
+                opacity="1" />
+
+    <Camera id="fixed_camera"
+            mode="orbit"
+            target="anime"
+            yaw="0"
+            pitch="0"
+            distance="3.4"
+            fov="35" />
+
+    <Actor id="anime"
+           model="../sample_assets/glb/your_character.glb"
+           profile="anime_profile"
+           x="0"
+           y="0"
+           z="0"
+           yaw="0"
+           pitch="0"
+           roll="0"
+           scale="1"
+           opacity="1">
+      <Material style="toon" outline="true" outlineWidth="2" />
+      <Play clip="Idle" loop="true" speed="1" />
+    </Actor>
+  </World>
+
+  <Action id="straight_punch" skeleton="humanoid_v1" duration="1.6s" intent="punch">
+    <Pose t="0.0" label="guard">
+      <Bone id="hips" turn="0" />
+      <Bone id="chest" turn="0" />
+      <Bone id="upper_arm_r" forward="4" side="18" />
+      <Bone id="forearm_r" bend="72" />
+      <Bone id="hand_r" twist="0" />
+      <Bone id="upper_arm_l" forward="4" side="18" />
+      <Bone id="forearm_l" bend="72" />
+      <Bone id="hand_l" twist="0" />
+    </Pose>
+
+    <Pose t="0.22" label="right_punch_windup">
+      <Bone id="hips" turn="5" />
+      <Bone id="chest" turn="10" />
+      <Bone id="upper_arm_r" forward="-8" side="24" />
+      <Bone id="forearm_r" bend="88" />
+      <Bone id="upper_arm_l" forward="10" side="14" />
+      <Bone id="forearm_l" bend="64" />
+    </Pose>
+
+    <Pose t="0.42" label="right_punch_extend">
+      <Bone id="hips" turn="-10" />
+      <Bone id="chest" turn="-24" />
+      <Bone id="upper_arm_r" forward="62" side="2" twist="8" />
+      <Bone id="forearm_r" bend="6" />
+      <Bone id="hand_r" twist="14" />
+      <Bone id="upper_arm_l" forward="0" side="22" />
+      <Bone id="forearm_l" bend="78" />
+    </Pose>
+
+    <Pose t="0.72" label="guard_recover">
+      <Bone id="hips" turn="0" />
+      <Bone id="chest" turn="0" />
+      <Bone id="upper_arm_r" forward="4" side="18" />
+      <Bone id="forearm_r" bend="72" />
+      <Bone id="upper_arm_l" forward="4" side="18" />
+      <Bone id="forearm_l" bend="72" />
+    </Pose>
+
+    <Pose t="1.02" label="left_punch_windup">
+      <Bone id="hips" turn="-5" />
+      <Bone id="chest" turn="-10" />
+      <Bone id="upper_arm_l" forward="-8" side="24" />
+      <Bone id="forearm_l" bend="88" />
+      <Bone id="upper_arm_r" forward="10" side="14" />
+      <Bone id="forearm_r" bend="64" />
+    </Pose>
+
+    <Pose t="1.22" label="left_punch_extend">
+      <Bone id="hips" turn="10" />
+      <Bone id="chest" turn="24" />
+      <Bone id="upper_arm_l" forward="62" side="2" twist="-8" />
+      <Bone id="forearm_l" bend="6" />
+      <Bone id="hand_l" twist="-14" />
+      <Bone id="upper_arm_r" forward="0" side="22" />
+      <Bone id="forearm_r" bend="78" />
+    </Pose>
+
+    <Pose t="1.6" label="guard_loop">
+      <Bone id="hips" turn="0" />
+      <Bone id="chest" turn="0" />
+      <Bone id="upper_arm_r" forward="4" side="18" />
+      <Bone id="forearm_r" bend="72" />
+      <Bone id="upper_arm_l" forward="4" side="18" />
+      <Bone id="forearm_l" bend="72" />
+    </Pose>
+  </Action>
+
+  <ApplyAction target="anime" action="straight_punch" at="0s" loop="true" weight="1" />
+
+  <Present from="forest_stage" />
+</Graph>

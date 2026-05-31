@@ -1,0 +1,33 @@
+<Graph fps={30} duration="1s" size={[1280,720]} renderSize={[1280,720]}>
+  <World id="sprite_stage">
+    <Background color="#FFFFFF" />
+
+    <Camera yaw={curve("0.00:0:linear, 0.12:0:linear, 0.24:45:linear, 0.36:90:linear, 0.48:135:linear, 0.60:180:linear, 0.72:225:linear, 0.84:270:linear, 1.00:315:linear")}
+            pitch={curve("0.00:0:linear, 0.84:0:linear, 1.00:90:ease_in_out")}
+            zoom={curve("0.00:0.82:ease_in_out, 0.50:1.35:ease_in_out, 1.00:1.05:ease_in_out")} />
+
+    <DirectionalCharacter id="hero"
+                          sheet="../sample_assets/sprite_sheets/hero_direction_sheet.png"
+                          x="640"
+                          y="680"
+                          scale="1"
+                          yaw="90">
+      <DirectionMap mode="nearest">
+        <Direction angle="0" rect={[0,0,418,418]} anchor={[209,392]} />
+<Direction angle="45" rect={[418,0,418,418]} anchor={[209,392]} />
+<Direction angle="90" rect={[836,0,418,418]} anchor={[209,392]} />
+
+<Direction angle="135" rect={[0,418,418,418]} anchor={[209,392]} />
+<Direction angle="180" rect={[418,418,418,418]} anchor={[209,392]} />
+<Direction angle="225" rect={[836,418,418,418]} anchor={[209,392]} />
+
+<Direction angle="270" rect={[0,836,418,418]} anchor={[209,392]} />
+<Direction angle="315" rect={[418,836,418,418]} anchor={[209,392]} />
+<Direction name="top" cameraPitch="90" rect={[836,836,418,418]} anchor={[209,230]} />
+
+      </DirectionMap>
+    </DirectionalCharacter>
+  </World>
+
+  <Present from="sprite_stage" />
+</Graph>

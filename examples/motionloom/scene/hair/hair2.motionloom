@@ -1,0 +1,213 @@
+<Graph fps={30} duration="3s" size={[720,900]} renderSize={[720,900]}>
+  <Background color="#F4E7EE" />
+
+  <Scene id="shy_schoolgirl_medium_bob_hair">
+    <!--
+      Prompt: shy schoolgirl, medium length, soft bangs.
+      Topology:
+      - hair_style: medium_bob
+      - bangs: 6, slightly inward, soft_sharp tips
+      - side_locks: 2, chin length
+      - occlusion: bang_2 over forehead, bang_3 over right_eye by ~15%
+    -->
+    <Defs>
+      <LinearGradient id="hair_base" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#536179, 0.44:#2F3A51, 1:#1E2638" />
+      <LinearGradient id="hair_shadow" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#273148, 1:#121827" />
+      <LinearGradient id="hair_highlight" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#8CA1C6AA, 0.55:#B7C8ECAA, 1:#6B7FA4AA" />
+      <LinearGradient id="skin_soft" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFE7D9, 1:#F2C4B7" />
+      <LinearGradient id="blush_soft" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#F5A4B500, 0.5:#F5A4B588, 1:#F5A4B500" />
+    </Defs>
+
+    <Rect x="0" y="0" width="720" height="900" color="#F4E7EE" />
+
+    <!-- back bob mass -->
+    <Path id="back_hair_mass"
+          d="M 168 276
+             C 184 150 274 82 370 92
+             C 484 104 558 186 564 310
+             C 572 440 548 572 504 664
+             C 468 700 418 714 359 710
+             C 300 714 247 696 212 658
+             C 168 558 150 424 168 276 Z"
+          fill="url(#hair_base)"
+          stroke="#151B29"
+          strokeWidth="5" />
+
+    <!-- soft lower bob silhouette -->
+    <Path id="bob_lower_curve"
+          d="M 188 500
+             C 214 614 272 690 358 704
+             C 446 690 512 612 542 498
+             C 528 614 490 730 358 744
+             C 234 724 196 610 188 500 Z"
+          fill="#1A2234"
+          opacity="0.78" />
+
+    <!-- face / forehead target behind bangs -->
+    <Path id="face"
+          d="M 224 304
+             C 244 214 298 170 361 170
+             C 428 170 482 220 498 314
+             C 512 434 463 556 361 604
+             C 261 558 210 434 224 304 Z"
+          fill="url(#skin_soft)"
+          stroke="#E8B9AA"
+          strokeWidth="3" />
+
+    <Path id="neck"
+          d="M 316 586
+             C 338 604 382 604 406 586
+             L 410 706
+             C 388 730 334 730 312 706 Z"
+          fill="#E9B5A8" />
+
+    <!-- side locks: chin length -->
+    <Path id="side_lock_l"
+          d="M 204 292
+             C 172 370 172 492 210 602
+             C 225 646 250 674 278 690
+             C 245 704 206 684 184 638
+             C 146 558 142 394 176 290 Z"
+          fill="url(#hair_shadow)"
+          stroke="#151B29"
+          strokeWidth="4" />
+
+    <Path id="side_lock_r"
+          d="M 514 294
+             C 548 388 544 548 506 636
+             C 486 684 446 704 414 690
+             C 444 672 468 642 482 598
+             C 520 484 520 370 514 294 Z"
+          fill="url(#hair_shadow)"
+          stroke="#151B29"
+          strokeWidth="4" />
+
+    <!-- top cap -->
+    <Path id="hair_cap"
+          d="M 156 286
+             C 176 166 272 90 368 92
+             C 486 94 554 176 574 294
+             C 514 260 458 248 398 252
+             C 326 246 256 254 156 286 Z"
+          fill="url(#hair_base)"
+          stroke="#151B29"
+          strokeWidth="5" />
+
+    <!-- 6 slightly inward bangs, front layer -->
+    <Path id="bang_1"
+          d="M 196 268
+             C 228 238 256 220 292 210
+             C 278 274 270 344 276 418
+             C 250 394 232 366 220 334
+             C 208 348 194 360 178 368
+             C 184 328 188 296 196 268 Z"
+          fill="#2A344B"
+          stroke="#151B29"
+          strokeWidth="4" />
+
+    <Path id="bang_2"
+          d="M 262 222
+             C 300 198 334 186 368 184
+             C 354 268 346 338 350 414
+             C 326 384 308 346 300 304
+             C 288 326 276 344 260 358
+             C 258 310 258 264 262 222 Z"
+          fill="#303B54"
+          stroke="#151B29"
+          strokeWidth="4" />
+
+    <Path id="bang_3"
+          d="M 334 188
+             C 374 184 410 190 444 208
+             C 418 282 402 344 400 414
+             C 382 388 370 350 366 306
+             C 350 326 334 342 314 354
+             C 326 304 332 248 334 188 Z"
+          fill="#263148"
+          stroke="#151B29"
+          strokeWidth="4" />
+
+    <Path id="bang_4"
+          d="M 422 210
+             C 462 224 492 246 520 278
+             C 500 342 478 390 452 426
+             C 448 384 442 340 432 294
+             C 418 314 400 332 380 346
+             C 394 298 408 254 422 210 Z"
+          fill="#2F3952"
+          stroke="#151B29"
+          strokeWidth="4" />
+
+    <Path id="bang_5"
+          d="M 486 252
+             C 520 270 544 292 566 324
+             C 548 374 524 414 492 444
+             C 492 404 488 366 478 328
+             C 464 344 450 356 432 366
+             C 456 330 474 292 486 252 Z"
+          fill="#252F46"
+          stroke="#151B29"
+          strokeWidth="4" />
+
+    <Path id="bang_6"
+          d="M 174 284
+             C 198 258 226 238 258 224
+             C 240 284 228 338 224 390
+             C 208 374 196 352 188 324
+             C 176 342 164 356 148 366
+             C 150 334 158 306 174 284 Z"
+          fill="#222C43"
+          stroke="#151B29"
+          strokeWidth="4" />
+
+    <!-- occlusion accent: bang_3 covers a little of right eye -->
+    <Path id="bang_3_eye_occlusion"
+          d="M 392 302
+             C 404 334 406 370 402 410
+             C 388 390 380 360 378 326 Z"
+          fill="#263148"
+          opacity="0.95" />
+
+    <!-- soft highlights following the bob curvature -->
+    <Path id="hair_highlight_top"
+          d="M 236 194
+             C 286 144 378 128 452 158
+             C 408 154 320 166 266 210"
+          stroke="url(#hair_highlight)"
+          strokeWidth="12"
+          lineCap="round"
+          fill="none"
+          opacity="0.42" />
+
+    <Path id="bang_highlight"
+          d="M 292 218
+             C 302 268 304 318 302 352
+             M 376 210
+             C 370 266 366 320 368 358
+             M 466 244
+             C 460 292 452 334 438 370"
+          stroke="#AFC0E777"
+          strokeWidth="5"
+          lineCap="round"
+          fill="none" />
+
+    <!-- small school uniform hint, kept secondary -->
+    <Path id="collar"
+          d="M 266 702
+             L 328 646
+             L 360 710
+             L 394 646
+             L 456 704
+             C 420 742 300 742 266 702 Z"
+          fill="#F7F9FF"
+          stroke="#BFC8D9"
+          strokeWidth="3" />
+  </Scene>
+
+  <Present from="shy_schoolgirl_medium_bob_hair" />
+</Graph>

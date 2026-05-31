@@ -9,9 +9,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from("motionloom_frame.png"));
 
     let script = r##"
-<Graph scope="scene" fps={60} duration="1s" size={[640,360]}>
+<Graph fps={60} duration="1s" size={[640,360]}>
+  <Background color="#101827" />
+
   <Scene id="example_scene">
-    <Solid color="#101827" />
     <Circle x="320" y="180" radius="96" color="#4cc9f0" />
     <Path id="spark"
           d="M 320 84 L 342 158 L 416 180 L 342 202 L 320 276 L 298 202 L 224 180 L 298 158 Z"

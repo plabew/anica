@@ -1,0 +1,139 @@
+<Graph fps={30} duration="4s" size={[1280,720]} renderSize={[1280,720]}>
+  <World id="forest_stage">
+    <Background id="forest_bg"
+                src="../sample_assets/backgrounds/forest_path_static.png"
+                fit="cover"
+                color="#87c9ff"
+                opacity="1" />
+
+    <Camera id="fixed_camera"
+            mode="orbit"
+            target="anime"
+            yaw="0"
+            pitch="0"
+            distance="3.4"
+            fov="35" />
+
+    <Actor id="anime"
+           model="../sample_assets/glb/your_character.glb"
+           rig="humanoid_v1"
+           retarget="anime_humanoid_map"
+           x="0"
+           y="0"
+           z="0"
+           yaw="0"
+           pitch="0"
+           roll="0"
+           scale="1"
+           opacity="1">
+      <Material style="toon" outline="true" outlineWidth="2" />
+      <Play clip="Idle" loop="true" speed="1" />
+    </Actor>
+  </World>
+
+  <!-- Model-specific map: GLB joint/node names -> universal MotionLoom humanoid_v1 bones. -->
+  <Retarget id="anime_humanoid_map" actor="anime" preset="humanoid_v1">
+    <Map from="Hips_183" to="hips" />
+    <Map from="Spine_104" to="spine" />
+    <Map from="Chest_77" to="chest" />
+    <Map from="Neck_48" to="neck" />
+    <Map from="Head_47" to="head" />
+
+    <Map from="Left shoulder_22" to="shoulder_l" />
+    <Map from="Left arm_20" to="upper_arm_l" />
+    <Map from="Left elbow_19" to="forearm_l" />
+    <Map from="Left wrist_16" to="hand_l" />
+
+    <Map from="Right shoulder_70" to="shoulder_r" />
+    <Map from="Right arm_68" to="upper_arm_r" />
+    <Map from="Right elbow_67" to="forearm_r" />
+    <Map from="Right wrist_64" to="hand_r" />
+
+    <Map from="Left leg_108" to="upper_leg_l" />
+    <Map from="Left knee_107" to="lower_leg_l" />
+    <Map from="Left ankle_106" to="foot_l" />
+    <Map from="Left toe_105" to="toe_l" />
+
+    <Map from="Right leg_112" to="upper_leg_r" />
+    <Map from="Right knee_111" to="lower_leg_r" />
+    <Map from="Right ankle_110" to="foot_r" />
+    <Map from="Right toe_109" to="toe_r" />
+  </Retarget>
+
+  <!-- Universal action: this can be reused on another GLB with a different Retarget map. -->
+  <Action id="run_cycle" skeleton="humanoid_v1" duration="1s">
+    <Pose t="0.0">
+      <Bone id="hips" y="0" rotationZ="0" />
+      <Bone id="upper_leg_l" rotationZ="25" />
+      <Bone id="lower_leg_l" rotationZ="-35" />
+      <Bone id="foot_l" rotationZ="10" />
+      <Bone id="upper_leg_r" rotationZ="-25" />
+      <Bone id="lower_leg_r" rotationZ="20" />
+      <Bone id="foot_r" rotationZ="-8" />
+      <Bone id="upper_arm_l" rotationZ="-28" />
+      <Bone id="forearm_l" rotationZ="22" />
+      <Bone id="upper_arm_r" rotationZ="28" />
+      <Bone id="forearm_r" rotationZ="-22" />
+    </Pose>
+
+    <Pose t="0.25">
+      <Bone id="hips" y="0.04" rotationZ="2" />
+      <Bone id="upper_leg_l" rotationZ="5" />
+      <Bone id="lower_leg_l" rotationZ="-10" />
+      <Bone id="foot_l" rotationZ="4" />
+      <Bone id="upper_leg_r" rotationZ="-8" />
+      <Bone id="lower_leg_r" rotationZ="42" />
+      <Bone id="foot_r" rotationZ="18" />
+      <Bone id="upper_arm_l" rotationZ="-8" />
+      <Bone id="forearm_l" rotationZ="18" />
+      <Bone id="upper_arm_r" rotationZ="8" />
+      <Bone id="forearm_r" rotationZ="-18" />
+    </Pose>
+
+    <Pose t="0.5">
+      <Bone id="hips" y="0" rotationZ="0" />
+      <Bone id="upper_leg_l" rotationZ="-25" />
+      <Bone id="lower_leg_l" rotationZ="20" />
+      <Bone id="foot_l" rotationZ="-8" />
+      <Bone id="upper_leg_r" rotationZ="25" />
+      <Bone id="lower_leg_r" rotationZ="-35" />
+      <Bone id="foot_r" rotationZ="10" />
+      <Bone id="upper_arm_l" rotationZ="28" />
+      <Bone id="forearm_l" rotationZ="-22" />
+      <Bone id="upper_arm_r" rotationZ="-28" />
+      <Bone id="forearm_r" rotationZ="22" />
+    </Pose>
+
+    <Pose t="0.75">
+      <Bone id="hips" y="0.04" rotationZ="-2" />
+      <Bone id="upper_leg_l" rotationZ="-8" />
+      <Bone id="lower_leg_l" rotationZ="42" />
+      <Bone id="foot_l" rotationZ="18" />
+      <Bone id="upper_leg_r" rotationZ="5" />
+      <Bone id="lower_leg_r" rotationZ="-10" />
+      <Bone id="foot_r" rotationZ="4" />
+      <Bone id="upper_arm_l" rotationZ="8" />
+      <Bone id="forearm_l" rotationZ="-18" />
+      <Bone id="upper_arm_r" rotationZ="-8" />
+      <Bone id="forearm_r" rotationZ="18" />
+    </Pose>
+
+    <Pose t="1.0">
+      <Bone id="hips" y="0" rotationZ="0" />
+      <Bone id="upper_leg_l" rotationZ="25" />
+      <Bone id="lower_leg_l" rotationZ="-35" />
+      <Bone id="foot_l" rotationZ="10" />
+      <Bone id="upper_leg_r" rotationZ="-25" />
+      <Bone id="lower_leg_r" rotationZ="20" />
+      <Bone id="foot_r" rotationZ="-8" />
+      <Bone id="upper_arm_l" rotationZ="-28" />
+      <Bone id="forearm_l" rotationZ="22" />
+      <Bone id="upper_arm_r" rotationZ="28" />
+      <Bone id="forearm_r" rotationZ="-22" />
+    </Pose>
+  </Action>
+
+  <ApplyAction target="anime" action="run_cycle" at="0s" loop="true" weight="1" />
+
+  <Present from="forest_stage" />
+</Graph>
