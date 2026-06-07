@@ -1,55 +1,66 @@
-<Graph fps={60} duration="2s" size={[1920,1080]}>
+<Graph fps={30} duration="2s" size={[1920,1080]}>
   <Background color="#05070B" />
 
   <Scene id="aa_test_03_mask_feather_text">
-    <!-- Group mask test. Compare left hard mask and right feathered mask. If only masked text is jagged, mask alpha/composite is the issue. -->
-    <Mask id="hard_text_mask"
-          shape="rect"
-          x="90"
-          y="185"
-          width="780"
-          height="230"
-          radius="0"
-          feather="0" />
+    <Defs>
+      <!-- Group mask test. Compare left hard mask and right feathered mask. If only masked text is jagged, mask alpha/composite is the issue. -->
+      <Mask id="hard_text_mask"
+            shape="rect"
+            x="90"
+            y="185"
+            width="780"
+            height="230"
+            radius="0"
+            feather="0" />
 
-    <Mask id="soft_text_mask"
-          shape="rect"
-          x="1010"
-          y="185"
-          width="780"
-          height="230"
-          radius="72"
-          feather="48" />
+      <Mask id="soft_text_mask"
+            shape="rect"
+            x="1010"
+            y="185"
+            width="780"
+            height="230"
+            radius="72"
+            feather="48" />
+    </Defs>
 
-    <Group id="hard_masked_text" mask="hard_text_mask" maskMode="alpha" opacity="1">
-      <Text value="HARD"
-            x="120"
-            y="330"
-            fontSize="150"
-            color="#FFFFFF"
-            opacity="1" />
-      <Text value="mask feather 0"
-            x="128"
-            y="407"
-            fontSize="40"
-            color="#7DEBFF"
-            opacity="1" />
-    </Group>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="2s" out="hold">
+          <Layer>
 
-    <Group id="soft_masked_text" mask="soft_text_mask" maskMode="alpha" opacity="1">
-      <Text value="SOFT"
-            x="1040"
-            y="330"
-            fontSize="150"
-            color="#FFFFFF"
-            opacity="1" />
-      <Text value="mask feather 48"
-            x="1048"
-            y="407"
-            fontSize="40"
-            color="#7DEBFF"
-            opacity="1" />
-    </Group>
+            <Group id="hard_masked_text" mask="hard_text_mask" maskMode="alpha" opacity="1">
+              <Text value="HARD"
+                    x="120"
+                    y="330"
+                    fontSize="150"
+                    color="#FFFFFF"
+                    opacity="1" />
+              <Text value="mask feather 0"
+                    x="128"
+                    y="407"
+                    fontSize="40"
+                    color="#7DEBFF"
+                    opacity="1" />
+            </Group>
+
+            <Group id="soft_masked_text" mask="soft_text_mask" maskMode="alpha" opacity="1">
+              <Text value="SOFT"
+                    x="1040"
+                    y="330"
+                    fontSize="150"
+                    color="#FFFFFF"
+                    opacity="1" />
+              <Text value="mask feather 48"
+                    x="1048"
+                    y="407"
+                    fontSize="40"
+                    color="#7DEBFF"
+                    opacity="1" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="aa_test_03_mask_feather_text" />

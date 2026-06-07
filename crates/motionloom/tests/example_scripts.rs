@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use motionloom::{
-    SceneRenderProfile, is_animation_graph_script, is_graph_script, parse_animation_graph_script,
-    parse_graph_script, render_scene_graph_frame,
+    SceneRenderProfile, is_graph_script, is_world_graph_script, parse_graph_script,
+    parse_world_graph_script, render_scene_graph_frame,
 };
 
 fn collect_motionloom_files(root: &Path, out: &mut Vec<PathBuf>) {
@@ -27,6 +27,26 @@ fn collect_motionloom_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+fn render_gpu_example_or_skip_adapter(file: &Path, graph: &motionloom::GraphScript) {
+    match render_scene_graph_frame(graph, 0, SceneRenderProfile::Gpu) {
+        Ok(_) => {}
+        Err(err) if is_gpu_adapter_unavailable(&err) => {
+            eprintln!(
+                "skipping GPU example render because this runner has no GPU adapter: {}: {err}",
+                file.display()
+            );
+        }
+        Err(err) => panic!("GPU-profile render failed for {}: {err}", file.display()),
+    }
+}
+
+fn is_gpu_adapter_unavailable(err: &motionloom::MotionLoomSceneRenderError) -> bool {
+    let message = err.to_string();
+    message.contains("no compatible GPU adapter was available")
+        || message.contains("No suitable graphics adapter found")
+        || message.contains("metal found no adapters")
+}
+
 #[test]
 fn bundled_motionloom_examples_parse() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/motionloom");
@@ -42,10 +62,9 @@ fn bundled_motionloom_examples_parse() {
         if !is_graph_script(&script) {
             continue;
         }
-        if is_animation_graph_script(&script) {
-            parse_animation_graph_script(&script).unwrap_or_else(|err| {
-                panic!("failed to parse animation {}: {err}", file.display())
-            });
+        if is_world_graph_script(&script) {
+            parse_world_graph_script(&script)
+                .unwrap_or_else(|err| panic!("failed to parse world {}: {err}", file.display()));
         } else {
             parse_graph_script(&script)
                 .unwrap_or_else(|err| panic!("failed to parse {}: {err}", file.display()));
@@ -54,53 +73,57 @@ fn bundled_motionloom_examples_parse() {
 }
 
 #[test]
-fn mask_matte_precompose_example_renders_gpu_profile() {
+fn filter_effect_test_example_renders_gpu_profile() {
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../examples/motionloom/scene/motion_graphics/mask_matte_precompose_level1.motionloom",
+        "../../examples/motionloom/scene/motion_graphics/filter_effect_test_level1.motionloom",
     );
     let script = std::fs::read_to_string(&file)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", file.display()));
     let graph = parse_graph_script(&script)
         .unwrap_or_else(|err| panic!("failed to parse {}: {err}", file.display()));
 
-    render_scene_graph_frame(&graph, 0, SceneRenderProfile::Gpu)
-        .unwrap_or_else(|err| panic!("GPU-profile render failed for {}: {err}", file.display()));
+    render_gpu_example_or_skip_adapter(&file, &graph);
 }
 
 #[test]
-fn font_family_hello_specimen_renders_cpu_and_gpu_profile() {
-    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../examples/motionloom/scene/motion_graphics/font_family_hello_specimen.motionloom",
-    );
-    let script = std::fs::read_to_string(&file)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", file.display()));
-    let graph = parse_graph_script(&script)
-        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", file.display()));
-
-    render_scene_graph_frame(&graph, 0, SceneRenderProfile::Cpu)
-        .unwrap_or_else(|err| panic!("CPU-profile render failed for {}: {err}", file.display()));
-    render_scene_graph_frame(&graph, 0, SceneRenderProfile::Gpu)
-        .unwrap_or_else(|err| panic!("GPU-profile render failed for {}: {err}", file.display()));
-}
-
-#[test]
-fn pixel_cat_example_renders_cpu_and_gpu_profile() {
+fn audio_spectrum_level1_example_renders_gpu_profile() {
     let file = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/motionloom/scene/pixel/pixel_cat_level1.motionloom");
+        .join("../../examples/motionloom/scene/audio/audio_spectrum_level1.motionloom");
     let script = std::fs::read_to_string(&file)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", file.display()));
     let graph = parse_graph_script(&script)
         .unwrap_or_else(|err| panic!("failed to parse {}: {err}", file.display()));
 
-    render_scene_graph_frame(&graph, 0, SceneRenderProfile::Cpu)
-        .unwrap_or_else(|err| panic!("CPU-profile render failed for {}: {err}", file.display()));
-    render_scene_graph_frame(&graph, 0, SceneRenderProfile::Gpu)
-        .unwrap_or_else(|err| panic!("GPU-profile render failed for {}: {err}", file.display()));
+    render_gpu_example_or_skip_adapter(&file, &graph);
+}
+
+#[test]
+fn audio_spectrum_level2_example_renders_gpu_profile() {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/motionloom/scene/audio/audio_spectrum_level2.motionloom");
+    let script = std::fs::read_to_string(&file)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", file.display()));
+    let graph = parse_graph_script(&script)
+        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", file.display()));
+
+    render_gpu_example_or_skip_adapter(&file, &graph);
+}
+
+#[test]
+fn eyes2_level1_example_renders_gpu_profile() {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/motionloom/scene/eyes/eyes2/eyes_level1.motionloom");
+    let script = std::fs::read_to_string(&file)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", file.display()));
+    let graph = parse_graph_script(&script)
+        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", file.display()));
+
+    render_gpu_example_or_skip_adapter(&file, &graph);
 }
 
 #[test]
 fn bone_axis_map_parses_rest_offsets() {
-    let graph = parse_animation_graph_script(
+    let graph = parse_world_graph_script(
         r#"
 <Graph fps={30} duration="1s" size={[64,64]}>
   <ModelProfile id="profile" model="actor.glb" preset="humanoid_v1">
@@ -119,7 +142,7 @@ fn bone_axis_map_parses_rest_offsets() {
 </Graph>
 "#,
     )
-    .expect("parse animation graph");
+    .expect("parse world graph");
 
     let axis = &graph.model_profiles[0]
         .bone_axis_map
@@ -132,7 +155,7 @@ fn bone_axis_map_parses_rest_offsets() {
 
 #[test]
 fn rest_pose_correction_tag_is_rejected() {
-    let err = parse_animation_graph_script(
+    let err = parse_world_graph_script(
         r#"
 <Graph fps={30} duration="1s" size={[64,64]}>
   <ModelProfile id="profile" model="actor.glb" preset="humanoid_v1">

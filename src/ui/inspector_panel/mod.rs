@@ -34,7 +34,9 @@ use media_gen_protocol::{
     ModelResolutionCatalog, ProtocolError as MediaGenProtocolError, VideoResolutionConstraint,
     VideoResolutionConstraintMap, model_resolution_catalog,
 };
-use motionloom::{GraphApplyScope, compile_runtime_program, is_graph_script, parse_graph_script};
+use motionloom::{
+    GraphApplyScope, compile_runtime_program, is_graph_script, parse_process_graph_script,
+};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::fs;

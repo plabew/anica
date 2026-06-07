@@ -3,16 +3,18 @@ use super::*;
 fn curve_drag_style_update_rewrites_only_target_pass_opacity() {
     let script = r#"
 <Graph fps={60} size={[1920,1080]}>
-  <Input id="under" type="video" from="input:under" />
-  <Tex id="tmp" fmt="rgba16f" size={[1920,1080]} />
-  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
-  <Pass id="fx_blur" kind="compute" effect="gaussian_5tap_h"
-        in={["under"]} out={["tmp"]}
-        params={{ sigma: "8.0" }} />
-  <Pass id="fx_opacity" kind="compute" effect="opacity"
-        in={["tmp"]} out={["out"]}
-        params={{ opacity: curve("0.00:1.000:linear, 2.00:1.000:linear"), }} />
-  <Present from="out" />
+  <Process id="layer_fx">
+    <Input id="under" type="video" from="input:under" />
+    <Tex id="tmp" fmt="rgba16f" size={[1920,1080]} />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_blur" kind="compute" effect="gaussian_5tap_h"
+          in={["under"]} out={["tmp"]}
+          params={{ sigma: "8.0" }} />
+    <Pass id="fx_opacity" kind="compute" effect="opacity"
+          in={["tmp"]} out={["out"]}
+          params={{ opacity: curve("0.00:1.000:linear, 2.00:1.000:linear"), }} />
+  </Process>
+  <Present from="layer_fx" />
 </Graph>
 "#;
 
@@ -59,12 +61,14 @@ fn curve_drag_style_update_rewrites_only_target_pass_opacity() {
 fn curve_drag_style_update_returns_none_for_unknown_pass() {
     let script = r#"
 <Graph fps={60} size={[1920,1080]}>
-  <Input id="under" type="video" from="input:under" />
-  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
-  <Pass id="fx_opacity" kind="compute" effect="opacity"
-        in={["under"]} out={["out"]}
-        params={{ opacity: "1.0" }} />
-  <Present from="out" />
+  <Process id="layer_fx">
+    <Input id="under" type="video" from="input:under" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_opacity" kind="compute" effect="opacity"
+          in={["under"]} out={["out"]}
+          params={{ opacity: "1.0" }} />
+  </Process>
+  <Present from="layer_fx" />
 </Graph>
 "#;
 
@@ -81,12 +85,14 @@ fn curve_drag_style_update_returns_none_for_unknown_pass() {
 fn curve_drag_style_update_rewrites_sigma_for_blur_pass() {
     let script = r#"
 <Graph fps={60} size={[1920,1080]}>
-  <Input id="under" type="video" from="input:under" />
-  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
-  <Pass id="fx_blur" kind="compute" effect="gaussian_5tap_h"
-        in={["under"]} out={["out"]}
-        params={{ sigma: "10.0" }} />
-  <Present from="out" />
+  <Process id="layer_fx">
+    <Input id="under" type="video" from="input:under" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_blur" kind="compute" effect="gaussian_5tap_h"
+          in={["under"]} out={["out"]}
+          params={{ sigma: "10.0" }} />
+  </Process>
+  <Present from="layer_fx" />
 </Graph>
 "#;
 

@@ -1,5 +1,5 @@
 <!-- fontFamily uses installed system font family names; missing fonts fall back to the renderer default sans-serif. Use fontPath for portable bundled fonts. -->
-<Graph fps={60} duration="4s" size={[1920,1080]}>
+<Graph fps={30} duration="4s" size={[1920,1080]}>
   <Background color="#101014" />
 
   <Scene id="font_family_hello_specimen">
@@ -12,73 +12,82 @@
                       stops="0:#75F7FF33, 0.48:#FF6A9A18, 1:#00000000" />
     </Defs>
 
-    <Rect x="0" y="0" width="1920" height="1080" color="url(#panel_grad)" />
-    <Circle x="960" y="520" radius="620" color="url(#glow)" blend="screen" opacity="0.78" />
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="4s" out="hold">
+          <Layer>
 
-    <Text value="FONT FAMILY TEST"
-          x="92"
-          y="104"
-          fontSize="44"
-          fontFamily="Avenir Next Condensed"
-          color="#E9F9FF"
-          opacity="0.82" />
-    <Text value="Same DSL scene, same word, different fontFamily"
-          x="94"
-          y="148"
-          fontSize="24"
-          fontFamily="Menlo"
-          color="#88A0AA"
-          opacity="0.84" />
+            <Rect x="0" y="0" width="1920" height="1080" color="url(#panel_grad)" />
+            <Circle x="960" y="520" radius="620" color="url(#glow)" blend="screen" opacity="0.78" />
 
-    <Group id="font_grid" x="0" y="0" opacity="1">
-      <Group id="hello_avenir" x="96" y="226">
-        <Text value="Avenir Next Condensed" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
-        <Text value="HELLO" x="0" y="88" fontSize="122" fontFamily="Avenir Next Condensed" color="#FFFFFF" opacity="1" />
-        <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
-      </Group>
+            <Text value="FONT FAMILY TEST"
+                  x="92"
+                  y="104"
+                  fontSize="44"
+                  fontFamily="Avenir Next Condensed"
+                  color="#E9F9FF"
+                  opacity="0.82" />
+            <Text value="Same DSL scene, same word, different fontFamily"
+                  x="94"
+                  y="148"
+                  fontSize="24"
+                  fontFamily="Menlo"
+                  color="#88A0AA"
+                  opacity="0.84" />
 
-      <Group id="hello_menlo" x="1038" y="226">
-        <Text value="Menlo" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
-        <Text value="HELLO" x="0" y="88" fontSize="104" fontFamily="Menlo" color="#B8FF7A" opacity="1" />
-        <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
-      </Group>
+            <Group id="font_grid" x="0" y="0" opacity="1">
+              <Group id="hello_avenir" x="96" y="226">
+                <Text value="Avenir Next Condensed" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
+                <Text value="HELLO" x="0" y="88" fontSize="122" fontFamily="Avenir Next Condensed" color="#FFFFFF" opacity="1" />
+                <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
+              </Group>
 
-      <Group id="hello_georgia" x="96" y="424">
-        <Text value="Georgia" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
-        <Text value="HELLO" x="0" y="88" fontSize="116" fontFamily="Georgia" color="#FFD27A" opacity="1" />
-        <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
-      </Group>
+              <Group id="hello_menlo" x="1038" y="226">
+                <Text value="Menlo" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
+                <Text value="HELLO" x="0" y="88" fontSize="104" fontFamily="Menlo" color="#B8FF7A" opacity="1" />
+                <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
+              </Group>
 
-      <Group id="hello_didot" x="1038" y="424">
-        <Text value="Didot" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
-        <Text value="HELLO" x="0" y="88" fontSize="126" fontFamily="Didot" color="#FFFFFF" opacity="1" />
-        <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
-      </Group>
+              <Group id="hello_georgia" x="96" y="424">
+                <Text value="Georgia" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
+                <Text value="HELLO" x="0" y="88" fontSize="116" fontFamily="Georgia" color="#FFD27A" opacity="1" />
+                <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
+              </Group>
 
-      <Group id="hello_futura" x="96" y="622">
-        <Text value="Futura" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
-        <Text value="HELLO" x="0" y="88" fontSize="118" fontFamily="Futura" color="#75F7FF" opacity="1" />
-        <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
-      </Group>
+              <Group id="hello_didot" x="1038" y="424">
+                <Text value="Didot" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
+                <Text value="HELLO" x="0" y="88" fontSize="126" fontFamily="Didot" color="#FFFFFF" opacity="1" />
+                <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
+              </Group>
 
-      <Group id="hello_american_typewriter" x="1038" y="622">
-        <Text value="American Typewriter" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
-        <Text value="HELLO" x="0" y="88" fontSize="108" fontFamily="American Typewriter" color="#FF9CB8" opacity="1" />
-        <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
-      </Group>
+              <Group id="hello_futura" x="96" y="622">
+                <Text value="Futura" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
+                <Text value="HELLO" x="0" y="88" fontSize="118" fontFamily="Futura" color="#75F7FF" opacity="1" />
+                <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
+              </Group>
 
-      <Group id="hello_copperplate" x="96" y="820">
-        <Text value="Copperplate" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
-        <Text value="HELLO" x="0" y="88" fontSize="112" fontFamily="Copperplate" color="#FFFFFF" opacity="1" />
-        <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
-      </Group>
+              <Group id="hello_american_typewriter" x="1038" y="622">
+                <Text value="American Typewriter" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
+                <Text value="HELLO" x="0" y="88" fontSize="108" fontFamily="American Typewriter" color="#FF9CB8" opacity="1" />
+                <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
+              </Group>
 
-      <Group id="hello_papyrus" x="1038" y="820">
-        <Text value="Papyrus" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
-        <Text value="HELLO" x="0" y="88" fontSize="112" fontFamily="Papyrus" color="#FF6A9A" opacity="1" />
-        <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
-      </Group>
-    </Group>
+              <Group id="hello_copperplate" x="96" y="820">
+                <Text value="Copperplate" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
+                <Text value="HELLO" x="0" y="88" fontSize="112" fontFamily="Copperplate" color="#FFFFFF" opacity="1" />
+                <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
+              </Group>
+
+              <Group id="hello_papyrus" x="1038" y="820">
+                <Text value="Papyrus" x="0" y="-38" fontSize="22" fontFamily="Menlo" color="#6EDBE8" opacity="0.72" />
+                <Text value="HELLO" x="0" y="88" fontSize="112" fontFamily="Papyrus" color="#FF6A9A" opacity="1" />
+                <Line x1="0" y1="128" x2="720" y2="128" stroke="#FFFFFF22" strokeWidth="2" />
+              </Group>
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="font_family_hello_specimen" />

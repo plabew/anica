@@ -23,8 +23,8 @@ use gpui_component::{
 };
 use image::{ImageBuffer, Rgba};
 use motionloom::{
-    AnimationFrameRenderer, SceneRenderProfile, is_animation_graph_script, is_graph_script,
-    parse_animation_graph_script, parse_graph_script, render_scene_graph_frame,
+    SceneRenderProfile, WorldFrameRenderer, is_graph_script, is_world_graph_script,
+    parse_graph_script, parse_world_graph_script, render_scene_graph_frame,
 };
 use smallvec::SmallVec;
 
@@ -408,6 +408,8 @@ pub struct VectorLabPage {
     canvas_bg_color: Hsla,
     canvas_bg_picker: Option<Entity<ColorPickerState>>,
     canvas_bg_picker_sub: Option<Subscription>,
+    brush_color_picker: Option<Entity<ColorPickerState>>,
+    brush_color_picker_sub: Option<Subscription>,
     paths: Vec<VectorPathDraft>,
     selected_path: Option<usize>,
     current_pen_points: Vec<VectorPoint>,
@@ -440,6 +442,8 @@ impl VectorLabPage {
             canvas_bg_color: Hsla::from(rgb(0x0f1624)),
             canvas_bg_picker: None,
             canvas_bg_picker_sub: None,
+            brush_color_picker: None,
+            brush_color_picker_sub: None,
             paths: Vec::new(),
             selected_path: None,
             current_pen_points: Vec::new(),
@@ -571,6 +575,12 @@ impl VectorLabPage {
                 path.brush = self.current_brush.clone();
             }
         }
+    }
+
+    fn set_brush_color(&mut self, color: Hsla) {
+        self.current_brush.color = color.to_hex();
+        self.sync_selected_brush();
+        self.status_line = format!("Brush color: {}.", self.current_brush.color);
     }
 
     fn select_brush_preset(&mut self, preset: BrushPreset) {
@@ -723,7 +733,7 @@ impl VectorLabPage {
         })
     }
 
-    fn animation_asset_root() -> PathBuf {
+    fn world_asset_root() -> PathBuf {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         for candidate in [
             cwd.join("examples/motionloom/world"),
@@ -738,8 +748,8 @@ impl VectorLabPage {
         PathBuf::from("examples/motionloom/world")
     }
 
-    fn uses_pure_animation_renderer(raw: &str) -> bool {
-        is_animation_graph_script(raw)
+    fn uses_pure_world_renderer(raw: &str) -> bool {
+        is_world_graph_script(raw)
             && !raw.contains("<Tex")
             && !raw.contains("<Pass")
             && !raw.contains("<Layer")
@@ -760,18 +770,17 @@ impl VectorLabPage {
             );
         }
 
-        let rgba = if Self::uses_pure_animation_renderer(&raw) {
-            let graph = parse_animation_graph_script(&raw).map_err(|err| {
+        let rgba = if Self::uses_pure_world_renderer(&raw) {
+            let graph = parse_world_graph_script(&raw).map_err(|err| {
                 format!(
-                    "VFX animation parse error at line {}: {}",
+                    "VFX world parse error at line {}: {}",
                     err.line, err.message
                 )
             })?;
-            let mut renderer = AnimationFrameRenderer::new();
+            let mut renderer = WorldFrameRenderer::new();
             renderer
-                .render_frame_gpu(&graph, frame, Self::animation_asset_root())
-                .or_else(|_| renderer.render_frame(&graph, frame, Self::animation_asset_root()))
-                .map_err(|err| format!("VFX animation render error: {err}"))?
+                .render_frame_gpu(&graph, frame, Self::world_asset_root())
+                .map_err(|err| format!("VFX world render error: {err}"))?
         } else {
             let graph = parse_graph_script(&raw).map_err(|err| {
                 format!(
@@ -783,7 +792,6 @@ impl VectorLabPage {
                 return Err("VFX scene preview needs at least one <Scene> node.".to_string());
             }
             render_scene_graph_frame(&graph, frame, SceneRenderProfile::Gpu)
-                .or_else(|_| render_scene_graph_frame(&graph, frame, SceneRenderProfile::Cpu))
                 .map_err(|err| format!("VFX scene render error: {err}"))?
         };
 
@@ -1230,6 +1238,40 @@ impl VectorLabPage {
         self.canvas_bg_picker_sub = Some(sub);
     }
 
+    fn ensure_brush_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.brush_color_picker.is_some() {
+            return;
+        }
+
+        let initial = Self::brush_color_hsla(&self.current_brush.color);
+        let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(initial));
+        let sub = cx.subscribe(&picker, |this, _picker, ev, cx| {
+            let ColorPickerEvent::Change(value) = ev;
+            if let Some(color) = *value {
+                this.set_brush_color(color);
+                cx.notify();
+            }
+        });
+        self.brush_color_picker = Some(picker);
+        self.brush_color_picker_sub = Some(sub);
+    }
+
+    fn sync_brush_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(picker) = self.brush_color_picker.as_ref() {
+            let target = Self::brush_color_hsla(&self.current_brush.color);
+            let current = picker.read(cx).value();
+            if current != Some(target) {
+                picker.update(cx, |picker, cx| {
+                    picker.set_value(target, window, cx);
+                });
+            }
+        }
+    }
+
+    fn brush_color_hsla(value: &str) -> Hsla {
+        Hsla::parse_hex(value).unwrap_or_else(|_| Hsla::from(rgb(0x111111)))
+    }
+
     fn set_group_id_input_value(
         &mut self,
         value: String,
@@ -1408,15 +1450,21 @@ impl VectorLabPage {
         )
     }
 
-    fn new_vector_scene_script(width: u32, height: u32, export: &VectorGroupExport) -> String {
+    fn new_vector_scene_script(
+        group_id: &str,
+        width: u32,
+        height: u32,
+        export: &VectorGroupExport,
+    ) -> String {
         let defs_block = Self::brush_defs_block(&export.brush_defs);
+        let timeline_block = Self::vector_group_timeline_block(group_id, &export.group_block, "1s");
         format!(
             r##"<Graph fps={{60}} duration="1s" size={{[{width},{height}]}}>
   <Background color="#ffffff" />
 
   <Scene id="vector_lab_trace">
 {defs}
-{group}
+{timeline}
   </Scene>
 
   <Present from="vector_lab_trace" />
@@ -1424,7 +1472,7 @@ impl VectorLabPage {
             width = width.max(1),
             height = height.max(1),
             defs = Self::indent_block(&defs_block, 4),
-            group = Self::indent_block(&export.group_block, 4),
+            timeline = Self::indent_block(&timeline_block, 4),
         )
     }
 
@@ -1437,29 +1485,136 @@ impl VectorLabPage {
     ) -> String {
         let trimmed = existing_script.trim();
         if trimmed.is_empty() || !trimmed.contains("<Scene") || !trimmed.contains("</Scene>") {
-            return Self::new_vector_scene_script(width, height, export);
+            return Self::new_vector_scene_script(group_id, width, height, export);
         }
 
+        let duration = Self::motionloom_graph_duration(trimmed).unwrap_or_else(|| "1s".to_string());
         let trimmed = Self::patch_motionloom_brush_defs(trimmed, &export.brush_defs);
         if let Some((start, end)) = Self::find_group_block_range(&trimmed, group_id) {
             let mut out = trimmed.to_string();
-            out.replace_range(start..end, &export.group_block);
-            return out;
+            if Self::range_inside_tag(&out, start, end, "Timeline") {
+                out.replace_range(start..end, &export.group_block);
+                return out;
+            }
+
+            out.replace_range(start..end, "");
+            return Self::insert_vector_group_into_timeline(
+                &out,
+                group_id,
+                &export.group_block,
+                &duration,
+            )
+            .unwrap_or_else(|| Self::new_vector_scene_script(group_id, width, height, export));
         }
 
-        if let Some(scene_close) = trimmed.rfind("</Scene>") {
-            let mut out = String::with_capacity(trimmed.len() + export.group_block.len() + 16);
-            out.push_str(&trimmed[..scene_close]);
+        Self::insert_vector_group_into_timeline(&trimmed, group_id, &export.group_block, &duration)
+            .unwrap_or_else(|| Self::new_vector_scene_script(group_id, width, height, export))
+    }
+
+    fn vector_group_timeline_block(group_id: &str, group_block: &str, duration: &str) -> String {
+        let track = Self::vector_group_track_block(group_id, group_block, duration);
+        format!(
+            r##"<Timeline>
+{track}
+</Timeline>"##,
+            track = Self::indent_block(&track, 2),
+        )
+    }
+
+    fn vector_group_track_block(group_id: &str, group_block: &str, duration: &str) -> String {
+        let track_id = Self::vector_track_id(group_id);
+        format!(
+            r##"<Track id="{track_id}" space="world" z="1000">
+  <Sequence from="0s" duration="{duration}" out="hold">
+    <Layer>
+{group}
+    </Layer>
+  </Sequence>
+</Track>"##,
+            track_id = Self::escape_attr(&track_id),
+            duration = Self::escape_attr(duration),
+            group = Self::indent_block(group_block, 6),
+        )
+    }
+
+    fn insert_vector_group_into_timeline(
+        script: &str,
+        group_id: &str,
+        group_block: &str,
+        duration: &str,
+    ) -> Option<String> {
+        let track = Self::vector_group_track_block(group_id, group_block, duration);
+        if let Some(timeline_close) = Self::find_ascii_case_insensitive(script, "</Timeline>", 0) {
+            let mut out = String::with_capacity(script.len() + track.len() + 16);
+            out.push_str(&script[..timeline_close]);
             if !out.ends_with('\n') {
                 out.push('\n');
             }
-            out.push_str(&Self::indent_block(&export.group_block, 4));
+            out.push_str(&Self::indent_block(&track, 6));
             out.push('\n');
-            out.push_str(&trimmed[scene_close..]);
-            return out;
+            out.push_str(&script[timeline_close..]);
+            return Some(out);
         }
 
-        Self::new_vector_scene_script(width, height, export)
+        let scene_close = Self::find_ascii_case_insensitive(script, "</Scene>", 0)?;
+        let timeline = Self::vector_group_timeline_block(group_id, group_block, duration);
+        let mut out = String::with_capacity(script.len() + timeline.len() + 16);
+        out.push_str(&script[..scene_close]);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&Self::indent_block(&timeline, 4));
+        out.push('\n');
+        out.push_str(&script[scene_close..]);
+        Some(out)
+    }
+
+    fn vector_track_id(group_id: &str) -> String {
+        let sanitized = group_id
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('_')
+            .to_string();
+        if sanitized.is_empty() {
+            "vector_lab_track".to_string()
+        } else {
+            format!("{sanitized}_track")
+        }
+    }
+
+    fn motionloom_graph_duration(script: &str) -> Option<String> {
+        let graph_start = Self::find_ascii_case_insensitive(script, "<Graph", 0)?;
+        let graph_end = Self::find_tag_end(script, graph_start)?;
+        Self::extract_attr(&script[graph_start..=graph_end], "duration")
+    }
+
+    fn range_inside_tag(script: &str, start: usize, end: usize, tag_name: &str) -> bool {
+        let open_prefix = format!("<{tag_name}");
+        let close_tag = format!("</{tag_name}>");
+        let mut cursor = 0usize;
+        while let Some(open) = Self::find_ascii_case_insensitive(script, &open_prefix, cursor) {
+            let Some(open_end) = Self::find_tag_end(script, open) else {
+                return false;
+            };
+            let Some(close) =
+                Self::find_ascii_case_insensitive(script, &close_tag, open_end.saturating_add(1))
+            else {
+                return false;
+            };
+            let close_end = close.saturating_add(close_tag.len());
+            if open <= start && end <= close_end {
+                return true;
+            }
+            cursor = close_end;
+        }
+        false
     }
 
     fn brush_key(brush: &BrushSettings) -> String {
@@ -2645,11 +2800,7 @@ impl VectorLabPage {
 
     fn brush_preview_color_with_alpha(brush: &BrushSettings, alpha: f32) -> gpui::Rgba {
         let a = (alpha * 255.0).round() as u32;
-        let (r, g, b) = if brush.color.eq_ignore_ascii_case("#111111") {
-            (0xff, 0xff, 0xff)
-        } else {
-            Self::parse_hex_rgb(&brush.color).unwrap_or((0xff, 0xff, 0xff))
-        };
+        let (r, g, b) = Self::parse_hex_rgb(&brush.color).unwrap_or((0xff, 0xff, 0xff));
         rgba((r << 24) | (g << 16) | (b << 8) | a)
     }
 
@@ -3011,6 +3162,8 @@ impl Render for VectorLabPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_group_id_input(window, cx);
         self.ensure_canvas_bg_picker(window, cx);
+        self.ensure_brush_color_picker(window, cx);
+        self.sync_brush_color_picker(window, cx);
         let snapshot = VectorCanvasSnapshot {
             paths: self.paths.clone(),
             selected_path: self.selected_path,
@@ -3106,6 +3259,30 @@ impl Render for VectorLabPage {
                             Hsla::from(rgb(0x0b1220)),
                             Hsla::from(rgb(0x1f2937)),
                             Hsla::from(rgb(0x3f79c5)),
+                        ]),
+                )
+                .into_any_element()
+        } else {
+            div().h(px(30.0)).into_any_element()
+        };
+        let brush_color_picker_elem = if let Some(picker) = self.brush_color_picker.as_ref() {
+            div()
+                .h(px(30.0))
+                .flex()
+                .items_center()
+                .child(
+                    ColorPicker::new(picker)
+                        .small()
+                        .label("Line Color")
+                        .featured_colors(vec![
+                            Hsla::from(rgb(0x111111)),
+                            Hsla::from(rgb(0xffffff)),
+                            Hsla::from(rgb(0x3f79c5)),
+                            Hsla::from(rgb(0xef4444)),
+                            Hsla::from(rgb(0xf59e0b)),
+                            Hsla::from(rgb(0x22c55e)),
+                            Hsla::from(rgb(0xa855f7)),
+                            Hsla::from(rgb(0x06b6d4)),
                         ]),
                 )
                 .into_any_element()
@@ -3235,6 +3412,7 @@ impl Render for VectorLabPage {
                                 }),
                             ))
                             .child(bg_color_picker_elem)
+                            .child(brush_color_picker_elem)
                             .child(
                                 Self::dynamic_button(
                                     image_controls_label.to_string(),
@@ -3843,6 +4021,96 @@ mod tests {
         );
         assert!(!export.group_block.contains("strokeWidth"));
         assert!(VectorLabPage::brush_defs_block(&export.brush_defs).contains("<Brush"));
+    }
+
+    #[test]
+    fn vector_lab_patch_inserts_new_group_inside_timeline() {
+        let paths = vec![VectorPathDraft {
+            id: "vector_path_01".to_string(),
+            kind: VectorPathKind::Freehand,
+            points: vec![VectorPoint::new(0.0, 0.0), VectorPoint::new(10.0, 10.0)],
+            brush: BrushSettings::for_preset(BrushPreset::Pencil),
+            export_simplify_epsilon: 0.0,
+        }];
+        let export = VectorLabPage::vector_group_export("vector_group_01", &paths);
+        let script = r##"<Graph fps={30} duration="8s" size={[1920,1080]}>
+  <Scene id="AudioSpectrum">
+    <Defs>
+      <Brush id="existing_brush" stroke="#111111" strokeWidth="1.6" />
+    </Defs>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="1920" height="1080" color="#000000" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+</Graph>"##;
+
+        let updated = VectorLabPage::patch_motionloom_group_script(
+            script,
+            "vector_group_01",
+            &export,
+            1920,
+            1080,
+        );
+        let timeline_start = updated.find("<Timeline>").unwrap();
+        let timeline_end = updated.find("</Timeline>").unwrap();
+        let group_start = updated.find(r#"<Group id="vector_group_01""#).unwrap();
+
+        assert!(timeline_start < group_start && group_start < timeline_end);
+        assert!(updated.contains(r#"<Track id="vector_group_01_track" space="world" z="1000">"#));
+        assert!(updated.contains(r#"<Sequence from="0s" duration="8s" out="hold">"#));
+    }
+
+    #[test]
+    fn vector_lab_patch_moves_legacy_root_group_into_timeline() {
+        let paths = vec![VectorPathDraft {
+            id: "vector_path_01".to_string(),
+            kind: VectorPathKind::Freehand,
+            points: vec![VectorPoint::new(2.0, 4.0), VectorPoint::new(12.0, 14.0)],
+            brush: BrushSettings::for_preset(BrushPreset::Pencil),
+            export_simplify_epsilon: 0.0,
+        }];
+        let export = VectorLabPage::vector_group_export("vector_group_01", &paths);
+        let script = r##"<Graph fps={30} duration="8s" size={[1920,1080]}>
+  <Scene id="AudioSpectrum">
+    <Defs>
+      <Brush id="vector_vector_group_01_brush_01" stroke="#111111" strokeWidth="1.6" />
+    </Defs>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="1920" height="1080" color="#000000" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+    <Group id="vector_group_01" brush="vector_vector_group_01_brush_01" x="0" y="0" opacity="1">
+      <Path id="vector_path_old" d="M 1 1 L 2 2" />
+    </Group>
+  </Scene>
+</Graph>"##;
+
+        let updated = VectorLabPage::patch_motionloom_group_script(
+            script,
+            "vector_group_01",
+            &export,
+            1920,
+            1080,
+        );
+        let timeline_start = updated.find("<Timeline>").unwrap();
+        let timeline_end = updated.find("</Timeline>").unwrap();
+        let scene_end = updated.find("</Scene>").unwrap();
+        let group_start = updated.find(r#"<Group id="vector_group_01""#).unwrap();
+
+        assert_eq!(updated.matches(r#"<Group id="vector_group_01""#).count(), 1);
+        assert!(timeline_start < group_start && group_start < timeline_end);
+        assert!(!updated[timeline_end..scene_end].contains(r#"<Group id="vector_group_01""#));
     }
 
     #[test]

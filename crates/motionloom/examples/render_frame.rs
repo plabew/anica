@@ -25,8 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 "##;
 
     let graph = parse_graph_script(script)?;
-    let frame = render_scene_frame(&graph, 0, SceneRenderProfile::Gpu)
-        .or_else(|_| render_scene_frame(&graph, 0, SceneRenderProfile::Cpu))?;
+    let frame = render_scene_frame(&graph, 0, SceneRenderProfile::Gpu)?;
     frame.save(&output)?;
     println!("saved {}", output.display());
     Ok(())

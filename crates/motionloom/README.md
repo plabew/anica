@@ -1,7 +1,7 @@
 # MotionLoom
 
 MotionLoom is the DSL parser and renderer crate used by Anica for video effects,
-scene graphs, motion graphics, and animation graphs.
+scene graphs, motion graphics, and world graphs.
 
 It is designed to be used as a Rust library. Anica can expose MotionLoom through
 application tools such as `anica.motionloom/render_scene`, while this crate
@@ -21,14 +21,32 @@ Checks whether a string looks like a MotionLoom graph script.
 Parses a scene/effect/composition graph. Use this for `<Scene>`, `<Tex>`,
 `<Pass>`, `<Layer>`, `<Precompose>`, `<Mask>`, and most motion graphics DSL.
 
-`is_animation_graph_script(input: &str) -> bool`
+`is_world_graph_script(input: &str) -> bool`
 
-Checks whether a string should be handled by the animation graph parser.
+Checks whether a string should be handled by the world graph parser.
 
-`parse_animation_graph_script(input: &str) -> Result<AnimationGraph, GraphParseError>`
+`parse_world_graph_script(input: &str) -> Result<WorldGraph, GraphParseError>`
 
 Parses a `<World>` graph. Use this for GLB actors, camera/world
-animation, directional sprites, retarget maps, and skeletal actions.
+world, directional sprites, retarget maps, and skeletal actions.
+
+## Present Rule
+
+Every MotionLoom graph must contain exactly one `<Present ... />` node.
+
+`<Present ... />` must be a direct child of `<Graph>` and must be the final node
+before `</Graph>`. It cannot be nested inside `<Scene>`, `<World>`, or
+`<Process>`.
+
+For process graphs, use root-level present from the process id:
+
+```xml
+<Process id="FinalProcess">
+  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+</Process>
+
+<Present from="FinalProcess" />
+```
 
 ## Scene Rendering
 
@@ -62,31 +80,33 @@ Selects the renderer/output path:
 - `SceneRenderProfile::Gpu`
 - `SceneRenderProfile::GpuProRes`
 
-## Animation Rendering
+Scene `zDepth` uses camera-space depth: negative is closer, positive is farther.
 
-`render_animation_frame(graph: &AnimationGraph, frame: u32, asset_root)`
+## World Rendering
 
-Renders one animation frame using the compatibility animation renderer.
+`render_world_frame(graph: &WorldGraph, frame: u32, asset_root)`
 
-`AnimationFrameRenderer::new()`
+Renders one world frame using the compatibility world renderer.
 
-Creates a reusable animation renderer with image, GLB mesh, and GPU caches.
+`WorldFrameRenderer::new()`
 
-`AnimationFrameRenderer::render_frame(graph, frame, asset_root)`
+Creates a reusable world renderer with image, GLB mesh, and GPU caches.
 
-Renders an animation frame on the CPU/debug path.
+`WorldFrameRenderer::render_frame(graph, frame, asset_root)`
 
-`AnimationFrameRenderer::render_frame_gpu(graph, frame, asset_root)`
+Renders an world frame on the CPU/debug path.
 
-Renders an animation frame using the GPU actor path where available.
+`WorldFrameRenderer::render_frame_gpu(graph, frame, asset_root)`
 
-`AnimationFrameRenderer::render_frame_gpu_with_ground_grid(...)`
+Renders an world frame using the GPU actor path where available.
 
-Renders GPU animation with a ground grid overlay for viewport/debug use.
+`WorldFrameRenderer::render_frame_gpu_with_ground_grid(...)`
 
-`render_animation_graph_to_video_with_progress(ffmpeg_bin, graph, asset_root, output_path, profile, progress_every_frames, callback)`
+Renders GPU world with a ground grid overlay for viewport/debug use.
 
-Renders an animation graph to video through ffmpeg and reports progress.
+`render_world_graph_to_video_with_progress(ffmpeg_bin, graph, asset_root, output_path, profile, progress_every_frames, callback)`
+
+Renders an world graph to video through ffmpeg and reports progress.
 
 ## Runtime Evaluation
 
@@ -138,16 +158,16 @@ materials.
 
 `load_glb_mesh_data(path)` and `parse_glb_mesh_data(path, bytes)`
 
-Load or parse GLB mesh data for animation rendering and diagnostics.
+Load or parse GLB mesh data for world rendering and diagnostics.
 
-`diagnose_animation_glb_gpu_plan(mesh)`
+`diagnose_world_glb_gpu_plan(mesh)`
 
 Builds a diagnostic report for whether a GLB mesh is suitable for the GPU
-animation path.
+world path.
 
-`diagnose_animation_graph_actor_gpu_frame(graph, actor_id, frame, asset_root)`
+`diagnose_world_graph_actor_gpu_frame(graph, actor_id, frame, asset_root)`
 
-Diagnoses one actor in an animation graph at a specific frame.
+Diagnoses one actor in an world graph at a specific frame.
 
 ## Minimal Scene Example
 
@@ -172,10 +192,10 @@ frame.save("motionloom_frame.png")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Minimal Animation Example
+## Minimal World Example
 
 ```rust
-use motionloom::{AnimationFrameRenderer, parse_animation_graph_script};
+use motionloom::{WorldFrameRenderer, parse_world_graph_script};
 
 let script = r##"
 <Graph fps={30} duration="1s" size={[320,180]}>
@@ -187,16 +207,16 @@ let script = r##"
 </Graph>
 "##;
 
-let graph = parse_animation_graph_script(script)?;
-let mut renderer = AnimationFrameRenderer::new();
+let graph = parse_world_graph_script(script)?;
+let mut renderer = WorldFrameRenderer::new();
 let frame = renderer.render_frame(&graph, 0, ".")?;
-frame.save("motionloom_animation_frame.png")?;
+frame.save("motionloom_world_frame.png")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## Notes
 
-Scene graph APIs are for 2D scene/motion graphics/effect graphs. Animation graph
+Scene graph APIs are for 2D scene/motion graphics/effect graphs. World graph
 APIs are for world/camera/actor/directional-character rendering.
 
 GPU rendering requires a working `wgpu` backend on the host machine. For tools

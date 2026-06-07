@@ -58,5 +58,8 @@ jobs:
       - name: Clippy (workspace, correctness+suspicious strict, perf warn)
         run: cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -W clippy::perf
 
+      - name: Clippy (MotionLoom public crate, zero warnings)
+        run: cargo clippy -p motionloom --all-targets -- -D warnings
+
       - name: Tests
         run: cargo test --workspace

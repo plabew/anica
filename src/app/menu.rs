@@ -34,6 +34,7 @@ actions!(
         OpenAction,
         NewAction,
         RevealInFinderExplorerAction,
+        SelectMotionLoomAssetRootAction,
         OpenMemoryPreferencesAction,
         TogglePreviewRenderModeAction
     ]
@@ -98,6 +99,7 @@ fn create_new_project(cx: &mut App, global: gpui::Entity<GlobalState>) {
         *gs = GlobalState::default();
         gs.apply_media_dependency_status(media_status.clone(), false);
         gs.set_project_file_path(None);
+        gs.set_motionloom_asset_root(None);
         cx.notify();
         project_signature(gs)
     });
@@ -162,6 +164,7 @@ pub fn init_app_menus(cx: &mut App, global: gpui::Entity<GlobalState>) {
     cx.on_action(open_action);
     cx.on_action(new_action);
     cx.on_action(reveal_in_finder_explorer_action);
+    cx.on_action(select_motionloom_asset_root_action);
     cx.on_action(open_memory_preferences_action);
     cx.on_action(toggle_preview_render_mode_action);
 
@@ -213,6 +216,11 @@ pub fn init_app_menus(cx: &mut App, global: gpui::Entity<GlobalState>) {
                 MenuItem::separator(),
                 MenuItem::action("Save", SaveAction),
                 MenuItem::action("Save As…", SaveAsAction),
+                MenuItem::separator(),
+                MenuItem::action(
+                    "Set MotionLoom Asset Root…",
+                    SelectMotionLoomAssetRootAction,
+                ),
                 MenuItem::separator(),
                 MenuItem::action("Reveal in Finder/Explorer", RevealInFinderExplorerAction),
             ],
@@ -846,6 +854,52 @@ fn reveal_in_finder_explorer_action(_: &RevealInFinderExplorerAction, cx: &mut A
         gs.ui_notice = Some(notice);
         cx.notify();
     });
+}
+
+fn select_motionloom_asset_root_action(_: &SelectMotionLoomAssetRootAction, cx: &mut App) {
+    let Some(global) = cx
+        .try_global::<AppMenuState>()
+        .map(|menu_state| menu_state.global.clone())
+    else {
+        return;
+    };
+
+    let rx = cx.prompt_for_paths(PathPromptOptions {
+        files: false,
+        directories: true,
+        multiple: false,
+        prompt: Some("Select MotionLoom Asset Root".into()),
+    });
+
+    cx.spawn(async move |cx| {
+        let Ok(result) = rx.await else { return };
+        let paths = match result {
+            Ok(Some(paths)) => paths,
+            Ok(None) => return,
+            Err(err) => {
+                eprintln!("[MotionLoom] Asset root picker error: {err}");
+                return;
+            }
+        };
+
+        let Some(path) = paths.into_iter().next() else {
+            return;
+        };
+
+        let _ = global.update(cx, |gs, cx| {
+            if path.is_dir() {
+                gs.set_motionloom_asset_root(Some(path.clone()));
+                gs.ui_notice = Some(format!("MotionLoom asset root: {}", path.display()));
+            } else {
+                gs.ui_notice = Some(format!(
+                    "MotionLoom asset root must be a folder: {}",
+                    path.display()
+                ));
+            }
+            cx.notify();
+        });
+    })
+    .detach();
 }
 
 fn open_memory_preferences_action(_: &OpenMemoryPreferencesAction, cx: &mut App) {

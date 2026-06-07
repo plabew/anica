@@ -1,5 +1,18 @@
+pub mod backend;
+pub mod compile;
+pub mod composition;
+pub mod domain;
+pub mod drawable;
+pub mod dsl;
+pub mod error;
 pub mod model;
 pub mod render;
+pub mod resource;
+pub mod spatial;
+pub mod text;
+pub mod timeline;
 
+pub use error::*;
 pub use model::*;
 pub use render::*;
+pub use text::*;

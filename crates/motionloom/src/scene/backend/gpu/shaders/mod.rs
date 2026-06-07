@@ -1,0 +1,8 @@
+//! WGSL shader sources used by the Scene GPU backend.
+
+pub(crate) const WGPU_SCENE_SHADER: &str = include_str!("scene.wgsl");
+pub(crate) const WGPU_MATTE_TEXTURE_SHADER: &str = include_str!("matte_texture.wgsl");
+#[allow(dead_code)]
+pub(crate) const WGPU_SHAPE_SHADER: &str = include_str!("shape.wgsl");
+pub(crate) const WGPU_BATCH_SHAPE_SHADER: &str = include_str!("batch_shape.wgsl");
+pub(crate) const WGPU_POST_SHADER: &str = include_str!("post.wgsl");

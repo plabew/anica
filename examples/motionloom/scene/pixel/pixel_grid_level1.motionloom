@@ -2,32 +2,43 @@
   <Background color="#111827" />
 
   <Scene id="pixel_grid_level1">
-    <Palette id="anime16">
-      <Color key="." value="#00000000" />
-      <Color key="K" value="#0B0D16" />
-      <Color key="S" value="#F4BDAF" />
-      <Color key="B" value="#8ABBE0" />
-      <Color key="W" value="#F8FAFC" />
-    </Palette>
+    <Defs>
+      <Palette id="anime16">
+        <Color key="." value="#00000000" />
+        <Color key="K" value="#0B0D16" />
+        <Color key="S" value="#F4BDAF" />
+        <Color key="B" value="#8ABBE0" />
+        <Color key="W" value="#F8FAFC" />
+      </Palette>
+    </Defs>
 
-    <PixelGrid id="face_pixels"
-               x="118"
-               y="72"
-               pixelSize="14"
-               palette="anime16">
-      <![CDATA[
-....KKKK....
-..KKSSSSKK..
-.KSSSSSSSSK.
-.KSSKSSKSSK.
-.KSSSSSSSSK.
-..KKSSSSKK..
-....KKKK....
-.....BB.....
-....BBBB....
-...BBWWBB...
-      ]]>
-    </PixelGrid>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="2s" out="hold">
+          <Layer>
+
+            <PixelGrid id="face_pixels"
+                       x="118"
+                       y="72"
+                       pixelSize="14"
+                       palette="anime16">
+              <![CDATA[
+        ....KKKK....
+        ..KKSSSSKK..
+        .KSSSSSSSSK.
+        .KSSKSSKSSK.
+        .KSSSSSSSSK.
+        ..KKSSSSKK..
+        ....KKKK....
+        .....BB.....
+        ....BBBB....
+        ...BBWWBB...
+              ]]>
+            </PixelGrid>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="pixel_grid_level1" />

@@ -55,6 +55,8 @@ pub struct ProjectState {
     pub version: u32,
     pub meta: ProjectMetadata,
     pub canvas: CanvasState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motionloom_asset_root: Option<PathBuf>,
     pub timeline: TimelineState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media_pool: Vec<MediaPoolItemState>,
@@ -395,6 +397,7 @@ impl ProjectState {
                 height: gs.canvas_h,
                 fps: None,
             },
+            motionloom_asset_root: gs.motionloom_asset_root.clone(),
             timeline,
             media_pool,
             layer_effects: layer_effects_from_global(gs),
@@ -407,6 +410,7 @@ impl ProjectState {
     }
 
     pub fn apply_to(&self, gs: &mut GlobalState) {
+        gs.set_motionloom_asset_root(self.motionloom_asset_root.clone());
         gs.set_canvas_size(self.canvas.width, self.canvas.height);
         gs.v1_clips = self.timeline.v1.iter().map(state_to_clip).collect();
         gs.audio_tracks = self

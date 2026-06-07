@@ -18,8 +18,8 @@ use gpui_component::{
 };
 use image::{ImageBuffer, Rgba};
 use motionloom::{
-    AnimationGpuDiagnostics, AnimationGraph, CharacterDesignGpuViewport,
-    diagnose_animation_glb_gpu_plan, load_glb_mesh_data, parse_animation_graph_script,
+    CharacterDesignGpuViewport, WorldGpuDiagnostics, WorldGraph, diagnose_world_glb_gpu_plan,
+    load_glb_mesh_data, parse_world_graph_script,
 };
 use smallvec::SmallVec;
 
@@ -49,7 +49,7 @@ struct CharacterPreviewResponse {
     width: u32,
     height: u32,
     bgra: Vec<u8>,
-    diagnostics: Option<AnimationGpuDiagnostics>,
+    diagnostics: Option<WorldGpuDiagnostics>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,7 +81,7 @@ struct LoadedModelInspection {
     material_names: Vec<String>,
     hidden_meshes: HashSet<String>,
     hidden_materials: HashSet<String>,
-    diagnostics: Option<AnimationGpuDiagnostics>,
+    diagnostics: Option<WorldGpuDiagnostics>,
     bounds_height: f32,
     source_rest_pose: SourceRestPose,
 }
@@ -891,7 +891,7 @@ pub struct CharacterDesignPage {
     material_names: Vec<String>,
     hidden_meshes: HashSet<String>,
     hidden_materials: HashSet<String>,
-    gpu_diagnostics: Option<AnimationGpuDiagnostics>,
+    gpu_diagnostics: Option<WorldGpuDiagnostics>,
     action: WaveActionControls,
     additional_actions: Vec<WaveActionControls>,
     actor_x: f32,
@@ -1232,7 +1232,7 @@ impl CharacterDesignPage {
         std::thread::spawn(move || {
             let mut viewport = CharacterDesignGpuViewport::new();
             let mut cached_script = String::new();
-            let mut cached_graph: Option<AnimationGraph> = None;
+            let mut cached_graph: Option<WorldGraph> = None;
             while let Ok(mut request) = request_rx.recv() {
                 while let Ok(next_request) = request_rx.try_recv() {
                     request = next_request;
@@ -1240,7 +1240,7 @@ impl CharacterDesignPage {
                 let result = (|| {
                     if cached_graph.is_none() || cached_script != request.script {
                         cached_graph = Some(
-                            parse_animation_graph_script(&request.script)
+                            parse_world_graph_script(&request.script)
                                 .map_err(|err| format!("Character DSL parse error: {err}"))?,
                         );
                         cached_script = request.script.clone();
@@ -1272,7 +1272,7 @@ impl CharacterDesignPage {
         request_tx
     }
 
-    fn animation_asset_root() -> PathBuf {
+    fn world_asset_root() -> PathBuf {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         for candidate in [
             cwd.join("examples/motionloom/world"),
@@ -1292,7 +1292,7 @@ impl CharacterDesignPage {
         if path.is_absolute() {
             path.to_path_buf()
         } else {
-            Self::animation_asset_root().join(path)
+            Self::world_asset_root().join(path)
         }
     }
 
@@ -1309,7 +1309,7 @@ impl CharacterDesignPage {
     }
 
     fn display_model_path(path: PathBuf) -> String {
-        let asset_root = Self::animation_asset_root();
+        let asset_root = Self::world_asset_root();
         if let Ok(relative) = path.strip_prefix(&asset_root) {
             relative.to_string_lossy().to_string()
         } else if let Some(motionloom_root) = asset_root.parent() {
@@ -1335,7 +1335,7 @@ impl CharacterDesignPage {
         if path.is_absolute() {
             path.to_path_buf()
         } else {
-            Self::animation_asset_root().join(path)
+            Self::world_asset_root().join(path)
         }
     }
 
@@ -1411,7 +1411,7 @@ impl CharacterDesignPage {
             material_names,
             hidden_meshes,
             hidden_materials,
-            diagnostics: Some(diagnose_animation_glb_gpu_plan(&mesh)),
+            diagnostics: Some(diagnose_world_glb_gpu_plan(&mesh)),
             bounds_height,
             source_rest_pose,
         })
@@ -4441,7 +4441,7 @@ impl CharacterDesignPage {
         let token = self.preview_token;
         let frame = self.frame;
         let actor_id = self.selected_actor_id();
-        let asset_root = Self::animation_asset_root();
+        let asset_root = Self::world_asset_root();
         let (tx, rx) = mpsc::channel::<Result<CharacterPreviewResponse, String>>();
         let request = CharacterPreviewRequest {
             script,
@@ -5089,7 +5089,7 @@ impl CharacterDesignPage {
     }
 
     fn global_node_matrices(
-        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
     ) -> Vec<[f32; 16]> {
         let local = nodes
             .iter()
@@ -5111,7 +5111,7 @@ impl CharacterDesignPage {
 
     fn compute_global_node_matrix(
         index: usize,
-        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
         local: &[[f32; 16]],
         global: &mut [Option<[f32; 16]>],
     ) -> [f32; 16] {

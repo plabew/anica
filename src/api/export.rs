@@ -214,6 +214,10 @@ fn parse_export_range(
 }
 
 fn infer_extension_for_mode(mode: ExportMode, preset: ExportPreset, gs: &GlobalState) -> String {
+    if preset.requires_rendered_video() {
+        return preset.file_extension().to_string();
+    }
+
     if (mode == ExportMode::KeepSourceCopy || mode == ExportMode::SmartUniversal)
         && let Some(clip) = gs.v1_clips.first()
         && let Some(ext) = Path::new(&clip.file_path)
@@ -332,7 +336,55 @@ pub fn resolve_acp_export_run_request(
 
 #[cfg(test)]
 mod tests {
-    use super::{infer_target_resolution_from_text, resolve_target_resolution};
+    use std::time::Duration;
+
+    use super::{
+        infer_extension_for_mode, infer_target_resolution_from_text, resolve_target_resolution,
+    };
+    use crate::core::export::{ExportMode, ExportPreset};
+    use crate::core::global_state::{Clip, GlobalState};
+
+    fn test_clip(path: &str) -> Clip {
+        Clip {
+            id: 1,
+            label: "clip".to_string(),
+            file_path: path.to_string(),
+            start: Duration::ZERO,
+            duration: Duration::from_secs(1),
+            source_in: Duration::ZERO,
+            media_duration: Duration::from_secs(1),
+            link_group_id: None,
+            audio_gain_db: 0.0,
+            dissolve_trim_in: Duration::ZERO,
+            dissolve_trim_out: Duration::ZERO,
+            video_effects: Vec::new(),
+            local_mask_layers: Vec::new(),
+            pos_x_keyframes: Vec::new(),
+            pos_y_keyframes: Vec::new(),
+            scale_keyframes: Vec::new(),
+            rotation_keyframes: Vec::new(),
+            brightness_keyframes: Vec::new(),
+            contrast_keyframes: Vec::new(),
+            saturation_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            blur_keyframes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn infer_extension_for_gif_ignores_source_extension() {
+        let mut gs = GlobalState::default();
+        gs.v1_clips.push(test_clip("/tmp/source.mp4"));
+
+        assert_eq!(
+            infer_extension_for_mode(ExportMode::SmartUniversal, ExportPreset::Gif, &gs),
+            "gif"
+        );
+        assert_eq!(
+            infer_extension_for_mode(ExportMode::KeepSourceCopy, ExportPreset::Gif, &gs),
+            "gif"
+        );
+    }
 
     #[test]
     fn infer_target_resolution_from_text_maps_orientation_keywords() {

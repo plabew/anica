@@ -6,9 +6,13 @@ use gpu_effect_export_engine::{
     SingleClipOpacityVideoToolboxRequest, WgpuOpacityProcessor,
     build_single_clip_opacity_videotoolbox_args,
 };
+use gpui_video_renderer::{
+    BgraGpuEffectParams, VideoLocalMaskLayer, process_bgra_effects_with_params,
+};
 use motionloom::{
     GraphApplyScope, PassNode as MotionloomPassNode, PassTransitionEasing, PassTransitionMode,
-    is_graph_script, parse_graph_script, resolve_pass_kernel,
+    RuntimeFrameOutput, RuntimeProgram, compile_runtime_program, is_graph_script,
+    parse_process_graph_script, resolve_pass_kernel,
 };
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Stdio;
@@ -16,7 +20,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, path::Path, path::PathBuf, process::Command};
 use thiserror::Error;
 use url::Url;
@@ -62,6 +66,13 @@ struct LayerHslaOverlayPlan {
     alpha: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LayerBloomPlan {
+    threshold: f64,
+    intensity: f64,
+    sigma: f64,
+}
+
 #[derive(Debug, Clone, Default)]
 struct LayerScriptExportPlan {
     apply: GraphApplyScope,
@@ -72,7 +83,45 @@ struct LayerScriptExportPlan {
     sharpen_sigma: Option<f64>,
     lut_mix: Option<f64>,
     hsla_overlay: Option<LayerHslaOverlayPlan>,
+    bloom: Option<LayerBloomPlan>,
     opacity_factor: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UnifiedLayerFrameEffects {
+    brightness: f32,
+    contrast: f32,
+    saturation: f32,
+    signed_blur_sigma: f32,
+    lut_mix: f32,
+    tint_hue: f32,
+    tint_saturation: f32,
+    tint_lightness: f32,
+    tint_alpha: f32,
+    bloom_threshold: f32,
+    bloom_intensity: f32,
+    bloom_sigma: f32,
+    opacity_factor: f32,
+}
+
+impl Default for UnifiedLayerFrameEffects {
+    fn default() -> Self {
+        Self {
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            signed_blur_sigma: 0.0,
+            lut_mix: 0.0,
+            tint_hue: 0.0,
+            tint_saturation: 0.0,
+            tint_lightness: 0.0,
+            tint_alpha: 0.0,
+            bloom_threshold: 1.0,
+            bloom_intensity: 0.0,
+            bloom_sigma: 0.0,
+            opacity_factor: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +129,7 @@ pub enum ExportPreset {
     H264Mp4,
     H264VideotoolboxMp4,
     HevcMp4,
+    Gif,
     Vp8Webm,
     Vp9Webm,
     Av1LibaomMkv,
@@ -173,6 +223,7 @@ impl ExportPreset {
             ExportPreset::H264Mp4 => "h264_mp4",
             ExportPreset::H264VideotoolboxMp4 => "h264_videotoolbox_mp4",
             ExportPreset::HevcMp4 => "hevc_mp4",
+            ExportPreset::Gif => "gif",
             ExportPreset::Vp8Webm => "vp8_webm",
             ExportPreset::Vp9Webm => "vp9_webm",
             ExportPreset::Av1LibaomMkv => "av1_libaom_mkv",
@@ -195,6 +246,7 @@ impl ExportPreset {
             "h264_mp4" => Some(ExportPreset::H264Mp4),
             "h264_videotoolbox_mp4" => Some(ExportPreset::H264VideotoolboxMp4),
             "hevc_mp4" => Some(ExportPreset::HevcMp4),
+            "gif" => Some(ExportPreset::Gif),
             "vp8_webm" => Some(ExportPreset::Vp8Webm),
             "vp9_webm" => Some(ExportPreset::Vp9Webm),
             "av1_libaom_mkv" => Some(ExportPreset::Av1LibaomMkv),
@@ -218,6 +270,7 @@ impl ExportPreset {
             ExportPreset::H264Mp4,
             ExportPreset::H264VideotoolboxMp4,
             ExportPreset::HevcMp4,
+            ExportPreset::Gif,
             ExportPreset::Vp9Webm,
             ExportPreset::Vp8Webm,
             ExportPreset::Av1LibaomMkv,
@@ -240,6 +293,7 @@ impl ExportPreset {
             ExportPreset::H264Mp4 => "H.264 MP4",
             ExportPreset::H264VideotoolboxMp4 => "H.264 MP4 (VideoToolbox, macOS)",
             ExportPreset::HevcMp4 => "HEVC MP4",
+            ExportPreset::Gif => "Animated GIF",
             ExportPreset::Vp8Webm => "VP8 WEBM",
             ExportPreset::Vp9Webm => "VP9 WEBM",
             ExportPreset::Av1LibaomMkv => "AV1 (libaom+opus) MKV",
@@ -268,6 +322,9 @@ impl ExportPreset {
             ExportPreset::HevcMp4 => {
                 "HEVC via VideoToolbox on macOS. On other platforms falls back to H.264 compatibility export."
             }
+            ExportPreset::Gif => {
+                "Animated GIF with FFmpeg palette generation. No audio; best for short clips."
+            }
             ExportPreset::Vp8Webm => "VP8 video + Opus audio in WebM.",
             ExportPreset::Vp9Webm => "VP9 video + Opus audio in WebM.",
             ExportPreset::Av1LibaomMkv => "AV1 via libaom with Opus audio.",
@@ -294,6 +351,7 @@ impl ExportPreset {
             ExportPreset::H264Mp4 | ExportPreset::H264VideotoolboxMp4 | ExportPreset::HevcMp4 => {
                 "mp4"
             }
+            ExportPreset::Gif => "gif",
             ExportPreset::Vp8Webm | ExportPreset::Vp9Webm => "webm",
             ExportPreset::Av1LibaomMkv | ExportPreset::Av1SvtMkv => "mkv",
             ExportPreset::DnxhrHqMov
@@ -391,6 +449,14 @@ impl ExportPreset {
         )
     }
 
+    pub const fn requires_rendered_video(self) -> bool {
+        matches!(self, ExportPreset::Gif)
+    }
+
+    pub const fn omits_audio(self) -> bool {
+        matches!(self, ExportPreset::Gif)
+    }
+
     fn is_yuv420p_8bit(self) -> bool {
         matches!(
             self,
@@ -426,6 +492,10 @@ impl ExportPreset {
             }
             ExportPreset::HevcMp4 => {
                 Self::push_non_gpl_hevc_args(args, settings);
+            }
+            ExportPreset::Gif => {
+                args.push("-loop".into());
+                args.push("0".into());
             }
             ExportPreset::Vp8Webm => {
                 args.push("-c:v".into());
@@ -701,6 +771,11 @@ pub enum ExportError {
     },
     #[error("Failed to process GPU opacity frame: {message}")]
     ProcessGpuOpacityFrame { message: String },
+    #[error("Failed to load subtitle overlay ({path}): {source}")]
+    LoadSubtitleOverlay {
+        path: PathBuf,
+        source: image::ImageError,
+    },
     #[error("Internal export state missing: {state}")]
     MissingInternalState { state: &'static str },
     #[error("__ANICA_EXPORT_CANCELLED__")]
@@ -727,7 +802,14 @@ fn temp_output_path(out_path: &str) -> String {
         .and_then(|s| s.to_str())
         .filter(|s| !s.is_empty())
         .unwrap_or("mp4");
-    let tmp_name = format!("{stem}.anica.tmp.{ext}");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_nanos();
+    let tmp_name = format!(
+        "{stem}.anica.{pid}.{nonce}.tmp.{ext}",
+        pid = std::process::id()
+    );
     if let Some(parent) = path.parent() {
         return parent.join(tmp_name).to_string_lossy().to_string();
     }
@@ -851,6 +933,25 @@ impl FfmpegExporter {
         (clip.get_opacity().clamp(0.0, 1.0) - 1.0).abs() > 0.001
     }
 
+    fn clip_requires_unified_gpu_render(clip: &Clip) -> bool {
+        Self::has_active_local_mask_layers(&clip.local_mask_layers)
+            || !clip.pos_x_keyframes.is_empty()
+            || !clip.pos_y_keyframes.is_empty()
+            || !clip.scale_keyframes.is_empty()
+            || !clip.rotation_keyframes.is_empty()
+            || !clip.brightness_keyframes.is_empty()
+            || !clip.contrast_keyframes.is_empty()
+            || !clip.saturation_keyframes.is_empty()
+            || !clip.blur_keyframes.is_empty()
+            || clip.dissolve_trim_in > Duration::from_millis(1)
+            || clip.dissolve_trim_out > Duration::from_millis(1)
+            || Self::clip_has_non_identity_opacity(clip)
+            || clip
+                .video_effects
+                .iter()
+                .any(|effect| !Self::is_identity_video_effect(effect))
+    }
+
     fn is_default_linked_audio_layout(audio_tracks: &[AudioTrack], clip: &Clip) -> bool {
         let mut all_audio_clips = audio_tracks.iter().flat_map(|track| track.clips.iter());
         let Some(a) = all_audio_clips.next() else {
@@ -944,6 +1045,227 @@ impl FfmpegExporter {
             .any(|clip| Self::clip_has_non_identity_opacity(clip))
     }
 
+    fn should_try_unified_gpu_render_path(
+        v1_clips: &[Clip],
+        audio_tracks: &[AudioTrack],
+        video_tracks: &[VideoTrack],
+        subtitle_tracks: &[SubtitleTrack],
+        layer_effects: LayerColorBlurEffects,
+        layer_effect_clips: &[LayerEffectClip],
+        preset: ExportPreset,
+    ) -> bool {
+        if preset.is_audio_only() {
+            return false;
+        }
+        if v1_clips.is_empty() && video_tracks.iter().all(|t| t.clips.is_empty()) {
+            return false;
+        }
+
+        if preset == ExportPreset::Gif {
+            return true;
+        }
+        if subtitle_tracks.iter().any(|t| !t.clips.is_empty()) {
+            return true;
+        }
+        if let Some(base_clip) = v1_clips.first()
+            && !Self::is_default_linked_audio_layout(audio_tracks, base_clip)
+        {
+            return true;
+        }
+        if !layer_effects.is_identity() {
+            return true;
+        }
+        if v1_clips
+            .iter()
+            .any(|clip| Self::clip_requires_unified_gpu_render(clip))
+            || video_tracks.iter().any(|track| {
+                track
+                    .clips
+                    .iter()
+                    .any(|clip| Self::clip_requires_unified_gpu_render(clip))
+            })
+        {
+            return true;
+        }
+
+        let mut cache: std::collections::HashMap<u64, Option<LayerScriptExportPlan>> =
+            std::collections::HashMap::new();
+        layer_effect_clips.iter().any(|layer| {
+            layer.duration > Duration::ZERO
+                && (layer.has_any_effect_enabled()
+                    || Self::layer_script_plan_for_export(layer, &mut cache).is_some())
+        })
+    }
+
+    fn rgba_bgra_swap_in_place(data: &mut [u8]) {
+        for px in data.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+    }
+
+    fn local_mask_layers_for_gpu(clip: &Clip) -> Vec<VideoLocalMaskLayer> {
+        clip.local_mask_layers
+            .iter()
+            .map(|layer| VideoLocalMaskLayer {
+                enabled: layer.enabled,
+                center_x: layer.center_x,
+                center_y: layer.center_y,
+                radius: layer.radius,
+                feather: layer.feather,
+                strength: layer.strength,
+                brightness: layer.brightness,
+                contrast: layer.contrast,
+                saturation: layer.saturation,
+                opacity: layer.opacity,
+                blur_sigma: layer.blur_sigma,
+            })
+            .collect()
+    }
+
+    fn runtime_program_for_layer_export(
+        layer_clip: &LayerEffectClip,
+        cache: &mut std::collections::HashMap<u64, Option<RuntimeProgram>>,
+    ) -> Option<RuntimeProgram> {
+        let entry = cache.entry(layer_clip.id).or_insert_with(|| {
+            if !layer_clip.motionloom_enabled {
+                return None;
+            }
+            let script = layer_clip.motionloom_script.trim();
+            if script.is_empty() || !is_graph_script(script) {
+                return None;
+            }
+            parse_process_graph_script(script)
+                .ok()
+                .and_then(|graph| compile_runtime_program(graph).ok())
+        });
+        entry.clone()
+    }
+
+    fn runtime_output_for_layer_export(
+        layer_clip: &LayerEffectClip,
+        timeline_time: Duration,
+        cache: &mut std::collections::HashMap<u64, Option<RuntimeProgram>>,
+    ) -> Option<RuntimeFrameOutput> {
+        let runtime = Self::runtime_program_for_layer_export(layer_clip, cache)?;
+        let local = layer_clip.local_time(timeline_time)?;
+        Some(
+            runtime
+                .evaluate_at_time_sec(local.as_secs_f32(), Some(layer_clip.duration.as_secs_f32())),
+        )
+    }
+
+    fn unified_layer_frame_effects_at(
+        layer_effects: LayerColorBlurEffects,
+        layer_effect_clips: &[LayerEffectClip],
+        timeline_time: Duration,
+        runtime_cache: &mut std::collections::HashMap<u64, Option<RuntimeProgram>>,
+    ) -> UnifiedLayerFrameEffects {
+        let mut out = UnifiedLayerFrameEffects::default();
+        let mut has_active_layer = false;
+        let mut opacity_strength = 0.0_f32;
+        let mut transition_opacity = 1.0_f32;
+        let mut best_lut_mix = 0.0_f32;
+        let mut best_hsla_weighted_alpha = 0.0_f32;
+        let mut best_bloom_weighted_intensity = 0.0_f32;
+
+        for layer_clip in layer_effect_clips {
+            if layer_clip.local_time(timeline_time).is_none() {
+                continue;
+            }
+            has_active_layer = true;
+            let strength = layer_clip.envelope_factor_at(timeline_time).clamp(0.0, 1.0);
+            opacity_strength = opacity_strength.max(strength);
+
+            if let Some(mut sampled) = layer_clip.effects_at(timeline_time) {
+                // Match preview semantics: legacy global layer effects are only used
+                // through an active Layer FX clip that has no per-clip toggles.
+                if !layer_clip.has_any_effect_enabled() && !layer_effects.is_identity() {
+                    sampled = layer_effects;
+                }
+
+                if let Some(runtime_out) =
+                    Self::runtime_output_for_layer_export(layer_clip, timeline_time, runtime_cache)
+                {
+                    let mut runtime_signed_sigma = 0.0_f32;
+                    if let Some(v) = runtime_out.layer_blur_sigma {
+                        runtime_signed_sigma += v.clamp(0.0, 64.0);
+                    }
+                    if let Some(v) = runtime_out.layer_sharpen_sigma {
+                        runtime_signed_sigma -= v.clamp(0.0, 64.0);
+                    }
+                    sampled.blur_sigma = runtime_signed_sigma.clamp(-64.0, 64.0);
+                }
+
+                let sampled = sampled.normalized();
+                out.brightness += sampled.brightness;
+                out.contrast *= sampled.contrast;
+                out.saturation *= sampled.saturation;
+                out.signed_blur_sigma += sampled.blur_sigma;
+            }
+
+            let Some(runtime_out) =
+                Self::runtime_output_for_layer_export(layer_clip, timeline_time, runtime_cache)
+            else {
+                continue;
+            };
+
+            if let Some(v) = runtime_out.layer_transition_opacity {
+                transition_opacity = transition_opacity.min(v.clamp(0.0, 1.0));
+            }
+            if let Some(v) = runtime_out.layer_lut_mix {
+                best_lut_mix = best_lut_mix.max(v.clamp(0.0, 1.0) * strength);
+            }
+            if let (Some(h), Some(s), Some(l), Some(a)) = (
+                runtime_out.layer_hsla_hue,
+                runtime_out.layer_hsla_saturation,
+                runtime_out.layer_hsla_lightness,
+                runtime_out.layer_hsla_alpha,
+            ) {
+                let weighted_alpha = (a.clamp(0.0, 1.0) * strength).clamp(0.0, 1.0);
+                if weighted_alpha > best_hsla_weighted_alpha {
+                    best_hsla_weighted_alpha = weighted_alpha;
+                    out.tint_hue = h;
+                    out.tint_saturation = s;
+                    out.tint_lightness = l;
+                    out.tint_alpha = weighted_alpha.clamp(0.0, 1.0);
+                }
+            }
+            if let (Some(threshold), Some(intensity), Some(sigma)) = (
+                runtime_out.layer_bloom_threshold,
+                runtime_out.layer_bloom_intensity,
+                runtime_out.layer_bloom_sigma,
+            ) {
+                let weighted_intensity = (intensity.clamp(0.0, 8.0) * strength).clamp(0.0, 8.0);
+                if weighted_intensity > best_bloom_weighted_intensity && sigma > 0.001 {
+                    best_bloom_weighted_intensity = weighted_intensity;
+                    out.bloom_threshold = threshold.clamp(0.0, 1.0);
+                    out.bloom_intensity = weighted_intensity.clamp(0.0, 8.0);
+                    out.bloom_sigma = sigma.clamp(0.0, 64.0);
+                }
+            }
+        }
+
+        // Preserve legacy direct layer controls when no Layer FX clip is active.
+        if !has_active_layer && !layer_effects.is_identity() {
+            let layer = layer_effects.normalized();
+            out.brightness += layer.brightness;
+            out.contrast *= layer.contrast;
+            out.saturation *= layer.saturation;
+            out.signed_blur_sigma += layer.blur_sigma;
+        }
+        if has_active_layer {
+            out.opacity_factor = (opacity_strength * transition_opacity).clamp(0.0, 1.0);
+            out.lut_mix = best_lut_mix.clamp(0.0, 1.0);
+        }
+
+        out.brightness = out.brightness.clamp(-1.0, 1.0);
+        out.contrast = out.contrast.clamp(0.0, 2.0);
+        out.saturation = out.saturation.clamp(0.0, 2.0);
+        out.signed_blur_sigma = out.signed_blur_sigma.clamp(-64.0, 64.0);
+        out.opacity_factor = out.opacity_factor.clamp(0.0, 1.0);
+        out
+    }
+
     fn alpha_over_rgba(dst: &mut [u8], src: &[u8]) {
         let px_count = dst.len() / 4;
         for i in 0..px_count {
@@ -968,6 +1290,34 @@ impl FfmpegExporter {
             dst[off + 2] = ((sb * sa + db * inv + 127) / 255) as u8;
             dst[off + 3] = (sa + ((da * inv + 127) / 255)).min(255) as u8;
         }
+    }
+
+    fn load_unified_subtitle_overlays(
+        subtitle_overlays: &[RenderedSubtitle],
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<(f64, f64, Vec<u8>)>, ExportError> {
+        let mut out = Vec::with_capacity(subtitle_overlays.len());
+        for overlay in subtitle_overlays {
+            let image = image::open(&overlay.path)
+                .map_err(|source| ExportError::LoadSubtitleOverlay {
+                    path: overlay.path.clone(),
+                    source,
+                })?
+                .into_rgba8();
+            let image = if image.width() == width && image.height() == height {
+                image
+            } else {
+                image::imageops::resize(
+                    &image,
+                    width,
+                    height,
+                    image::imageops::FilterType::Lanczos3,
+                )
+            };
+            out.push((overlay.start, overlay.end, image.into_raw()));
+        }
+        Ok(out)
     }
 
     fn build_clip_decode_rgba_args(
@@ -1017,6 +1367,567 @@ impl FfmpegExporter {
         args.push("rawvideo".to_string());
         args.push("pipe:1".to_string());
         args
+    }
+
+    fn run_unified_gpu_render_export(
+        ffmpeg_bin: &str,
+        v1_clips: &[Clip],
+        audio_tracks: &[AudioTrack],
+        video_tracks: &[VideoTrack],
+        subtitle_overlays: &[RenderedSubtitle],
+        temp_out_path: &str,
+        canvas_w: f32,
+        canvas_h: f32,
+        layer_effects: LayerColorBlurEffects,
+        layer_effect_clips: &[LayerEffectClip],
+        export_preset: ExportPreset,
+        export_settings: &ExportSettings,
+        timeline_max: Duration,
+        export_range: Option<ExportRange>,
+        progress_total: Duration,
+        cancel_requested: &Arc<AtomicBool>,
+        on_progress: &mut impl FnMut(ExportProgress),
+    ) -> Result<(), ExportError> {
+        #[derive(Clone, Copy)]
+        struct TrackClipSpec<'a> {
+            clip: &'a Clip,
+            active_start: Duration,
+            active_end: Duration,
+            source_start: Duration,
+        }
+
+        struct DecoderProc {
+            child: std::process::Child,
+            stdout: std::process::ChildStdout,
+            stderr_join: std::thread::JoinHandle<String>,
+        }
+
+        struct LayerState<'a> {
+            spec: TrackClipSpec<'a>,
+            decoder: Option<DecoderProc>,
+            started: bool,
+            ended: bool,
+            local_mask_layers: Vec<VideoLocalMaskLayer>,
+        }
+
+        let fps = export_settings.normalized_fps().clamp(1, 144);
+        let width = canvas_w.max(1.0).round() as u32;
+        let height = canvas_h.max(1.0).round() as u32;
+        let frame_bytes = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        let export_start = export_range.map(|r| r.start).unwrap_or(Duration::ZERO);
+        let export_end = export_range
+            .map(|r| r.end)
+            .unwrap_or_else(|| export_start + progress_total);
+        if export_end <= export_start + Duration::from_millis(1) {
+            return Err(ExportError::GpuOpacityPathUnavailable {
+                reason: "effective duration is too short".to_string(),
+            });
+        }
+
+        let mut specs: Vec<TrackClipSpec<'_>> = Vec::new();
+        for clip in v1_clips {
+            let active_start = export_start.max(clip.start);
+            let active_end = export_end.min(clip.end());
+            if active_end <= active_start + Duration::from_millis(1) {
+                continue;
+            }
+            specs.push(TrackClipSpec {
+                clip,
+                active_start,
+                active_end,
+                source_start: clip.source_in + active_start.saturating_sub(clip.start),
+            });
+        }
+        for track in video_tracks {
+            for clip in &track.clips {
+                let active_start = export_start.max(clip.start);
+                let active_end = export_end.min(clip.end());
+                if active_end <= active_start + Duration::from_millis(1) {
+                    continue;
+                }
+                specs.push(TrackClipSpec {
+                    clip,
+                    active_start,
+                    active_end,
+                    source_start: clip.source_in + active_start.saturating_sub(clip.start),
+                });
+            }
+        }
+        if specs.is_empty() {
+            return Err(ExportError::GpuOpacityPathUnavailable {
+                reason: "no visual clips intersect export range".to_string(),
+            });
+        }
+
+        let mut encode_args = vec![
+            "-y".to_string(),
+            "-hide_banner".to_string(),
+            "-f".to_string(),
+            "rawvideo".to_string(),
+            "-pix_fmt".to_string(),
+            "rgba".to_string(),
+            "-s:v".to_string(),
+            format!("{}x{}", width, height),
+            "-r".to_string(),
+            fps.to_string(),
+            "-i".to_string(),
+            "pipe:0".to_string(),
+        ];
+
+        let mut audio_track_indices: Vec<Vec<Option<usize>>> = Vec::new();
+        let mut next_input_idx = 1usize;
+        let mut audio_presence_cache: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+        if !export_preset.omits_audio() {
+            for track in audio_tracks {
+                let mut indices = Vec::with_capacity(track.clips.len());
+                for clip in &track.clips {
+                    let has_audio = *audio_presence_cache
+                        .entry(clip.file_path.clone())
+                        .or_insert_with(|| has_audio_stream(&clip.file_path));
+                    if has_audio {
+                        encode_args.push("-i".to_string());
+                        encode_args.push(clip.file_path.clone());
+                        indices.push(Some(next_input_idx));
+                        next_input_idx += 1;
+                    } else {
+                        indices.push(None);
+                    }
+                }
+                audio_track_indices.push(indices);
+            }
+        }
+
+        let mut filter_parts = Vec::<String>::new();
+        let mut mapped_audio_tag: Option<String> = None;
+        if export_preset == ExportPreset::Gif {
+            filter_parts.push(format!(
+                "[0:v:0]fps={fps},split[v_gif_palette_src][v_gif_use_src];\
+                 [v_gif_palette_src]palettegen=stats_mode=diff[p_gif];\
+                 [v_gif_use_src][p_gif]paletteuse=dither=sierra2_4a[v_gif]"
+            ));
+        } else if !export_preset.omits_audio() {
+            let mut audio_mix_inputs = Vec::new();
+            for (track_idx, track) in audio_tracks.iter().enumerate() {
+                if track.clips.is_empty() {
+                    continue;
+                }
+                let Some(indices) = audio_track_indices.get(track_idx) else {
+                    continue;
+                };
+                let label = format!("ugpu_audio_{track_idx}");
+                let mut concat_inputs = String::new();
+                let mut concat_count = 0usize;
+                let mut cursor = Duration::ZERO;
+
+                for (clip_idx, clip) in track.clips.iter().enumerate() {
+                    if clip.start > cursor {
+                        let gap = (clip.start - cursor).as_secs_f64();
+                        filter_parts.push(format!(
+                            "anullsrc=channel_layout=stereo:sample_rate=48000:d={gap:.6}[{label}_gap_{clip_idx}]"
+                        ));
+                        concat_inputs.push_str(&format!("[{label}_gap_{clip_idx}]"));
+                        concat_count += 1;
+                    }
+
+                    let clip_tag = format!("[{label}_clip_{clip_idx}]");
+                    if let Some(Some(input_idx)) = indices.get(clip_idx) {
+                        let raw_tag = format!("[{label}_raw_{clip_idx}]");
+                        let start = clip.source_in.as_secs_f64();
+                        let end = (clip.source_in + clip.duration).as_secs_f64();
+                        filter_parts.push(format!(
+                            "[{input_idx}:a:0]aresample=48000,atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS{raw_tag}"
+                        ));
+                        let gain_linear = 10.0_f64.powf((clip.audio_gain_db as f64) / 20.0);
+                        if (gain_linear - 1.0).abs() > 0.0005 {
+                            filter_parts
+                                .push(format!("{raw_tag}volume={gain_linear:.6}{clip_tag}"));
+                        } else {
+                            filter_parts.push(format!("{raw_tag}anull{clip_tag}"));
+                        }
+                    } else {
+                        let silence_dur = clip.duration.as_secs_f64().max(0.001);
+                        filter_parts.push(format!(
+                            "anullsrc=channel_layout=stereo:sample_rate=48000:d={silence_dur:.6}{clip_tag}"
+                        ));
+                    }
+                    concat_inputs.push_str(&clip_tag);
+                    concat_count += 1;
+                    cursor = clip.start + clip.duration;
+                }
+
+                if cursor < timeline_max {
+                    let gap = (timeline_max - cursor).as_secs_f64();
+                    filter_parts.push(format!(
+                        "anullsrc=channel_layout=stereo:sample_rate=48000:d={gap:.6}[{label}_gap_end]"
+                    ));
+                    concat_inputs.push_str(&format!("[{label}_gap_end]"));
+                    concat_count += 1;
+                }
+
+                if concat_count == 0 {
+                    continue;
+                }
+                let track_tag = format!("[{label}_track]");
+                filter_parts.push(format!(
+                    "{concat_inputs}concat=n={concat_count}:v=0:a=1{track_tag}"
+                ));
+                let gain_linear = 10.0_f64.powf((track.gain_db as f64) / 20.0);
+                if (gain_linear - 1.0).abs() > 0.0005 {
+                    let gain_tag = format!("[{label}_gain]");
+                    filter_parts.push(format!("{track_tag}volume={gain_linear:.6}{gain_tag}"));
+                    audio_mix_inputs.push(gain_tag);
+                } else {
+                    audio_mix_inputs.push(track_tag);
+                }
+            }
+
+            if !audio_mix_inputs.is_empty() {
+                let mixed_tag = if audio_mix_inputs.len() == 1 {
+                    let tag = "[ugpu_aout]".to_string();
+                    filter_parts.push(format!("{}anull{}", audio_mix_inputs[0], tag));
+                    tag
+                } else {
+                    let tag = "[ugpu_aout]".to_string();
+                    filter_parts.push(format!(
+                        "{}amix=inputs={}:duration=longest:dropout_transition=0{}",
+                        audio_mix_inputs.join(""),
+                        audio_mix_inputs.len(),
+                        tag
+                    ));
+                    tag
+                };
+                let trimmed_tag = "[ugpu_aexport]".to_string();
+                filter_parts.push(format!(
+                    "{mixed_tag}atrim=start={:.6}:end={:.6},asetpts=PTS-STARTPTS{}",
+                    export_start.as_secs_f64(),
+                    export_end.as_secs_f64(),
+                    trimmed_tag
+                ));
+                mapped_audio_tag = Some(trimmed_tag);
+            }
+        }
+
+        if !filter_parts.is_empty() {
+            encode_args.push("-filter_complex".to_string());
+            encode_args.push(filter_parts.join(";"));
+        }
+        encode_args.push("-map".to_string());
+        if export_preset == ExportPreset::Gif {
+            encode_args.push("[v_gif]".to_string());
+        } else {
+            encode_args.push("0:v:0".to_string());
+        }
+        if let Some(audio_tag) = mapped_audio_tag.as_ref() {
+            encode_args.push("-map".to_string());
+            encode_args.push(audio_tag.clone());
+        }
+        export_preset.push_output_args(&mut encode_args, export_settings);
+        if mapped_audio_tag.is_some() {
+            encode_args.push("-shortest".to_string());
+        }
+        encode_args.push("-nostats".to_string());
+        encode_args.push("-loglevel".to_string());
+        encode_args.push("error".to_string());
+        encode_args.push(temp_out_path.to_string());
+
+        println!(
+            "[Export][Unified GPU] Encode ffmpeg: {} {:?}",
+            ffmpeg_bin, encode_args
+        );
+        let mut encode_child = Command::new(ffmpeg_bin)
+            .args(&encode_args)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|source| ExportError::ExecuteStageFfmpeg {
+                stage: "encode",
+                source,
+            })?;
+        let mut encode_stdin = encode_child
+            .stdin
+            .take()
+            .ok_or(ExportError::MissingFfmpegPipe {
+                stage: "encode",
+                pipe: "stdin",
+            })?;
+        let encode_stderr = encode_child
+            .stderr
+            .take()
+            .ok_or(ExportError::MissingFfmpegPipe {
+                stage: "encode",
+                pipe: "stderr",
+            })?;
+        let encode_stderr_handle = std::thread::spawn(move || {
+            let mut msg = String::new();
+            let mut reader = BufReader::new(encode_stderr);
+            let _ = reader.read_to_string(&mut msg);
+            msg
+        });
+
+        let mut layer_states: Vec<LayerState<'_>> = specs
+            .into_iter()
+            .map(|spec| LayerState {
+                local_mask_layers: Self::local_mask_layers_for_gpu(spec.clip),
+                spec,
+                decoder: None,
+                started: false,
+                ended: false,
+            })
+            .collect();
+        let mut motionloom_runtime_cache: std::collections::HashMap<u64, Option<RuntimeProgram>> =
+            std::collections::HashMap::new();
+
+        let mut frame_rgba = vec![0u8; frame_bytes];
+        let mut composed_rgba = vec![0u8; frame_bytes];
+        let subtitle_overlay_pixels =
+            Self::load_unified_subtitle_overlays(subtitle_overlays, width, height)?;
+        let total_frames = ((progress_total.as_secs_f64() * f64::from(fps)).ceil() as u64).max(1);
+
+        on_progress(ExportProgress {
+            rendered: Duration::ZERO,
+            total: progress_total,
+            speed: None,
+        });
+
+        for frame_idx in 0..total_frames {
+            if cancel_requested.load(Ordering::Relaxed) {
+                for state in &mut layer_states {
+                    if let Some(mut d) = state.decoder.take() {
+                        let _ = d.child.kill();
+                        let _ = d.child.wait();
+                        let _ = d.stderr_join.join();
+                    }
+                }
+                let _ = encode_child.kill();
+                let _ = encode_child.wait();
+                let _ = encode_stderr_handle.join();
+                return Err(ExportError::Cancelled);
+            }
+
+            let t = export_start + Duration::from_secs_f64(frame_idx as f64 / f64::from(fps));
+            let layer_fx = Self::unified_layer_frame_effects_at(
+                layer_effects,
+                layer_effect_clips,
+                t,
+                &mut motionloom_runtime_cache,
+            );
+            composed_rgba.fill(0);
+
+            for state in &mut layer_states {
+                if t < state.spec.active_start || t >= state.spec.active_end {
+                    if t >= state.spec.active_end && !state.ended {
+                        if let Some(mut d) = state.decoder.take() {
+                            let _ = d.child.wait();
+                            let _ = d.stderr_join.join();
+                        }
+                        state.ended = true;
+                    }
+                    continue;
+                }
+
+                if !state.started {
+                    let decode_duration = state
+                        .spec
+                        .active_end
+                        .saturating_sub(state.spec.active_start);
+                    let decode_args = Self::build_clip_decode_rgba_args(
+                        state.spec.clip,
+                        state.spec.source_start,
+                        decode_duration,
+                        width,
+                        height,
+                        fps,
+                    );
+                    println!(
+                        "[Export][Unified GPU] Decode ffmpeg: {} {:?}",
+                        ffmpeg_bin, decode_args
+                    );
+                    let mut child = Command::new(ffmpeg_bin)
+                        .args(&decode_args)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|source| ExportError::ExecuteStageFfmpeg {
+                            stage: "decode",
+                            source,
+                        })?;
+                    let stdout = child.stdout.take().ok_or(ExportError::MissingFfmpegPipe {
+                        stage: "decode",
+                        pipe: "stdout",
+                    })?;
+                    let stderr = child.stderr.take().ok_or(ExportError::MissingFfmpegPipe {
+                        stage: "decode",
+                        pipe: "stderr",
+                    })?;
+                    let stderr_join = std::thread::spawn(move || {
+                        let mut msg = String::new();
+                        let mut reader = BufReader::new(stderr);
+                        let _ = reader.read_to_string(&mut msg);
+                        msg
+                    });
+                    state.decoder = Some(DecoderProc {
+                        child,
+                        stdout,
+                        stderr_join,
+                    });
+                    state.started = true;
+                }
+
+                let Some(decoder) = state.decoder.as_mut() else {
+                    return Err(ExportError::MissingInternalState {
+                        state: "unified gpu decode state",
+                    });
+                };
+                decoder
+                    .stdout
+                    .read_exact(&mut frame_rgba)
+                    .map_err(|source| ExportError::ReadFfmpegFrame {
+                        stage: "decode",
+                        source,
+                    })?;
+
+                let local_t = t.saturating_sub(state.spec.clip.start);
+                let (clip_tint_h, clip_tint_s, clip_tint_l, clip_tint_a) =
+                    state.spec.clip.get_hsla_overlay();
+                let use_layer_tint = layer_fx.tint_alpha > 0.001;
+                let opacity = state.spec.clip.sample_opacity(local_t)
+                    * state.spec.clip.sample_fade_factor(local_t)
+                    * state.spec.clip.sample_dissolve_factor(local_t)
+                    * layer_fx.opacity_factor;
+                let params = BgraGpuEffectParams {
+                    brightness: (state.spec.clip.sample_brightness(local_t) + layer_fx.brightness)
+                        .clamp(-1.0, 1.0),
+                    contrast: (state.spec.clip.sample_contrast(local_t) * layer_fx.contrast)
+                        .clamp(0.0, 2.0),
+                    saturation: (state.spec.clip.sample_saturation(local_t) * layer_fx.saturation)
+                        .clamp(0.0, 2.0),
+                    lut_mix: layer_fx.lut_mix,
+                    opacity: opacity.clamp(0.0, 1.0),
+                    rotation_deg: state.spec.clip.sample_rotation(local_t),
+                    transform_scale: state.spec.clip.sample_scale(local_t),
+                    transform_pos_x: state.spec.clip.sample_pos_x(local_t),
+                    transform_pos_y: state.spec.clip.sample_pos_y(local_t),
+                    transform_ref_width: width as f32,
+                    transform_ref_height: height as f32,
+                    tint_hue: if use_layer_tint {
+                        layer_fx.tint_hue
+                    } else {
+                        clip_tint_h
+                    },
+                    tint_saturation: if use_layer_tint {
+                        layer_fx.tint_saturation
+                    } else {
+                        clip_tint_s
+                    },
+                    tint_lightness: if use_layer_tint {
+                        layer_fx.tint_lightness
+                    } else {
+                        clip_tint_l
+                    },
+                    tint_alpha: if use_layer_tint {
+                        layer_fx.tint_alpha
+                    } else {
+                        clip_tint_a
+                    },
+                    blur_sigma: (state.spec.clip.sample_blur(local_t) + layer_fx.signed_blur_sigma)
+                        .clamp(-64.0, 64.0),
+                    bloom_threshold: layer_fx.bloom_threshold,
+                    bloom_intensity: layer_fx.bloom_intensity,
+                    bloom_sigma: layer_fx.bloom_sigma,
+                };
+
+                Self::rgba_bgra_swap_in_place(&mut frame_rgba);
+                if !process_bgra_effects_with_params(
+                    &mut frame_rgba,
+                    width,
+                    height,
+                    params,
+                    &state.local_mask_layers,
+                ) {
+                    return Err(ExportError::ProcessGpuOpacityFrame {
+                        message: "unified WGPU BGRA effect processing failed".to_string(),
+                    });
+                }
+                Self::rgba_bgra_swap_in_place(&mut frame_rgba);
+                Self::alpha_over_rgba(&mut composed_rgba, &frame_rgba);
+            }
+
+            let t_sec = t.as_secs_f64();
+            for (start, end, pixels) in &subtitle_overlay_pixels {
+                if t_sec >= *start && t_sec < *end {
+                    Self::alpha_over_rgba(&mut composed_rgba, pixels);
+                }
+            }
+
+            encode_stdin.write_all(&composed_rgba).map_err(|source| {
+                ExportError::WriteFfmpegFrame {
+                    stage: "encode",
+                    source,
+                }
+            })?;
+
+            if frame_idx % 8 == 0 {
+                let rendered =
+                    Duration::from_secs_f64((frame_idx as f64 / f64::from(fps)).max(0.0))
+                        .min(progress_total);
+                on_progress(ExportProgress {
+                    rendered,
+                    total: progress_total,
+                    speed: None,
+                });
+            }
+        }
+
+        for state in &mut layer_states {
+            if let Some(mut d) = state.decoder.take() {
+                let decode_status =
+                    d.child
+                        .wait()
+                        .map_err(|source| ExportError::WaitStageFfmpegProcess {
+                            stage: "decode",
+                            source,
+                        })?;
+                let decode_stderr = d.stderr_join.join().unwrap_or_default();
+                if !decode_status.success() {
+                    let msg = decode_stderr.trim();
+                    return Err(ExportError::StageFfmpegFailed {
+                        stage: "decode",
+                        status: decode_status.to_string(),
+                        stderr: if msg.is_empty() {
+                            "empty stderr".to_string()
+                        } else {
+                            msg.to_string()
+                        },
+                    });
+                }
+            }
+        }
+
+        drop(encode_stdin);
+        let encode_status =
+            encode_child
+                .wait()
+                .map_err(|source| ExportError::WaitStageFfmpegProcess {
+                    stage: "encode",
+                    source,
+                })?;
+        let encode_stderr = encode_stderr_handle.join().unwrap_or_default();
+        if !encode_status.success() {
+            let msg = encode_stderr.trim();
+            return Err(ExportError::StageFfmpegFailed {
+                stage: "encode",
+                status: encode_status.to_string(),
+                stderr: if msg.is_empty() {
+                    "empty stderr".to_string()
+                } else {
+                    msg.to_string()
+                },
+            });
+        }
+        Ok(())
     }
 
     fn run_true_gpu_multitrack_opacity_export(
@@ -1912,6 +2823,88 @@ impl FfmpegExporter {
             }
         }
 
+        if !audio_only_export
+            && Self::should_try_unified_gpu_render_path(
+                v1_clips,
+                audio_tracks,
+                video_tracks,
+                subtitle_tracks,
+                layer_effects,
+                layer_effect_clips,
+                active_export_preset,
+            )
+        {
+            println!(
+                "[Export][Unified GPU] Path selected: FFmpeg decode/encode + shared WGPU preview effects."
+            );
+            let unified_subtitle_renders =
+                if subtitle_tracks.iter().any(|track| !track.clips.is_empty()) {
+                    Some(render_subtitle_pngs(
+                        subtitle_tracks,
+                        subtitle_groups,
+                        canvas_w_i,
+                        canvas_h_i,
+                        layout_canvas_w_i,
+                        layout_canvas_h_i,
+                    )?)
+                } else {
+                    None
+                };
+            let unified_subtitle_overlays = unified_subtitle_renders
+                .as_ref()
+                .map(|renders| renders.overlays.as_slice())
+                .unwrap_or(&[]);
+            match Self::run_unified_gpu_render_export(
+                ffmpeg_bin,
+                v1_clips,
+                audio_tracks,
+                video_tracks,
+                unified_subtitle_overlays,
+                &temp_out_path,
+                canvas_w,
+                canvas_h,
+                layer_effects,
+                layer_effect_clips,
+                active_export_preset,
+                &export_settings,
+                timeline_max,
+                export_range,
+                progress_total,
+                &cancel_requested,
+                &mut on_progress,
+            ) {
+                Ok(()) => {
+                    if cancel_requested.load(Ordering::Relaxed) {
+                        let _ = fs::remove_file(&temp_out_path);
+                        return Err(ExportError::Cancelled);
+                    }
+
+                    if Path::new(out_path).exists() {
+                        fs::remove_file(out_path)
+                            .map_err(|source| ExportError::ReplaceExistingOutput { source })?;
+                    }
+                    fs::rename(&temp_out_path, out_path)
+                        .map_err(|source| ExportError::FinalizeOutput { source })?;
+
+                    on_progress(ExportProgress {
+                        rendered: progress_total,
+                        total: progress_total,
+                        speed: None,
+                    });
+                    println!("[Export] Success!");
+                    return Ok(());
+                }
+                Err(ExportError::Cancelled) => {
+                    let _ = fs::remove_file(&temp_out_path);
+                    return Err(ExportError::Cancelled);
+                }
+                Err(reason) => {
+                    println!("[Export][Unified GPU] Fallback to standard FFmpeg graph: {reason}");
+                    let _ = fs::remove_file(&temp_out_path);
+                }
+            }
+        }
+
         // Keep subtitle render output alive until ffmpeg exits.
         // SubtitleRenderOutput drops temp PNG files on Drop.
         // Keep Source/Smart mode can use stream copy only when timeline is a single untouched source clip.
@@ -1939,6 +2932,8 @@ impl FfmpegExporter {
                 ExportMode::KeepSourceCopy => {
                     if audio_only_export {
                         (build_audio_only_args(active_export_preset), None)
+                    } else if active_export_preset.requires_rendered_video() {
+                        return Err(ExportError::KeepSourceCopyUnavailable);
                     } else if let Some(copy_args) = Self::build_copy_ffmpeg_cmd(
                         v1_clips,
                         audio_tracks,
@@ -1958,16 +2953,18 @@ impl FfmpegExporter {
                 ExportMode::SmartUniversal => {
                     if audio_only_export {
                         (build_audio_only_args(active_export_preset), None)
-                    } else if let Some(copy_args) = Self::build_copy_ffmpeg_cmd(
-                        v1_clips,
-                        audio_tracks,
-                        video_tracks,
-                        subtitle_tracks,
-                        &temp_out_path,
-                        export_range,
-                        layer_effects,
-                        layer_effect_clips,
-                    ) {
+                    } else if !active_export_preset.requires_rendered_video()
+                        && let Some(copy_args) = Self::build_copy_ffmpeg_cmd(
+                            v1_clips,
+                            audio_tracks,
+                            video_tracks,
+                            subtitle_tracks,
+                            &temp_out_path,
+                            export_range,
+                            layer_effects,
+                            layer_effect_clips,
+                        )
+                    {
                         used_copy_path = true;
                         (copy_args, None)
                     } else {
@@ -3212,9 +4209,23 @@ impl FfmpegExporter {
         // ---------------------------------------------------------
         // 6. FINAL ASSEMBLY
         // ---------------------------------------------------------
+        if export_preset == ExportPreset::Gif {
+            let gif_fps = fps;
+            let gif_tag = "[v_gif]".to_string();
+            filter_parts.push(format!(
+                "{final_video_tag}fps={gif_fps},split[v_gif_palette_src][v_gif_use_src];\
+                 [v_gif_palette_src]palettegen=stats_mode=diff[p_gif];\
+                 [v_gif_use_src][p_gif]paletteuse=dither=sierra2_4a{gif_tag}"
+            ));
+            final_video_tag = gif_tag;
+        }
+
         if export_preset.is_audio_only() {
             // Keep video branch connected for ffmpeg graph validation while emitting audio-only output.
             filter_parts.push(format!("{final_video_tag}nullsink"));
+        } else if export_preset.omits_audio() {
+            // GIF has no audio stream; consume the generated audio branch so filter_complex remains valid.
+            filter_parts.push(format!("{final_audio_tag}anullsink"));
         }
 
         let full_filter = filter_parts.join(";");
@@ -3225,8 +4236,10 @@ impl FfmpegExporter {
             args.push("-map".into());
             args.push(final_video_tag);
         }
-        args.push("-map".into());
-        args.push(final_audio_tag);
+        if !export_preset.omits_audio() {
+            args.push("-map".into());
+            args.push(final_audio_tag);
+        }
 
         // Output encoding preset
         export_preset.push_output_args(&mut args, export_settings);
@@ -3327,6 +4340,14 @@ impl FfmpegExporter {
             motionloom_plan_cache,
             "T",
         );
+        let motionloom_bloom_filter = Self::build_motionloom_bloom_filter_for_clip(
+            c,
+            layer_effect_clips,
+            motionloom_plan_cache,
+            "T",
+            label_prefix,
+            local_i,
+        );
         let opacity_filter = Self::build_opacity_filter(
             c,
             opacity_mode,
@@ -3370,7 +4391,7 @@ impl FfmpegExporter {
         let scale_w_expr = format!("({:.3})*({})", canvas_w, scale_expr);
         let scale_h_expr = format!("({:.3})*({})", canvas_h, scale_expr);
         filter_parts.push(format!(
-            "[{}:v:0]fps={},setsar=1,trim=start={:.6}:end={:.6},setpts=PTS-STARTPTS,format=bgra{},scale=w='{}':h='{}':force_original_aspect_ratio=decrease:eval=frame{}{}{}{}{}{}{}{}{}",
+            "[{}:v:0]fps={},setsar=1,trim=start={:.6}:end={:.6},setpts=PTS-STARTPTS,format=bgra{},scale=w='{}':h='{}':force_original_aspect_ratio=decrease:eval=frame{}{}{}{}{}{}{}{}{}{}",
             global_i,
             output_fps,
             start,
@@ -3384,10 +4405,25 @@ impl FfmpegExporter {
             motionloom_lut_filter,
             tint_filter,
             motionloom_hsla_filter,
+            if motionloom_bloom_filter.is_empty() {
+                String::new()
+            } else {
+                ",format=bgra".to_string()
+            },
             pre_opacity_format,
             opacity_filter,
             base_content_tag
         ));
+        let base_content_tag = if motionloom_bloom_filter.is_empty() {
+            base_content_tag.clone()
+        } else {
+            let bloom_tag = format!("[{}_bloom_base_{}]", label_prefix, local_i);
+            filter_parts.push(format!(
+                "{}{}{}",
+                base_content_tag, motionloom_bloom_filter, bloom_tag
+            ));
+            bloom_tag
+        };
         let content_tag = if disable_local_mask_filters {
             base_content_tag.clone()
         } else {
@@ -3770,6 +4806,21 @@ impl FfmpegExporter {
         }
     }
 
+    fn is_bloom_effect(effect: &str) -> bool {
+        matches!(
+            effect,
+            "bloom"
+                | "glow"
+                | "glow_bloom"
+                | "post.bloom"
+                | "post.glow"
+                | "post.glow_bloom"
+                | "light_atmosphere.bloom"
+                | "light_atmosphere.glow"
+                | "light_atmosphere.glow_bloom"
+        )
+    }
+
     fn build_transition_easing_expr(progress_expr: &str, easing: PassTransitionEasing) -> String {
         match easing {
             PassTransitionEasing::Linear => format!("({})", progress_expr),
@@ -3825,7 +4876,7 @@ impl FfmpegExporter {
         if trimmed.is_empty() || !is_graph_script(trimmed) {
             return None;
         }
-        let graph = parse_graph_script(trimmed).ok()?;
+        let graph = parse_process_graph_script(trimmed).ok()?;
         let mut plan = LayerScriptExportPlan {
             apply: graph.apply,
             graph_duration_sec: (graph.duration_ms as f64 / 1000.0).max(0.000_1),
@@ -3917,6 +4968,26 @@ impl FfmpegExporter {
                         }
                         continue;
                     }
+                    if Self::is_bloom_effect(&effect) {
+                        let threshold = Self::pass_param_f64(pass, &["threshold"])
+                            .unwrap_or(0.72)
+                            .clamp(0.0, 1.0);
+                        let intensity =
+                            Self::pass_param_f64(pass, &["intensity", "strength", "amount"])
+                                .unwrap_or(1.0)
+                                .clamp(0.0, 8.0);
+                        let sigma = Self::pass_param_f64(pass, &["sigma", "radius"])
+                            .unwrap_or(18.0)
+                            .clamp(0.0, 64.0);
+                        if intensity > 0.001 && sigma > 0.001 {
+                            plan.bloom = Some(LayerBloomPlan {
+                                threshold,
+                                intensity,
+                                sigma,
+                            });
+                        }
+                        continue;
+                    }
                     if effect == "hsla_overlay"
                         || effect == "hsla"
                         || effect == "tint_overlay"
@@ -3951,6 +5022,7 @@ impl FfmpegExporter {
             && plan.sharpen_sigma.is_none()
             && plan.lut_mix.is_none()
             && plan.hsla_overlay.is_none()
+            && plan.bloom.is_none()
             && plan.opacity_factor.is_none()
         {
             None
@@ -4509,6 +5581,151 @@ impl FfmpegExporter {
         out
     }
 
+    fn build_motionloom_bloom_filter_for_clip(
+        clip: &Clip,
+        layer_effect_clips: &[LayerEffectClip],
+        motionloom_plan_cache: &mut std::collections::HashMap<u64, Option<LayerScriptExportPlan>>,
+        time_var: &str,
+        label_prefix: &str,
+        local_i: usize,
+    ) -> String {
+        if clip.duration <= Duration::ZERO || layer_effect_clips.is_empty() {
+            return String::new();
+        }
+
+        let clip_start = clip.start;
+        let clip_end = clip.start.saturating_add(clip.duration);
+        let mut layers = Vec::<(usize, LayerBloomPlan, String)>::new();
+
+        for (layer_idx, layer_clip) in layer_effect_clips.iter().enumerate() {
+            if layer_clip.duration <= Duration::ZERO {
+                continue;
+            }
+            let Some(plan) = Self::layer_script_plan_for_export(layer_clip, motionloom_plan_cache)
+            else {
+                continue;
+            };
+            let Some(bloom) = plan.bloom else {
+                continue;
+            };
+            if bloom.intensity <= 0.001 || bloom.sigma <= 0.001 {
+                continue;
+            }
+
+            let layer_start = layer_clip.start;
+            let layer_end = layer_clip.start.saturating_add(layer_clip.duration);
+            let start = clip_start.max(layer_start);
+            let end = clip_end.min(layer_end);
+            if end <= start {
+                continue;
+            }
+            let local_start = start.saturating_sub(clip_start).as_secs_f64();
+            let local_end = end.saturating_sub(clip_start).as_secs_f64();
+            if local_end <= local_start + 0.000_5 {
+                continue;
+            }
+
+            let layer_start_local = if layer_start >= clip_start {
+                layer_start.saturating_sub(clip_start).as_secs_f64()
+            } else {
+                -(clip_start.saturating_sub(layer_start).as_secs_f64())
+            };
+            let layer_end_local = layer_start_local + layer_clip.duration.as_secs_f64();
+            let active_expr = format!("between({},{:.6},{:.6})", time_var, local_start, local_end);
+            let fade_in = layer_clip
+                .fade_in
+                .as_secs_f64()
+                .clamp(0.0, layer_clip.duration.as_secs_f64());
+            let fade_out = layer_clip
+                .fade_out
+                .as_secs_f64()
+                .clamp(0.0, layer_clip.duration.as_secs_f64());
+            let in_expr = if fade_in > 0.000_5 {
+                format!(
+                    "clip(({}-({:.6}))/{:.6},0,1)",
+                    time_var, layer_start_local, fade_in
+                )
+            } else {
+                "1".to_string()
+            };
+            let out_expr = if fade_out > 0.000_5 {
+                format!(
+                    "clip((({:.6})-{})/{:.6},0,1)",
+                    layer_end_local, time_var, fade_out
+                )
+            } else {
+                "1".to_string()
+            };
+            let envelope_expr = format!("min({}, {})", in_expr, out_expr);
+            let layer_local_expr = format!("({}-({:.6}))", time_var, layer_start_local);
+            let graph_gate_expr =
+                if plan.apply == GraphApplyScope::Graph && plan.graph_duration_explicit {
+                    format!(
+                        "between({},0,{:.6})",
+                        layer_local_expr, plan.graph_duration_sec
+                    )
+                } else {
+                    "1".to_string()
+                };
+            let intensity_expr = format!(
+                "clip(({:.6})*({})*({})*({}),0,8)",
+                bloom.intensity, active_expr, envelope_expr, graph_gate_expr
+            );
+            layers.push((layer_idx, bloom, intensity_expr));
+        }
+
+        if layers.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::new();
+        for (i, (layer_idx, bloom, intensity_expr)) in layers.iter().enumerate() {
+            let orig_tag = format!("[{}_{}_ml_bloom_{}_orig]", label_prefix, local_i, layer_idx);
+            let src_tag = format!("[{}_{}_ml_bloom_{}_src]", label_prefix, local_i, layer_idx);
+            let pref_tag = format!("[{}_{}_ml_bloom_{}_pref]", label_prefix, local_i, layer_idx);
+            let blur_tag = format!("[{}_{}_ml_bloom_{}_blur]", label_prefix, local_i, layer_idx);
+            let out_tag = if i + 1 == layers.len() {
+                String::new()
+            } else {
+                format!("[{}_{}_ml_bloom_{}_out]", label_prefix, local_i, layer_idx)
+            };
+            if i > 0 {
+                out.push(';');
+                out.push_str(&format!(
+                    "[{}_{}_ml_bloom_{}_out]",
+                    label_prefix,
+                    local_i,
+                    layers[i - 1].0
+                ));
+            }
+            let threshold_255 = (bloom.threshold.clamp(0.0, 1.0) * 255.0).clamp(0.0, 255.0);
+            let luma = "(0.2126*r(X,Y)+0.7152*g(X,Y)+0.0722*b(X,Y))";
+            let pref_expr = |channel: &str| {
+                format!(
+                    "if(gte({luma},{thr:.6}),clip({ch}(X,Y)*({intensity}),0,255),0)",
+                    luma = luma,
+                    thr = threshold_255,
+                    ch = channel,
+                    intensity = intensity_expr
+                )
+            };
+            out.push_str(&format!(
+                "split=2{orig}{src};{src}format=bgra,geq=r='{r}':g='{g}':b='{b}':a='alpha(X,Y)'{pref};{pref}gblur=sigma={sigma:.4}:steps=1,format=bgra{blur};{orig}{blur}blend=all_mode=addition:shortest=1,format=bgra{out_tag}",
+                orig = orig_tag,
+                src = src_tag,
+                r = pref_expr("r"),
+                g = pref_expr("g"),
+                b = pref_expr("b"),
+                pref = pref_tag,
+                sigma = bloom.sigma.clamp(0.0, 64.0),
+                blur = blur_tag,
+                out_tag = out_tag
+            ));
+        }
+
+        out
+    }
+
     /// [Helper 1] Video Effects (Brightness, Contrast, Saturation) -> GPUI-like correction
     fn build_eq_filter(
         clip: &Clip,
@@ -4957,4 +6174,85 @@ fn hsla_to_rgb_components(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     let g = ((g_raw + m) * 255.0).clamp(0.0, 255.0);
     let b = ((b_raw + m) * 255.0).clamp(0.0, 255.0);
     (r, g, b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FfmpegExporter;
+
+    const PROCESS_LAYER_FX_SCRIPT: &str = r#"
+<Graph fps={60} size={[1920,1080]}>
+  <Process id="layer_fx">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_hsla_overlay" kind="compute"
+          effect="hsla_overlay"
+          in={["src"]} out={["out"]}
+          params={{
+            hue: "210.0",
+            saturation: "0.70",
+            lightness: "0.41",
+            alpha: "0.45"
+          }} />
+  </Process>
+  <Present from="layer_fx" />
+</Graph>
+"#;
+
+    const LEGACY_LAYER_FX_SCRIPT: &str = r#"
+<Graph fps={60} size={[1920,1080]}>
+  <Input id="clip0" type="video" from="input:clip0" />
+  <Tex id="src" fmt="rgba16f" from="clip0" />
+  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+  <Pass id="fx_hsla_overlay" kind="compute"
+        effect="hsla_overlay"
+        in={["src"]} out={["out"]}
+        params={{ hue: "210.0", saturation: "0.70", lightness: "0.41", alpha: "0.45" }} />
+  <Present from="out" />
+</Graph>
+"#;
+
+    const BLOOM_LAYER_FX_SCRIPT: &str = r#"
+<Graph fps={30} size={[1920,1080]}>
+  <Process id="layer_fx">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="post_glow_bloom" kind="compute"
+          effect="glow_bloom"
+          in={["src"]} out={["out"]}
+          params={{ threshold: "0.64", intensity: "1.75", sigma: "22.0" }} />
+  </Process>
+  <Present from="layer_fx" />
+</Graph>
+"#;
+
+    #[test]
+    fn export_plan_accepts_process_layer_fx_script() {
+        let plan = FfmpegExporter::analyze_motionloom_script_for_export(PROCESS_LAYER_FX_SCRIPT)
+            .expect("process layer fx script should produce export plan");
+        let hsla = plan.hsla_overlay.expect("HSLA overlay should be analyzed");
+        assert_eq!(hsla.hue, 210.0);
+        assert_eq!(hsla.saturation, 0.70);
+        assert_eq!(hsla.lightness, 0.41);
+        assert_eq!(hsla.alpha, 0.45);
+    }
+
+    #[test]
+    fn export_plan_accepts_process_bloom_layer_fx_script() {
+        let plan = FfmpegExporter::analyze_motionloom_script_for_export(BLOOM_LAYER_FX_SCRIPT)
+            .expect("process bloom layer fx script should produce export plan");
+        let bloom = plan.bloom.expect("bloom should be analyzed");
+        assert_eq!(bloom.threshold, 0.64);
+        assert_eq!(bloom.intensity, 1.75);
+        assert_eq!(bloom.sigma, 22.0);
+    }
+
+    #[test]
+    fn export_plan_rejects_legacy_root_level_layer_fx_script() {
+        assert!(
+            FfmpegExporter::analyze_motionloom_script_for_export(LEGACY_LAYER_FX_SCRIPT).is_none()
+        );
+    }
 }

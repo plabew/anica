@@ -7,7 +7,7 @@
                 opacity="1" />
 
     <Camera id="orbit_camera"
-            mode="orbit"
+            control="orbit"
             target="anime"
             yaw={curve("0:0:linear, 4:360:linear")}
             pitch="0"

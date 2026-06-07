@@ -2,27 +2,35 @@
   <Background color="#f7f7f7" />
 
   <Scene id="character5_part_torso_front">
-
     <Defs>
       <Brush id="rig_bone" stroke="#1f2a37" strokeWidth="7" strokeStyle="pencil" strokeRoughness="0.6" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
       <Brush id="rig_joint" stroke="#2f6fed" strokeWidth="4" lineCap="round" lineJoin="round" fill="none" />
       <Brush id="rig_volume" stroke="#475569" strokeWidth="3" strokeStyle="pencil" strokeRoughness="0.5" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.58" />
     </Defs>
 
-    <Character id="character5_torso_front" x="360" y="250" opacity="1">
-      <Part id="torso_core_front" label="Torso core front" role="torso" brush="rig_bone" anchorX="0" anchorY="0">
-        <Path id="spine_chain" d="M 0 0 L 0 96 L 0 208" />
-        <Path id="shoulder_axis" d="M -118 28 L 118 28" />
-        <Path id="hip_axis" d="M -86 208 L 86 208" />
-        <Path id="rib_cage_volume" brush="rig_volume" d="M -108 28 C -96 88 -70 154 0 176 C 70 154 96 88 108 28" />
-        <Path id="pelvis_volume" brush="rig_volume" d="M -86 208 C -52 248 52 248 86 208" />
-        <Path id="chest_joint" brush="rig_joint" d="M -13 28 C -13 20 -8 15 0 15 C 8 15 13 20 13 28 C 13 36 8 41 0 41 C -8 41 -13 36 -13 28 Z" />
-        <Path id="waist_joint" brush="rig_joint" d="M -12 96 C -12 89 -7 84 0 84 C 7 84 12 89 12 96 C 12 103 7 108 0 108 C -7 108 -12 103 -12 96 Z" />
-        <Path id="pelvis_joint" brush="rig_joint" d="M -15 208 C -15 199 -9 193 0 193 C 9 193 15 199 15 208 C 15 217 9 223 0 223 C -9 223 -15 217 -15 208 Z" />
-        <Path id="shoulder_joints" brush="rig_joint" d="M -132 28 C -132 20 -126 14 -118 14 C -110 14 -104 20 -104 28 C -104 36 -110 42 -118 42 C -126 42 -132 36 -132 28 Z M 104 28 C 104 20 110 14 118 14 C 126 14 132 20 132 28 C 132 36 126 42 118 42 C 110 42 104 36 104 28 Z" />
-        <Path id="hip_joints" brush="rig_joint" d="M -100 208 C -100 200 -94 194 -86 194 C -78 194 -72 200 -72 208 C -72 216 -78 222 -86 222 C -94 222 -100 216 -100 208 Z M 72 208 C 72 200 78 194 86 194 C 94 194 100 200 100 208 C 100 216 94 222 86 222 C 78 222 72 216 72 208 Z" />
-      </Part>
-    </Character>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+
+            <Character id="character5_torso_front" x="360" y="250" opacity="1">
+              <Part id="torso_core_front" label="Torso core front" role="torso" brush="rig_bone" anchorX="0" anchorY="0">
+                <Path id="spine_chain" d="M 0 0 L 0 96 L 0 208" />
+                <Path id="shoulder_axis" d="M -118 28 L 118 28" />
+                <Path id="hip_axis" d="M -86 208 L 86 208" />
+                <Path id="rib_cage_volume" brush="rig_volume" d="M -108 28 C -96 88 -70 154 0 176 C 70 154 96 88 108 28" />
+                <Path id="pelvis_volume" brush="rig_volume" d="M -86 208 C -52 248 52 248 86 208" />
+                <Path id="chest_joint" brush="rig_joint" d="M -13 28 C -13 20 -8 15 0 15 C 8 15 13 20 13 28 C 13 36 8 41 0 41 C -8 41 -13 36 -13 28 Z" />
+                <Path id="waist_joint" brush="rig_joint" d="M -12 96 C -12 89 -7 84 0 84 C 7 84 12 89 12 96 C 12 103 7 108 0 108 C -7 108 -12 103 -12 96 Z" />
+                <Path id="pelvis_joint" brush="rig_joint" d="M -15 208 C -15 199 -9 193 0 193 C 9 193 15 199 15 208 C 15 217 9 223 0 223 C -9 223 -15 217 -15 208 Z" />
+                <Path id="shoulder_joints" brush="rig_joint" d="M -132 28 C -132 20 -126 14 -118 14 C -110 14 -104 20 -104 28 C -104 36 -110 42 -118 42 C -126 42 -132 36 -132 28 Z M 104 28 C 104 20 110 14 118 14 C 126 14 132 20 132 28 C 132 36 126 42 118 42 C 110 42 104 36 104 28 Z" />
+                <Path id="hip_joints" brush="rig_joint" d="M -100 208 C -100 200 -94 194 -86 194 C -78 194 -72 200 -72 208 C -72 216 -78 222 -86 222 C -94 222 -100 216 -100 208 Z M 72 208 C 72 200 78 194 86 194 C 94 194 100 200 100 208 C 100 216 94 222 86 222 C 78 222 72 216 72 208 Z" />
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="character5_part_torso_front" />

@@ -2,26 +2,34 @@
   <Background color="#f7f7f7" />
 
   <Scene id="character5_part_left_hand_front">
-
     <Defs>
       <Brush id="rig_bone" stroke="#1f2a37" strokeWidth="6" strokeStyle="pencil" strokeRoughness="0.6" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
       <Brush id="rig_joint" stroke="#2f6fed" strokeWidth="3.5" lineCap="round" lineJoin="round" fill="none" />
       <Brush id="rig_volume" stroke="#64748b" strokeWidth="2.4" strokeStyle="pencil" strokeRoughness="0.5" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.55" />
     </Defs>
 
-    <Character id="character5_left_hand_front" x="360" y="360" opacity="1">
-      <Part id="left_palm_front" label="Left palm front" role="palm_l" brush="rig_bone" anchorX="0" anchorY="0">
-        <Path id="left_palm_shape" brush="rig_volume" d="M -24 -4 C -32 22 -28 58 -8 78 C 12 64 24 30 22 2 C 8 -8 -10 -10 -24 -4 Z" />
-        <Path id="left_palm_center_bone" d="M 0 0 L -4 72" />
-        <Path id="left_wrist_joint" brush="rig_joint" d="M -13 0 C -13 -8 -8 -13 0 -13 C 8 -13 13 -8 13 0 C 13 8 8 13 0 13 C -8 13 -13 8 -13 0 Z" />
-      </Part>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
 
-      <Part id="left_fingers_front" label="Left fingers front" role="fingers_l" brush="rig_bone" anchorX="-4" anchorY="72">
-        <Path id="left_finger_bones" d="M -4 72 L -36 118 M -4 72 L -20 130 M -4 72 L 0 136 M -4 72 L 20 124" />
-        <Path id="left_thumb_bone" d="M -20 38 L -56 64 L -70 92" />
-        <Path id="left_finger_tip_joints" brush="rig_joint" d="M -44 118 C -44 114 -40 110 -36 110 C -32 110 -28 114 -28 118 C -28 122 -32 126 -36 126 C -40 126 -44 122 -44 118 Z M -28 130 C -28 126 -24 122 -20 122 C -16 122 -12 126 -12 130 C -12 134 -16 138 -20 138 C -24 138 -28 134 -28 130 Z M -8 136 C -8 132 -4 128 0 128 C 4 128 8 132 8 136 C 8 140 4 144 0 144 C -4 144 -8 140 -8 136 Z M 12 124 C 12 120 16 116 20 116 C 24 116 28 120 28 124 C 28 128 24 132 20 132 C 16 132 12 128 12 124 Z" />
-      </Part>
-    </Character>
+            <Character id="character5_left_hand_front" x="360" y="360" opacity="1">
+              <Part id="left_palm_front" label="Left palm front" role="palm_l" brush="rig_bone" anchorX="0" anchorY="0">
+                <Path id="left_palm_shape" brush="rig_volume" d="M -24 -4 C -32 22 -28 58 -8 78 C 12 64 24 30 22 2 C 8 -8 -10 -10 -24 -4 Z" />
+                <Path id="left_palm_center_bone" d="M 0 0 L -4 72" />
+                <Path id="left_wrist_joint" brush="rig_joint" d="M -13 0 C -13 -8 -8 -13 0 -13 C 8 -13 13 -8 13 0 C 13 8 8 13 0 13 C -8 13 -13 8 -13 0 Z" />
+              </Part>
+
+              <Part id="left_fingers_front" label="Left fingers front" role="fingers_l" brush="rig_bone" anchorX="-4" anchorY="72">
+                <Path id="left_finger_bones" d="M -4 72 L -36 118 M -4 72 L -20 130 M -4 72 L 0 136 M -4 72 L 20 124" />
+                <Path id="left_thumb_bone" d="M -20 38 L -56 64 L -70 92" />
+                <Path id="left_finger_tip_joints" brush="rig_joint" d="M -44 118 C -44 114 -40 110 -36 110 C -32 110 -28 114 -28 118 C -28 122 -32 126 -36 126 C -40 126 -44 122 -44 118 Z M -28 130 C -28 126 -24 122 -20 122 C -16 122 -12 126 -12 130 C -12 134 -16 138 -20 138 C -24 138 -28 134 -28 130 Z M -8 136 C -8 132 -4 128 0 128 C 4 128 8 132 8 136 C 8 140 4 144 0 144 C -4 144 -8 140 -8 136 Z M 12 124 C 12 120 16 116 20 116 C 24 116 28 120 28 124 C 28 128 24 132 20 132 C 16 132 12 128 12 124 Z" />
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="character5_part_left_hand_front" />

@@ -1,0 +1,330 @@
+<Graph fps={30} duration="8s" size={[1920,1080]} renderSize={[1920,1080]}>
+  <Background color="#07080D" />
+
+  <Scene id="AudioSpectrumLevel2">
+    <!-- Level 2 note: bars use deterministic random(...) seeds per frame to mimic reactive frequency activity. -->
+    <Defs>
+      <RadialGradient id="bg_vignette" cx="0.50" cy="0.34" r="0.78"
+                      stops="0:#15182B, 0.52:#080A12, 1:#030409" />
+      <LinearGradient id="floor_gloss" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#182033AA, 0.25:#0A0D16AA, 1:#03040900" />
+      <LinearGradient id="reflection_fade" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFFFFF33, 1:#FFFFFF00" />
+      <LinearGradient id="bar_grad_00" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#4F92FF, 0.58:#287AFF, 1:#1E5CBF" />
+      <LinearGradient id="bar_grad_01" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#4F96FF, 0.58:#287FFF, 1:#1E5FBF" />
+      <LinearGradient id="bar_grad_02" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#509BFF, 0.58:#2985FF, 1:#1F64BF" />
+      <LinearGradient id="bar_grad_03" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#509FFF, 0.58:#298AFF, 1:#1F68BF" />
+      <LinearGradient id="bar_grad_04" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#50A4FF, 0.58:#2990FF, 1:#1F6CBF" />
+      <LinearGradient id="bar_grad_05" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#50A8FF, 0.58:#2995FF, 1:#1F70BF" />
+      <LinearGradient id="bar_grad_06" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#50ADFF, 0.58:#2A9BFF, 1:#2074BF" />
+      <LinearGradient id="bar_grad_07" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#50B1FF, 0.58:#2AA0FF, 1:#2078BF" />
+      <LinearGradient id="bar_grad_08" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#50B6FF, 0.58:#2AA6FF, 1:#207CBF" />
+      <LinearGradient id="bar_grad_09" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#51BAFF, 0.58:#2BABFF, 1:#2080BF" />
+      <LinearGradient id="bar_grad_10" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#51BEFF, 0.58:#2BB0FF, 1:#2084BF" />
+      <LinearGradient id="bar_grad_11" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#51C3FF, 0.58:#2BB6FF, 1:#2088BF" />
+      <LinearGradient id="bar_grad_12" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#51C7FF, 0.58:#2BBBFF, 1:#208CBF" />
+      <LinearGradient id="bar_grad_13" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52CCFF, 0.58:#2CC1FF, 1:#2191BF" />
+      <LinearGradient id="bar_grad_14" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52D0FF, 0.58:#2CC6FF, 1:#2194BF" />
+      <LinearGradient id="bar_grad_15" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52D4F8, 0.58:#2CCAF7, 1:#2198B9" />
+      <LinearGradient id="bar_grad_16" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52D7F2, 0.58:#2CCEEF, 1:#219AB3" />
+      <LinearGradient id="bar_grad_17" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52DAEB, 0.58:#2CD2E7, 1:#219EAD" />
+      <LinearGradient id="bar_grad_18" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52DDE6, 0.58:#2CD5E0, 1:#21A0A8" />
+      <LinearGradient id="bar_grad_19" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52E0DF, 0.58:#2CD9D8, 1:#21A3A2" />
+      <LinearGradient id="bar_grad_20" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52E3D8, 0.58:#2CDDD0, 1:#21A69C" />
+      <LinearGradient id="bar_grad_21" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52E6D2, 0.58:#2CE1C8, 1:#21A996" />
+      <LinearGradient id="bar_grad_22" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#52EACB, 0.58:#2CE5C0, 1:#21AC90" />
+      <LinearGradient id="bar_grad_23" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#54ECC4, 0.58:#2FE8B7, 1:#23AE89" />
+      <LinearGradient id="bar_grad_24" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#58EFBB, 0.58:#33EBAC, 1:#26B081" />
+      <LinearGradient id="bar_grad_25" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#5BF1B2, 0.58:#37EEA1, 1:#29B279" />
+      <LinearGradient id="bar_grad_26" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#5EF4A9, 0.58:#3BF196, 1:#2CB570" />
+      <LinearGradient id="bar_grad_27" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#62F5A0, 0.58:#3FF38B, 1:#2FB668" />
+      <LinearGradient id="bar_grad_28" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#66F897, 0.58:#44F680, 1:#33B860" />
+      <LinearGradient id="bar_grad_29" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#69FA8F, 0.58:#48F976, 1:#36BB58" />
+      <LinearGradient id="bar_grad_30" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#6CFD86, 0.58:#4CFC6B, 1:#39BD50" />
+      <LinearGradient id="bar_grad_31" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#70FF7D, 0.58:#50FF60, 1:#3CBF48" />
+
+      <Component id="AudioSpectrumBars">
+        <Group id="spectrum_bars" opacity={curve("0:0:linear, 0.75:1:ease_in_out, 8:1:linear")}>
+          <Group id="band_00" opacity="1">
+            <Rect id="band_00_glow" x="62" y="730 - random(445.0,638.0,floor($time.sec*24)+11) - 8" width="48" height="random(445.0,638.0,floor($time.sec*24)+11) + 16" radius="24" fill="url(#bar_grad_00)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+11+300)" blend="screen" />
+            <Rect id="band_00_bar" x="70" y="730 - random(445.0,638.0,floor($time.sec*24)+11)" width="32" height="random(445.0,638.0,floor($time.sec*24)+11)" radius="18" fill="url(#bar_grad_00)" />
+            <Rect id="band_00_shine" x="77" y="730 - random(445.0,638.0,floor($time.sec*24)+11) + 18" width="6" height="random(445.0,638.0,floor($time.sec*24)+11)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_00_reflection" x="70" y="748" width="32" height="random(445.0,638.0,floor($time.sec*24)+11)*0.34" radius="18" fill="url(#bar_grad_00)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+11+600)" blend="screen" />
+            <Rect id="band_00_reflection_fade" x="70" y="748" width="32" height="random(445.0,638.0,floor($time.sec*24)+11)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_01" opacity="1">
+            <Rect id="band_01_glow" x="118" y="730 - random(435.6,640.9,floor($time.sec*24)+48) - 8" width="48" height="random(435.6,640.9,floor($time.sec*24)+48) + 16" radius="24" fill="url(#bar_grad_01)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+48+300)" blend="screen" />
+            <Rect id="band_01_bar" x="126" y="730 - random(435.6,640.9,floor($time.sec*24)+48)" width="32" height="random(435.6,640.9,floor($time.sec*24)+48)" radius="18" fill="url(#bar_grad_01)" />
+            <Rect id="band_01_shine" x="133" y="730 - random(435.6,640.9,floor($time.sec*24)+48) + 18" width="6" height="random(435.6,640.9,floor($time.sec*24)+48)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_01_reflection" x="126" y="748" width="32" height="random(435.6,640.9,floor($time.sec*24)+48)*0.34" radius="18" fill="url(#bar_grad_01)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+48+600)" blend="screen" />
+            <Rect id="band_01_reflection_fade" x="126" y="748" width="32" height="random(435.6,640.9,floor($time.sec*24)+48)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_02" opacity="1">
+            <Rect id="band_02_glow" x="174" y="730 - random(419.6,629.6,floor($time.sec*24)+85) - 8" width="48" height="random(419.6,629.6,floor($time.sec*24)+85) + 16" radius="24" fill="url(#bar_grad_02)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+85+300)" blend="screen" />
+            <Rect id="band_02_bar" x="182" y="730 - random(419.6,629.6,floor($time.sec*24)+85)" width="32" height="random(419.6,629.6,floor($time.sec*24)+85)" radius="18" fill="url(#bar_grad_02)" />
+            <Rect id="band_02_shine" x="189" y="730 - random(419.6,629.6,floor($time.sec*24)+85) + 18" width="6" height="random(419.6,629.6,floor($time.sec*24)+85)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_02_reflection" x="182" y="748" width="32" height="random(419.6,629.6,floor($time.sec*24)+85)*0.34" radius="18" fill="url(#bar_grad_02)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+85+600)" blend="screen" />
+            <Rect id="band_02_reflection_fade" x="182" y="748" width="32" height="random(419.6,629.6,floor($time.sec*24)+85)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_03" opacity="1">
+            <Rect id="band_03_glow" x="230" y="730 - random(391.4,598.0,floor($time.sec*24)+122) - 8" width="48" height="random(391.4,598.0,floor($time.sec*24)+122) + 16" radius="24" fill="url(#bar_grad_03)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+122+300)" blend="screen" />
+            <Rect id="band_03_bar" x="238" y="730 - random(391.4,598.0,floor($time.sec*24)+122)" width="32" height="random(391.4,598.0,floor($time.sec*24)+122)" radius="18" fill="url(#bar_grad_03)" />
+            <Rect id="band_03_shine" x="245" y="730 - random(391.4,598.0,floor($time.sec*24)+122) + 18" width="6" height="random(391.4,598.0,floor($time.sec*24)+122)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_03_reflection" x="238" y="748" width="32" height="random(391.4,598.0,floor($time.sec*24)+122)*0.34" radius="18" fill="url(#bar_grad_03)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+122+600)" blend="screen" />
+            <Rect id="band_03_reflection_fade" x="238" y="748" width="32" height="random(391.4,598.0,floor($time.sec*24)+122)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_04" opacity="1">
+            <Rect id="band_04_glow" x="286" y="730 - random(352.6,548.2,floor($time.sec*24)+159) - 8" width="48" height="random(352.6,548.2,floor($time.sec*24)+159) + 16" radius="24" fill="url(#bar_grad_04)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+159+300)" blend="screen" />
+            <Rect id="band_04_bar" x="294" y="730 - random(352.6,548.2,floor($time.sec*24)+159)" width="32" height="random(352.6,548.2,floor($time.sec*24)+159)" radius="18" fill="url(#bar_grad_04)" />
+            <Rect id="band_04_shine" x="301" y="730 - random(352.6,548.2,floor($time.sec*24)+159) + 18" width="6" height="random(352.6,548.2,floor($time.sec*24)+159)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_04_reflection" x="294" y="748" width="32" height="random(352.6,548.2,floor($time.sec*24)+159)*0.34" radius="18" fill="url(#bar_grad_04)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+159+600)" blend="screen" />
+            <Rect id="band_04_reflection_fade" x="294" y="748" width="32" height="random(352.6,548.2,floor($time.sec*24)+159)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_05" opacity="1">
+            <Rect id="band_05_glow" x="342" y="730 - random(311.0,489.3,floor($time.sec*24)+196) - 8" width="48" height="random(311.0,489.3,floor($time.sec*24)+196) + 16" radius="24" fill="url(#bar_grad_05)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+196+300)" blend="screen" />
+            <Rect id="band_05_bar" x="350" y="730 - random(311.0,489.3,floor($time.sec*24)+196)" width="32" height="random(311.0,489.3,floor($time.sec*24)+196)" radius="18" fill="url(#bar_grad_05)" />
+            <Rect id="band_05_shine" x="357" y="730 - random(311.0,489.3,floor($time.sec*24)+196) + 18" width="6" height="random(311.0,489.3,floor($time.sec*24)+196)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_05_reflection" x="350" y="748" width="32" height="random(311.0,489.3,floor($time.sec*24)+196)*0.34" radius="18" fill="url(#bar_grad_05)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+196+600)" blend="screen" />
+            <Rect id="band_05_reflection_fade" x="350" y="748" width="32" height="random(311.0,489.3,floor($time.sec*24)+196)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_06" opacity="1">
+            <Rect id="band_06_glow" x="398" y="730 - random(276.6,433.9,floor($time.sec*24)+233) - 8" width="48" height="random(276.6,433.9,floor($time.sec*24)+233) + 16" radius="24" fill="url(#bar_grad_06)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+233+300)" blend="screen" />
+            <Rect id="band_06_bar" x="406" y="730 - random(276.6,433.9,floor($time.sec*24)+233)" width="32" height="random(276.6,433.9,floor($time.sec*24)+233)" radius="18" fill="url(#bar_grad_06)" />
+            <Rect id="band_06_shine" x="413" y="730 - random(276.6,433.9,floor($time.sec*24)+233) + 18" width="6" height="random(276.6,433.9,floor($time.sec*24)+233)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_06_reflection" x="406" y="748" width="32" height="random(276.6,433.9,floor($time.sec*24)+233)*0.34" radius="18" fill="url(#bar_grad_06)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+233+600)" blend="screen" />
+            <Rect id="band_06_reflection_fade" x="406" y="748" width="32" height="random(276.6,433.9,floor($time.sec*24)+233)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_07" opacity="1">
+            <Rect id="band_07_glow" x="454" y="730 - random(257.1,392.4,floor($time.sec*24)+270) - 8" width="48" height="random(257.1,392.4,floor($time.sec*24)+270) + 16" radius="24" fill="url(#bar_grad_07)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+270+300)" blend="screen" />
+            <Rect id="band_07_bar" x="462" y="730 - random(257.1,392.4,floor($time.sec*24)+270)" width="32" height="random(257.1,392.4,floor($time.sec*24)+270)" radius="18" fill="url(#bar_grad_07)" />
+            <Rect id="band_07_shine" x="469" y="730 - random(257.1,392.4,floor($time.sec*24)+270) + 18" width="6" height="random(257.1,392.4,floor($time.sec*24)+270)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_07_reflection" x="462" y="748" width="32" height="random(257.1,392.4,floor($time.sec*24)+270)*0.34" radius="18" fill="url(#bar_grad_07)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+270+600)" blend="screen" />
+            <Rect id="band_07_reflection_fade" x="462" y="748" width="32" height="random(257.1,392.4,floor($time.sec*24)+270)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_08" opacity="1">
+            <Rect id="band_08_glow" x="510" y="730 - random(254.0,369.3,floor($time.sec*24)+307) - 8" width="48" height="random(254.0,369.3,floor($time.sec*24)+307) + 16" radius="24" fill="url(#bar_grad_08)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+307+300)" blend="screen" />
+            <Rect id="band_08_bar" x="518" y="730 - random(254.0,369.3,floor($time.sec*24)+307)" width="32" height="random(254.0,369.3,floor($time.sec*24)+307)" radius="18" fill="url(#bar_grad_08)" />
+            <Rect id="band_08_shine" x="525" y="730 - random(254.0,369.3,floor($time.sec*24)+307) + 18" width="6" height="random(254.0,369.3,floor($time.sec*24)+307)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_08_reflection" x="518" y="748" width="32" height="random(254.0,369.3,floor($time.sec*24)+307)*0.34" radius="18" fill="url(#bar_grad_08)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+307+600)" blend="screen" />
+            <Rect id="band_08_reflection_fade" x="518" y="748" width="32" height="random(254.0,369.3,floor($time.sec*24)+307)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_09" opacity="1">
+            <Rect id="band_09_glow" x="566" y="730 - random(261.9,361.8,floor($time.sec*24)+344) - 8" width="48" height="random(261.9,361.8,floor($time.sec*24)+344) + 16" radius="24" fill="url(#bar_grad_09)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+344+300)" blend="screen" />
+            <Rect id="band_09_bar" x="574" y="730 - random(261.9,361.8,floor($time.sec*24)+344)" width="32" height="random(261.9,361.8,floor($time.sec*24)+344)" radius="18" fill="url(#bar_grad_09)" />
+            <Rect id="band_09_shine" x="581" y="730 - random(261.9,361.8,floor($time.sec*24)+344) + 18" width="6" height="random(261.9,361.8,floor($time.sec*24)+344)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_09_reflection" x="574" y="748" width="32" height="random(261.9,361.8,floor($time.sec*24)+344)*0.34" radius="18" fill="url(#bar_grad_09)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+344+600)" blend="screen" />
+            <Rect id="band_09_reflection_fade" x="574" y="748" width="32" height="random(261.9,361.8,floor($time.sec*24)+344)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_10" opacity="1">
+            <Rect id="band_10_glow" x="622" y="730 - random(270.7,362.1,floor($time.sec*24)+381) - 8" width="48" height="random(270.7,362.1,floor($time.sec*24)+381) + 16" radius="24" fill="url(#bar_grad_10)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+381+300)" blend="screen" />
+            <Rect id="band_10_bar" x="630" y="730 - random(270.7,362.1,floor($time.sec*24)+381)" width="32" height="random(270.7,362.1,floor($time.sec*24)+381)" radius="18" fill="url(#bar_grad_10)" />
+            <Rect id="band_10_shine" x="637" y="730 - random(270.7,362.1,floor($time.sec*24)+381) + 18" width="6" height="random(270.7,362.1,floor($time.sec*24)+381)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_10_reflection" x="630" y="748" width="32" height="random(270.7,362.1,floor($time.sec*24)+381)*0.34" radius="18" fill="url(#bar_grad_10)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+381+600)" blend="screen" />
+            <Rect id="band_10_reflection_fade" x="630" y="748" width="32" height="random(270.7,362.1,floor($time.sec*24)+381)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_11" opacity="1">
+            <Rect id="band_11_glow" x="678" y="730 - random(270.9,361.6,floor($time.sec*24)+418) - 8" width="48" height="random(270.9,361.6,floor($time.sec*24)+418) + 16" radius="24" fill="url(#bar_grad_11)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+418+300)" blend="screen" />
+            <Rect id="band_11_bar" x="686" y="730 - random(270.9,361.6,floor($time.sec*24)+418)" width="32" height="random(270.9,361.6,floor($time.sec*24)+418)" radius="18" fill="url(#bar_grad_11)" />
+            <Rect id="band_11_shine" x="693" y="730 - random(270.9,361.6,floor($time.sec*24)+418) + 18" width="6" height="random(270.9,361.6,floor($time.sec*24)+418)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_11_reflection" x="686" y="748" width="32" height="random(270.9,361.6,floor($time.sec*24)+418)*0.34" radius="18" fill="url(#bar_grad_11)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+418+600)" blend="screen" />
+            <Rect id="band_11_reflection_fade" x="686" y="748" width="32" height="random(270.9,361.6,floor($time.sec*24)+418)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_12" opacity="1">
+            <Rect id="band_12_glow" x="734" y="730 - random(257.2,355.3,floor($time.sec*24)+455) - 8" width="48" height="random(257.2,355.3,floor($time.sec*24)+455) + 16" radius="24" fill="url(#bar_grad_12)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+455+300)" blend="screen" />
+            <Rect id="band_12_bar" x="742" y="730 - random(257.2,355.3,floor($time.sec*24)+455)" width="32" height="random(257.2,355.3,floor($time.sec*24)+455)" radius="18" fill="url(#bar_grad_12)" />
+            <Rect id="band_12_shine" x="749" y="730 - random(257.2,355.3,floor($time.sec*24)+455) + 18" width="6" height="random(257.2,355.3,floor($time.sec*24)+455)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_12_reflection" x="742" y="748" width="32" height="random(257.2,355.3,floor($time.sec*24)+455)*0.34" radius="18" fill="url(#bar_grad_12)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+455+600)" blend="screen" />
+            <Rect id="band_12_reflection_fade" x="742" y="748" width="32" height="random(257.2,355.3,floor($time.sec*24)+455)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_13" opacity="1">
+            <Rect id="band_13_glow" x="790" y="730 - random(231.6,344.2,floor($time.sec*24)+492) - 8" width="48" height="random(231.6,344.2,floor($time.sec*24)+492) + 16" radius="24" fill="url(#bar_grad_13)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+492+300)" blend="screen" />
+            <Rect id="band_13_bar" x="798" y="730 - random(231.6,344.2,floor($time.sec*24)+492)" width="32" height="random(231.6,344.2,floor($time.sec*24)+492)" radius="18" fill="url(#bar_grad_13)" />
+            <Rect id="band_13_shine" x="805" y="730 - random(231.6,344.2,floor($time.sec*24)+492) + 18" width="6" height="random(231.6,344.2,floor($time.sec*24)+492)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_13_reflection" x="798" y="748" width="32" height="random(231.6,344.2,floor($time.sec*24)+492)*0.34" radius="18" fill="url(#bar_grad_13)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+492+600)" blend="screen" />
+            <Rect id="band_13_reflection_fade" x="798" y="748" width="32" height="random(231.6,344.2,floor($time.sec*24)+492)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_14" opacity="1">
+            <Rect id="band_14_glow" x="846" y="730 - random(202.0,334.1,floor($time.sec*24)+529) - 8" width="48" height="random(202.0,334.1,floor($time.sec*24)+529) + 16" radius="24" fill="url(#bar_grad_14)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+529+300)" blend="screen" />
+            <Rect id="band_14_bar" x="854" y="730 - random(202.0,334.1,floor($time.sec*24)+529)" width="32" height="random(202.0,334.1,floor($time.sec*24)+529)" radius="18" fill="url(#bar_grad_14)" />
+            <Rect id="band_14_shine" x="861" y="730 - random(202.0,334.1,floor($time.sec*24)+529) + 18" width="6" height="random(202.0,334.1,floor($time.sec*24)+529)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_14_reflection" x="854" y="748" width="32" height="random(202.0,334.1,floor($time.sec*24)+529)*0.34" radius="18" fill="url(#bar_grad_14)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+529+600)" blend="screen" />
+            <Rect id="band_14_reflection_fade" x="854" y="748" width="32" height="random(202.0,334.1,floor($time.sec*24)+529)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_15" opacity="1">
+            <Rect id="band_15_glow" x="902" y="730 - random(178.7,332.7,floor($time.sec*24)+566) - 8" width="48" height="random(178.7,332.7,floor($time.sec*24)+566) + 16" radius="24" fill="url(#bar_grad_15)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+566+300)" blend="screen" />
+            <Rect id="band_15_bar" x="910" y="730 - random(178.7,332.7,floor($time.sec*24)+566)" width="32" height="random(178.7,332.7,floor($time.sec*24)+566)" radius="18" fill="url(#bar_grad_15)" />
+            <Rect id="band_15_shine" x="917" y="730 - random(178.7,332.7,floor($time.sec*24)+566) + 18" width="6" height="random(178.7,332.7,floor($time.sec*24)+566)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_15_reflection" x="910" y="748" width="32" height="random(178.7,332.7,floor($time.sec*24)+566)*0.34" radius="18" fill="url(#bar_grad_15)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+566+600)" blend="screen" />
+            <Rect id="band_15_reflection_fade" x="910" y="748" width="32" height="random(178.7,332.7,floor($time.sec*24)+566)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_16" opacity="1">
+            <Rect id="band_16_glow" x="958" y="730 - random(169.3,344.7,floor($time.sec*24)+603) - 8" width="48" height="random(169.3,344.7,floor($time.sec*24)+603) + 16" radius="24" fill="url(#bar_grad_16)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+603+300)" blend="screen" />
+            <Rect id="band_16_bar" x="966" y="730 - random(169.3,344.7,floor($time.sec*24)+603)" width="32" height="random(169.3,344.7,floor($time.sec*24)+603)" radius="18" fill="url(#bar_grad_16)" />
+            <Rect id="band_16_shine" x="973" y="730 - random(169.3,344.7,floor($time.sec*24)+603) + 18" width="6" height="random(169.3,344.7,floor($time.sec*24)+603)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_16_reflection" x="966" y="748" width="32" height="random(169.3,344.7,floor($time.sec*24)+603)*0.34" radius="18" fill="url(#bar_grad_16)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+603+600)" blend="screen" />
+            <Rect id="band_16_reflection_fade" x="966" y="748" width="32" height="random(169.3,344.7,floor($time.sec*24)+603)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_17" opacity="1">
+            <Rect id="band_17_glow" x="1014" y="730 - random(175.3,368.7,floor($time.sec*24)+640) - 8" width="48" height="random(175.3,368.7,floor($time.sec*24)+640) + 16" radius="24" fill="url(#bar_grad_17)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+640+300)" blend="screen" />
+            <Rect id="band_17_bar" x="1022" y="730 - random(175.3,368.7,floor($time.sec*24)+640)" width="32" height="random(175.3,368.7,floor($time.sec*24)+640)" radius="18" fill="url(#bar_grad_17)" />
+            <Rect id="band_17_shine" x="1029" y="730 - random(175.3,368.7,floor($time.sec*24)+640) + 18" width="6" height="random(175.3,368.7,floor($time.sec*24)+640)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_17_reflection" x="1022" y="748" width="32" height="random(175.3,368.7,floor($time.sec*24)+640)*0.34" radius="18" fill="url(#bar_grad_17)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+640+600)" blend="screen" />
+            <Rect id="band_17_reflection_fade" x="1022" y="748" width="32" height="random(175.3,368.7,floor($time.sec*24)+640)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_18" opacity="1">
+            <Rect id="band_18_glow" x="1070" y="730 - random(191.2,396.6,floor($time.sec*24)+677) - 8" width="48" height="random(191.2,396.6,floor($time.sec*24)+677) + 16" radius="24" fill="url(#bar_grad_18)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+677+300)" blend="screen" />
+            <Rect id="band_18_bar" x="1078" y="730 - random(191.2,396.6,floor($time.sec*24)+677)" width="32" height="random(191.2,396.6,floor($time.sec*24)+677)" radius="18" fill="url(#bar_grad_18)" />
+            <Rect id="band_18_shine" x="1085" y="730 - random(191.2,396.6,floor($time.sec*24)+677) + 18" width="6" height="random(191.2,396.6,floor($time.sec*24)+677)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_18_reflection" x="1078" y="748" width="32" height="random(191.2,396.6,floor($time.sec*24)+677)*0.34" radius="18" fill="url(#bar_grad_18)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+677+600)" blend="screen" />
+            <Rect id="band_18_reflection_fade" x="1078" y="748" width="32" height="random(191.2,396.6,floor($time.sec*24)+677)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_19" opacity="1">
+            <Rect id="band_19_glow" x="1126" y="730 - random(207.0,417.0,floor($time.sec*24)+714) - 8" width="48" height="random(207.0,417.0,floor($time.sec*24)+714) + 16" radius="24" fill="url(#bar_grad_19)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+714+300)" blend="screen" />
+            <Rect id="band_19_bar" x="1134" y="730 - random(207.0,417.0,floor($time.sec*24)+714)" width="32" height="random(207.0,417.0,floor($time.sec*24)+714)" radius="18" fill="url(#bar_grad_19)" />
+            <Rect id="band_19_shine" x="1141" y="730 - random(207.0,417.0,floor($time.sec*24)+714) + 18" width="6" height="random(207.0,417.0,floor($time.sec*24)+714)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_19_reflection" x="1134" y="748" width="32" height="random(207.0,417.0,floor($time.sec*24)+714)*0.34" radius="18" fill="url(#bar_grad_19)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+714+600)" blend="screen" />
+            <Rect id="band_19_reflection_fade" x="1134" y="748" width="32" height="random(207.0,417.0,floor($time.sec*24)+714)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_20" opacity="1">
+            <Rect id="band_20_glow" x="1182" y="730 - random(213.2,419.7,floor($time.sec*24)+751) - 8" width="48" height="random(213.2,419.7,floor($time.sec*24)+751) + 16" radius="24" fill="url(#bar_grad_20)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+751+300)" blend="screen" />
+            <Rect id="band_20_bar" x="1190" y="730 - random(213.2,419.7,floor($time.sec*24)+751)" width="32" height="random(213.2,419.7,floor($time.sec*24)+751)" radius="18" fill="url(#bar_grad_20)" />
+            <Rect id="band_20_shine" x="1197" y="730 - random(213.2,419.7,floor($time.sec*24)+751) + 18" width="6" height="random(213.2,419.7,floor($time.sec*24)+751)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_20_reflection" x="1190" y="748" width="32" height="random(213.2,419.7,floor($time.sec*24)+751)*0.34" radius="18" fill="url(#bar_grad_20)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+751+600)" blend="screen" />
+            <Rect id="band_20_reflection_fade" x="1190" y="748" width="32" height="random(213.2,419.7,floor($time.sec*24)+751)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_21" opacity="1">
+            <Rect id="band_21_glow" x="1238" y="730 - random(205.0,400.2,floor($time.sec*24)+788) - 8" width="48" height="random(205.0,400.2,floor($time.sec*24)+788) + 16" radius="24" fill="url(#bar_grad_21)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+788+300)" blend="screen" />
+            <Rect id="band_21_bar" x="1246" y="730 - random(205.0,400.2,floor($time.sec*24)+788)" width="32" height="random(205.0,400.2,floor($time.sec*24)+788)" radius="18" fill="url(#bar_grad_21)" />
+            <Rect id="band_21_shine" x="1253" y="730 - random(205.0,400.2,floor($time.sec*24)+788) + 18" width="6" height="random(205.0,400.2,floor($time.sec*24)+788)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_21_reflection" x="1246" y="748" width="32" height="random(205.0,400.2,floor($time.sec*24)+788)*0.34" radius="18" fill="url(#bar_grad_21)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+788+600)" blend="screen" />
+            <Rect id="band_21_reflection_fade" x="1246" y="748" width="32" height="random(205.0,400.2,floor($time.sec*24)+788)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_22" opacity="1">
+            <Rect id="band_22_glow" x="1294" y="730 - random(184.3,362.3,floor($time.sec*24)+825) - 8" width="48" height="random(184.3,362.3,floor($time.sec*24)+825) + 16" radius="24" fill="url(#bar_grad_22)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+825+300)" blend="screen" />
+            <Rect id="band_22_bar" x="1302" y="730 - random(184.3,362.3,floor($time.sec*24)+825)" width="32" height="random(184.3,362.3,floor($time.sec*24)+825)" radius="18" fill="url(#bar_grad_22)" />
+            <Rect id="band_22_shine" x="1309" y="730 - random(184.3,362.3,floor($time.sec*24)+825) + 18" width="6" height="random(184.3,362.3,floor($time.sec*24)+825)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_22_reflection" x="1302" y="748" width="32" height="random(184.3,362.3,floor($time.sec*24)+825)*0.34" radius="18" fill="url(#bar_grad_22)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+825+600)" blend="screen" />
+            <Rect id="band_22_reflection_fade" x="1302" y="748" width="32" height="random(184.3,362.3,floor($time.sec*24)+825)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_23" opacity="1">
+            <Rect id="band_23_glow" x="1350" y="730 - random(159.4,316.3,floor($time.sec*24)+862) - 8" width="48" height="random(159.4,316.3,floor($time.sec*24)+862) + 16" radius="24" fill="url(#bar_grad_23)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+862+300)" blend="screen" />
+            <Rect id="band_23_bar" x="1358" y="730 - random(159.4,316.3,floor($time.sec*24)+862)" width="32" height="random(159.4,316.3,floor($time.sec*24)+862)" radius="18" fill="url(#bar_grad_23)" />
+            <Rect id="band_23_shine" x="1365" y="730 - random(159.4,316.3,floor($time.sec*24)+862) + 18" width="6" height="random(159.4,316.3,floor($time.sec*24)+862)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_23_reflection" x="1358" y="748" width="32" height="random(159.4,316.3,floor($time.sec*24)+862)*0.34" radius="18" fill="url(#bar_grad_23)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+862+600)" blend="screen" />
+            <Rect id="band_23_reflection_fade" x="1358" y="748" width="32" height="random(159.4,316.3,floor($time.sec*24)+862)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_24" opacity="1">
+            <Rect id="band_24_glow" x="1406" y="730 - random(140.6,275.4,floor($time.sec*24)+899) - 8" width="48" height="random(140.6,275.4,floor($time.sec*24)+899) + 16" radius="24" fill="url(#bar_grad_24)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+899+300)" blend="screen" />
+            <Rect id="band_24_bar" x="1414" y="730 - random(140.6,275.4,floor($time.sec*24)+899)" width="32" height="random(140.6,275.4,floor($time.sec*24)+899)" radius="18" fill="url(#bar_grad_24)" />
+            <Rect id="band_24_shine" x="1421" y="730 - random(140.6,275.4,floor($time.sec*24)+899) + 18" width="6" height="random(140.6,275.4,floor($time.sec*24)+899)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_24_reflection" x="1414" y="748" width="32" height="random(140.6,275.4,floor($time.sec*24)+899)*0.34" radius="18" fill="url(#bar_grad_24)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+899+600)" blend="screen" />
+            <Rect id="band_24_reflection_fade" x="1414" y="748" width="32" height="random(140.6,275.4,floor($time.sec*24)+899)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_25" opacity="1">
+            <Rect id="band_25_glow" x="1462" y="730 - random(135.4,250.3,floor($time.sec*24)+936) - 8" width="48" height="random(135.4,250.3,floor($time.sec*24)+936) + 16" radius="24" fill="url(#bar_grad_25)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+936+300)" blend="screen" />
+            <Rect id="band_25_bar" x="1470" y="730 - random(135.4,250.3,floor($time.sec*24)+936)" width="32" height="random(135.4,250.3,floor($time.sec*24)+936)" radius="18" fill="url(#bar_grad_25)" />
+            <Rect id="band_25_shine" x="1477" y="730 - random(135.4,250.3,floor($time.sec*24)+936) + 18" width="6" height="random(135.4,250.3,floor($time.sec*24)+936)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_25_reflection" x="1470" y="748" width="32" height="random(135.4,250.3,floor($time.sec*24)+936)*0.34" radius="18" fill="url(#bar_grad_25)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+936+600)" blend="screen" />
+            <Rect id="band_25_reflection_fade" x="1470" y="748" width="32" height="random(135.4,250.3,floor($time.sec*24)+936)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_26" opacity="1">
+            <Rect id="band_26_glow" x="1518" y="730 - random(145.1,244.7,floor($time.sec*24)+973) - 8" width="48" height="random(145.1,244.7,floor($time.sec*24)+973) + 16" radius="24" fill="url(#bar_grad_26)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+973+300)" blend="screen" />
+            <Rect id="band_26_bar" x="1526" y="730 - random(145.1,244.7,floor($time.sec*24)+973)" width="32" height="random(145.1,244.7,floor($time.sec*24)+973)" radius="18" fill="url(#bar_grad_26)" />
+            <Rect id="band_26_shine" x="1533" y="730 - random(145.1,244.7,floor($time.sec*24)+973) + 18" width="6" height="random(145.1,244.7,floor($time.sec*24)+973)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_26_reflection" x="1526" y="748" width="32" height="random(145.1,244.7,floor($time.sec*24)+973)*0.34" radius="18" fill="url(#bar_grad_26)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+973+600)" blend="screen" />
+            <Rect id="band_26_reflection_fade" x="1526" y="748" width="32" height="random(145.1,244.7,floor($time.sec*24)+973)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_27" opacity="1">
+            <Rect id="band_27_glow" x="1574" y="730 - random(164.1,255.4,floor($time.sec*24)+1010) - 8" width="48" height="random(164.1,255.4,floor($time.sec*24)+1010) + 16" radius="24" fill="url(#bar_grad_27)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+1010+300)" blend="screen" />
+            <Rect id="band_27_bar" x="1582" y="730 - random(164.1,255.4,floor($time.sec*24)+1010)" width="32" height="random(164.1,255.4,floor($time.sec*24)+1010)" radius="18" fill="url(#bar_grad_27)" />
+            <Rect id="band_27_shine" x="1589" y="730 - random(164.1,255.4,floor($time.sec*24)+1010) + 18" width="6" height="random(164.1,255.4,floor($time.sec*24)+1010)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_27_reflection" x="1582" y="748" width="32" height="random(164.1,255.4,floor($time.sec*24)+1010)*0.34" radius="18" fill="url(#bar_grad_27)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+1010+600)" blend="screen" />
+            <Rect id="band_27_reflection_fade" x="1582" y="748" width="32" height="random(164.1,255.4,floor($time.sec*24)+1010)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_28" opacity="1">
+            <Rect id="band_28_glow" x="1630" y="730 - random(182.6,273.4,floor($time.sec*24)+1047) - 8" width="48" height="random(182.6,273.4,floor($time.sec*24)+1047) + 16" radius="24" fill="url(#bar_grad_28)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+1047+300)" blend="screen" />
+            <Rect id="band_28_bar" x="1638" y="730 - random(182.6,273.4,floor($time.sec*24)+1047)" width="32" height="random(182.6,273.4,floor($time.sec*24)+1047)" radius="18" fill="url(#bar_grad_28)" />
+            <Rect id="band_28_shine" x="1645" y="730 - random(182.6,273.4,floor($time.sec*24)+1047) + 18" width="6" height="random(182.6,273.4,floor($time.sec*24)+1047)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_28_reflection" x="1638" y="748" width="32" height="random(182.6,273.4,floor($time.sec*24)+1047)*0.34" radius="18" fill="url(#bar_grad_28)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+1047+600)" blend="screen" />
+            <Rect id="band_28_reflection_fade" x="1638" y="748" width="32" height="random(182.6,273.4,floor($time.sec*24)+1047)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_29" opacity="1">
+            <Rect id="band_29_glow" x="1686" y="730 - random(190.9,289.3,floor($time.sec*24)+1084) - 8" width="48" height="random(190.9,289.3,floor($time.sec*24)+1084) + 16" radius="24" fill="url(#bar_grad_29)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+1084+300)" blend="screen" />
+            <Rect id="band_29_bar" x="1694" y="730 - random(190.9,289.3,floor($time.sec*24)+1084)" width="32" height="random(190.9,289.3,floor($time.sec*24)+1084)" radius="18" fill="url(#bar_grad_29)" />
+            <Rect id="band_29_shine" x="1701" y="730 - random(190.9,289.3,floor($time.sec*24)+1084) + 18" width="6" height="random(190.9,289.3,floor($time.sec*24)+1084)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_29_reflection" x="1694" y="748" width="32" height="random(190.9,289.3,floor($time.sec*24)+1084)*0.34" radius="18" fill="url(#bar_grad_29)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+1084+600)" blend="screen" />
+            <Rect id="band_29_reflection_fade" x="1694" y="748" width="32" height="random(190.9,289.3,floor($time.sec*24)+1084)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_30" opacity="1">
+            <Rect id="band_30_glow" x="1742" y="730 - random(184.5,297.4,floor($time.sec*24)+1121) - 8" width="48" height="random(184.5,297.4,floor($time.sec*24)+1121) + 16" radius="24" fill="url(#bar_grad_30)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+1121+300)" blend="screen" />
+            <Rect id="band_30_bar" x="1750" y="730 - random(184.5,297.4,floor($time.sec*24)+1121)" width="32" height="random(184.5,297.4,floor($time.sec*24)+1121)" radius="18" fill="url(#bar_grad_30)" />
+            <Rect id="band_30_shine" x="1757" y="730 - random(184.5,297.4,floor($time.sec*24)+1121) + 18" width="6" height="random(184.5,297.4,floor($time.sec*24)+1121)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_30_reflection" x="1750" y="748" width="32" height="random(184.5,297.4,floor($time.sec*24)+1121)*0.34" radius="18" fill="url(#bar_grad_30)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+1121+600)" blend="screen" />
+            <Rect id="band_30_reflection_fade" x="1750" y="748" width="32" height="random(184.5,297.4,floor($time.sec*24)+1121)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+          <Group id="band_31" opacity="1">
+            <Rect id="band_31_glow" x="1798" y="730 - random(165.7,298.1,floor($time.sec*24)+1158) - 8" width="48" height="random(165.7,298.1,floor($time.sec*24)+1158) + 16" radius="24" fill="url(#bar_grad_31)" opacity="0.14 + 0.18*random(0,1,floor($time.sec*24)+1158+300)" blend="screen" />
+            <Rect id="band_31_bar" x="1806" y="730 - random(165.7,298.1,floor($time.sec*24)+1158)" width="32" height="random(165.7,298.1,floor($time.sec*24)+1158)" radius="18" fill="url(#bar_grad_31)" />
+            <Rect id="band_31_shine" x="1813" y="730 - random(165.7,298.1,floor($time.sec*24)+1158) + 18" width="6" height="random(165.7,298.1,floor($time.sec*24)+1158)*0.72" radius="3" color="#FFFFFF" opacity="0.10" blend="screen" />
+            <Rect id="band_31_reflection" x="1806" y="748" width="32" height="random(165.7,298.1,floor($time.sec*24)+1158)*0.34" radius="18" fill="url(#bar_grad_31)" opacity="0.10 + 0.07*random(0,1,floor($time.sec*24)+1158+600)" blend="screen" />
+            <Rect id="band_31_reflection_fade" x="1806" y="748" width="32" height="random(165.7,298.1,floor($time.sec*24)+1158)*0.34" radius="18" fill="url(#reflection_fade)" opacity="0.22" />
+          </Group>
+        </Group>
+      </Component>
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer>
+
+            <Rect x="0" y="0" width="1920" height="1080" fill="url(#bg_vignette)" />
+            <Rect x="0" y="720" width="1920" height="360" fill="url(#floor_gloss)" />
+            <Line x1="70" y1="730" x2="1850" y2="730" stroke="#FFFFFF22" strokeWidth="2" />
+
+            <Text id="title" x="70" y="125" value="AudioBar L2" fontSize="52" color="#EAF7FF" opacity={curve("0:0:linear, 0.65:0.78:ease_in_out, 8:0.78:linear")} />
+            <Text id="subtitle" x="72" y="165" value="32 seeded random frequency bands · blue to green" fontSize="24" color="#8EA4C8" opacity={curve("0:0:linear, 0.8:0.62:ease_in_out, 8:0.62:linear")} />
+
+            <Use ref="AudioSpectrumBars" />
+
+            <Rect x="0" y="760" width="1920" height="320" color="#05060B" opacity="0.38" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="AudioSpectrumLevel2" />
+</Graph>

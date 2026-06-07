@@ -27,8 +27,9 @@ use crate::core::waveform::{WaveformStatus, waveform_key};
 use crate::core::{
     export::{get_media_duration, is_supported_media_path},
     global_state::{
-        ActiveTool, AudioTrack, Clip, GlobalState, MacPreviewRenderMode, MediaPoolUiEvent,
-        PlaybackUiEvent, PreviewQuality, ProxyRenderMode, SemanticClip, SubtitleClip, TrackType,
+        ActiveTool, AppPage, AudioTrack, Clip, GlobalState, MacPreviewRenderMode, MediaPoolUiEvent,
+        PlaybackUiEvent, PreviewQuality, PreviewResolution, ProxyRenderMode, SemanticClip,
+        SubtitleClip, TrackType,
     },
     proxy::{ProxyStatus, proxy_key, proxy_path_for_in},
 };
@@ -534,6 +535,7 @@ fn timeline_state_sig(gs: &GlobalState) -> u64 {
     discriminant(&gs.active_tool).hash(&mut h);
     discriminant(&gs.v1_move_mode).hash(&mut h);
     discriminant(&gs.preview_quality).hash(&mut h);
+    discriminant(&gs.preview_resolution).hash(&mut h);
     discriminant(&gs.preview_fps).hash(&mut h);
     // Canvas dimensions
     gs.canvas_w.to_bits().hash(&mut h);
@@ -571,8 +573,10 @@ impl TimelinePanel {
             }
         })
         .detach();
-        cx.subscribe(&global, |_, _, evt: &PlaybackUiEvent, cx| {
-            if matches!(evt, PlaybackUiEvent::Tick) {
+        cx.subscribe(&global, |_, global, evt: &PlaybackUiEvent, cx| {
+            if matches!(evt, PlaybackUiEvent::Tick)
+                && global.read(cx).active_page == AppPage::Editor
+            {
                 cx.notify();
             }
         })
@@ -3920,20 +3924,6 @@ impl TimelinePanel {
 
 impl Render for TimelinePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
-        if let Some(prev) = self.ui_fps_last_instant {
-            let dt = now.saturating_duration_since(prev).as_secs_f32();
-            if (1.0 / 240.0..=0.5).contains(&dt) {
-                let sample_fps = 1.0 / dt;
-                self.ui_fps_ema = if self.ui_fps_ema <= 0.0 {
-                    sample_fps
-                } else {
-                    self.ui_fps_ema * 0.90 + sample_fps * 0.10
-                };
-            }
-        }
-        self.ui_fps_last_instant = Some(now);
-
         let (
             playing,
             active_tool,
@@ -3952,7 +3942,7 @@ impl Render for TimelinePanel {
             preview_video_input_fps,
             preview_present_fps,
             preview_present_dropped_frames,
-            preview_quality,
+            preview_resolution,
             v1_move_mode,
             ui_notice,
             pending_trim_to_fit,
@@ -3993,7 +3983,7 @@ impl Render for TimelinePanel {
                 gs.preview_video_input_fps,
                 gs.preview_present_fps,
                 gs.preview_present_dropped_frames,
-                gs.preview_quality,
+                gs.preview_resolution,
                 gs.v1_move_mode,
                 gs.ui_notice.clone(),
                 gs.pending_trim_to_fit.clone(),
@@ -4018,13 +4008,32 @@ impl Render for TimelinePanel {
 
         let play_label: &'static str = if playing { "Pause" } else { "Play" };
         let timeline_low_load_mode = self.timeline_load_mode.use_low_load(playing);
+        let show_fps_counters = !timeline_low_load_mode;
+        if playing && show_fps_counters {
+            let now = Instant::now();
+            if let Some(prev) = self.ui_fps_last_instant {
+                let dt = now.saturating_duration_since(prev).as_secs_f32();
+                if (1.0 / 240.0..=0.5).contains(&dt) {
+                    let sample_fps = 1.0 / dt;
+                    self.ui_fps_ema = if self.ui_fps_ema <= 0.0 {
+                        sample_fps
+                    } else {
+                        self.ui_fps_ema * 0.90 + sample_fps * 0.10
+                    };
+                }
+            }
+            self.ui_fps_last_instant = Some(now);
+        } else {
+            self.ui_fps_last_instant = None;
+        }
         let current_px_per_sec = self.px_per_sec;
         let ruler_w = dur_to_px(timeline_total, current_px_per_sec).max(1000.0);
         let playhead_x = dur_to_px(playhead, current_px_per_sec);
         let display_settings_label = format!(
-            "Display {} @{}fps",
+            "Display {} @{}fps · {}",
             display_ratio_label(canvas_w, canvas_h),
-            preview_fps.value()
+            preview_fps.value(),
+            preview_resolution.settings_label()
         );
         let timeline_fps_label = if self.ui_fps_ema > 0.0 {
             format!("UI {:.1} fps", self.ui_fps_ema)
@@ -4113,6 +4122,8 @@ impl Render for TimelinePanel {
                         cx.listener(move |_this, _, _, cx| {
                             global.update(cx, |gs, cx| {
                                 gs.preview_quality = quality;
+                                gs.preview_resolution =
+                                    PreviewResolution::from_max_dim(quality.max_dim());
                                 gs.ui_notice = Some(format!("Preview quality set to {}.", label));
                                 cx.notify();
                             });
@@ -4358,6 +4369,9 @@ impl Render for TimelinePanel {
                                 cx.listener(move |this, _, _, cx| {
                                     global_for_confirm.update(cx, |gs, cx| {
                                         gs.preview_quality = confirm_quality;
+                                        gs.preview_resolution = PreviewResolution::from_max_dim(
+                                            confirm_quality.max_dim(),
+                                        );
                                         if TimelinePanel::queue_selected_proxies(gs, confirm_dim) {
                                             gs.ui_notice =
                                                 Some(format!("Proxy queued ({}p).", confirm_dim));
@@ -5808,7 +5822,7 @@ impl Render for TimelinePanel {
                             .child(format!("Exporting… {pct}%{eta_text}")),
                     );
                 } else if let Some(err) = export_last_error {
-                    let err_single = err.lines().next().unwrap_or("Export failed.").to_string();
+                    let err_single = GlobalState::export_error_summary(&err);
                     s = s.child(
                         div()
                             .w_full()
@@ -6614,14 +6628,20 @@ impl Render for TimelinePanel {
                                             .justify_center()
                                             .child(display_settings_label)
                                             .on_mouse_down(MouseButton::Left, cx.listener(move |_this, _, _, cx| {
-                                                let (canvas_w, canvas_h, preview_fps) = {
+                                                let (canvas_w, canvas_h, preview_fps, preview_resolution) = {
                                                     let gs = _this.global.read(cx);
-                                                    (gs.canvas_w, gs.canvas_h, gs.preview_fps.value())
+                                                    (
+                                                        gs.canvas_w,
+                                                        gs.canvas_h,
+                                                        gs.preview_fps.value(),
+                                                        gs.preview_resolution,
+                                                    )
                                                 };
                                                 _this.display_settings_modal.open_with_current(
                                                     canvas_w,
                                                     canvas_h,
                                                     preview_fps,
+                                                    preview_resolution,
                                                 );
                                                 cx.notify();
                                             }))
@@ -6644,7 +6664,7 @@ impl Render for TimelinePanel {
                                         }))
                                     )
                                     .child(
-                                        TimelinePanel::transport_btn(preview_quality.label())
+                                        TimelinePanel::transport_btn(preview_resolution.label())
                                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                                 this.proxy_modal_open = true;
                                                 this.proxy_confirm_quality = None;
@@ -6735,49 +6755,52 @@ impl Render for TimelinePanel {
                             .flex()
                             .items_center()
                             .gap_2()
+                            .when(show_fps_counters, |row| {
+                                row.child(
+                                    div()
+                                        .pl_2()
+                                        .pr_1()
+                                        .font_family("Mono")
+                                        .text_xs()
+                                        .text_color(rgb(0x93c5fd))
+                                        .flex_shrink_0()
+                                        .child(timeline_fps_label),
+                                )
+                                .child(
+                                    div()
+                                        .pr_1()
+                                        .font_family("Mono")
+                                        .text_xs()
+                                        .text_color(rgb(0x86efac))
+                                        .flex_shrink_0()
+                                        .child(video_fps_label),
+                                )
+                                .child(
+                                    div()
+                                        .pr_1()
+                                        .font_family("Mono")
+                                        .text_xs()
+                                        .text_color(rgb(0x67e8f9))
+                                        .flex_shrink_0()
+                                        .child(present_fps_label),
+                                )
+                                .child(
+                                    div()
+                                        .pr_1()
+                                        .font_family("Mono")
+                                        .text_xs()
+                                        .text_color(if preview_present_dropped_frames > 0 {
+                                            rgb(0xfca5a5)
+                                        } else {
+                                            rgba(0xffffff73)
+                                        })
+                                        .flex_shrink_0()
+                                        .child(present_drop_label),
+                                )
+                            })
                             .child(
                                 div()
-                                    .pl_2()
-                                    .pr_1()
-                                    .font_family("Mono")
-                                    .text_xs()
-                                    .text_color(rgb(0x93c5fd))
-                                    .flex_shrink_0()
-                                    .child(timeline_fps_label),
-                            )
-                            .child(
-                                div()
-                                    .pr_1()
-                                    .font_family("Mono")
-                                    .text_xs()
-                                    .text_color(rgb(0x86efac))
-                                    .flex_shrink_0()
-                                    .child(video_fps_label),
-                            )
-                            .child(
-                                div()
-                                    .pr_1()
-                                    .font_family("Mono")
-                                    .text_xs()
-                                    .text_color(rgb(0x67e8f9))
-                                    .flex_shrink_0()
-                                    .child(present_fps_label),
-                            )
-                            .child(
-                                div()
-                                    .pr_1()
-                                    .font_family("Mono")
-                                    .text_xs()
-                                    .text_color(if preview_present_dropped_frames > 0 {
-                                        rgb(0xfca5a5)
-                                    } else {
-                                        rgba(0xffffff73)
-                                    })
-                                    .flex_shrink_0()
-                                    .child(present_drop_label),
-                            )
-                            .child(
-                                div()
+                                    .pl(if show_fps_counters { px(0.0) } else { px(8.0) })
                                     .pr_1()
                                     .font_family("Mono")
                                     .text_xs()

@@ -1,0 +1,137 @@
+<!-- Filter effect test: left side is raw primitives; right side uses GPU-native Defs Filter via Layer effect. -->
+<Graph fps={30} duration="3s" size={[1280,720]} renderSize={[1280,720]}>
+  <Background color="#05070B" />
+
+  <Scene id="filter_effect_test_level1">
+    <Defs>
+      <LinearGradient id="bg_grad" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#05070B, 0.58:#0B1830, 1:#12091F" />
+      <RadialGradient id="orb_grad" cx="0.50" cy="0.50" r="0.64"
+                      stops="0:#FFFFFF, 0.24:#65F7FF, 0.62:#3B82F6AA, 1:#3B82F600" />
+      <LinearGradient id="hot_grad" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#FF3D77, 0.48:#FFB000, 1:#65F7FF" />
+
+      <Filter id="test_soft_glow">
+        <Blur radius={curve("0:12:ease_in_out, 1.5:22:ease_in_out, 3:14:ease_in_out")} />
+        <ColorMatrix saturation={curve("0:1.40:ease_in_out, 1.5:1.95:ease_in_out, 3:1.50:ease_in_out")}
+                     brightness={curve("0:1.20:ease_in_out, 1.5:1.62:ease_in_out, 3:1.30:ease_in_out")} />
+      </Filter>
+
+      <Filter id="test_big_glow">
+        <Blur radius={curve("0:18:ease_in_out, 1.5:42:ease_in_out, 3:24:ease_in_out")} />
+        <ColorMatrix saturation="2.20" brightness={curve("0:1.28:ease_in_out, 1.5:1.92:ease_in_out, 3:1.36:ease_in_out")} />
+      </Filter>
+
+      <!-- GPU-native layer filters currently use scene-sized precompose textures. -->
+      <Precompose id="filter_source" duration="3s" size={[1280,720]}>
+        <Circle x={curve("0:242:ease_in_out, 1.5:284:ease_in_out, 3:260:ease_in_out")}
+                y={curve("0:210:ease_in_out, 1.5:184:ease_in_out, 3:210:ease_in_out")}
+                radius={curve("0:84:ease_in_out, 1.5:110:ease_in_out, 3:92:ease_in_out")}
+                fill="url(#orb_grad)"
+                blend="screen"
+                opacity={curve("0:0.78:ease_in_out, 1.5:1.00:ease_in_out, 3:0.88:ease_in_out")} />
+        <Circle x={curve("0:120:ease_in_out, 1.5:385:ease_in_out, 3:166:ease_in_out")}
+                y={curve("0:310:ease_in_out, 1.5:136:ease_in_out, 3:286:ease_in_out")}
+                radius={curve("0:28:ease_in_out, 1.5:54:ease_in_out, 3:34:ease_in_out")}
+                color="#FFB000"
+                blend="screen"
+                opacity={curve("0:0.10:ease_in_out, 1.5:0.60:ease_in_out, 3:0.18:ease_in_out")} />
+        <Path d="M 70 262 C 160 142 318 332 450 170"
+              stroke="#65F7FF"
+              strokeWidth="34"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.94"
+              trimStart={curve("0:0.00:ease_in_out, 1.3:0.08:ease_in_out, 3:0.20:ease_in_out")}
+              trimEnd={curve("0:0.16:ease_in_out, 1.3:1.00:ease_in_out, 3:1.00:ease_in_out")} />
+        <Path d="M 70 292 C 178 220 312 398 480 238"
+              stroke="#FFFFFF"
+              strokeWidth="9"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity={curve("0:0.12:ease_in_out, 1.45:0.72:ease_in_out, 3:0.30:ease_in_out")}
+              trimStart={curve("0:0.00:ease_in_out, 1.5:0.28:ease_in_out, 3:0.52:ease_in_out")}
+              trimEnd={curve("0:0.08:ease_in_out, 1.5:0.88:ease_in_out, 3:1.00:ease_in_out")} />
+        <Text value="FILTER"
+              x="118"
+              y="390"
+              fontSize="58"
+              color="#FFFFFF"
+              opacity={curve("0:0.70:ease_in_out, 1.5:1.00:ease_in_out, 3:0.86:ease_in_out")} />
+      </Precompose>
+    </Defs>
+
+    <Timeline>
+      <Track id="background" space="screen" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="1280" height="720" fill="url(#bg_grad)" />
+            <Path d="M -80 604 C 230 390 440 690 720 442 C 940 250 1090 300 1360 120"
+                  stroke="#65F7FF"
+                  strokeWidth="22"
+                  lineCap="round"
+                  fill="none"
+                  blend="screen"
+                  opacity={curve("0:0.02:ease_in_out, 1.5:0.12:ease_in_out, 3:0.04:ease_in_out")}
+                  trimStart={curve("0:0:ease_in_out, 3:0.22:ease_in_out")}
+                  trimEnd={curve("0:0.16:ease_in_out, 3:1:ease_in_out")} />
+            <Circle x={curve("0:1040:ease_in_out, 1.5:880:ease_in_out, 3:1110:ease_in_out")}
+                    y={curve("0:118:ease_in_out, 1.5:178:ease_in_out, 3:132:ease_in_out")}
+                    radius={curve("0:90:ease_in_out, 1.5:150:ease_in_out, 3:110:ease_in_out")}
+                    fill="url(#orb_grad)"
+                    blend="screen"
+                    opacity={curve("0:0.05:ease_in_out, 1.5:0.18:ease_in_out, 3:0.08:ease_in_out")} />
+            <Line x1="640" y1="80" x2="640" y2="640" stroke="#FFFFFF22" strokeWidth="2" />
+            <Text value="RAW" x="250" y="120" fontSize="34" color="#FFFFFFAA" />
+            <Text value="FILTERED" x="842" y="120" fontSize="34" color="#FFFFFFAA" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="raw_control" space="world" z="10">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer id="raw_layer" source="filter_source" x="0" y="0" opacity="1" />
+        </Sequence>
+      </Track>
+
+      <Track id="filtered_big_glow" space="world" z="18">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer id="filtered_big_glow_layer"
+                 source="filter_source"
+                 x="640"
+                 y="0"
+                 blend="screen"
+                 opacity={curve("0:0.30:ease_in_out, 1.5:0.92:ease_in_out, 3:0.45:ease_in_out")}
+                 effect="test_big_glow" />
+        </Sequence>
+      </Track>
+
+      <Track id="filtered_underlay" space="world" z="20">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer id="filtered_glow_layer"
+                 source="filter_source"
+                 x="640"
+                 y="0"
+                 blend="screen"
+                 opacity={curve("0:0.72:ease_in_out, 1.5:1.00:ease_in_out, 3:0.82:ease_in_out")}
+                 effect="test_soft_glow" />
+        </Sequence>
+      </Track>
+
+      <Track id="filtered_sharp_core" space="world" z="30">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer id="filtered_core_layer"
+                 source="filter_source"
+                 x="640"
+                 y="0"
+                 blend="screen"
+                 opacity={curve("0:0.62:ease_in_out, 1.5:0.78:ease_in_out, 3:0.66:ease_in_out")} />
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="filter_effect_test_level1" />
+</Graph>

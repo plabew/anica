@@ -963,7 +963,7 @@ impl Render for InspectorPanel {
             let s = cx.new(|_| {
                 SliderState::new()
                     .min(0.0)
-                    .max(32.0)
+                    .max(64.0)
                     .default_value(blur_sigma_val)
                     .step(0.1)
             });
@@ -1242,7 +1242,7 @@ impl Render for InspectorPanel {
             let s = cx.new(|_| {
                 SliderState::new()
                     .min(0.0)
-                    .max(32.0)
+                    .max(64.0)
                     .default_value(local_mask_blur_sigma_val)
                     .step(0.1)
             });

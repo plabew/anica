@@ -29,6 +29,14 @@ cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::susp
 cargo test
 ```
 
+New changes must leave touched crates warning-free. For every crate you touch, also run:
+
+```bash
+cargo clippy -p <touched-crate> --all-targets -- -D warnings
+```
+
+For root app changes, use `cargo clippy -p anica --all-targets -- -D warnings`.
+
 If your change is UI-only and there are no tests for that area yet, still run `cargo check`.
 
 ## Coding Standard

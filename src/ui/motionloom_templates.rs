@@ -2,9 +2,11 @@
 // =========================================
 // src/ui/motionloom_templates.rs
 
-// Keep layer templates on a single graph scaffold so future multi-effect appends
-// can reuse the same `clip0 -> src -> ... -> out` structure consistently.
-const LAYER_GRAPH_INPUTS: &str = "  <Input id=\"clip0\" type=\"video\" from=\"input:clip0\" />\n  <Tex id=\"src\" fmt=\"rgba16f\" from=\"clip0\" />\n  <Tex id=\"out\" fmt=\"rgba16f\" size={[1920,1080]} />\n";
+// Keep layer templates on a single process scaffold so future multi-effect
+// appends reuse the same `clip0 -> src -> ... -> out` process consistently.
+const LAYER_PROCESS_ID: &str = "layer_fx";
+const LAYER_GRAPH_INPUTS: &str = "    <Input id=\"clip0\" type=\"video\" from=\"input:clip0\" />\n    <Tex id=\"src\" fmt=\"rgba16f\" from=\"clip0\" />\n    <Tex id=\"out\" fmt=\"rgba16f\" size={[1920,1080]} />\n";
+const LAYER_PROCESS_CLOSE: &str = "  </Process>\n";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerEffectTemplateKind {
@@ -57,12 +59,14 @@ fn begin_layer_graph(add_time_parameter: bool) -> String {
     } else {
         script.push_str("<Graph fps={60} size={[1920,1080]}>\n");
     }
+    script.push_str(&format!("  <Process id=\"{LAYER_PROCESS_ID}\">\n"));
     script.push_str(LAYER_GRAPH_INPUTS);
     script
 }
 
 fn finish_graph(script: &mut String) {
-    script.push_str("  <Present from=\"out\" />\n");
+    script.push_str(LAYER_PROCESS_CLOSE);
+    script.push_str(&format!("  <Present from=\"{LAYER_PROCESS_ID}\" />\n"));
     script.push_str("</Graph>");
 }
 
@@ -99,7 +103,7 @@ fn build_transition_passes(
 ) -> String {
     let mut script = String::new();
     script.push_str(&format!(
-        "  <Pass id=\"fade_in_{suffix}\" kind=\"render\" role=\"transition\"\n"
+        "    <Pass id=\"fade_in_{suffix}\" kind=\"render\" role=\"transition\"\n"
     ));
     script.push_str("        effect=\"fade_in\"\n");
     script.push_str(&format!(
@@ -115,7 +119,7 @@ fn build_transition_passes(
     }
     script.push_str("        }} />\n");
     script.push_str(&format!(
-        "  <Pass id=\"fade_out_{suffix}\" kind=\"render\" role=\"transition\"\n"
+        "    <Pass id=\"fade_out_{suffix}\" kind=\"render\" role=\"transition\"\n"
     ));
     script.push_str("        effect=\"fade_out\"\n");
     script.push_str(&format!(
@@ -170,7 +174,7 @@ pub fn build_layer_effect_chain_script(
             stage_idx += 1;
             let stage_tex = format!("stage{stage_idx}");
             tex_defs.push_str(&format!(
-                "  <Tex id=\"{stage_tex}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n"
+                "    <Tex id=\"{stage_tex}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n"
             ));
             stage_tex
         };
@@ -178,7 +182,7 @@ pub fn build_layer_effect_chain_script(
             transition_idx += 1;
             let tmp_tex = format!("transition_tmp{transition_idx}");
             tex_defs.push_str(&format!(
-                "  <Tex id=\"{tmp_tex}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n"
+                "    <Tex id=\"{tmp_tex}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n"
             ));
             pass_defs.push_str(&build_transition_passes(
                 &input_tex,
@@ -212,7 +216,7 @@ pub fn append_layer_effect_template_script(
 ) -> Option<String> {
     match kind {
         LayerEffectTemplateKind::BlurGaussian => {
-            if let Some(start_idx) = existing_script.find("  <Pass id=\"fx_blur\"") {
+            if let Some(start_idx) = existing_script.find("    <Pass id=\"fx_blur\"") {
                 let rel_end = existing_script[start_idx..].find("/>\n")?;
                 let end_idx = start_idx + rel_end + 3;
                 let block = &existing_script[start_idx..end_idx];
@@ -227,7 +231,7 @@ pub fn append_layer_effect_template_script(
             }
         }
         LayerEffectTemplateKind::Sharpen => {
-            if let Some(start_idx) = existing_script.find("  <Pass id=\"fx_sharpen\"") {
+            if let Some(start_idx) = existing_script.find("    <Pass id=\"fx_sharpen\"") {
                 let rel_end = existing_script[start_idx..].find("/>\n")?;
                 let end_idx = start_idx + rel_end + 3;
                 let block = &existing_script[start_idx..end_idx];
@@ -242,7 +246,7 @@ pub fn append_layer_effect_template_script(
             }
         }
         LayerEffectTemplateKind::Opacity => {
-            if let Some(start_idx) = existing_script.find("  <Pass id=\"fx_opacity\"") {
+            if let Some(start_idx) = existing_script.find("    <Pass id=\"fx_opacity\"") {
                 let rel_end = existing_script[start_idx..].find("/>\n")?;
                 let end_idx = start_idx + rel_end + 3;
                 let block = &existing_script[start_idx..end_idx];
@@ -257,7 +261,7 @@ pub fn append_layer_effect_template_script(
             }
         }
         LayerEffectTemplateKind::Lut => {
-            if let Some(start_idx) = existing_script.find("  <Pass id=\"fx_lut\"") {
+            if let Some(start_idx) = existing_script.find("    <Pass id=\"fx_lut\"") {
                 let rel_end = existing_script[start_idx..].find("/>\n")?;
                 let end_idx = start_idx + rel_end + 3;
                 let block = &existing_script[start_idx..end_idx];
@@ -272,7 +276,7 @@ pub fn append_layer_effect_template_script(
             }
         }
         LayerEffectTemplateKind::HslaOverlay => {
-            if let Some(start_idx) = existing_script.find("  <Pass id=\"fx_hsla_overlay\"") {
+            if let Some(start_idx) = existing_script.find("    <Pass id=\"fx_hsla_overlay\"") {
                 let rel_end = existing_script[start_idx..].find("/>\n")?;
                 let end_idx = start_idx + rel_end + 3;
                 let block = &existing_script[start_idx..end_idx];
@@ -287,12 +291,12 @@ pub fn append_layer_effect_template_script(
             }
         }
         LayerEffectTemplateKind::TransitionFadeInOut => {
-            if let Some(start_idx) = existing_script.find("  <Pass id=\"fade_in_") {
+            if let Some(start_idx) = existing_script.find("    <Pass id=\"fade_in_") {
                 let fade_in_rel_end = existing_script[start_idx..].find("/>\n")?;
                 let fade_in_end = start_idx + fade_in_rel_end + 3;
                 let fade_in_block = &existing_script[start_idx..fade_in_end];
                 let suffix = extract_attr_value(fade_in_block, "id=\"fade_in_", "\"")?;
-                let fade_out_marker = format!("  <Pass id=\"fade_out_{suffix}\"");
+                let fade_out_marker = format!("    <Pass id=\"fade_out_{suffix}\"");
                 let fade_out_start = existing_script.find(&fade_out_marker)?;
                 let fade_out_rel_end = existing_script[fade_out_start..].find("/>\n")?;
                 let fade_out_end = fade_out_start + fade_out_rel_end + 3;
@@ -319,39 +323,40 @@ pub fn append_layer_effect_template_script(
     }
 
     if !existing_script.contains("<Graph")
+        || !existing_script.contains("<Process")
         || !existing_script.contains("<Tex id=\"src\"")
         || !existing_script.contains("<Tex id=\"out\"")
     {
         return None;
     }
 
-    let present_idx = existing_script.find("  <Present from=\"out\" />")?;
-    let first_pass_idx = existing_script.find("  <Pass ")?;
-    let pass_count = existing_script.matches("\n  <Pass ").count();
+    let process_close_idx = existing_script.find(LAYER_PROCESS_CLOSE)?;
+    let pass_count = existing_script.matches("\n    <Pass ").count();
 
     if pass_count == 0 {
         let mut updated = existing_script.to_string();
         if kind == LayerEffectTemplateKind::TransitionFadeInOut {
             let tmp_tex = "transition_tmp1";
-            let insert_tex_at = updated.find("  <Present from=\"out\" />")?;
+            let insert_tex_at = updated.find(LAYER_PROCESS_CLOSE)?;
             updated.insert_str(
                 insert_tex_at,
-                &format!("  <Tex id=\"{tmp_tex}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n"),
+                &format!("    <Tex id=\"{tmp_tex}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n"),
             );
-            let insert_at = updated.find("  <Present from=\"out\" />")?;
+            let insert_at = updated.find(LAYER_PROCESS_CLOSE)?;
             updated.insert_str(
                 insert_at,
                 &build_transition_passes("src", "out", tmp_tex, 1, add_curve_parameter),
             );
         } else {
             updated.insert_str(
-                present_idx,
+                process_close_idx,
                 &build_layer_effect_pass(kind, "src", "out", add_curve_parameter),
             );
         }
         return Some(updated);
     }
 
+    let first_pass_idx = existing_script.find("    <Pass ")?;
     let mut stage_idx = 1usize;
     while existing_script.contains(&format!("id=\"stage{stage_idx}\"")) {
         stage_idx += 1;
@@ -362,14 +367,14 @@ pub fn append_layer_effect_template_script(
 
     let mut updated = existing_script.to_string();
     let mut inserted_defs =
-        format!("  <Tex id=\"{stage_tex}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n");
+        format!("    <Tex id=\"{stage_tex}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n");
     let transition_suffix = if kind == LayerEffectTemplateKind::TransitionFadeInOut {
         let mut transition_idx = 1usize;
         while existing_script.contains(&format!("id=\"transition_tmp{transition_idx}\"")) {
             transition_idx += 1;
         }
         inserted_defs.push_str(&format!(
-            "  <Tex id=\"transition_tmp{transition_idx}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n"
+            "    <Tex id=\"transition_tmp{transition_idx}\" fmt=\"rgba16f\" size={{[1920,1080]}} />\n"
         ));
         Some(transition_idx)
     } else {
@@ -383,7 +388,7 @@ pub fn append_layer_effect_template_script(
         &format!("out={{[\"{stage_tex}\"]}}"),
     );
 
-    let insert_at = updated.find("  <Present from=\"out\" />")?;
+    let insert_at = updated.find(LAYER_PROCESS_CLOSE)?;
     if let Some(transition_idx) = transition_suffix {
         let tmp_tex = format!("transition_tmp{transition_idx}");
         updated.insert_str(
@@ -422,7 +427,7 @@ pub fn append_layer_effect_template_chain_script(
 // can later be reused for stacked effect graphs.
 fn blur_gaussian_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bool) -> String {
     let mut script = String::new();
-    script.push_str("  <Pass id=\"fx_blur\" kind=\"compute\"\n");
+    script.push_str("    <Pass id=\"fx_blur\" kind=\"compute\"\n");
     script.push_str("        effect=\"gaussian_5tap_h\"\n");
     script.push_str(&format!(
         "        in={{[\"{input_tex}\"]}} out={{[\"{output_tex}\"]}}\n"
@@ -441,7 +446,7 @@ fn blur_gaussian_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bo
 
 fn sharpen_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bool) -> String {
     let mut script = String::new();
-    script.push_str("  <Pass id=\"fx_sharpen\" kind=\"compute\"\n");
+    script.push_str("    <Pass id=\"fx_sharpen\" kind=\"compute\"\n");
     script.push_str("        effect=\"sharpen\"\n");
     script.push_str(&format!(
         "        in={{[\"{input_tex}\"]}} out={{[\"{output_tex}\"]}}\n"
@@ -460,7 +465,7 @@ fn sharpen_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bool) ->
 
 fn opacity_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bool) -> String {
     let mut script = String::new();
-    script.push_str("  <Pass id=\"fx_opacity\" kind=\"compute\"\n");
+    script.push_str("    <Pass id=\"fx_opacity\" kind=\"compute\"\n");
     script.push_str("        effect=\"opacity\"\n");
     script.push_str(&format!(
         "        in={{[\"{input_tex}\"]}} out={{[\"{output_tex}\"]}}\n"
@@ -477,7 +482,7 @@ fn opacity_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bool) ->
 
 fn lut_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bool) -> String {
     let mut script = String::new();
-    script.push_str("  <Pass id=\"fx_lut\" kind=\"compute\"\n");
+    script.push_str("    <Pass id=\"fx_lut\" kind=\"compute\"\n");
     script.push_str("        effect=\"lut\"\n");
     script.push_str(&format!(
         "        in={{[\"{input_tex}\"]}} out={{[\"{output_tex}\"]}}\n"
@@ -494,7 +499,7 @@ fn lut_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bool) -> Str
 
 fn hsla_overlay_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bool) -> String {
     let mut script = String::new();
-    script.push_str("  <Pass id=\"fx_hsla_overlay\" kind=\"compute\"\n");
+    script.push_str("    <Pass id=\"fx_hsla_overlay\" kind=\"compute\"\n");
     script.push_str("        effect=\"hsla_overlay\"\n");
     script.push_str(&format!(
         "        in={{[\"{input_tex}\"]}} out={{[\"{output_tex}\"]}}\n"
@@ -509,4 +514,69 @@ fn hsla_overlay_pass(input_tex: &str, output_tex: &str, add_curve_parameter: boo
         );
     }
     script
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LayerEffectTemplateKind, append_layer_effect_template_chain_script,
+        build_layer_effect_chain_script,
+    };
+
+    #[test]
+    fn layer_effect_chain_uses_process_wrapper() {
+        let script = build_layer_effect_chain_script(
+            &[
+                LayerEffectTemplateKind::HslaOverlay,
+                LayerEffectTemplateKind::BlurGaussian,
+            ],
+            true,
+            true,
+        )
+        .expect("template should build");
+
+        assert!(script.contains("<Process id=\"layer_fx\">"));
+        assert!(script.contains("    <Pass id=\"fx_hsla_overlay\""));
+        assert!(script.contains("    <Pass id=\"fx_blur\""));
+        assert!(!script.contains("    <Present from=\"out\" />"));
+        assert!(script.contains("  <Present from=\"layer_fx\" />"));
+        assert!(
+            !script.contains("\n  <Pass "),
+            "process passes must not be emitted at Graph root:\n{script}"
+        );
+    }
+
+    #[test]
+    fn append_layer_effect_chain_requires_process_wrapper() {
+        let legacy = r#"
+<Graph fps={60} size={[1920,1080]}>
+  <Input id="clip0" type="video" from="input:clip0" />
+  <Tex id="src" fmt="rgba16f" from="clip0" />
+  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+  <Present from="src" />
+</Graph>
+"#;
+        assert!(
+            append_layer_effect_template_chain_script(
+                legacy,
+                &[LayerEffectTemplateKind::Opacity],
+                false
+            )
+            .is_none(),
+            "legacy root-level process graph should not be chainable"
+        );
+
+        let script =
+            build_layer_effect_chain_script(&[LayerEffectTemplateKind::Opacity], false, false)
+                .expect("template should build");
+        let appended = append_layer_effect_template_chain_script(
+            &script,
+            &[LayerEffectTemplateKind::BlurGaussian],
+            false,
+        )
+        .expect("canonical process graph should append");
+        assert!(appended.contains("    <Pass id=\"fx_opacity\""));
+        assert!(appended.contains("    <Pass id=\"fx_blur\""));
+        assert!(appended.contains("    <Tex id=\"stage1\""));
+    }
 }

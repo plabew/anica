@@ -57,7 +57,7 @@
                 opacity="1" />
 
     <Camera id="fixed_camera"
-            mode="orbit"
+            control="orbit"
             target="test_actor"
             yaw="0"
             pitch="0"

@@ -2,14 +2,22 @@
   <Background color="#FB923C" />
 
   <Scene id="hello_world_scene">
-    <Group id="hello_world_title" x="0" y="0" opacity="1">
-      <Text value="hello world"
-            x="center"
-            y="center"
-            fontSize="96"
-            color="#ffffff"
-            opacity={curve("0:0:linear, 1:1:ease_in_out, 3:1:linear")} />
-    </Group>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
+            <Group id="hello_world_title" x="0" y="0" opacity="1">
+              <Text value="hello world"
+                    x="center"
+                    y="center"
+                    fontSize="96"
+                    color="#ffffff"
+                    opacity={curve("0:0:linear, 1:1:ease_in_out, 3:1:linear")} />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Tex id="scene_tex" fmt="rgba16f" from="hello_world_scene" />

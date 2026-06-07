@@ -1,0 +1,216 @@
+<!-- Transparent-background Anica notification card swarm.
+     Note: alpha is preserved by PNG sequence / ProRes 4444 exports. H.264 MP4 drops transparency. -->
+<Graph fps={30} duration="4.5s" size={[1920,1080]} renderSize={[1920,1080]}>
+  <Background color="transparent" />
+
+  <Scene id="notification_cards_fadein_transparent_bg">
+    <Defs>
+      <Font id="ui" family="Avenir Next" fallback="system" />
+      <Font id="ui_bold" family="Avenir Next Demi Bold" fallback="system" />
+      <Font id="mono" family="Menlo" fallback="system" />
+    </Defs>
+
+    <Timeline>
+      <Track id="card_swarm" space="world" z="0">
+        <Sequence from="0s" duration="4.5s" out="hold">
+          <Layer>
+            <Group id="anica_brand" x="34" y={curve("0:214:linear, 0.10:214:linear, 0.32:172:ease_out, 4.50:172:linear")} rotation="-1.5" scale={curve("0:0.86:linear, 0.10:0.86:linear, 0.30:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.10:0:linear, 0.26:1:ease_out, 4.50:1:linear")} transformOriginX="215.0" transformOriginY="73.0">
+              <Rect x="0" y="0" width="430" height="146" radius="16" color="#111827" opacity="0.68" />
+              <Group x="62" y="73">
+                <Rect x="-28" y="-24" width="56" height="48" radius="12" color="#5141D8" />
+                <Rect x="-13" y="-8" width="26" height="18" radius="4" color="#00000000" stroke="#FFFFFF" strokeWidth="4" />
+                <Line x1="5" y1="10" x2="18" y2="18" stroke="#FFFFFF" strokeWidth="4" />
+              </Group>
+              <Text x="116" y="82" value="ANICA" font="ui_bold" fontSize="32" renderScale="3x" color="#FFFFFF" opacity="0.94" />
+              <Text x="118" y="116" value="Agent workflow platform" font="ui" fontSize="17" renderScale="3x" color="#E5E7EB" opacity="0.70" />
+            </Group>
+            <Group id="ticket_mobile" x="344" y={curve("0:154:linear, 0.17:154:linear, 0.39:112:ease_out, 4.50:112:linear")} rotation="-8.5" scale={curve("0:0.86:linear, 0.17:0.86:linear, 0.37:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.17:0:linear, 0.33:1:ease_out, 4.50:1:linear")} transformOriginX="231.0" transformOriginY="78.0">
+              <Rect x="10" y="14" width="462" height="156" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="462" height="156" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Rect x="30" y="24" width="108" height="24" radius="12" color="#FFF5F7" stroke="#D9A0AD" strokeWidth="2" />
+              <Circle x="43" y="36" radius="5" color="#EF4444" opacity="0.72" />
+              <Text x="54" y="42" value="P1-CRITICAL" font="ui_bold" fontSize="13" renderScale="3x" color="#A85B6E" opacity="0.88" />
+              <Text x="30" y="80" value="Mobile Network Error" font="ui_bold" fontSize="27" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="30" y="108" value="TICKET ID: TKT-2026-04-1245" font="ui_bold" fontSize="14" renderScale="3x" color="#374151" opacity="0.74" />
+              <Text x="30" y="136" value="CREATED  Apr 15, 01:23 AM     UPDATED  Apr 15, 07:47 AM" font="mono" fontSize="10" renderScale="3x" color="#6B7280" opacity="0.70" />
+            </Group>
+            <Group id="chat_top" x="678" y={curve("0:88:linear, 0.23:88:linear, 0.45:46:ease_out, 4.50:46:linear")} rotation="0" scale={curve("0:0.86:linear, 0.23:0.86:linear, 0.43:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.23:0:linear, 0.39:1:ease_out, 4.50:1:linear")} transformOriginX="66.0" transformOriginY="66.0">
+              <Circle x="46" y="46" radius="58" color="#000000" opacity="0.16" />
+              <Group x="46" y="46">
+                <Rect x="-28" y="-24" width="56" height="48" radius="12" color="#5141D8" />
+                <Rect x="-13" y="-8" width="26" height="18" radius="4" color="#00000000" stroke="#FFFFFF" strokeWidth="4" />
+                <Line x1="5" y1="10" x2="18" y2="18" stroke="#FFFFFF" strokeWidth="4" />
+              </Group>
+              <Circle x="104" y="8" radius="25" color="#C94D48" stroke="#FFFFFF" strokeWidth="4" />
+              <Text x="84" y="18" value="45" font="ui_bold" fontSize="25" renderScale="3x" color="#FFFFFF" opacity="1" />
+            </Group>
+            <Group id="anica_vocab" x="1098" y={curve("0:128:linear, 0.30:128:linear, 0.52:86:ease_out, 4.50:86:linear")} rotation="8" scale={curve("0:0.86:linear, 0.30:0.86:linear, 0.50:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.30:0:linear, 0.46:1:ease_out, 4.50:1:linear")} transformOriginX="196.0" transformOriginY="69.0">
+              <Rect x="10" y="14" width="392" height="138" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="392" height="138" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Group x="50" y="50">
+                <Circle x="0" y="0" radius="17" color="#5141D8" />
+                <Text x="-9" y="8" value="A" font="ui_bold" fontSize="24" renderScale="3x" color="#FFFFFF" opacity="1" />
+              </Group>
+              <Text x="86" y="42" value="Anica Chat" font="ui_bold" fontSize="22" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="86" y="70" value="Support Agent" font="ui" fontSize="18" renderScale="3x" color="#6B7280" opacity="0.90" />
+              <Text x="34" y="112" value="Custom vocabulary not loading correctly" font="ui" fontSize="19" renderScale="3x" color="#1F2937" opacity="0.92" />
+            </Group>
+            <Group id="anica_alert" x="1632" y={curve("0:162:linear, 0.36:162:linear, 0.58:120:ease_out, 4.50:120:linear")} rotation="0" scale={curve("0:0.86:linear, 0.36:0.86:linear, 0.56:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.36:0:linear, 0.52:1:ease_out, 4.50:1:linear")} transformOriginX="92.0" transformOriginY="125.0">
+              <Rect x="0" y="0" width="184" height="250" radius="24" color="#111827" opacity="0.28" />
+              <Group x="94" y="76">
+                <Rect x="-66" y="-66" width="132" height="132" radius="18" color="#C9534B" />
+                <Path d="M 0 -34 L 40 34 L -40 34 Z" fill="#00000000" stroke="#FFFFFF" strokeWidth="7" lineJoin="round" />
+                <Line x1="0" y1="-8" x2="0" y2="14" stroke="#FFFFFF" strokeWidth="7" lineCap="round" />
+                <Circle x="0" y="27" radius="4" color="#FFFFFF" />
+              </Group>
+              <Circle x="180" y="0" radius="26" color="#C94D48" stroke="#FFFFFF" strokeWidth="4" />
+              <Text x="160" y="10" value="15" font="ui_bold" fontSize="26" renderScale="3x" color="#FFFFFF" opacity="1" />
+              <Text x="52" y="214" value="Anica" font="ui_bold" fontSize="33" renderScale="3x" color="#FFFFFF" opacity="0.88" />
+            </Group>
+            <Group id="ticket_voice" x="138" y={curve("0:380:linear, 0.43:380:linear, 0.65:338:ease_out, 4.50:338:linear")} rotation="7" scale={curve("0:0.86:linear, 0.43:0.86:linear, 0.63:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.43:0:linear, 0.59:1:ease_out, 4.50:1:linear")} transformOriginX="280.0" transformOriginY="75.0">
+              <Rect x="10" y="14" width="560" height="150" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="560" height="150" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Rect x="30" y="24" width="108" height="24" radius="12" color="#FFF5F7" stroke="#D9A0AD" strokeWidth="2" />
+              <Circle x="43" y="36" radius="5" color="#EF4444" opacity="0.72" />
+              <Text x="54" y="42" value="P1-CRITICAL" font="ui_bold" fontSize="13" renderScale="3x" color="#A85B6E" opacity="0.88" />
+              <Text x="30" y="80" value="Voice Quality Degraded" font="ui_bold" fontSize="27" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="30" y="108" value="TICKET ID: TKT-2026-04-8235" font="ui_bold" fontSize="14" renderScale="3x" color="#374151" opacity="0.74" />
+              <Text x="30" y="130" value="CREATED  Apr 15, 01:23 AM     UPDATED  Apr 15, 07:47 AM" font="mono" fontSize="10" renderScale="3x" color="#6B7280" opacity="0.70" />
+            </Group>
+            <Group id="ticket_blank" x="460" y={curve("0:460:linear, 0.49:460:linear, 0.71:418:ease_out, 4.50:418:linear")} rotation="1.6" scale={curve("0:0.86:linear, 0.49:0.86:linear, 0.69:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.49:0:linear, 0.65:1:ease_out, 4.50:1:linear")} transformOriginX="210.0" transformOriginY="64.0">
+              <Rect x="10" y="14" width="420" height="128" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="420" height="128" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Rect x="30" y="24" width="108" height="24" radius="12" color="#FFF5F7" stroke="#D9A0AD" strokeWidth="2" />
+              <Circle x="43" y="36" radius="5" color="#EF4444" opacity="0.72" />
+              <Text x="54" y="42" value="P1-CRITICAL" font="ui_bold" fontSize="13" renderScale="3x" color="#A85B6E" opacity="0.88" />
+              <Text x="30" y="80" value="Blank Screen Refresh" font="ui_bold" fontSize="27" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="30" y="108" value="TICKET ID: TKT-2026-04-8472" font="ui_bold" fontSize="14" renderScale="3x" color="#374151" opacity="0.74" />
+              <Text x="30" y="120" value="CREATED  Apr 15, 01:23 AM     UPDATED  Apr 15, 07:47 AM" font="mono" fontSize="9" renderScale="3x" color="#6B7280" opacity="0.66" />
+            </Group>
+            <Group id="calendar_core" x="884" y={curve("0:510:linear, 0.56:510:linear, 0.78:468:ease_out, 4.50:468:linear")} rotation="0" scale={curve("0:0.86:linear, 0.56:0.86:linear, 0.76:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.56:0:linear, 0.72:1:ease_out, 4.50:1:linear")} transformOriginX="66.0" transformOriginY="66.0">
+              <Circle x="66" y="81" radius="58" color="#000000" opacity="0.16" />
+              <Group x="66" y="81">
+                <Rect x="-42" y="-45" width="84" height="90" radius="14" color="#5141D8" />
+                <Rect x="-25" y="-20" width="50" height="45" radius="3" color="#00000000" stroke="#FFFFFF" strokeWidth="6" />
+                <Line x1="-16" y1="-32" x2="-16" y2="-10" stroke="#FFFFFF" strokeWidth="6" />
+                <Line x1="16" y1="-32" x2="16" y2="-10" stroke="#FFFFFF" strokeWidth="6" />
+              </Group>
+              <Circle x="124" y="8" radius="25" color="#C94D48" stroke="#FFFFFF" strokeWidth="4" />
+              <Text x="104" y="18" value="22" font="ui_bold" fontSize="25" renderScale="3x" color="#FFFFFF" opacity="1" />
+            </Group>
+            <Group id="workspace_freshness" x="1246" y={curve("0:396:linear, 0.62:396:linear, 0.84:354:ease_out, 4.50:354:linear")} rotation="7" scale={curve("0:0.86:linear, 0.62:0.86:linear, 0.82:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.62:0:linear, 0.78:1:ease_out, 4.50:1:linear")} transformOriginX="239.0" transformOriginY="75.0">
+              <Rect x="10" y="14" width="478" height="150" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="478" height="150" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Group x="50" y="50">
+                <Rect x="-18" y="-16" width="36" height="32" radius="7" color="#6366F1" opacity="0.95" />
+                <Text x="-8" y="8" value="A" font="ui_bold" fontSize="24" renderScale="3x" color="#FFFFFF" opacity="1" />
+              </Group>
+              <Text x="86" y="42" value="Anica Desk" font="ui_bold" fontSize="22" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="86" y="70" value="Ops Lead" font="ui" fontSize="18" renderScale="3x" color="#6B7280" opacity="0.90" />
+              <Text x="34" y="112" value="Freshness check shows stale data again" font="ui" fontSize="19" renderScale="3x" color="#1F2937" opacity="0.92" />
+            </Group>
+            <Group id="sync_stale" x="1330" y={curve("0:260:linear, 0.68:260:linear, 0.90:218:ease_out, 4.50:218:linear")} rotation="1" scale={curve("0:0.86:linear, 0.68:0.86:linear, 0.88:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.68:0:linear, 0.84:1:ease_out, 4.50:1:linear")} transformOriginX="215.0" transformOriginY="72.0">
+              <Rect x="10" y="14" width="430" height="144" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="430" height="144" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Group x="50" y="50">
+                <Circle x="0" y="0" radius="17" color="#5141D8" />
+                <Text x="-9" y="8" value="A" font="ui_bold" fontSize="24" renderScale="3x" color="#FFFFFF" opacity="1" />
+              </Group>
+              <Text x="86" y="42" value="Anica Chat" font="ui_bold" fontSize="22" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="86" y="70" value="Dev Agent" font="ui" fontSize="18" renderScale="3x" color="#6B7280" opacity="0.90" />
+              <Text x="34" y="112" value="Dashboard still shows last synced 4 hours ago" font="ui" fontSize="19" renderScale="3x" color="#1F2937" opacity="0.92" />
+            </Group>
+            <Group id="ticket_stale" x="88" y={curve("0:570:linear, 0.75:570:linear, 0.97:528:ease_out, 4.50:528:linear")} rotation="0.6" scale={curve("0:0.86:linear, 0.75:0.86:linear, 0.95:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.75:0:linear, 0.91:1:ease_out, 4.50:1:linear")} transformOriginX="260.0" transformOriginY="66.0">
+              <Rect x="10" y="14" width="520" height="132" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="520" height="132" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Rect x="30" y="24" width="108" height="24" radius="12" color="#FFF5F7" stroke="#D9A0AD" strokeWidth="2" />
+              <Circle x="43" y="36" radius="5" color="#EF4444" opacity="0.72" />
+              <Text x="54" y="42" value="P1-CRITICAL" font="ui_bold" fontSize="13" renderScale="3x" color="#A85B6E" opacity="0.88" />
+              <Text x="30" y="80" value="Stale Data Sync Failed" font="ui_bold" fontSize="27" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="30" y="108" value="TICKET ID: TKT-2026-04-8472" font="ui_bold" fontSize="14" renderScale="3x" color="#374151" opacity="0.74" />
+              <Text x="30" y="122" value="CREATED  Apr 15, 01:23 AM     UPDATED  Apr 15, 07:47 AM" font="mono" fontSize="9" renderScale="3x" color="#6B7280" opacity="0.70" />
+            </Group>
+            <Group id="inbox_owner" x="734" y={curve("0:582:linear, 0.82:582:linear, 1.04:540:ease_out, 4.50:540:linear")} rotation="-2" scale={curve("0:0.86:linear, 0.82:0.86:linear, 1.02:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.82:0:linear, 0.98:1:ease_out, 4.50:1:linear")} transformOriginX="260.0" transformOriginY="85.0">
+              <Rect x="10" y="14" width="520" height="170" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="520" height="170" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Group x="50" y="50">
+                <Rect x="-18" y="-13" width="36" height="26" radius="5" color="#FFFFFF" stroke="#E5E7EB" strokeWidth="2" />
+                <Line x1="-15" y1="-9" x2="0" y2="2" stroke="#4F46E5" strokeWidth="4" />
+                <Line x1="15" y1="-9" x2="0" y2="2" stroke="#4F46E5" strokeWidth="4" />
+              </Group>
+              <Text x="86" y="42" value="Anica Inbox" font="ui_bold" fontSize="22" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="86" y="70" value="Project Owner" font="ui" fontSize="18" renderScale="3x" color="#6B7280" opacity="0.90" />
+              <Text x="34" y="112" value="Cannot log in. After refresh, screen stays blank." font="ui" fontSize="19" renderScale="3x" color="#1F2937" opacity="0.92" />
+            </Group>
+            <Group id="inbox_data" x="1378" y={curve("0:526:linear, 0.88:526:linear, 1.10:484:ease_out, 4.50:484:linear")} rotation="-11" scale={curve("0:0.86:linear, 0.88:0.86:linear, 1.08:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.88:0:linear, 1.04:1:ease_out, 4.50:1:linear")} transformOriginX="305.0" transformOriginY="89.0">
+              <Rect x="10" y="14" width="610" height="178" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="610" height="178" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Group x="50" y="50">
+                <Rect x="-18" y="-13" width="36" height="26" radius="5" color="#FFFFFF" stroke="#E5E7EB" strokeWidth="2" />
+                <Line x1="-15" y1="-9" x2="0" y2="2" stroke="#4F46E5" strokeWidth="4" />
+                <Line x1="15" y1="-9" x2="0" y2="2" stroke="#4F46E5" strokeWidth="4" />
+              </Group>
+              <Text x="86" y="42" value="Anica Inbox" font="ui_bold" fontSize="22" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="86" y="70" value="Data Team" font="ui" fontSize="18" renderScale="3x" color="#6B7280" opacity="0.90" />
+              <Text x="34" y="112" value="Incorrect dashboard totals after the last sync." font="ui" fontSize="19" renderScale="3x" color="#1F2937" opacity="0.92" />
+            </Group>
+            <Group id="ticket_loading" x="370" y={curve("0:704:linear, 0.94:704:linear, 1.16:662:ease_out, 4.50:662:linear")} rotation="-1.8" scale={curve("0:0.86:linear, 0.94:0.86:linear, 1.14:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 0.94:0:linear, 1.10:1:ease_out, 4.50:1:linear")} transformOriginX="210.0" transformOriginY="63.0">
+              <Rect x="10" y="14" width="420" height="126" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="420" height="126" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Rect x="30" y="24" width="108" height="24" radius="12" color="#FFF5F7" stroke="#D9A0AD" strokeWidth="2" />
+              <Circle x="43" y="36" radius="5" color="#EF4444" opacity="0.72" />
+              <Text x="54" y="42" value="P1-CRITICAL" font="ui_bold" fontSize="13" renderScale="3x" color="#A85B6E" opacity="0.88" />
+              <Text x="30" y="80" value="Main View Loading" font="ui_bold" fontSize="27" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="30" y="108" value="TICKET ID: TKT-2026-04-8472" font="ui_bold" fontSize="14" renderScale="3x" color="#374151" opacity="0.74" />
+              <Text x="30" y="118" value="CREATED  Apr 15, 01:23 AM     UPDATED  Apr 15, 07:47 AM" font="mono" fontSize="9" renderScale="3x" color="#6B7280" opacity="0.70" />
+            </Group>
+            <Group id="anica_amy" x="1110" y={curve("0:696:linear, 1.01:696:linear, 1.23:654:ease_out, 4.50:654:linear")} rotation="1.2" scale={curve("0:0.86:linear, 1.01:0.86:linear, 1.21:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 1.01:0:linear, 1.17:1:ease_out, 4.50:1:linear")} transformOriginX="266.0" transformOriginY="84.0">
+              <Rect x="10" y="14" width="532" height="168" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="532" height="168" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Group x="50" y="50">
+                <Circle x="0" y="0" radius="17" color="#5141D8" />
+                <Text x="-9" y="8" value="A" font="ui_bold" fontSize="24" renderScale="3x" color="#FFFFFF" opacity="1" />
+              </Group>
+              <Text x="86" y="42" value="Anica Chat" font="ui_bold" fontSize="22" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="86" y="70" value="Workflow Agent" font="ui" fontSize="18" renderScale="3x" color="#6B7280" opacity="0.90" />
+              <Text x="34" y="112" value="Need a connector health check before launch." font="ui" fontSize="19" renderScale="3x" color="#1F2937" opacity="0.92" />
+            </Group>
+            <Group id="ticket_sync" x="230" y={curve("0:828:linear, 1.08:828:linear, 1.30:786:ease_out, 4.50:786:linear")} rotation="7.8" scale={curve("0:0.86:linear, 1.08:0.86:linear, 1.28:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 1.08:0:linear, 1.24:1:ease_out, 4.50:1:linear")} transformOriginX="250.0" transformOriginY="75.0">
+              <Rect x="10" y="14" width="500" height="150" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="500" height="150" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Rect x="30" y="24" width="108" height="24" radius="12" color="#FFF5F7" stroke="#D9A0AD" strokeWidth="2" />
+              <Circle x="43" y="36" radius="5" color="#EF4444" opacity="0.72" />
+              <Text x="54" y="42" value="P1-CRITICAL" font="ui_bold" fontSize="13" renderScale="3x" color="#A85B6E" opacity="0.88" />
+              <Text x="30" y="80" value="Sync Failed" font="ui_bold" fontSize="27" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="30" y="108" value="TICKET ID: TKT-2026-05-2356" font="ui_bold" fontSize="14" renderScale="3x" color="#374151" opacity="0.74" />
+              <Text x="30" y="130" value="CREATED  Apr 15, 01:23 AM     UPDATED  Apr 15, 07:47 AM" font="mono" fontSize="10" renderScale="3x" color="#6B7280" opacity="0.70" />
+            </Group>
+            <Group id="ticket_network_bottom" x="734" y={curve("0:824:linear, 1.14:824:linear, 1.36:782:ease_out, 4.50:782:linear")} rotation="-1.8" scale={curve("0:0.86:linear, 1.14:0.86:linear, 1.34:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 1.14:0:linear, 1.30:1:ease_out, 4.50:1:linear")} transformOriginX="254.0" transformOriginY="66.0">
+              <Rect x="10" y="14" width="508" height="132" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="508" height="132" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Rect x="30" y="24" width="108" height="24" radius="12" color="#FFF5F7" stroke="#D9A0AD" strokeWidth="2" />
+              <Circle x="43" y="36" radius="5" color="#EF4444" opacity="0.72" />
+              <Text x="54" y="42" value="P1-CRITICAL" font="ui_bold" fontSize="13" renderScale="3x" color="#A85B6E" opacity="0.88" />
+              <Text x="30" y="80" value="Network Error" font="ui_bold" fontSize="27" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="30" y="108" value="TICKET ID: TKT-2026-04-8472" font="ui_bold" fontSize="14" renderScale="3x" color="#374151" opacity="0.74" />
+              <Text x="30" y="122" value="CREATED  Apr 15, 01:23 AM     UPDATED  Apr 15, 07:47 AM" font="mono" fontSize="9" renderScale="3x" color="#6B7280" opacity="0.70" />
+            </Group>
+            <Group id="migration_note" x="1328" y={curve("0:846:linear, 1.21:846:linear, 1.43:804:ease_out, 4.50:804:linear")} rotation="-7" scale={curve("0:0.86:linear, 1.21:0.86:linear, 1.41:1.0:ease_out, 4.50:1.0:linear")} opacity={curve("0:0:linear, 1.21:0:linear, 1.37:1:ease_out, 4.50:1:linear")} transformOriginX="235.0" transformOriginY="75.0">
+              <Rect x="10" y="14" width="470" height="150" radius="16" color="#000000" opacity="0.13" />
+              <Rect x="0" y="0" width="470" height="150" radius="16" color="#FFFFFF" opacity="0.98" stroke="#E5E7EB" strokeWidth="2" />
+              <Group x="50" y="50">
+                <Circle x="0" y="0" radius="17" color="#5141D8" />
+                <Text x="-9" y="8" value="A" font="ui_bold" fontSize="24" renderScale="3x" color="#FFFFFF" opacity="1" />
+              </Group>
+              <Text x="86" y="42" value="Anica Chat" font="ui_bold" fontSize="22" renderScale="3x" color="#111827" opacity="1" />
+              <Text x="86" y="70" value="Platform Agent" font="ui" fontSize="18" renderScale="3x" color="#6B7280" opacity="0.90" />
+              <Text x="34" y="112" value="Migration queue needs one more validation run." font="ui" fontSize="19" renderScale="3x" color="#1F2937" opacity="0.92" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="notification_cards_fadein_transparent_bg" />
+</Graph>

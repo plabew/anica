@@ -1,4 +1,4 @@
-  <!-- Graph，Reusable humanoid_v1 action. Copy this Action into a GLB animation graph,
+  <!-- Graph，Reusable humanoid_v1 action. Copy this Action into a GLB world graph,
        then attach it with: <ApplyAction target="actor_id" action="jump" at="0s" loop="true" /> -->
 
   <Action id="jump" skeleton="humanoid_v1" duration="1.6s">

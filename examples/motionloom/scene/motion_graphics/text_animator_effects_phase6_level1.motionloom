@@ -1,0 +1,166 @@
+<!-- Phase 6 text effects test: TextAnimator word/char/line selectors plus stroke, shadow, blur, and glow. -->
+<Graph fps={30} duration="6s" size={[1280,720]} renderSize={[1280,720]}>
+  <Background color="#071018" />
+
+  <Scene id="text_animator_effects_phase6_level1">
+    <Defs>
+      <Font id="display" family="Avenir Next Condensed" fallback="system" />
+      <Font id="body" family="Avenir Next" fallback="system" />
+
+      <LinearGradient id="bg_grad" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#06111F, 0.45:#102B46, 0.74:#24104A, 1:#07090F" />
+      <LinearGradient id="scan_grad" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#65F7FF00, 0.45:#65F7FF66, 0.55:#FFB00088, 1:#FF3D7700" />
+      <RadialGradient id="orb_cyan" cx="0.50" cy="0.50" r="0.64"
+                      stops="0:#FFFFFF, 0.22:#65F7FFEE, 0.68:#3B82F688, 1:#3B82F600" />
+      <RadialGradient id="orb_gold" cx="0.50" cy="0.50" r="0.64"
+                      stops="0:#FFFFFF, 0.24:#FFB000DD, 0.64:#FF3D7777, 1:#FF3D7700" />
+    </Defs>
+
+    <Timeline>
+      <Track id="background" space="screen" z="0">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="1280" height="720" fill="url(#bg_grad)" />
+            <Circle x={curve("0:1020:ease_in_out, 3:900:ease_in_out, 6:1080:ease_in_out")}
+                    y={curve("0:142:ease_in_out, 3:210:ease_in_out, 6:150:ease_in_out")}
+                    radius={curve("0:160:ease_in_out, 3:220:ease_in_out, 6:170:ease_in_out")}
+                    fill="url(#orb_cyan)"
+                    blend="screen"
+                    opacity="0.24" />
+            <Circle x={curve("0:160:ease_in_out, 3:260:ease_in_out, 6:120:ease_in_out")}
+                    y={curve("0:630:ease_in_out, 3:520:ease_in_out, 6:650:ease_in_out")}
+                    radius="260"
+                    fill="url(#orb_gold)"
+                    blend="screen"
+                    opacity="0.16" />
+            <Rect x={curve("0:-620:ease_in_out, 2.8:260:ease_in_out, 6:1320:ease_in_out")}
+                  y="0"
+                  width="520"
+                  height="720"
+                  fill="url(#scan_grad)"
+                  blend="screen"
+                  opacity="0.46" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="title_shadow_pass" space="screen" z="8">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer opacity="0.72">
+            <Text id="hero_caption_shadow"
+                  value="AI edits your video"
+                  x="center"
+                  y="center"
+                  maxWidth="980"
+                  align="center"
+                  font="display"
+                  fontSize="92"
+                  lineHeight="1.05"
+                  color="#071018"
+                  tracking="-0.02em"
+                  stroke="#000000"
+                  strokeWidth="8"
+                  opacity="0.92">
+              <TextLayout wrap="balance" overflow="fit" safeArea="96,80,96,80" />
+              <TextAnimator id="shadow_soften" selector="word" from="0s" duration="0.55s" stagger="0.08s">
+                <Transform y={curve("0:42:ease_out, 0.45:0:ease_out")} scale={curve("0:0.88:ease_out, 0.45:1:ease_out")} />
+                <Style opacity={curve("0:0:linear, 0.22:1:ease_out")} blur={curve("0:20:ease_out, 0.50:7:ease_out")} />
+              </TextAnimator>
+            </Text>
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="title_main" space="screen" z="20">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer>
+            <Text id="hero_caption"
+                  value="AI edits your video"
+                  x="center"
+                  y="center"
+                  maxWidth="980"
+                  align="center"
+                  font="display"
+                  fontSize="92"
+                  lineHeight="1.05"
+                  color="#EAFEFF"
+                  tracking="-0.02em"
+                  stroke="#071018"
+                  strokeWidth="6">
+              <TextLayout wrap="balance" overflow="fit" safeArea="96,80,96,80" />
+
+              <TextAnimator id="word_reveal" selector="word" from="0s" duration="0.55s" stagger="0.08s" order="forward">
+                <Transform y={curve("0:42:ease_out, 0.45:0:ease_out")}
+                           scale={curve("0:0.88:ease_out, 0.45:1:ease_out")}
+                           rotation={curve("0:-3:ease_out, 0.45:0:ease_out")} />
+                <Style opacity={curve("0:0:linear, 0.22:1:ease_out")}
+                       blur={curve("0:14:ease_out, 0.50:0:ease_out")} />
+              </TextAnimator>
+
+              <TextAnimator id="active_word_karaoke" selector="word" mode="karaoke" activeWord={floor($time.sec * 1.25)} preRoll="0.10s" postRoll="0.22s">
+                <Transform y={curve("0:0:ease_out, 0.18:-8:ease_out, 0.36:0:ease_in")}
+                           scale={curve("0:1:ease_out, 0.18:1.12:ease_out, 0.36:1:ease_in")} />
+                <Style color="#FFB000"
+                       stroke="#071018"
+                       strokeWidth="8"
+                       shadowColor="#000000AA"
+                       shadowX="0"
+                       shadowY="10"
+                       shadowBlur="22" />
+                <Effects>
+                  <Glow radius="26" intensity="1.55" color="#FFB000" />
+                </Effects>
+              </TextAnimator>
+
+              <TextAnimator id="char_micro_motion" selector="char" from="0.25s" duration="5.2s" stagger="0.012s" order="forward">
+                <Transform y={curve("0:0:ease_in_out, 2.6:-2.2:ease_in_out, 5.2:0:ease_in_out")}
+                           rotation={curve("0:-0.7:ease_in_out, 2.6:0.9:ease_in_out, 5.2:-0.4:ease_in_out")} />
+              </TextAnimator>
+
+              <TextAnimator id="exit_by_line" selector="line" from="5.05s" duration="0.72s" stagger="0.10s" order="reverse">
+                <Transform y={curve("0:0:ease_in, 0.72:-48:ease_in")}
+                           scale={curve("0:1:ease_in, 0.72:0.96:ease_in")} />
+                <Style opacity={curve("0:1:linear, 0.46:0:ease_in")}
+                       blur={curve("0:0:ease_in, 0.72:18:ease_in")} />
+              </TextAnimator>
+            </Text>
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="subtitle" space="screen" z="30">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer>
+            <Text value="Phase 6: stroke / shadow / blur / glow"
+                  x="center"
+                  y="498"
+                  maxWidth="860"
+                  align="center"
+                  font="body"
+                  fontSize="30"
+                  color="#65F7FF"
+                  opacity="0.88"
+                  stroke="#071018"
+                  strokeWidth="3">
+              <TextLayout wrap="balance" overflow="fit" safeArea="120,80,120,80" />
+              <TextAnimator selector="word" from="0.75s" duration="0.42s" stagger="0.045s">
+                <Transform y={curve("0:24:ease_out, 0.42:0:ease_out")} />
+                <Style opacity={curve("0:0:linear, 0.26:1:ease_out")}
+                       shadowColor="#000000AA"
+                       shadowX="0"
+                       shadowY="8"
+                       shadowBlur="16" />
+                <Effects>
+                  <Glow radius="12" intensity="0.85" color="#65F7FF" />
+                </Effects>
+              </TextAnimator>
+            </Text>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="text_animator_effects_phase6_level1" />
+</Graph>

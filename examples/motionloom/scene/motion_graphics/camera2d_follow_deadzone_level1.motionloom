@@ -1,0 +1,80 @@
+<!-- Scene Camera2D example. Scene cameras are Timeline nodes and do not use mode="2d". -->
+<Graph fps={30} duration="6s" size={[1280,720]} renderSize={[1280,720]}>
+  <Background color="#060A12" />
+
+  <Scene id="camera2d_follow_deadzone_level1">
+    <Defs>
+      <LinearGradient id="world_bg" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#0B1830, 0.55:#132A52, 1:#05070D" />
+      <RadialGradient id="hero_glow" cx="0.50" cy="0.50" r="0.62"
+                      stops="0:#FFFFFF, 0.25:#65F7FF, 1:#65F7FF00" />
+    </Defs>
+
+    <Timeline>
+      <Track id="main_camera_track" role="camera" z="1000">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Camera id="main_camera"
+                  target="hero_marker"
+                  anchorX="50%"
+                  anchorY="52%"
+                  zoom={curve("0:1.00:ease_in_out, 2.2:1.34:ease_in_out, 4.2:1.10:ease_in_out, 6:1.22:ease_in_out")}
+                  rotation={curve("0:-1.2:ease_in_out, 3:1.1:ease_in_out, 6:0:ease_in_out")}
+                  offsetX={curve("0:0:linear, 2.5:-36:ease_in_out, 6:28:ease_in_out")}
+                  offsetY={curve("0:0:linear, 2.5:18:ease_in_out, 6:-10:ease_in_out")}
+                  shakeX={curve("0:0:linear, 1.20:0:linear, 1.28:10:linear, 1.36:-8:linear, 1.44:5:linear, 1.56:0:linear, 6:0:linear")}
+                  shakeY={curve("0:0:linear, 1.20:0:linear, 1.28:-6:linear, 1.36:5:linear, 1.44:-3:linear, 1.56:0:linear, 6:0:linear")}
+                  deadZone="500,255,280,170"
+                  worldBounds="-320,-220,2100,1240" />
+        </Sequence>
+      </Track>
+
+      <Track id="camera_world" space="world" z="0">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer id="world_layer">
+              <Rect x="-320" y="-220" width="2100" height="1240" fill="url(#world_bg)" />
+
+              <Repeat id="grid_x" count="26" x="-240" y="-120" xStep="80" opacity="0.24">
+                <Line x1="0" y1="0" x2="0" y2="1040" stroke="#FFFFFF" strokeWidth="1" />
+              </Repeat>
+              <Repeat id="grid_y" count="15" x="-240" y="-120" yStep="80" opacity="0.20">
+                <Line x1="0" y1="0" x2="2000" y2="0" stroke="#FFFFFF" strokeWidth="1" />
+              </Repeat>
+
+              <Path d="M 80 540 C 300 330 480 680 760 420 C 1040 160 1260 280 1540 120"
+                    stroke="#65F7FF"
+                    strokeWidth="16"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.52"
+                    trimEnd={curve("0:0:ease_in_out, 2.8:1:ease_in_out, 6:1:linear")} />
+
+              <Circle id="hero_marker"
+                      x={curve("0:120:ease_in_out, 1.6:520:ease_in_out, 3.4:980:ease_in_out, 6:1420:ease_in_out")}
+                      y={curve("0:540:ease_in_out, 1.6:360:ease_in_out, 3.4:470:ease_in_out, 6:250:ease_in_out")}
+                      radius="34"
+                      fill="url(#hero_glow)"
+                      blend="screen"
+                      opacity="0.95" />
+              <Circle x={curve("0:120:ease_in_out, 1.6:520:ease_in_out, 3.4:980:ease_in_out, 6:1420:ease_in_out")}
+                      y={curve("0:540:ease_in_out, 1.6:360:ease_in_out, 3.4:470:ease_in_out, 6:250:ease_in_out")}
+                      radius="10"
+                      color="#FFFFFF"
+                      opacity="1" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="screen_hud" space="screen" z="10">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer id="hud_layer">
+            <Rect x="48" y="48" width="470" height="92" radius="24" color="#000000" opacity="0.30" />
+            <Text x="76" y="92" value="Camera2D follows a world-space target" fontSize="28" color="#EAFEFF" />
+            <Text x="76" y="122" value="Timeline wrapped, dead-zone, offsets, shake, world bounds" fontSize="18" color="#65F7FF" opacity="0.84" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="camera2d_follow_deadzone_level1" />
+</Graph>

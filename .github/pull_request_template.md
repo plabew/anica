@@ -8,6 +8,7 @@
 - [ ] `cargo fmt --check`
 - [ ] `cargo check`
 - [ ] `cargo clippy --workspace --all-targets -- -D clippy::correctness -D clippy::suspicious -W clippy::perf`
+- [ ] `cargo clippy -p <touched-crate> --all-targets -- -D warnings` for each touched crate/package
 - [ ] `cargo test`
 - [ ] Not run intentionally, with reason explained below
 

@@ -1,0 +1,323 @@
+<!-- Font note: this promo uses common macOS presentation fonts; unavailable font families fall back to the renderer default. -->
+<Graph fps={30} duration="20s" size={[1920,1080]} renderSize={[1920,1080]}>
+  <Background color="#030406" />
+
+  <Scene id="anica_promo_presentation_20s">
+    <Defs>
+      <LinearGradient id="glass_panel" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#FFFFFF24, 0.45:#FFFFFF0E, 1:#FFFFFF05" />
+      <LinearGradient id="blue_line" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#FFFFFF00, 0.18:#8BE7FF, 0.72:#FFFFFF, 1:#FFFFFF00" />
+      <LinearGradient id="silver_line" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#FFFFFF00, 0.30:#FFFFFFAA, 0.68:#7B8794AA, 1:#FFFFFF00" />
+      <RadialGradient id="cold_bloom" cx="0.50" cy="0.50" r="0.72"
+                      stops="0:#DDFBFF88, 0.36:#6AE7FF22, 1:#03040600" />
+      <RadialGradient id="warm_bloom" cx="0.50" cy="0.50" r="0.78"
+                      stops="0:#FFE8C166, 0.32:#FFB45B1E, 1:#03040600" />
+      <RadialGradient id="white_orb" cx="0.50" cy="0.50" r="0.64"
+                      stops="0:#FFFFFF, 0.20:#FFFFFFDD, 0.70:#FFFFFF26, 1:#FFFFFF00" />
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="20s" out="hold">
+          <Layer>
+
+            <!-- Ambient keynote-style light fields. -->
+            <Circle id="ambient_cold"
+                    x={curve("0:1320:ease_in_out, 8:1020:ease_in_out, 20:1450:ease_in_out")}
+                    y={curve("0:250:ease_in_out, 10:180:ease_in_out, 20:420:ease_in_out")}
+                    radius={curve("0:520:ease_in_out, 10:720:ease_in_out, 20:620:ease_in_out")}
+                    color="url(#cold_bloom)"
+                    blend="screen"
+                    opacity="0.72" />
+            <Circle id="ambient_warm"
+                    x={curve("0:280:ease_in_out, 9:480:ease_in_out, 20:240:ease_in_out")}
+                    y={curve("0:830:ease_in_out, 12:730:ease_in_out, 20:820:ease_in_out")}
+                    radius={curve("0:420:ease_in_out, 9:560:ease_in_out, 20:460:ease_in_out")}
+                    color="url(#warm_bloom)"
+                    blend="screen"
+                    opacity="0.46" />
+
+            <!-- 0-4s: product reveal. -->
+            <Group id="intro_logo" x="0" y="0" opacity={curve("0:1:linear, 3.50:1:linear, 4.40:0:ease_in_out, 20:0:linear")}>
+              <Text value="A"
+                    x="center"
+                    y="center"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="640"
+                    color="#FFFFFF"
+                    opacity={curve("0:0:ease_in_out, 0.80:0.050:ease_in_out, 3.40:0.050:linear, 4.10:0:ease_in_out")}
+                    scale={curve("0:0.92:ease_in_out, 3.60:1.06:ease_in_out")}
+                    transformOriginX="960"
+                    transformOriginY="540" />
+              <Text value="Anica"
+                    x="center"
+                    y="470"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="196"
+                    color="#FFFFFF"
+                    opacity={curve("0:0:ease_in_out, 0.85:1:ease_in_out, 3.40:1:linear, 4.15:0:ease_in_out")}
+                    scale={curve("0:0.84:ease_in_out, 1.20:1.0:ease_in_out, 3.70:1.035:ease_in_out")}
+                    transformOriginX="960"
+                    transformOriginY="470" />
+              <Text value="Anica"
+                    x="center"
+                    y="470"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="196"
+                    color="#80F2FF"
+                    opacity={curve("0:0:ease_in_out, 1.00:0.18:ease_in_out, 2.60:0.08:ease_in_out, 4.00:0:ease_in_out")}
+                    scale="1.014"
+                    transformOriginX="960"
+                    transformOriginY="470" />
+              <Path d="M 570 620 C 720 604 850 606 960 620 C 1070 634 1220 633 1350 612"
+                    stroke="url(#blue_line)"
+                    strokeWidth="4"
+                    lineCap="round"
+                    fill="none"
+                    opacity={curve("0:0:linear, 1.15:0.75:ease_in_out, 3.50:0.75:linear, 4.10:0:ease_in_out")}
+                    trimStart={curve("0:0.48:ease_in_out, 1.30:0:ease_in_out")}
+                    trimEnd={curve("0:0.52:ease_in_out, 1.30:1:ease_in_out")} />
+              <Text value="An agentic AI video editor built for creative flow."
+                    x="center"
+                    y="686"
+                    fontFamily="Helvetica Neue"
+                    fontSize="34"
+                    color="#C7D0DA"
+                    opacity={curve("0:0:linear, 1.30:0:ease_in_out, 2.05:0.86:ease_in_out, 3.45:0.86:linear, 4.00:0:ease_in_out")} />
+            </Group>
+
+            <!-- 4-8s: thesis. -->
+            <Group id="flow_section" opacity={curve("3.70:0:ease_in_out, 4.55:1:ease_in_out, 7.75:1:linear, 8.50:0:ease_in_out, 20:0:linear")}>
+              <Text value="Edit at the speed"
+                    x="160"
+                    y="342"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="106"
+                    color="#FFFFFF"
+                    opacity="1" />
+              <Text value="of thought."
+                    x="160"
+                    y="456"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="132"
+                    color="#FFFFFF"
+                    opacity="1" />
+              <Text value="A timeline, a motion language, and generation tools moving together."
+                    x="164"
+                    y="532"
+                    fontFamily="Helvetica Neue"
+                    fontSize="30"
+                    color="#AEB7C2"
+                    opacity="0.88" />
+
+              <Group id="flow_card_1"
+                     x={curve("3.80:1260:ease_in_out, 4.70:1080:ease_in_out, 7.80:1020:ease_in_out")}
+                     y={curve("3.80:250:ease_in_out, 4.70:220:ease_in_out, 7.80:230:ease_in_out")}
+                     opacity={curve("3.80:0:ease_in_out, 4.60:1:ease_in_out, 7.85:1:linear, 8.35:0:ease_in_out")}>
+                <Rect x="0" y="0" width="500" height="132" radius="34" fill="url(#glass_panel)" stroke="#FFFFFF24" strokeWidth="1.5" />
+                <Circle x="64" y="66" radius="24" color="#FFFFFF" opacity="0.95" />
+                <Text value="Timeline"
+                      x="118"
+                      y="58"
+                      fontFamily="Helvetica Neue"
+                      fontSize="32"
+                      color="#FFFFFF" />
+                <Text value="Fast, readable, direct."
+                      x="118"
+                      y="94"
+                      fontFamily="Helvetica Neue"
+                      fontSize="20"
+                      color="#AEB7C2" />
+              </Group>
+
+              <Group id="flow_card_2"
+                     x={curve("4.00:1320:ease_in_out, 4.95:1120:ease_in_out, 7.80:1080:ease_in_out")}
+                     y={curve("4.00:430:ease_in_out, 4.95:400:ease_in_out, 7.80:405:ease_in_out")}
+                     opacity={curve("4.00:0:ease_in_out, 4.90:1:ease_in_out, 7.85:1:linear, 8.35:0:ease_in_out")}>
+                <Rect x="0" y="0" width="500" height="132" radius="34" fill="url(#glass_panel)" stroke="#FFFFFF24" strokeWidth="1.5" />
+                <Path d="M 42 70 C 70 34 98 102 126 66"
+                      stroke="#8BE7FF"
+                      strokeWidth="7"
+                      lineCap="round"
+                      fill="none" />
+                <Text value="MotionLoom DSL"
+                      x="154"
+                      y="58"
+                      fontFamily="Helvetica Neue"
+                      fontSize="32"
+                      color="#FFFFFF" />
+                <Text value="Describe scenes as motion."
+                      x="154"
+                      y="94"
+                      fontFamily="Helvetica Neue"
+                      fontSize="20"
+                      color="#AEB7C2" />
+              </Group>
+
+              <Group id="flow_card_3"
+                     x={curve("4.20:1280:ease_in_out, 5.20:1040:ease_in_out, 7.80:1000:ease_in_out")}
+                     y={curve("4.20:610:ease_in_out, 5.20:580:ease_in_out, 7.80:588:ease_in_out")}
+                     opacity={curve("4.20:0:ease_in_out, 5.20:1:ease_in_out, 7.85:1:linear, 8.35:0:ease_in_out")}>
+                <Rect x="0" y="0" width="500" height="132" radius="34" fill="url(#glass_panel)" stroke="#FFFFFF24" strokeWidth="1.5" />
+                <Circle x="67" y="66" radius="38" color="url(#white_orb)" blend="screen" />
+                <Text value="Agentic tools"
+                      x="134"
+                      y="58"
+                      fontFamily="Helvetica Neue"
+                      fontSize="32"
+                      color="#FFFFFF" />
+                <Text value="Generate, inspect, refine."
+                      x="134"
+                      y="94"
+                      fontFamily="Helvetica Neue"
+                      fontSize="20"
+                      color="#AEB7C2" />
+              </Group>
+            </Group>
+
+            <!-- 8-12s: MotionLoom capability. -->
+            <Group id="dsl_section" opacity={curve("8.00:0:ease_in_out, 8.70:1:ease_in_out, 11.70:1:linear, 12.45:0:ease_in_out, 20:0:linear")}>
+              <Text value="Scene tags. World tags."
+                    x="center"
+                    y="292"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="112"
+                    color="#FFFFFF" />
+              <Text value="GPU-native motion graphics, vector scenes, and character worlds in one graph."
+                    x="center"
+                    y="372"
+                    fontFamily="Helvetica Neue"
+                    fontSize="30"
+                    color="#B8C1CC"
+                    opacity="0.90" />
+
+              <Rect x="310" y="500" width="1300" height="260" radius="42" fill="url(#glass_panel)" stroke="#FFFFFF24" strokeWidth="1.5" />
+              <Text value="Scene launch {"
+                    x="390"
+                    y="580"
+                    fontFamily="Menlo"
+                    fontSize="30"
+                    color="#E7F8FF"
+                    opacity={curve("8.70:0:ease_in_out, 9.15:1:ease_in_out")} />
+              <Text value="  Text Anica with curve(...)"
+                    x="390"
+                    y="636"
+                    fontFamily="Menlo"
+                    fontSize="30"
+                    color="#88EFFF"
+                    opacity={curve("9.00:0:ease_in_out, 9.45:1:ease_in_out")} />
+              <Text value="  GPU pass: motion_graphics compute"
+                    x="390"
+                    y="692"
+                    fontFamily="Menlo"
+                    fontSize="30"
+                    color="#FFFFFF"
+                    opacity={curve("9.30:0:ease_in_out, 9.75:1:ease_in_out")} />
+
+              <Path d="M 304 808 C 560 830 760 790 960 812 C 1160 834 1370 800 1616 818"
+                    stroke="url(#silver_line)"
+                    strokeWidth="3.5"
+                    lineCap="round"
+                    fill="none"
+                    trimStart={curve("8.60:0.5:ease_in_out, 9.90:0:ease_in_out")}
+                    trimEnd={curve("8.60:0.5:ease_in_out, 9.90:1:ease_in_out")}
+                    opacity="0.85" />
+            </Group>
+
+            <!-- 12-16s: export / native engine. -->
+            <Group id="native_section" opacity={curve("12.00:0:ease_in_out, 12.70:1:ease_in_out, 15.70:1:linear, 16.45:0:ease_in_out, 20:0:linear")}>
+              <Text value="Preview. Render. Export."
+                    x="138"
+                    y="268"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="118"
+                    color="#FFFFFF" />
+              <Text value="Built around native video workflows, GPU effects, and fast iteration."
+                    x="142"
+                    y="344"
+                    fontFamily="Helvetica Neue"
+                    fontSize="30"
+                    color="#B8C1CC" />
+
+              <Group id="export_rings" x="1210" y="540" rotation={curve("12.00:-12:ease_in_out, 16.00:8:ease_in_out")} opacity="1">
+                <Circle x="0" y="0" radius="256" color="#FFFFFF" opacity="0.045" />
+                <Circle x="0" y="0" radius="178" color="#FFFFFF" opacity="0.070" />
+                <Circle x="0" y="0" radius="86" color="url(#white_orb)" blend="screen" opacity="0.84" />
+                <Path d="M -260 0 C -120 -150 118 -150 260 0 C 118 150 -120 150 -260 0"
+                      stroke="url(#blue_line)"
+                      strokeWidth="6"
+                      lineCap="round"
+                      fill="none"
+                      trimStart={curve("12.40:0.50:ease_in_out, 13.40:0.0:ease_in_out")}
+                      trimEnd={curve("12.40:0.50:ease_in_out, 13.40:1.0:ease_in_out")} />
+              </Group>
+
+              <Group id="native_pills" x="142" y="470">
+                <Rect x="0" y="0" width="410" height="80" radius="40" fill="url(#glass_panel)" stroke="#FFFFFF24" strokeWidth="1.5" />
+                <Text value="GPU native path"
+                      x="38"
+                      y="52"
+                      fontFamily="Helvetica Neue"
+                      fontSize="28"
+                      color="#FFFFFF" />
+                <Rect x="0" y="112" width="470" height="80" radius="40" fill="url(#glass_panel)" stroke="#FFFFFF24" strokeWidth="1.5" />
+                <Text value="Motion graphics scenes"
+                      x="38"
+                      y="164"
+                      fontFamily="Helvetica Neue"
+                      fontSize="28"
+                      color="#FFFFFF" />
+                <Rect x="0" y="224" width="520" height="80" radius="40" fill="url(#glass_panel)" stroke="#FFFFFF24" strokeWidth="1.5" />
+                <Text value="Flexible export pipeline"
+                      x="38"
+                      y="276"
+                      fontFamily="Helvetica Neue"
+                      fontSize="28"
+                      color="#FFFFFF" />
+              </Group>
+            </Group>
+
+            <!-- 16-20s: final. -->
+            <Group id="final_lockup" opacity={curve("16.00:0:ease_in_out, 16.80:1:ease_in_out, 19.30:1:linear, 20.00:0:ease_in_out")}>
+              <Text value="Anica"
+                    x="center"
+                    y="430"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="188"
+                    color="#FFFFFF"
+                    scale={curve("16.00:0.92:ease_in_out, 18.20:1.0:ease_in_out, 20.00:1.04:ease_in_out")}
+                    transformOriginX="960"
+                    transformOriginY="430" />
+              <Text value="Create videos by editing, generating, and describing motion."
+                    x="center"
+                    y="550"
+                    fontFamily="Helvetica Neue"
+                    fontSize="34"
+                    color="#C9D2DC"
+                    opacity="0.92" />
+              <Text value="Open source. Rust native. Built for vibe editing."
+                    x="center"
+                    y="620"
+                    fontFamily="Helvetica Neue"
+                    fontSize="26"
+                    color="#7F8B98"
+                    opacity="0.90" />
+              <Path d="M 620 700 C 760 682 850 714 960 700 C 1070 686 1180 712 1300 694"
+                    stroke="url(#blue_line)"
+                    strokeWidth="4"
+                    lineCap="round"
+                    fill="none"
+                    trimStart={curve("16.80:0.5:ease_in_out, 18.00:0:ease_in_out")}
+                    trimEnd={curve("16.80:0.5:ease_in_out, 18.00:1:ease_in_out")}
+                    opacity="0.82" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="anica_promo_presentation_20s" />
+</Graph>

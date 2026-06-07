@@ -1,0 +1,150 @@
+<!-- Transparent-background text effects specimen: five HELLO styles for checking font, stroke, shadow, blur, and glow. -->
+<Graph fps={30} duration="4s" size={[1280,720]} renderSize={[1280,720]}>
+  <Background color="transparent" />
+
+  <Scene id="text_hello_effects_transparent_bg_level1">
+    <Defs>
+      <Font id="display" family="Avenir Next Condensed" fallback="system" />
+      <Font id="round" family="Arial Rounded MT Bold" fallback="system" />
+      <Font id="serif" family="Georgia" fallback="system" />
+      <Font id="mono" family="Menlo" fallback="system" />
+      <Font id="heavy" family="Helvetica Neue" fallback="system" />
+
+    </Defs>
+
+    <Timeline>
+      <Track id="sample_01_clean_stroke" space="screen" z="10">
+        <Sequence from="0s" duration="4s" out="hold">
+          <Layer>
+            <Text id="hello_01"
+                  value="HELLO"
+                  x="120"
+                  y="210"
+                  font="display"
+                  fontSize="92"
+                  color="#172033"
+                  stroke="#FFFFFF"
+                  strokeWidth="5"
+                  tracking="-0.03em">
+              <TextAnimator selector="char" from="0s" duration="0.38s" stagger="0.035s">
+                <Transform y={curve("0:26:ease_out, 0.38:0:ease_out")} scale={curve("0:0.92:ease_out, 0.38:1:ease_out")} />
+                <Style opacity={curve("0:0:linear, 0.22:1:ease_out")} />
+              </TextAnimator>
+            </Text>
+            <Text value="01 clean white stroke" x="124" y="285" font="mono" fontSize="16" color="#64748B" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="sample_02_soft_shadow" space="screen" z="20">
+        <Sequence from="0s" duration="4s" out="hold">
+          <Layer>
+            <Text id="hello_02"
+                  value="HELLO"
+                  x="650"
+                  y="210"
+                  font="heavy"
+                  fontSize="84"
+                  color="#111827"
+                  stroke="#FFFFFF"
+                  strokeWidth="3"
+                  tracking="-0.04em">
+              <TextAnimator selector="word" from="0.18s" duration="0.55s">
+                <Transform y={curve("0:22:ease_out, 0.55:0:ease_out")} rotation={curve("0:-1.5:ease_out, 0.55:0:ease_out")} />
+                <Style opacity={curve("0:0:linear, 0.25:1:ease_out")}
+                       shadowColor="#0F172A55"
+                       shadowX="0"
+                       shadowY="10"
+                       shadowBlur="14" />
+              </TextAnimator>
+            </Text>
+            <Text value="02 soft shadow" x="654" y="285" font="mono" fontSize="16" color="#64748B" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="sample_03_neon_glow" space="screen" z="30">
+        <Sequence from="0s" duration="4s" out="hold">
+          <Layer>
+            <Text id="hello_03"
+                  value="HELLO"
+                  x="120"
+                  y="410"
+                  font="round"
+                  fontSize="78"
+                  color="#0E7490"
+                  stroke="#E0F7FF"
+                  strokeWidth="4"
+                  tracking="0.01em">
+              <TextAnimator selector="word" from="0.42s" duration="0.7s">
+                <Transform scale={curve("0:0.88:ease_out, 0.34:1.06:ease_out, 0.70:1:ease_in_out")} />
+                <Style opacity={curve("0:0:linear, 0.24:1:ease_out")} />
+                <Effects>
+                  <Glow radius="18" intensity="1.15" color="#22D3EE" />
+                </Effects>
+              </TextAnimator>
+            </Text>
+            <Text value="03 cyan glow" x="124" y="485" font="mono" fontSize="16" color="#64748B" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="sample_04_blur_reveal" space="screen" z="40">
+        <Sequence from="0s" duration="4s" out="hold">
+          <Layer>
+            <Text id="hello_04"
+                  value="HELLO"
+                  x="650"
+                  y="410"
+                  font="serif"
+                  fontSize="82"
+                  color="#7C2D12"
+                  stroke="#FFFFFF"
+                  strokeWidth="4"
+                  tracking="-0.01em">
+              <TextAnimator selector="char" from="0.60s" duration="0.55s" stagger="0.045s">
+                <Transform y={curve("0:32:ease_out, 0.55:0:ease_out")} scale={curve("0:0.84:ease_out, 0.55:1:ease_out")} />
+                <Style opacity={curve("0:0:linear, 0.28:1:ease_out")}
+                       blur={curve("0:12:ease_out, 0.55:0:ease_out")} />
+              </TextAnimator>
+            </Text>
+            <Text value="04 blur reveal" x="654" y="485" font="mono" fontSize="16" color="#64748B" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="sample_05_gold_char_pulse" space="screen" z="50">
+        <Sequence from="0s" duration="4s" out="hold">
+          <Layer>
+            <Text id="hello_05"
+                  value="HELLO"
+                  x="center"
+                  y="592"
+                  font="display"
+                  fontSize="88"
+                  color="#253044"
+                  stroke="#FFFFFF"
+                  strokeWidth="4"
+                  tracking="0.04em">
+              <TextAnimator selector="char" from="0s" duration="0.45s" stagger="0.04s">
+                <Transform y={curve("0:20:ease_out, 0.45:0:ease_out")} />
+                <Style opacity={curve("0:0:linear, 0.22:1:ease_out")} />
+              </TextAnimator>
+              <TextAnimator selector="char" from="0.72s" duration="2.60s" stagger="0.08s">
+                <Transform y={curve("0:0:ease_out, 0.32:-8:ease_out, 0.70:0:ease_in_out, 2.60:0:linear")}
+                           scale={curve("0:1:ease_out, 0.32:1.10:ease_out, 0.70:1:ease_in_out, 2.60:1:linear")} />
+                <Style color="#FFB000" stroke="#FFF4D8" strokeWidth="5" shadowColor="#A1620755" shadowY="6" shadowBlur="10" />
+                <Effects>
+                  <Glow radius="12" intensity="0.95" color="#FFB000" />
+                </Effects>
+              </TextAnimator>
+            </Text>
+            <Text value="05 char gold pulse" x="center" y="650" font="mono" fontSize="16" color="#64748B" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="text_hello_effects_transparent_bg_level1" />
+</Graph>

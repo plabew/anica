@@ -13,7 +13,7 @@ Use this catalog for all export-related user questions.
 
 | ID | Title | When to open | Keywords | File |
 |---|---|---|---|---|
-| EXP-0001 | Export modes, presets, and recommendation logic | User asks which export preset/mode to choose, or asks for ffmpeg export options inside Anica. | `export`, `preset`, `mode`, `smart_universal`, `keep_source_copy`, `preset_reencode`, `h264`, `hevc`, `prores`, `dnxhr`, `audio-only`, `crf`, `fps`, `bitrate` | `anica/docs/acp/export/EXP-0001.md` |
+| EXP-0001 | Export modes, presets, and recommendation logic | User asks which export preset/mode to choose, or asks for ffmpeg export options inside Anica. | `export`, `preset`, `mode`, `smart_universal`, `keep_source_copy`, `preset_reencode`, `h264`, `hevc`, `gif`, `prores`, `dnxhr`, `audio-only`, `crf`, `fps`, `bitrate` | `anica/docs/acp/export/EXP-0001.md` |
 
 ## Answering Rules
 - Prefer exact preset IDs from docs (for example: `h264_mp4`, `prores_422_hq_mov`).

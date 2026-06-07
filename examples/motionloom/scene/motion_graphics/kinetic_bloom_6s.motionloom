@@ -1,4 +1,4 @@
-<Graph fps={60} duration="6s" size={[1920,1080]}>
+<Graph fps={30} duration="6s" size={[1920,1080]}>
   <Background color="#070A12" />
 
   <Scene id="kinetic_bloom_6s">
@@ -19,105 +19,114 @@
       <Brush id="ghost_line" stroke="#FFFFFF" strokeWidth="1.4" strokeStyle="hairline" strokeRoughness="0.12" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.38" />
     </Defs>
 
-    <Rect id="background_vortex" x="0" y="0" width="1920" height="1080" color="url(#bg_vortex)" />
-    <Rect id="lower_heat_field" x="0" y="540" width="1920" height="540" color="url(#lower_heat)" blend="screen" opacity="0.88" />
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer>
 
-    <Group id="perspective_grid" x="960" y="642" opacity={curve("0.00:0.00:linear, 0.55:0.34:ease_out, 5.30:0.28:linear, 6.00:0.00:ease_in")}
-           scaleX={curve("0.00:0.84:ease_out, 2.10:1.00:ease_in_out, 6.00:1.12:ease_in")}
-           scaleY={curve("0.00:0.68:ease_out, 2.10:1.00:ease_in_out, 6.00:1.12:ease_in")}
-           transformOriginX="0" transformOriginY="0">
-      <Repeat id="grid_horizontal_repeat" count="13" x="-840" y="-360" yStep="58" opacity="0.62" opacityStep="-0.032">
-        <Line id="grid_h_line" x1="0" y1="0" x2="1680" y2="0" stroke="#A8F8FF" strokeWidth="1.2" opacity="0.38" />
-      </Repeat>
-      <Repeat id="grid_vertical_repeat" count="17" x="-800" y="-360" xStep="100" opacity="0.46" opacityStep="-0.005">
-        <Line id="grid_v_line" x1="0" y1="0" x2="0" y2="700" stroke="#A8F8FF" strokeWidth="1.0" opacity="0.22" />
-      </Repeat>
-    </Group>
+            <Rect id="background_vortex" x="0" y="0" width="1920" height="1080" color="url(#bg_vortex)" />
+            <Rect id="lower_heat_field" x="0" y="540" width="1920" height="540" color="url(#lower_heat)" blend="screen" opacity="0.88" />
 
-    <Group id="parallax_shells" x="960" y="540"
-           rotation="8*sin($time.sec*0.22)"
-           scale={curve("0.00:0.84:ease_out, 1.20:1.0:ease_in_out, 6.00:1.08:linear")}
-           opacity={curve("0.00:0.0:linear, 0.35:1.0:ease_out, 5.50:1.0:linear, 6.00:0.0:ease_in")}
-           transformOriginX="0" transformOriginY="0">
-      <Circle id="shell_01" x="0" y="0" radius="206 + 12*sin($time.sec*1.3)" color="#00000000" stroke="#65F7FF33" strokeWidth="2" blend="screen" />
-      <Circle id="shell_02" x="0" y="0" radius="324 + 18*sin($time.sec*0.9 + 1.7)" color="#00000000" stroke="#FF5A9E2E" strokeWidth="3" blend="screen" />
-      <Circle id="shell_03" x="0" y="0" radius="456 + 20*sin($time.sec*0.7 + 2.2)" color="#00000000" stroke="#FFF59A22" strokeWidth="2" blend="screen" />
-      <Circle id="shell_04" x="0" y="0" radius="604 + 26*sin($time.sec*0.55 + 3.1)" color="#00000000" stroke="#C7E8FF18" strokeWidth="2" blend="screen" />
-    </Group>
+            <Group id="perspective_grid" x="960" y="642" opacity={curve("0.00:0.00:linear, 0.55:0.34:ease_out, 5.30:0.28:linear, 6.00:0.00:ease_in")}
+                   scaleX={curve("0.00:0.84:ease_out, 2.10:1.00:ease_in_out, 6.00:1.12:ease_in")}
+                   scaleY={curve("0.00:0.68:ease_out, 2.10:1.00:ease_in_out, 6.00:1.12:ease_in")}
+                   transformOriginX="0" transformOriginY="0">
+              <Repeat id="grid_horizontal_repeat" count="13" x="-840" y="-360" yStep="58" opacity="0.62" opacityStep="-0.032">
+                <Line id="grid_h_line" x1="0" y1="0" x2="1680" y2="0" stroke="#A8F8FF" strokeWidth="1.2" opacity="0.38" />
+              </Repeat>
+              <Repeat id="grid_vertical_repeat" count="17" x="-800" y="-360" xStep="100" opacity="0.46" opacityStep="-0.005">
+                <Line id="grid_v_line" x1="0" y1="0" x2="0" y2="700" stroke="#A8F8FF" strokeWidth="1.0" opacity="0.22" />
+              </Repeat>
+            </Group>
 
-    <Group id="radial_dash_ring" x="960" y="540"
-           rotation={curve("0.00:-110:ease_out, 1.15:22:ease(0.18,0.92,0.22,1), 3.30:144:ease_in_out, 6.00:358:ease_in_out")}
-           scale={curve("0.00:0.35:ease_out, 0.82:1.06:ease(0.16,1.12,0.24,1), 1.14:1.00:ease_in_out, 4.70:1.08:ease_in_out, 6.00:1.36:ease_in")}
-           opacity={curve("0.00:0.00:linear, 0.34:1.00:ease_out, 5.50:1.00:linear, 6.00:0.00:ease_in")}>
-      <Repeat id="dash_repeat" count="48" rotationStep="7.5" opacity="1" opacityStep="-0.003">
-        <Line id="radial_dash" x1="0" y1="-340" x2="0" y2={curve("0.00:-340:ease_out, 0.75:-430:ease_out, 1.24:-385:ease_in_out, 3.80:-470:ease_in_out, 6.00:-560:ease_in")} stroke="#9BFCFF" strokeWidth="3.0" lineCap="round" opacity="0.58" blend="screen" />
-      </Repeat>
-    </Group>
+            <Group id="parallax_shells" x="960" y="540"
+                   rotation="8*sin($time.sec*0.22)"
+                   scale={curve("0.00:0.84:ease_out, 1.20:1.0:ease_in_out, 6.00:1.08:linear")}
+                   opacity={curve("0.00:0.0:linear, 0.35:1.0:ease_out, 5.50:1.0:linear, 6.00:0.0:ease_in")}
+                   transformOriginX="0" transformOriginY="0">
+              <Circle id="shell_01" x="0" y="0" radius="206 + 12*sin($time.sec*1.3)" color="#00000000" stroke="#65F7FF33" strokeWidth="2" blend="screen" />
+              <Circle id="shell_02" x="0" y="0" radius="324 + 18*sin($time.sec*0.9 + 1.7)" color="#00000000" stroke="#FF5A9E2E" strokeWidth="3" blend="screen" />
+              <Circle id="shell_03" x="0" y="0" radius="456 + 20*sin($time.sec*0.7 + 2.2)" color="#00000000" stroke="#FFF59A22" strokeWidth="2" blend="screen" />
+              <Circle id="shell_04" x="0" y="0" radius="604 + 26*sin($time.sec*0.55 + 3.1)" color="#00000000" stroke="#C7E8FF18" strokeWidth="2" blend="screen" />
+            </Group>
 
-    <Group id="particle_constellation" opacity={curve("0.00:0.0:linear, 0.65:1:ease_out, 5.40:1:linear, 6.00:0:ease_in")}>
-      <Repeat id="particle_row_a" count="19" x="120" y="160" xStep="96" yStep="22" opacity="0.70" opacityStep="-0.018">
-        <Circle id="particle_a" x="18*sin($time.sec*1.4)" y="18*sin($time.sec*1.1 + 0.8)" radius="3.5 + 2.2*(0.5 + 0.5*sin($time.sec*3.4))" color="#C9FBFF" opacity="0.44 + 0.36*(0.5 + 0.5*sin($time.sec*2.6))" blend="screen" />
-      </Repeat>
-      <Repeat id="particle_row_b" count="17" x="180" y="842" xStep="104" yStep="-18" opacity="0.64" opacityStep="-0.016">
-        <Circle id="particle_b" x="24*sin($time.sec*1.1 + 2.4)" y="18*sin($time.sec*1.6)" radius="2.6 + 2.0*(0.5 + 0.5*sin($time.sec*2.2 + 1.4))" color="#FFDB78" opacity="0.30 + 0.36*(0.5 + 0.5*sin($time.sec*2.4 + 1.2))" blend="screen" />
-      </Repeat>
-      <Repeat id="particle_row_c" count="13" x="330" y="512" xStep="110" yStep="-8" opacity="0.54" opacityStep="-0.012">
-        <Circle id="particle_c" x="40*sin($time.sec*0.9 + 1.6)" y="56*sin($time.sec*0.72)" radius="2.8" color="#FF6AA8" opacity="0.28 + 0.32*(0.5 + 0.5*sin($time.sec*3.1 + 0.4))" blend="screen" />
-      </Repeat>
-    </Group>
+            <Group id="radial_dash_ring" x="960" y="540"
+                   rotation={curve("0.00:-110:ease_out, 1.15:22:ease(0.18,0.92,0.22,1), 3.30:144:ease_in_out, 6.00:358:ease_in_out")}
+                   scale={curve("0.00:0.35:ease_out, 0.82:1.06:ease(0.16,1.12,0.24,1), 1.14:1.00:ease_in_out, 4.70:1.08:ease_in_out, 6.00:1.36:ease_in")}
+                   opacity={curve("0.00:0.00:linear, 0.34:1.00:ease_out, 5.50:1.00:linear, 6.00:0.00:ease_in")}>
+              <Repeat id="dash_repeat" count="48" rotationStep="7.5" opacity="1" opacityStep="-0.003">
+                <Line id="radial_dash" x1="0" y1="-340" x2="0" y2={curve("0.00:-340:ease_out, 0.75:-430:ease_out, 1.24:-385:ease_in_out, 3.80:-470:ease_in_out, 6.00:-560:ease_in")} stroke="#9BFCFF" strokeWidth="3.0" lineCap="round" opacity="0.58" blend="screen" />
+              </Repeat>
+            </Group>
 
-    <Group id="warped_core"
-           deformGrid="3x3"
-           deformAmount={curve("0.00:0.00:linear, 0.70:0.92:ease_out, 1.20:0.18:ease_in_out, 2.80:0.72:ease_in_out, 4.20:1.00:ease_in_out, 6.00:0.35:ease_in")}
-           gridFrom="700,280 960,260 1220,280; 680,540 960,540 1240,540; 700,800 960,820 1220,800"
-           gridTo="660,318 970,214 1260,330; 730,520 938,575 1190,500; 760,772 1018,858 1180,738"
-           opacity={curve("0.00:0.00:linear, 0.26:1.00:ease_out, 5.72:1.00:linear, 6.00:0.00:ease_in")}>
-      <Path id="core_glow_blob"
-            d={morph("0.00:M 960 316 C 1012 344 1092 318 1138 388 C 1192 470 1142 516 1210 594 C 1110 616 1120 728 1008 700 C 960 792 892 704 800 732 C 790 628 676 618 742 522 C 662 432 796 410 790 330 C 870 350 900 286 960 316 Z", "1.10:M 960 274 C 1034 320 1096 314 1154 384 C 1210 450 1172 534 1234 612 C 1120 628 1126 724 1016 736 C 960 810 884 726 788 742 C 798 630 690 604 710 502 C 648 404 790 398 800 300 C 876 324 898 222 960 274 Z", "2.80:M 960 310 C 1012 278 1078 294 1128 454 C 1254 472 1240 616 1124 640 C 1148 746 1018 812 956 718 C 878 808 756 722 802 626 C 680 584 700 434 820 434 C 796 326 876 258 842 320 C 910 270 936 286 960 310 Z", "4.35:M 960 288 C 1004 340 1126 292 1162 384 C 1198 468 1124 522 1208 604 C 1096 588 1098 734 1000 710 C 952 792 892 682 800 732 C 826 626 672 604 742 510 C 648 420 804 418 792 322 C 870 360 906 236 960 288 Z", "6.00:M 960 316 C 1012 344 1092 318 1138 388 C 1192 470 1142 516 1210 594 C 1110 616 1120 728 1008 700 C 960 792 892 704 800 732 C 790 628 676 618 742 522 C 662 432 796 410 790 330 C 870 350 900 286 960 316 Z")}
-            fill="url(#core_grad)"
-            stroke="#E9FFFF"
-            strokeWidth="5"
-            opacity="0.94"
-            blend="screen" />
-      <Path id="core_hot_center"
-            d={morph("0.00:M 960 428 C 990 438 1030 424 1056 466 C 1088 508 1044 536 1084 578 C 1028 584 1026 640 974 628 C 950 680 914 624 860 650 C 872 596 808 584 842 534 C 804 482 872 476 870 432 C 914 448 926 406 960 428 Z", "2.80:M 960 402 C 1014 430 1058 422 1086 474 C 1138 512 1082 584 1116 626 C 1048 614 1018 686 966 636 C 916 694 850 628 872 572 C 796 546 834 470 892 474 C 886 414 930 382 916 408 C 936 390 950 394 960 402 Z", "6.00:M 960 428 C 990 438 1030 424 1056 466 C 1088 508 1044 536 1084 578 C 1028 584 1026 640 974 628 C 950 680 914 624 860 650 C 872 596 808 584 842 534 C 804 482 872 476 870 432 C 914 448 926 406 960 428 Z")}
-            fill="url(#core_hot)"
-            stroke="none"
-            opacity="0.78 + 0.18*(0.5 + 0.5*sin($time.sec*4.0))"
-            blend="screen" />
-    </Group>
+            <Group id="particle_constellation" opacity={curve("0.00:0.0:linear, 0.65:1:ease_out, 5.40:1:linear, 6.00:0:ease_in")}>
+              <Repeat id="particle_row_a" count="19" x="120" y="160" xStep="96" yStep="22" opacity="0.70" opacityStep="-0.018">
+                <Circle id="particle_a" x="18*sin($time.sec*1.4)" y="18*sin($time.sec*1.1 + 0.8)" radius="3.5 + 2.2*(0.5 + 0.5*sin($time.sec*3.4))" color="#C9FBFF" opacity="0.44 + 0.36*(0.5 + 0.5*sin($time.sec*2.6))" blend="screen" />
+              </Repeat>
+              <Repeat id="particle_row_b" count="17" x="180" y="842" xStep="104" yStep="-18" opacity="0.64" opacityStep="-0.016">
+                <Circle id="particle_b" x="24*sin($time.sec*1.1 + 2.4)" y="18*sin($time.sec*1.6)" radius="2.6 + 2.0*(0.5 + 0.5*sin($time.sec*2.2 + 1.4))" color="#FFDB78" opacity="0.30 + 0.36*(0.5 + 0.5*sin($time.sec*2.4 + 1.2))" blend="screen" />
+              </Repeat>
+              <Repeat id="particle_row_c" count="13" x="330" y="512" xStep="110" yStep="-8" opacity="0.54" opacityStep="-0.012">
+                <Circle id="particle_c" x="40*sin($time.sec*0.9 + 1.6)" y="56*sin($time.sec*0.72)" radius="2.8" color="#FF6AA8" opacity="0.28 + 0.32*(0.5 + 0.5*sin($time.sec*3.1 + 0.4))" blend="screen" />
+              </Repeat>
+            </Group>
 
-    <Group id="drawn_orbits" brush="electric_line" opacity={curve("0.00:0.0:linear, 0.45:1.0:ease_out, 5.55:1.0:linear, 6.00:0.0:ease_in")}>
-      <Path id="orbit_top_left" d="M 362 510 C 514 240 850 170 1112 292 C 1242 352 1358 446 1494 412" stroke="#8AFBFF" strokeWidth="4" fill="none" trimStart={curve("0.00:0.0:linear, 0.55:0.0:linear, 1.20:0.12:ease_in_out, 3.20:0.28:ease_in_out, 6.00:0.70:ease_in")} trimEnd={curve("0.00:0.0:linear, 0.72:0.0:linear, 1.45:0.92:ease_out, 4.60:1.0:linear, 6.00:1.0:linear")} lineCap="round" blend="screen" />
-      <Path id="orbit_bottom_right" d="M 1518 598 C 1362 844 1014 904 758 790 C 606 724 506 622 370 660" stroke="#FFDB78" strokeWidth="4" fill="none" trimStart={curve("0.00:0.0:linear, 1.00:0.0:linear, 2.10:0.18:ease_in_out, 5.20:0.52:ease_in")} trimEnd={curve("0.00:0.0:linear, 1.18:0.0:linear, 2.45:1.0:ease_out, 6.00:1.0:linear")} lineCap="round" blend="screen" opacity="0.88" />
-      <Path id="orbit_vertical" d="M 972 170 C 838 284 818 434 956 528 C 1116 638 1100 784 952 920" stroke="#FF5A9E" strokeWidth="3.4" fill="none" trimStart={curve("0.00:0.0:linear, 2.05:0.0:linear, 3.20:0.20:ease_in_out, 6.00:0.58:ease_in")} trimEnd={curve("0.00:0.0:linear, 2.18:0.0:linear, 3.52:0.96:ease_out, 6.00:1.0:linear")} lineCap="round" blend="screen" opacity="0.82" />
-    </Group>
+            <Group id="warped_core"
+                   deformGrid="3x3"
+                   deformAmount={curve("0.00:0.00:linear, 0.70:0.92:ease_out, 1.20:0.18:ease_in_out, 2.80:0.72:ease_in_out, 4.20:1.00:ease_in_out, 6.00:0.35:ease_in")}
+                   gridFrom="700,280 960,260 1220,280; 680,540 960,540 1240,540; 700,800 960,820 1220,800"
+                   gridTo="660,318 970,214 1260,330; 730,520 938,575 1190,500; 760,772 1018,858 1180,738"
+                   opacity={curve("0.00:0.00:linear, 0.26:1.00:ease_out, 5.72:1.00:linear, 6.00:0.00:ease_in")}>
+              <Path id="core_glow_blob"
+                    d={morph("0.00:M 960 316 C 1012 344 1092 318 1138 388 C 1192 470 1142 516 1210 594 C 1110 616 1120 728 1008 700 C 960 792 892 704 800 732 C 790 628 676 618 742 522 C 662 432 796 410 790 330 C 870 350 900 286 960 316 Z", "1.10:M 960 274 C 1034 320 1096 314 1154 384 C 1210 450 1172 534 1234 612 C 1120 628 1126 724 1016 736 C 960 810 884 726 788 742 C 798 630 690 604 710 502 C 648 404 790 398 800 300 C 876 324 898 222 960 274 Z", "2.80:M 960 310 C 1012 278 1078 294 1128 454 C 1254 472 1240 616 1124 640 C 1148 746 1018 812 956 718 C 878 808 756 722 802 626 C 680 584 700 434 820 434 C 796 326 876 258 842 320 C 910 270 936 286 960 310 Z", "4.35:M 960 288 C 1004 340 1126 292 1162 384 C 1198 468 1124 522 1208 604 C 1096 588 1098 734 1000 710 C 952 792 892 682 800 732 C 826 626 672 604 742 510 C 648 420 804 418 792 322 C 870 360 906 236 960 288 Z", "6.00:M 960 316 C 1012 344 1092 318 1138 388 C 1192 470 1142 516 1210 594 C 1110 616 1120 728 1008 700 C 960 792 892 704 800 732 C 790 628 676 618 742 522 C 662 432 796 410 790 330 C 870 350 900 286 960 316 Z")}
+                    fill="url(#core_grad)"
+                    stroke="#E9FFFF"
+                    strokeWidth="5"
+                    opacity="0.94"
+                    blend="screen" />
+              <Path id="core_hot_center"
+                    d={morph("0.00:M 960 428 C 990 438 1030 424 1056 466 C 1088 508 1044 536 1084 578 C 1028 584 1026 640 974 628 C 950 680 914 624 860 650 C 872 596 808 584 842 534 C 804 482 872 476 870 432 C 914 448 926 406 960 428 Z", "2.80:M 960 402 C 1014 430 1058 422 1086 474 C 1138 512 1082 584 1116 626 C 1048 614 1018 686 966 636 C 916 694 850 628 872 572 C 796 546 834 470 892 474 C 886 414 930 382 916 408 C 936 390 950 394 960 402 Z", "6.00:M 960 428 C 990 438 1030 424 1056 466 C 1088 508 1044 536 1084 578 C 1028 584 1026 640 974 628 C 950 680 914 624 860 650 C 872 596 808 584 842 534 C 804 482 872 476 870 432 C 914 448 926 406 960 428 Z")}
+                    fill="url(#core_hot)"
+                    stroke="none"
+                    opacity="0.78 + 0.18*(0.5 + 0.5*sin($time.sec*4.0))"
+                    blend="screen" />
+            </Group>
 
-    <Group id="speed_cuts" opacity={curve("0.00:0.0:linear, 0.22:0.0:linear, 0.42:1.0:ease_out, 1.10:0.0:ease_in, 2.85:0.0:linear, 3.05:0.9:ease_out, 3.58:0.0:ease_in, 5.30:0.0:linear, 5.48:1.0:ease_out, 5.86:0.0:ease_in")}
-           skewX={curve("0.00:-12:linear, 6.00:-12:linear")}
-           blend="screen">
-      <Rect id="cut_bar_01" x="-280" y="246" width="900" height="18" radius="9" color="url(#neon_bar)" opacity="0.90" />
-      <Rect id="cut_bar_02" x="830" y="772" width="1180" height="14" radius="7" color="url(#neon_bar)" opacity="0.70" />
-      <Rect id="cut_bar_03" x="420" y="364" width="620" height="8" radius="4" color="#FFFFFF" opacity="0.42" />
-      <Rect id="cut_bar_04" x="1030" y="442" width="780" height="10" radius="5" color="#8AFBFF" opacity="0.40" />
-    </Group>
+            <Group id="drawn_orbits" brush="electric_line" opacity={curve("0.00:0.0:linear, 0.45:1.0:ease_out, 5.55:1.0:linear, 6.00:0.0:ease_in")}>
+              <Path id="orbit_top_left" d="M 362 510 C 514 240 850 170 1112 292 C 1242 352 1358 446 1494 412" stroke="#8AFBFF" strokeWidth="4" fill="none" trimStart={curve("0.00:0.0:linear, 0.55:0.0:linear, 1.20:0.12:ease_in_out, 3.20:0.28:ease_in_out, 6.00:0.70:ease_in")} trimEnd={curve("0.00:0.0:linear, 0.72:0.0:linear, 1.45:0.92:ease_out, 4.60:1.0:linear, 6.00:1.0:linear")} lineCap="round" blend="screen" />
+              <Path id="orbit_bottom_right" d="M 1518 598 C 1362 844 1014 904 758 790 C 606 724 506 622 370 660" stroke="#FFDB78" strokeWidth="4" fill="none" trimStart={curve("0.00:0.0:linear, 1.00:0.0:linear, 2.10:0.18:ease_in_out, 5.20:0.52:ease_in")} trimEnd={curve("0.00:0.0:linear, 1.18:0.0:linear, 2.45:1.0:ease_out, 6.00:1.0:linear")} lineCap="round" blend="screen" opacity="0.88" />
+              <Path id="orbit_vertical" d="M 972 170 C 838 284 818 434 956 528 C 1116 638 1100 784 952 920" stroke="#FF5A9E" strokeWidth="3.4" fill="none" trimStart={curve("0.00:0.0:linear, 2.05:0.0:linear, 3.20:0.20:ease_in_out, 6.00:0.58:ease_in")} trimEnd={curve("0.00:0.0:linear, 2.18:0.0:linear, 3.52:0.96:ease_out, 6.00:1.0:linear")} lineCap="round" blend="screen" opacity="0.82" />
+            </Group>
 
-    <Group id="title_lockup" opacity={curve("0.00:0.0:linear, 3.15:0.0:linear, 3.52:1.0:ease_out, 5.48:1.0:linear, 5.94:0.0:ease_in")}
-           x={curve("0.00:0:linear, 3.15:38:linear, 3.52:0:ease_out, 6.00:-12:ease_in")}
-           y="0">
-      <Text id="title_kinetic" value="KINETIC" x="94" y="142" fontSize="96" color="#F5FBFF" opacity="0.94" visibleChars={curve("0.00:0:linear, 3.18:0:linear, 3.75:7:ease_out, 6.00:7:linear")} fontFamily="Avenir Next Condensed" />
-      <Text id="title_bloom" value="BLOOM" x="94" y="232" fontSize="96" color="#8AFBFF" opacity="0.78" visibleChars={curve("0.00:0:linear, 3.38:0:linear, 3.96:5:ease_out, 6.00:5:linear")} fontFamily="Avenir Next Condensed" />
-      <Text id="micro_label" value="MOTIONLOOM VECTOR GRAPH / MORPH / DEFORM GRID / TRIM" x="100" y="286" fontSize="22" color="#FFF59A" opacity="0.72" visibleChars={curve("0.00:0:linear, 3.65:0:linear, 4.65:52:ease_out, 6.00:52:linear")} fontFamily="Menlo" />
-    </Group>
+            <Group id="speed_cuts" opacity={curve("0.00:0.0:linear, 0.22:0.0:linear, 0.42:1.0:ease_out, 1.10:0.0:ease_in, 2.85:0.0:linear, 3.05:0.9:ease_out, 3.58:0.0:ease_in, 5.30:0.0:linear, 5.48:1.0:ease_out, 5.86:0.0:ease_in")}
+                   skewX={curve("0.00:-12:linear, 6.00:-12:linear")}
+                   blend="screen">
+              <Rect id="cut_bar_01" x="-280" y="246" width="900" height="18" radius="9" color="url(#neon_bar)" opacity="0.90" />
+              <Rect id="cut_bar_02" x="830" y="772" width="1180" height="14" radius="7" color="url(#neon_bar)" opacity="0.70" />
+              <Rect id="cut_bar_03" x="420" y="364" width="620" height="8" radius="4" color="#FFFFFF" opacity="0.42" />
+              <Rect id="cut_bar_04" x="1030" y="442" width="780" height="10" radius="5" color="#8AFBFF" opacity="0.40" />
+            </Group>
 
-    <Group id="final_aperture" x="960" y="540" opacity={curve("0.00:0:linear, 4.92:0:linear, 5.30:1:ease_out, 6.00:0:ease_in")}
-           scale={curve("0.00:0.2:linear, 4.92:0.2:linear, 5.28:1.0:ease_out, 6.00:2.2:ease_in")}
-           rotation={curve("0.00:0:linear, 4.92:-45:linear, 6.00:120:ease_in")}
-           transformOriginX="0" transformOriginY="0">
-      <Repeat id="aperture_repeat" count="12" rotationStep="30" opacity="1" opacityStep="-0.016">
-        <Path id="aperture_blade" d="M 0 -72 C 62 -210 106 -286 188 -336 C 98 -304 34 -280 -26 -162 C -18 -116 -10 -90 0 -72 Z" fill="#FFFFFF" stroke="none" opacity="0.22" blend="screen" />
-      </Repeat>
-    </Group>
+            <Group id="title_lockup" opacity={curve("0.00:0.0:linear, 3.15:0.0:linear, 3.52:1.0:ease_out, 5.48:1.0:linear, 5.94:0.0:ease_in")}
+                   x={curve("0.00:0:linear, 3.15:38:linear, 3.52:0:ease_out, 6.00:-12:ease_in")}
+                   y="0">
+              <Text id="title_kinetic" value="KINETIC" x="94" y="142" fontSize="96" color="#F5FBFF" opacity="0.94" visibleChars={curve("0.00:0:linear, 3.18:0:linear, 3.75:7:ease_out, 6.00:7:linear")} fontFamily="Avenir Next Condensed" />
+              <Text id="title_bloom" value="BLOOM" x="94" y="232" fontSize="96" color="#8AFBFF" opacity="0.78" visibleChars={curve("0.00:0:linear, 3.38:0:linear, 3.96:5:ease_out, 6.00:5:linear")} fontFamily="Avenir Next Condensed" />
+              <Text id="micro_label" value="MOTIONLOOM VECTOR GRAPH / MORPH / DEFORM GRID / TRIM" x="100" y="286" fontSize="22" color="#FFF59A" opacity="0.72" visibleChars={curve("0.00:0:linear, 3.65:0:linear, 4.65:52:ease_out, 6.00:52:linear")} fontFamily="Menlo" />
+            </Group>
+
+            <Group id="final_aperture" x="960" y="540" opacity={curve("0.00:0:linear, 4.92:0:linear, 5.30:1:ease_out, 6.00:0:ease_in")}
+                   scale={curve("0.00:0.2:linear, 4.92:0.2:linear, 5.28:1.0:ease_out, 6.00:2.2:ease_in")}
+                   rotation={curve("0.00:0:linear, 4.92:-45:linear, 6.00:120:ease_in")}
+                   transformOriginX="0" transformOriginY="0">
+              <Repeat id="aperture_repeat" count="12" rotationStep="30" opacity="1" opacityStep="-0.016">
+                <Path id="aperture_blade" d="M 0 -72 C 62 -210 106 -286 188 -336 C 98 -304 34 -280 -26 -162 C -18 -116 -10 -90 0 -72 Z" fill="#FFFFFF" stroke="none" opacity="0.22" blend="screen" />
+              </Repeat>
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="kinetic_bloom_6s" />

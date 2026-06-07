@@ -102,7 +102,7 @@
 
     <!-- 0-2s: close-up on actor_a face. 2-4s: push the same close-up to actor_b face. -->
     <Camera id="shot_camera"
-        mode="orbit"
+        control="orbit"
         x="0"
         y="1.05"
         z={curve("0:-0.52:linear, 2:-0.52:linear, 3:0.52:ease_in_out, 4:0.52:linear")}

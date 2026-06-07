@@ -4,7 +4,8 @@
 use gpui::{Context, Hsla, MouseButton, Window, div, prelude::*, px, rgb};
 use gpui_component::{black, scroll::ScrollableElement, white};
 
-use crate::core::export::{export_fps_choices_for_ui, export_resolution_choices_for_ui};
+use crate::core::export::export_resolution_choices_for_ui;
+use crate::core::global_state::PreviewResolution;
 
 use super::timeline_panel::TimelinePanel;
 
@@ -108,10 +109,31 @@ fn preset_id_from_canvas_choice(choice: &str) -> Option<String> {
         })
 }
 
+const UI_PREVIEW_FPS_CHOICES: [u32; 14] =
+    [5, 10, 15, 24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 144];
+
+fn preview_fps_choices_for_ui() -> &'static [u32] {
+    &UI_PREVIEW_FPS_CHOICES
+}
+
+const UI_PREVIEW_RESOLUTION_CHOICES: [PreviewResolution; 6] = [
+    PreviewResolution::Full,
+    PreviewResolution::P720,
+    PreviewResolution::P480,
+    PreviewResolution::P360,
+    PreviewResolution::P240,
+    PreviewResolution::P144,
+];
+
+fn preview_resolution_choices_for_ui() -> &'static [PreviewResolution] {
+    &UI_PREVIEW_RESOLUTION_CHOICES
+}
+
 pub struct DisplaySettingsModalState {
     pub open: bool,
     pub canvas_choice: String,
     pub preview_fps: u32,
+    pub preview_resolution: PreviewResolution,
     pub selected_preset_id: Option<String>,
 }
 
@@ -121,21 +143,29 @@ impl DisplaySettingsModalState {
         Self {
             open: false,
             canvas_choice: default_canvas_choice.clone(),
-            preview_fps: 60,
+            preview_fps: 30,
+            preview_resolution: PreviewResolution::P480,
             selected_preset_id: preset_id_from_canvas_choice(&default_canvas_choice),
         }
     }
 
-    pub fn open_with_current(&mut self, canvas_w: f32, canvas_h: f32, preview_fps: u32) {
+    pub fn open_with_current(
+        &mut self,
+        canvas_w: f32,
+        canvas_h: f32,
+        preview_fps: u32,
+        preview_resolution: PreviewResolution,
+    ) {
         let w = canvas_w.round().max(1.0) as u32;
         let h = canvas_h.round().max(1.0) as u32;
         self.canvas_choice = format_canvas_choice(w, h);
         self.selected_preset_id = preset_id_from_canvas_choice(&self.canvas_choice);
-        self.preview_fps = if export_fps_choices_for_ui().contains(&preview_fps) {
+        self.preview_fps = if preview_fps_choices_for_ui().contains(&preview_fps) {
             preview_fps
         } else {
             30
         };
+        self.preview_resolution = preview_resolution;
         self.open = true;
     }
 
@@ -254,7 +284,7 @@ pub fn render_display_settings_modal_overlay(
 
     let selected_fps = panel.display_settings_modal.preview_fps;
     let mut fps_grid = div().flex().flex_wrap().gap_2();
-    for fps in export_fps_choices_for_ui().iter().copied() {
+    for fps in preview_fps_choices_for_ui().iter().copied() {
         let selected = fps == selected_fps;
         fps_grid = fps_grid.child(
             div()
@@ -290,8 +320,47 @@ pub fn render_display_settings_modal_overlay(
         );
     }
 
+    let selected_preview_resolution = panel.display_settings_modal.preview_resolution;
+    let mut preview_resolution_grid = div().flex().flex_wrap().gap_2();
+    for resolution in preview_resolution_choices_for_ui().iter().copied() {
+        let selected = resolution == selected_preview_resolution;
+        preview_resolution_grid = preview_resolution_grid.child(
+            div()
+                .h(px(28.0))
+                .px_2()
+                .rounded_md()
+                .border_1()
+                .border_color(if selected {
+                    Hsla::from(rgb(0x60a5fa)).opacity(0.95)
+                } else {
+                    white().opacity(0.14)
+                })
+                .bg(if selected {
+                    Hsla::from(rgb(0x1e3a8a)).opacity(0.35)
+                } else {
+                    white().opacity(0.04)
+                })
+                .text_xs()
+                .text_color(white().opacity(0.9))
+                .hover(|s| s.bg(white().opacity(0.1)))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(resolution.settings_label())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.display_settings_modal.preview_resolution = resolution;
+                        cx.notify();
+                    }),
+                ),
+        );
+    }
+
     let selected_canvas_for_apply = panel.display_settings_modal.canvas_choice.clone();
     let selected_fps_for_apply = panel.display_settings_modal.preview_fps;
+    let selected_preview_resolution_for_apply = panel.display_settings_modal.preview_resolution;
     let selected_ratio_for_apply = panel.display_settings_modal.selected_ratio_label();
     let global_for_apply = panel.global.clone();
 
@@ -388,6 +457,25 @@ pub fn render_display_settings_modal_overlay(
                     div()
                         .text_xs()
                         .text_color(white().opacity(0.5))
+                        .child("Preview Resolution"),
+                )
+                .child(preview_resolution_grid)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(white().opacity(0.45))
+                        .child(format!(
+                            "Selected preview resolution: {}",
+                            panel
+                                .display_settings_modal
+                                .preview_resolution
+                                .settings_label()
+                        )),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(white().opacity(0.5))
                         .child("Preview FPS"),
                 )
                 .child(fps_grid)
@@ -437,12 +525,14 @@ pub fn render_display_settings_modal_overlay(
                                 global_for_apply.update(cx, |gs, cx| {
                                     gs.set_canvas_size(w, h);
                                     gs.set_preview_fps_value(selected_fps_for_apply);
+                                    gs.set_preview_resolution(selected_preview_resolution_for_apply);
                                     gs.ui_notice = Some(format!(
-                                        "Display updated: {}x{} ({}) @ {}fps",
+                                        "Display updated: {}x{} ({}) @ {}fps, preview {}",
                                         w.round() as u32,
                                         h.round() as u32,
                                         selected_ratio_for_apply,
-                                        selected_fps_for_apply
+                                        selected_fps_for_apply,
+                                        selected_preview_resolution_for_apply.settings_label()
                                     ));
                                     cx.notify();
                                     applied = true;

@@ -1,0 +1,79 @@
+<Graph fps={30} duration="4s" size={[900,600]} renderSize={[900,600]}>
+  <Background color="#F9F4F6" />
+
+  <Scene id="character9_composite_level1">
+    <Defs>
+      <LinearGradient id="soft_bg" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFF8FB, 0.58:#F9F4F6, 1:#F0E8EE" />
+      <RadialGradient id="pink_glow" cx="0.50" cy="0.32" r="0.62"
+                      stops="0:#FFFFFF, 0.45:#FFDDEAAA, 1:#FFDDEA00" />
+    </Defs>
+
+    <Timeline>
+      <Track id="background" space="screen" z="0">
+        <Sequence from="0s" duration="4s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="900" height="1000" fill="url(#soft_bg)" />
+            <Circle x="450" y="270" radius="330" fill="url(#pink_glow)" opacity="0.65" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="character" space="world" z="10">
+        <Sequence from="0s" duration="4s" out="hold">
+          <Layer>
+            <Character id="character9_girl"
+                       x="450"
+                       y={curve("0:115:ease_in_out, 2:108:ease_in_out, 4:115:ease_in_out")}
+                       rotation={curve("0:-0.6:ease_in_out, 2:0.8:ease_in_out, 4:-0.6:ease_in_out")}
+                       scale="1"
+                       opacity="1">
+              <Part id="body_uniform" role="body" x="-155" y="245" scale="1" opacity="1">
+                <Image src="scene/characters/character9/parts/body_uniform.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+
+              <Part id="hair_back" role="hair_back" x="-133" y="-31" scale="0.88" opacity="0.98">
+                <Image src="scene/characters/character9/parts/hair_back.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+
+              <Part id="ear_left" role="ear" x="-117" y="128" scale="0.62" opacity="1">
+                <Image src="scene/characters/character9/parts/ear_l.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+              <Part id="ear_right" role="ear" x="86" y="128" scale="0.62" opacity="1">
+                <Image src="scene/characters/character9/parts/ear_r.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+
+              <Part id="face_base" role="face" x="-89" y="-2" scale="0.68" opacity="1">
+                <Image src="scene/characters/character9/parts/face_base.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+
+              <Part id="eye_left" role="eye" x="-72" y="116" scale="0.43" opacity={curve("0:1:linear, 1.38:1:linear, 1.48:0.25:ease_in_out, 1.58:1:ease_in_out, 4:1:linear")}>
+                <Image src="scene/characters/character9/parts/eye_l.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+              <Part id="eye_right" role="eye" x="28" y="116" scale="0.43" opacity={curve("0:1:linear, 1.38:1:linear, 1.48:0.25:ease_in_out, 1.58:1:ease_in_out, 4:1:linear")}>
+                <Image src="scene/characters/character9/parts/eye_r.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+
+              <Part id="nose" role="nose" x="-6" y="168" scale="0.54" opacity="0.78">
+                <Image src="scene/characters/character9/parts/nose.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+              <Part id="mouth" role="mouth" x="-4" y="189" scale={curve("0:0.24:ease_in_out, 2:0.28:ease_in_out, 4:0.24:ease_in_out")} opacity="0.92">
+                <Image src="scene/characters/character9/parts/mouth.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+
+              <Part id="hair_front" role="hair_front" x="-155" y="-45" scale="0.94" rotation={curve("0:-0.7:ease_in_out, 2:0.8:ease_in_out, 4:-0.7:ease_in_out")} opacity="1">
+                <Image src="scene/characters/character9/parts/hair_front_shell.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+
+              <Part id="bow" role="accessory" x="-75" y="297" scale={curve("0:0.74:ease_in_out, 2:0.78:ease_in_out, 4:0.74:ease_in_out")} opacity="0">
+                <Image src="scene/characters/character9/parts/bow.png" x="0" y="0" scale="1" opacity="1" />
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="character9_composite_level1" />
+</Graph>

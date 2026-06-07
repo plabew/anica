@@ -10,24 +10,32 @@
           fov="35" />
 
   <Scene id="hello_scene">
-    <Group id="title_group" x="0" y="0" opacity="1">
-      <Text id="hello_text"
-            value="hello world"
-            x="center"
-            y="center"
-            fontSize="76"
-            color="#ffffff"
-            opacity={curve("0:0:linear, 1:1:ease_in_out, 4:1:linear")} />
-    </Group>
-    <Circle id="accent_orb"
-            x="640"
-            y="360"
-            radius="180"
-            color="#3B82F6"
-            opacity="0.35" />
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="4s" out="hold">
+          <Layer>
+            <Group id="title_group" x="0" y="0" opacity="1">
+              <Text id="hello_text"
+                    value="hello world"
+                    x="center"
+                    y="center"
+                    fontSize="76"
+                    color="#ffffff"
+                    opacity={curve("0:0:linear, 1:1:ease_in_out, 4:1:linear")} />
+            </Group>
+            <Circle id="accent_orb"
+                    x="640"
+                    y="360"
+                    radius="180"
+                    color="#3B82F6"
+                    opacity="0.35" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
-  <Animation id="character_animation">
+  <World id="character_world">
     <Actor id="main_actor"
            model="../sample_assets/glb/mammuthus_primigenius_blumbach.glb"
            rig="humanoid_v1"
@@ -80,7 +88,7 @@
     </Action>
 
     <ApplyAction target="main_actor" action="wave_hand" at="0s" loop="true" />
-  </Animation>
+  </World>
 
   <Layer id="global_layer">
     <Effect id="soft_blur"
@@ -96,7 +104,7 @@
 
   <Tex id="background_tex" from="scene" fmt="rgba16f" />
   <Tex id="scene_tex" from="hello_scene" fmt="rgba16f" />
-  <Tex id="character_tex" from="character_animation" fmt="rgba16f" />
+  <Tex id="character_tex" from="character_world" fmt="rgba16f" />
 
   <Tex id="comp_01" fmt="rgba16f" size={[1280,720]} />
   <Pass id="character_over_background"

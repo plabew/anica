@@ -18,300 +18,309 @@
              opacity="0.92" />
     </Defs>
 
-    <Rect x="0" y="0" width="1320" height="768" color="#ffffff" />
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
 
-    <!-- Rect transform demo: soft stage card bends subtly while the eye turns. -->
-    <Rect id="turn_stage_plate"
-          x="400"
-          y="112"
-          width="520"
-          height="530"
-          radius="36"
-          color="#F8FBFF"
-          opacity="0.58"
-          scaleX={curve("0.00:1.00:ease_in_out, 2.30:0.72:ease_in_out, 3.00:0.66:ease_in_out")}
-          skewX={curve("0.00:0:ease_in_out, 2.30:-5:ease_in_out, 3.00:-8:ease_in_out")}
-          transformOriginX="660"
-          transformOriginY="384" />
+            <Rect x="0" y="0" width="1320" height="768" color="#ffffff" />
 
-    <!-- Text transform demo is intentionally faint; it proves Text has the same primitive transform attrs. -->
-    <Text id="primitive_transform_caption"
-          value="Level5 primitive transforms"
-          x="46"
-          y="710"
-          fontSize="24"
-          color="#3F5877"
-          opacity="0.18"
-          scaleX={curve("0.00:1.00:linear, 3.00:0.92:ease_in_out")}
-          skewX={curve("0.00:0:linear, 3.00:-7:ease_in_out")}
-          transformOriginX="0"
-          transformOriginY="18" />
+            <!-- Rect transform demo: soft stage card bends subtly while the eye turns. -->
+            <Rect id="turn_stage_plate"
+                  x="400"
+                  y="112"
+                  width="520"
+                  height="530"
+                  radius="36"
+                  color="#F8FBFF"
+                  opacity="0.58"
+                  scaleX={curve("0.00:1.00:ease_in_out, 2.30:0.72:ease_in_out, 3.00:0.66:ease_in_out")}
+                  skewX={curve("0.00:0:ease_in_out, 2.30:-5:ease_in_out, 3.00:-8:ease_in_out")}
+                  transformOriginX="660"
+                  transformOriginY="384" />
 
-    <Character id="single_eye_left_turn"
-               x="660"
-               y="384"
-               rotation={curve("0.00:0:linear, 1.20:-2:ease_in_out, 3.00:-4:ease_in_out")}
-               scale="0.74"
-               scaleX={curve("0.00:1.00:ease_in_out, 1.20:0.62:ease_in_out, 2.35:0.28:ease_in_out, 3.00:0.22:ease_in_out")}
-               scaleY={curve("0.00:1.00:ease_in_out, 2.35:1.05:ease_in_out, 3.00:1.07:ease_in_out")}
-               skewY={curve("0.00:0:ease_in_out, 1.20:-4:ease_in_out, 2.35:-12:ease_in_out, 3.00:-15:ease_in_out")}
-               transformOriginX="0"
-               transformOriginY="20"
-               opacity="1">
+            <!-- Text transform demo is intentionally faint; it proves Text has the same primitive transform attrs. -->
+            <Text id="primitive_transform_caption"
+                  value="Level5 primitive transforms"
+                  x="46"
+                  y="710"
+                  fontSize="24"
+                  color="#3F5877"
+                  opacity="0.18"
+                  scaleX={curve("0.00:1.00:linear, 3.00:0.92:ease_in_out")}
+                  skewX={curve("0.00:0:linear, 3.00:-7:ease_in_out")}
+                  transformOriginX="0"
+                  transformOriginY="18" />
 
-      <!-- Path transform demo: sclera has its own x/scale/skew in addition to the outer Character transform. -->
-      <Path id="eye_white_left_turn"
-            x={curve("0.00:0:ease_in_out, 2.25:-18:ease_in_out, 3.00:-28:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 2.25:0.92:ease_in_out, 3.00:0.82:ease_in_out")}
-            scaleY={curve("0.00:1.00:ease_in_out, 3.00:1.04:ease_in_out")}
-            skewY={curve("0.00:0:ease_in_out, 2.25:-4:ease_in_out, 3.00:-8:ease_in_out")}
-            transformOriginX="0"
-            transformOriginY="20"
-            d="M 210 -86 C 96 -156 -34 -182 -158 -142 C -262 -108 -334 -36 -350 54 C -306 180 -178 252 -26 248 C 126 244 224 154 234 20 C 238 -30 230 -62 210 -86 Z"
-            fill="url(#sclera_soft)"
-            stroke="#3F5877"
-            strokeWidth="3"
-            opacity="0.98" />
+            <Character id="single_eye_left_turn"
+                       x="660"
+                       y="384"
+                       rotation={curve("0.00:0:linear, 1.20:-2:ease_in_out, 3.00:-4:ease_in_out")}
+                       scale="0.74"
+                       scaleX={curve("0.00:1.00:ease_in_out, 1.20:0.62:ease_in_out, 2.35:0.28:ease_in_out, 3.00:0.22:ease_in_out")}
+                       scaleY={curve("0.00:1.00:ease_in_out, 2.35:1.05:ease_in_out, 3.00:1.07:ease_in_out")}
+                       skewY={curve("0.00:0:ease_in_out, 1.20:-4:ease_in_out, 2.35:-12:ease_in_out, 3.00:-15:ease_in_out")}
+                       transformOriginX="0"
+                       transformOriginY="20"
+                       opacity="1">
 
-      <Path id="upper_lid_mass_left_turn"
-            x={curve("0.00:0:ease_in_out, 3.00:-20:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.76:ease_in_out")}
-            skewY={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
-            transformOriginX="0"
-            transformOriginY="0"
-            d="M 244 -82 C 114 -184 -26 -214 -176 -172 C -268 -146 -342 -86 -390 2 C -420 56 -458 82 -512 88 C -456 96 -416 76 -374 34 C -292 -42 -194 -92 -78 -102 C 44 -112 150 -72 230 24 C 260 62 282 90 306 116 C 284 52 264 -30 244 -82 Z"
-            fill="url(#lid_grey)"
-            stroke="#3F5877"
-            strokeWidth="4"
-            opacity="0.98" />
+              <!-- Path transform demo: sclera has its own x/scale/skew in addition to the outer Character transform. -->
+              <Path id="eye_white_left_turn"
+                    x={curve("0.00:0:ease_in_out, 2.25:-18:ease_in_out, 3.00:-28:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 2.25:0.92:ease_in_out, 3.00:0.82:ease_in_out")}
+                    scaleY={curve("0.00:1.00:ease_in_out, 3.00:1.04:ease_in_out")}
+                    skewY={curve("0.00:0:ease_in_out, 2.25:-4:ease_in_out, 3.00:-8:ease_in_out")}
+                    transformOriginX="0"
+                    transformOriginY="20"
+                    d="M 210 -86 C 96 -156 -34 -182 -158 -142 C -262 -108 -334 -36 -350 54 C -306 180 -178 252 -26 248 C 126 244 224 154 234 20 C 238 -30 230 -62 210 -86 Z"
+                    fill="url(#sclera_soft)"
+                    stroke="#3F5877"
+                    strokeWidth="3"
+                    opacity="0.98" />
 
-      <Path id="upper_lid_sketch_line_left_turn"
-            x={curve("0.00:0:ease_in_out, 3.00:-18:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.70:ease_in_out")}
-            skewY={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
-            d="M 280 -106 C 172 -194 26 -232 -146 -196 C -290 -166 -382 -74 -428 20"
-            stroke="#3F5877"
-            strokeWidth="2.3"
-            lineCap="round"
-            fill="none"
-            opacity="0.72" />
+              <Path id="upper_lid_mass_left_turn"
+                    x={curve("0.00:0:ease_in_out, 3.00:-20:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.76:ease_in_out")}
+                    skewY={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
+                    transformOriginX="0"
+                    transformOriginY="0"
+                    d="M 244 -82 C 114 -184 -26 -214 -176 -172 C -268 -146 -342 -86 -390 2 C -420 56 -458 82 -512 88 C -456 96 -416 76 -374 34 C -292 -42 -194 -92 -78 -102 C 44 -112 150 -72 230 24 C 260 62 282 90 306 116 C 284 52 264 -30 244 -82 Z"
+                    fill="url(#lid_grey)"
+                    stroke="#3F5877"
+                    strokeWidth="4"
+                    opacity="0.98" />
 
-      <Path id="outer_corner_spikes_left_turn"
-            x={curve("0.00:0:ease_in_out, 2.20:-16:ease_in_out, 3.00:-24:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.82:ease_in_out")}
-            skewY={curve("0.00:0:ease_in_out, 3.00:-7:ease_in_out")}
-            d="M -384 26 C -438 48 -486 70 -538 78 M -386 54 C -436 96 -475 124 -514 154 M -366 90 C -408 132 -432 174 -438 226"
-            stroke="#3F5877"
-            strokeWidth="3.2"
-            lineCap="round"
-            fill="none"
-            opacity="0.92" />
+              <Path id="upper_lid_sketch_line_left_turn"
+                    x={curve("0.00:0:ease_in_out, 3.00:-18:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.70:ease_in_out")}
+                    skewY={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
+                    d="M 280 -106 C 172 -194 26 -232 -146 -196 C -290 -166 -382 -74 -428 20"
+                    stroke="#3F5877"
+                    strokeWidth="2.3"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.72" />
 
-      <!-- Line transform demo: a faint perspective crease follows the eye surface. -->
-      <Line id="eye_surface_axis"
-            x={curve("0.00:0:ease_in_out, 3.00:-38:ease_in_out")}
-            y="18"
-            rotation={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.48:ease_in_out")}
-            skewY={curve("0.00:0:ease_in_out, 3.00:-6:ease_in_out")}
-            transformOriginX="0"
-            transformOriginY="0"
-            x1="-255"
-            y1="0"
-            x2="210"
-            y2="0"
-            stroke="#3F587733"
-            strokeWidth="2"
-            opacity={curve("0.00:0.0:linear, 1.20:0.28:ease_in_out, 3.00:0.18:ease_in_out")} />
+              <Path id="outer_corner_spikes_left_turn"
+                    x={curve("0.00:0:ease_in_out, 2.20:-16:ease_in_out, 3.00:-24:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.82:ease_in_out")}
+                    skewY={curve("0.00:0:ease_in_out, 3.00:-7:ease_in_out")}
+                    d="M -384 26 C -438 48 -486 70 -538 78 M -386 54 C -436 96 -475 124 -514 154 M -366 90 C -408 132 -432 174 -438 226"
+                    stroke="#3F5877"
+                    strokeWidth="3.2"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.92" />
 
-      <!-- Polyline transform demo: corner construction marks compress with the turn. -->
-      <Polyline id="outer_corner_turn_marks"
-                x={curve("0.00:0:ease_in_out, 3.00:-34:ease_in_out")}
-                y="14"
-                rotation={curve("0.00:0:ease_in_out, 3.00:-6:ease_in_out")}
-                scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.55:ease_in_out")}
-                skewY={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
-                transformOriginX="-360"
-                transformOriginY="40"
-                points="-360,30 -405,54 -452,70 -398,92 -438,126 -470,164"
-                stroke="#3F5877"
-                strokeWidth="2.2"
-                lineCap="round"
-                lineJoin="round"
-                trimEnd={curve("0.00:0.0:linear, 1.40:0.0:linear, 2.30:1.0:ease_in_out, 3.00:1.0:linear")}
-                opacity="0.45" />
+              <!-- Line transform demo: a faint perspective crease follows the eye surface. -->
+              <Line id="eye_surface_axis"
+                    x={curve("0.00:0:ease_in_out, 3.00:-38:ease_in_out")}
+                    y="18"
+                    rotation={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.48:ease_in_out")}
+                    skewY={curve("0.00:0:ease_in_out, 3.00:-6:ease_in_out")}
+                    transformOriginX="0"
+                    transformOriginY="0"
+                    x1="-255"
+                    y1="0"
+                    x2="210"
+                    y2="0"
+                    stroke="#3F587733"
+                    strokeWidth="2"
+                    opacity={curve("0.00:0.0:linear, 1.20:0.28:ease_in_out, 3.00:0.18:ease_in_out")} />
 
-      <!-- Iris still uses Group transform, but individual Path/Circle nodes also have primitive-level transforms. -->
-      <Group id="iris_turn_left"
-             x={curve("0.00:4:ease_in_out, 0.90:-54:ease_in_out, 2.20:-176:ease_in_out, 3.00:-206:ease_in_out")}
-             y={curve("0.00:16:ease_in_out, 2.20:18:ease_in_out, 3.00:20:ease_in_out")}
-             scaleX={curve("0.00:1.00:ease_in_out, 1.20:0.58:ease_in_out, 2.35:0.22:ease_in_out, 3.00:0.14:ease_in_out")}
-             scaleY={curve("0.00:1.00:ease_in_out, 2.35:1.08:ease_in_out, 3.00:1.10:ease_in_out")}
-             skewY={curve("0.00:0:ease_in_out, 2.35:-12:ease_in_out, 3.00:-16:ease_in_out")}
-             transformOriginX="0"
-             transformOriginY="24"
-             opacity={curve("0.00:1.0:linear, 2.55:0.95:ease_in_out, 3.00:0.55:ease_in_out")}>
-        <Path id="iris_oval_left_turn"
-              x={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
-              scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.72:ease_in_out")}
-              skewY={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
-              transformOriginX="0"
-              transformOriginY="24"
-              d="M 58 -184 C -34 -222 -132 -168 -164 -48 C -202 94 -148 256 -30 274 C 90 292 164 188 166 34 C 168 -78 132 -154 58 -184 Z"
-              fill="url(#iris_level1)"
-              stroke="#3F5877"
-              strokeWidth="8" />
+              <!-- Polyline transform demo: corner construction marks compress with the turn. -->
+              <Polyline id="outer_corner_turn_marks"
+                        x={curve("0.00:0:ease_in_out, 3.00:-34:ease_in_out")}
+                        y="14"
+                        rotation={curve("0.00:0:ease_in_out, 3.00:-6:ease_in_out")}
+                        scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.55:ease_in_out")}
+                        skewY={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
+                        transformOriginX="-360"
+                        transformOriginY="40"
+                        points="-360,30 -405,54 -452,70 -398,92 -438,126 -470,164"
+                        stroke="#3F5877"
+                        strokeWidth="2.2"
+                        lineCap="round"
+                        lineJoin="round"
+                        trimEnd={curve("0.00:0.0:linear, 1.40:0.0:linear, 2.30:1.0:ease_in_out, 3.00:1.0:linear")}
+                        opacity="0.45" />
 
-        <Path id="iris_shadow_left_turn"
-              x={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
-              scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.64:ease_in_out")}
-              d="M 76 -178 C 132 -112 152 8 134 112 C 120 196 76 254 0 276"
-              stroke="#3F5877"
-              strokeWidth="7"
-              lineCap="round"
-              fill="none"
-              opacity="0.84" />
+              <!-- Iris still uses Group transform, but individual Path/Circle nodes also have primitive-level transforms. -->
+              <Group id="iris_turn_left"
+                     x={curve("0.00:4:ease_in_out, 0.90:-54:ease_in_out, 2.20:-176:ease_in_out, 3.00:-206:ease_in_out")}
+                     y={curve("0.00:16:ease_in_out, 2.20:18:ease_in_out, 3.00:20:ease_in_out")}
+                     scaleX={curve("0.00:1.00:ease_in_out, 1.20:0.58:ease_in_out, 2.35:0.22:ease_in_out, 3.00:0.14:ease_in_out")}
+                     scaleY={curve("0.00:1.00:ease_in_out, 2.35:1.08:ease_in_out, 3.00:1.10:ease_in_out")}
+                     skewY={curve("0.00:0:ease_in_out, 2.35:-12:ease_in_out, 3.00:-16:ease_in_out")}
+                     transformOriginX="0"
+                     transformOriginY="24"
+                     opacity={curve("0.00:1.0:linear, 2.55:0.95:ease_in_out, 3.00:0.55:ease_in_out")}>
+                <Path id="iris_oval_left_turn"
+                      x={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
+                      scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.72:ease_in_out")}
+                      skewY={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
+                      transformOriginX="0"
+                      transformOriginY="24"
+                      d="M 58 -184 C -34 -222 -132 -168 -164 -48 C -202 94 -148 256 -30 274 C 90 292 164 188 166 34 C 168 -78 132 -154 58 -184 Z"
+                      fill="url(#iris_level1)"
+                      stroke="#3F5877"
+                      strokeWidth="8" />
 
-        <Path id="pupil_level1_left_turn"
-              x={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
-              scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.52:ease_in_out")}
-              skewY={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
-              d="M 22 26 C 32 82 26 132 -8 148 C -44 164 -78 116 -82 50 C -78 96 -54 126 -26 126 C 6 124 18 86 22 26 Z"
-              fill="#3F5877"
-              stroke="none"
-              opacity="0.86" />
+                <Path id="iris_shadow_left_turn"
+                      x={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
+                      scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.64:ease_in_out")}
+                      d="M 76 -178 C 132 -112 152 8 134 112 C 120 196 76 254 0 276"
+                      stroke="#3F5877"
+                      strokeWidth="7"
+                      lineCap="round"
+                      fill="none"
+                      opacity="0.84" />
 
-        <Path id="iris_pink_band_top_left_turn"
-              x={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
-              scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.58:ease_in_out")}
-              d="M 138 54 L 78 38 L 76 68 L 140 88 Z"
-              fill="#FB93A6"
-              stroke="none"
-              opacity="0.96" />
+                <Path id="pupil_level1_left_turn"
+                      x={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
+                      scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.52:ease_in_out")}
+                      skewY={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
+                      d="M 22 26 C 32 82 26 132 -8 148 C -44 164 -78 116 -82 50 C -78 96 -54 126 -26 126 C 6 124 18 86 22 26 Z"
+                      fill="#3F5877"
+                      stroke="none"
+                      opacity="0.86" />
 
-        <Path id="iris_pink_band_mid_left_turn"
-              brush="iris_fill_01"
-              x={curve("0.00:0:ease_in_out, 3.00:-9:ease_in_out")}
-              scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.62:ease_in_out")}
-              d="M 146 108 L 74 78 L 66 108 L 146 146 Z" />
+                <Path id="iris_pink_band_top_left_turn"
+                      x={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
+                      scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.58:ease_in_out")}
+                      d="M 138 54 L 78 38 L 76 68 L 140 88 Z"
+                      fill="#FB93A6"
+                      stroke="none"
+                      opacity="0.96" />
 
-        <Path id="iris_pink_band_mid_right_turn"
-              brush="iris_fill_01"
-              x={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
-              scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.68:ease_in_out")}
-              d="M -72 84 L -154 118 L -146 162 L -64 116 Z" />
+                <Path id="iris_pink_band_mid_left_turn"
+                      brush="iris_fill_01"
+                      x={curve("0.00:0:ease_in_out, 3.00:-9:ease_in_out")}
+                      scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.62:ease_in_out")}
+                      d="M 146 108 L 74 78 L 66 108 L 146 146 Z" />
 
-        <Path id="highlight_top_left_turn"
-              x={curve("0.00:0:ease_in_out, 2.20:-24:ease_in_out, 3.00:-34:ease_in_out")}
-              scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.38:ease_in_out")}
-              skewY={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
-              d="M -110 -86 C -148 -104 -206 -92 -224 -58 C -202 -28 -136 -24 -100 -48 C -88 -58 -92 -76 -110 -86 Z"
-              fill="#F7F7F7"
-              stroke="none"
-              opacity={curve("0.00:0.96:ease_in_out, 2.20:0.55:ease_in_out, 3.00:0.18:ease_in_out")} />
+                <Path id="iris_pink_band_mid_right_turn"
+                      brush="iris_fill_01"
+                      x={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
+                      scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.68:ease_in_out")}
+                      d="M -72 84 L -154 118 L -146 162 L -64 116 Z" />
 
-        <!-- Circle transform demo: a round glint becomes an ellipse as the iris turns. -->
-        <Circle id="turning_cornea_glint"
-                x="-118"
-                y="-68"
-                radius="18"
-                color="#F7F7F7"
-                opacity={curve("0.00:0.54:ease_in_out, 2.20:0.34:ease_in_out, 3.00:0.10:ease_in_out")}
-                scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.22:ease_in_out")}
-                scaleY={curve("0.00:1.00:ease_in_out, 3.00:1.35:ease_in_out")}
-                skewY={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
-                transformOriginX="-118"
-                transformOriginY="-68" />
-      </Group>
+                <Path id="highlight_top_left_turn"
+                      x={curve("0.00:0:ease_in_out, 2.20:-24:ease_in_out, 3.00:-34:ease_in_out")}
+                      scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.38:ease_in_out")}
+                      skewY={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
+                      d="M -110 -86 C -148 -104 -206 -92 -224 -58 C -202 -28 -136 -24 -100 -48 C -88 -58 -92 -76 -110 -86 Z"
+                      fill="#F7F7F7"
+                      stroke="none"
+                      opacity={curve("0.00:0.96:ease_in_out, 2.20:0.55:ease_in_out, 3.00:0.18:ease_in_out")} />
 
-      <Path id="lower_sclera_rim_left_turn"
-            x={curve("0.00:0:ease_in_out, 3.00:-18:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.74:ease_in_out")}
-            skewY={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
-            d="M 106 220 C 20 278 -130 288 -224 224 C -154 286 -24 324 88 266"
-            stroke="#3F5877"
-            strokeWidth="3"
-            lineCap="round"
-            fill="none"
-            opacity="0.70" />
+                <!-- Circle transform demo: a round glint becomes an ellipse as the iris turns. -->
+                <Circle id="turning_cornea_glint"
+                        x="-118"
+                        y="-68"
+                        radius="18"
+                        color="#F7F7F7"
+                        opacity={curve("0.00:0.54:ease_in_out, 2.20:0.34:ease_in_out, 3.00:0.10:ease_in_out")}
+                        scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.22:ease_in_out")}
+                        scaleY={curve("0.00:1.00:ease_in_out, 3.00:1.35:ease_in_out")}
+                        skewY={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
+                        transformOriginX="-118"
+                        transformOriginY="-68" />
+              </Group>
 
-      <Path id="lower_lash_01_left_turn"
-            x={curve("0.00:0:ease_in_out, 3.00:-15:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.70:ease_in_out")}
-            d="M 34 270 L 46 296"
-            stroke="#3F5877"
-            strokeWidth="2"
-            lineCap="round"
-            fill="none"
-            opacity="0.80" />
-      <Path id="lower_lash_02_left_turn"
-            x={curve("0.00:0:ease_in_out, 3.00:-13:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.70:ease_in_out")}
-            d="M -10 276 L 4 306"
-            stroke="#3F5877"
-            strokeWidth="2"
-            lineCap="round"
-            fill="none"
-            opacity="0.72" />
-      <Path id="lower_lash_03_left_turn"
-            x={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.70:ease_in_out")}
-            d="M -68 264 L -78 292"
-            stroke="#3F5877"
-            strokeWidth="2"
-            lineCap="round"
-            fill="none"
-            opacity="0.65" />
+              <Path id="lower_sclera_rim_left_turn"
+                    x={curve("0.00:0:ease_in_out, 3.00:-18:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.74:ease_in_out")}
+                    skewY={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
+                    d="M 106 220 C 20 278 -130 288 -224 224 C -154 286 -24 324 88 266"
+                    stroke="#3F5877"
+                    strokeWidth="3"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.70" />
 
-      <Path id="inner_corner_sketch_01_left_turn"
-            x={curve("0.00:0:ease_in_out, 3.00:-22:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.60:ease_in_out")}
-            skewY={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
-            d="M 236 -88 C 278 -46 306 0 334 70"
-            stroke="#3F5877"
-            strokeWidth="2"
-            lineCap="round"
-            fill="none"
-            opacity="0.70" />
+              <Path id="lower_lash_01_left_turn"
+                    x={curve("0.00:0:ease_in_out, 3.00:-15:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.70:ease_in_out")}
+                    d="M 34 270 L 46 296"
+                    stroke="#3F5877"
+                    strokeWidth="2"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.80" />
+              <Path id="lower_lash_02_left_turn"
+                    x={curve("0.00:0:ease_in_out, 3.00:-13:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.70:ease_in_out")}
+                    d="M -10 276 L 4 306"
+                    stroke="#3F5877"
+                    strokeWidth="2"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.72" />
+              <Path id="lower_lash_03_left_turn"
+                    x={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.70:ease_in_out")}
+                    d="M -68 264 L -78 292"
+                    stroke="#3F5877"
+                    strokeWidth="2"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.65" />
 
-      <Path id="inner_corner_sketch_02_left_turn"
-            x={curve("0.00:0:ease_in_out, 3.00:-24:ease_in_out")}
-            scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.55:ease_in_out")}
-            skewY={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
-            d="M 250 -66 C 302 0 340 72 368 130"
-            stroke="#3F5877"
-            strokeWidth="1.8"
-            lineCap="round"
-            fill="none"
-            opacity="0.55" />
+              <Path id="inner_corner_sketch_01_left_turn"
+                    x={curve("0.00:0:ease_in_out, 3.00:-22:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.60:ease_in_out")}
+                    skewY={curve("0.00:0:ease_in_out, 3.00:-10:ease_in_out")}
+                    d="M 236 -88 C 278 -46 306 0 334 70"
+                    stroke="#3F5877"
+                    strokeWidth="2"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.70" />
 
-      <Group id="left_profile_ridge"
-             x="-245"
-             y="22"
-             scaleX={curve("0.00:0.2:linear, 1.65:0.2:linear, 2.35:0.75:ease_in_out, 3.00:1.0:ease_in_out")}
-             scaleY={curve("0.00:0.8:linear, 2.35:1.0:ease_in_out, 3.00:1.04:ease_in_out")}
-             skewY="-8"
-             opacity={curve("0.00:0.0:linear, 1.55:0.0:linear, 2.35:0.72:ease_in_out, 3.00:0.95:ease_in_out")}>
-        <Path id="profile_lid_ridge"
-              x={curve("0.00:0:linear, 3.00:-10:ease_in_out")}
-              scaleX={curve("0.00:1.00:linear, 3.00:0.72:ease_in_out")}
-              d="M -34 -154 C 14 -102 38 -22 34 58 C 30 146 -6 218 -58 260"
-              stroke="#3F5877"
-              strokeWidth="14"
-              lineCap="round"
-              fill="none"
-              opacity="0.86" />
-        <Path id="profile_sclera_sliver"
-              x={curve("0.00:0:linear, 3.00:-8:ease_in_out")}
-              scaleX={curve("0.00:1.00:linear, 3.00:0.62:ease_in_out")}
-              d="M -42 -116 C 2 -58 20 24 8 92 C -2 152 -26 202 -62 232"
-              stroke="#F7F7F7"
-              strokeWidth="7"
-              lineCap="round"
-              fill="none"
-              opacity="0.70" />
-      </Group>
-    </Character>
+              <Path id="inner_corner_sketch_02_left_turn"
+                    x={curve("0.00:0:ease_in_out, 3.00:-24:ease_in_out")}
+                    scaleX={curve("0.00:1.00:ease_in_out, 3.00:0.55:ease_in_out")}
+                    skewY={curve("0.00:0:ease_in_out, 3.00:-12:ease_in_out")}
+                    d="M 250 -66 C 302 0 340 72 368 130"
+                    stroke="#3F5877"
+                    strokeWidth="1.8"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.55" />
+
+              <Group id="left_profile_ridge"
+                     x="-245"
+                     y="22"
+                     scaleX={curve("0.00:0.2:linear, 1.65:0.2:linear, 2.35:0.75:ease_in_out, 3.00:1.0:ease_in_out")}
+                     scaleY={curve("0.00:0.8:linear, 2.35:1.0:ease_in_out, 3.00:1.04:ease_in_out")}
+                     skewY="-8"
+                     opacity={curve("0.00:0.0:linear, 1.55:0.0:linear, 2.35:0.72:ease_in_out, 3.00:0.95:ease_in_out")}>
+                <Path id="profile_lid_ridge"
+                      x={curve("0.00:0:linear, 3.00:-10:ease_in_out")}
+                      scaleX={curve("0.00:1.00:linear, 3.00:0.72:ease_in_out")}
+                      d="M -34 -154 C 14 -102 38 -22 34 58 C 30 146 -6 218 -58 260"
+                      stroke="#3F5877"
+                      strokeWidth="14"
+                      lineCap="round"
+                      fill="none"
+                      opacity="0.86" />
+                <Path id="profile_sclera_sliver"
+                      x={curve("0.00:0:linear, 3.00:-8:ease_in_out")}
+                      scaleX={curve("0.00:1.00:linear, 3.00:0.62:ease_in_out")}
+                      d="M -42 -116 C 2 -58 20 24 8 92 C -2 152 -26 202 -62 232"
+                      stroke="#F7F7F7"
+                      strokeWidth="7"
+                      lineCap="round"
+                      fill="none"
+                      opacity="0.70" />
+              </Group>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="eyes2_single_eye_left_turn_level5" />

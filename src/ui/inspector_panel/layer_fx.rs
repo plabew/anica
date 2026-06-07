@@ -822,7 +822,7 @@ impl InspectorPanel {
         if script.is_empty() || !is_graph_script(script) {
             return;
         }
-        let Ok(graph) = parse_graph_script(script) else {
+        let Ok(graph) = parse_process_graph_script(script) else {
             return;
         };
         let layer_duration_sec = self
@@ -1036,11 +1036,11 @@ impl InspectorPanel {
     ) -> Result<(), String> {
         if !is_graph_script(script) {
             return Err(
-                "Layer FX script must be <Graph ...> DSL (legacy commands are not supported here)."
+                "Layer FX script must be <Graph><Process id=\"...\">...</Process></Graph> DSL."
                     .to_string(),
             );
         }
-        let graph = parse_graph_script(script)
+        let graph = parse_process_graph_script(script)
             .map_err(|err| format!("Parse error at line {}: {}", err.line, err.message))?;
         let runtime = compile_runtime_program(graph)
             .map_err(|err| format!("Runtime compile error: {}", err.message))?;

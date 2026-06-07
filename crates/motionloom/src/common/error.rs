@@ -11,7 +11,7 @@ fn format_graph_parse_error(line: usize, message: &str) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{}", format_graph_parse_error(*.line, &.message))]
+#[error("{}", format_graph_parse_error(*.line, .message))]
 pub struct GraphParseError {
     pub line: usize,
     pub message: String,

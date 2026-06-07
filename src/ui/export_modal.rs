@@ -874,6 +874,7 @@ pub fn render_export_modal_overlay(
     let selected_mode = panel.export_modal.mode;
     let crf_supported = selected_preset.supports_crf();
     let is_audio_only = selected_preset.is_audio_only();
+    let omits_audio = selected_preset.omits_audio();
 
     let preset_select_elem = if let Some(select) = panel.export_modal.preset_select.as_ref() {
         Select::new(select)
@@ -1106,6 +1107,12 @@ pub fn render_export_modal_overlay(
                         .text_color(white().opacity(0.45))
                         .child("Audio-only preset: video settings are ignored.")
                         .into_any_element()
+                } else if omits_audio {
+                    div()
+                        .text_xs()
+                        .text_color(white().opacity(0.45))
+                        .child("GIF preset: audio is omitted; use short ranges for smaller files.")
+                        .into_any_element()
                 } else {
                     div().into_any_element()
                 })
@@ -1174,7 +1181,15 @@ pub fn render_export_modal_overlay(
                                         .text_color(white().opacity(0.5))
                                         .child("Audio bitrate"),
                                 )
-                                .child(audio_bitrate_select_elem),
+                                .child(if omits_audio {
+                                    div()
+                                        .text_xs()
+                                        .text_color(white().opacity(0.45))
+                                        .child("N/A for GIF")
+                                        .into_any_element()
+                                } else {
+                                    audio_bitrate_select_elem
+                                }),
                         ),
                 )
                 .child(

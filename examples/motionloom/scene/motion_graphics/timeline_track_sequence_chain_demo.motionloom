@@ -1,0 +1,173 @@
+<Graph fps={30} duration="8s" size={[1280,720]} renderSize={[1280,720]}>
+  <Background color="#071018" />
+
+  <Scene id="timeline_track_sequence_chain_demo">
+    <Defs>
+      <LinearGradient id="bg_grad" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#071018, 0.48:#123257, 1:#05070C" />
+      <LinearGradient id="panel_grad" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFFFFF24, 1:#FFFFFF08" />
+      <LinearGradient id="cyan_bar" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#75F7FF, 1:#2563EB" />
+      <LinearGradient id="amber_bar" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFE66D, 1:#FF7A1A" />
+      <LinearGradient id="pink_bar" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FF8BD1, 1:#B347FF" />
+      <LinearGradient id="green_bar" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#9CFFBA, 1:#12B981" />
+      <RadialGradient id="pulse_glow" cx="0.50" cy="0.50" r="0.58"
+                      stops="0:#FFFFFFCC, 0.38:#65F7FF66, 1:#65F7FF00" />
+    </Defs>
+
+    <Timeline id="main_timeline">
+      <Track id="background_track" z="0">
+        <Sequence id="background_hold" from="0s" duration="8s" out="hold">
+          <Rect x="0" y="0" width="1280" height="720" fill="url(#bg_grad)" />
+          <Circle x={curve("0:220:linear, 8:1060:ease_in_out")}
+                  y={curve("0:120:linear, 8:560:ease_in_out")}
+                  radius="240"
+                  fill="url(#pulse_glow)"
+                  blend="screen"
+                  opacity="0.40" />
+          <Repeat id="grid_lines" count="16" x="80" y="120" xStep="70" yStep="0" opacity="0.22" opacityStep="-0.006">
+            <Line x1="0" y1="0" x2="0" y2="520" stroke="#BDEBFF" strokeWidth="1" opacity="0.34" />
+          </Repeat>
+          <Repeat id="grid_rows" count="8" x="80" y="120" xStep="0" yStep="70" opacity="0.18" opacityStep="-0.008">
+            <Line x1="0" y1="0" x2="1120" y2="0" stroke="#BDEBFF" strokeWidth="1" opacity="0.30" />
+          </Repeat>
+        </Sequence>
+      </Track>
+
+      <Track id="panel_track" z="10">
+        <Sequence id="panel_intro" from="0.15s" duration="7.7s" out="hold">
+          <Group id="panel_group"
+                 y={curve("0:34:ease_out, 0.65:0:ease_out")}
+                 opacity={curve("0:0:linear, 0.55:1:ease_out")}>
+            <Rect x="110" y="92" width="1060" height="530" radius="34"
+                  fill="url(#panel_grad)"
+                  stroke="#FFFFFF33"
+                  strokeWidth="2" />
+            <Text value="Timeline / Track / Sequence / Chain"
+                  x="150"
+                  y="162"
+                  fontSize="42"
+                  color="#EAFEFF"
+                  opacity="1" />
+            <Text value="Local curves reset inside each Sequence. Chain schedules children without hand-coded global offsets."
+                  x="152"
+                  y="202"
+                  fontSize="18"
+                  color="#9BEAFF"
+                  opacity="0.76" />
+          </Group>
+        </Sequence>
+      </Track>
+
+      <Track id="bar_chain_track" z="20">
+        <Chain id="revenue_chain" from="1.15s" gap="-0.12s">
+          <Sequence id="bar_q1" duration="0.85s" out="hold">
+            <Rect x="230"
+                  y={curve("0:540:ease_in_out, 0.85:382:linear")}
+                  width="120"
+                  height={curve("0:0:ease_in_out, 0.85:158:linear")}
+                  radius="18"
+                  fill="url(#cyan_bar)" />
+            <Text value="Q1" x="270" y="582" fontSize="24" color="#EAFEFF" />
+            <Text value="Sequence local 0s"
+                  x="210"
+                  y={curve("0:362:ease_in_out, 0.85:342:linear")}
+                  fontSize="15"
+                  color="#9BEAFF"
+                  opacity={curve("0:0:linear, 0.55:0:linear, 0.85:0.92:ease_out")} />
+          </Sequence>
+
+          <Sequence id="bar_q2" duration="0.85s" out="hold">
+            <Rect x="410"
+                  y={curve("0:540:ease_in_out, 0.85:328:linear")}
+                  width="120"
+                  height={curve("0:0:ease_in_out, 0.85:212:linear")}
+                  radius="18"
+                  fill="url(#amber_bar)" />
+            <Text value="Q2" x="450" y="582" fontSize="24" color="#EAFEFF" />
+          </Sequence>
+
+          <Sequence id="bar_q3" duration="0.85s" out="hold">
+            <Rect x="590"
+                  y={curve("0:540:ease_in_out, 0.85:288:linear")}
+                  width="120"
+                  height={curve("0:0:ease_in_out, 0.85:252:linear")}
+                  radius="18"
+                  fill="url(#pink_bar)" />
+            <Text value="Q3" x="630" y="582" fontSize="24" color="#EAFEFF" />
+          </Sequence>
+
+          <Sequence id="bar_q4" duration="0.85s" out="hold">
+            <Rect x="770"
+                  y={curve("0:540:ease_in_out, 0.85:242:linear")}
+                  width="120"
+                  height={curve("0:0:ease_in_out, 0.85:298:linear")}
+                  radius="18"
+                  fill="url(#green_bar)" />
+            <Text value="Q4" x="810" y="582" fontSize="24" color="#EAFEFF" />
+          </Sequence>
+        </Chain>
+      </Track>
+
+      <Track id="temporary_callout_track" z="30">
+        <Sequence id="temporary_burst" from="3.15s" duration="1.35s" out="hide">
+          <Layer id="burst_screen_layer" blend="screen">
+            <Circle x="970"
+                    y={curve("0:430:ease_out, 0.70:312:ease_in_out, 1.35:430:ease_in")}
+                    radius={curve("0:22:ease_out, 0.70:76:ease_out, 1.35:22:ease_in")}
+                    color="#FFB000"
+                    opacity={curve("0:0:linear, 0.26:0.82:ease_out, 1.35:0:ease_in")} />
+            <Text value="out=hide"
+                  x="922"
+                  y="300"
+                  fontSize="25"
+                  color="#FFFFFF"
+                  opacity={curve("0:0:linear, 0.35:1:ease_out, 1.35:0:ease_in")} />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="dot_chain_track" z="40">
+        <Chain id="dot_chain" from="4.35s" gap="0.08s">
+          <Sequence id="dot_a" duration="0.38s" out="hold">
+            <Circle x="995" y="545" radius={curve("0:0:ease_out, 0.38:16:ease_out")} color="#65F7FF" />
+          </Sequence>
+          <Sequence id="dot_b" duration="0.38s" out="hold">
+            <Circle x="1045" y="545" radius={curve("0:0:ease_out, 0.38:16:ease_out")} color="#FFB000" />
+          </Sequence>
+          <Sequence id="dot_c" duration="0.38s" out="hold">
+            <Circle x="1095" y="545" radius={curve("0:0:ease_out, 0.38:16:ease_out")} color="#FF4D8D" />
+          </Sequence>
+        </Chain>
+      </Track>
+
+      <Track id="final_track" z="50">
+        <Sequence id="final_hold" from="5.25s" duration="2.5s" out="hold">
+          <Layer id="final_text_layer" blend="screen" opacity="0.95">
+            <Group id="final_copy"
+                   x={curve("0:28:ease_out, 0.55:0:ease_out")}
+                   opacity={curve("0:0:linear, 0.45:1:ease_out")}>
+              <Text value="Cleaner timing. Less global curve math."
+                    x="150"
+                    y="676"
+                    fontSize="31"
+                    color="#FFFFFF" />
+              <Text value="Graph > Scene > Timeline > Track > Chain > Sequence > Layer > nodes"
+                    x="152"
+                    y="710"
+                    fontSize="18"
+                    color="#9BEAFF"
+                    opacity="0.72" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="timeline_track_sequence_chain_demo" />
+</Graph>

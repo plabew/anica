@@ -64,101 +64,110 @@
              opacity="0.62" />
     </Defs>
 
-    <Rect x="0" y="0" width="734" height="441" color="#ffffff" />
-    <Rect id="stage_card" x="140" y="54" width="455" height="325" radius="30"
-          color="#F8FBFF" opacity="0.66" />
-    <Text id="caption" x="32" y="405" value="characters7: Skeleton/Bone + ModelProfile + Path morph head turn" fontSize="18" color="#3F5877" opacity="0.42" />
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
 
-    <Character id="face_head_turn"
-               rig="face_turn_2d_v1"
-               modelProfile="2d_humanoid_vector_v1"
-               x={curve("0.00:367:ease_in_out, 3.00:318:ease_in_out")}
-               y="223"
-               scale="1.02"
-               rotation="0"
-               opacity="1">
-      <Part id="head_art" attachTo="head" brush="face_line" opacity="1">
-        <Group id="head_deform_grid"
-               deformGrid="3x3"
-               deformAmount={curve("0.00:0:linear, 1.40:0.45:ease_in_out, 3.00:1.0:ease_in_out")}
-               gridFrom="-110,-130 0,-130 110,-130; -110,-30 0,-30 110,-30; -110,70 0,70 110,70"
-               gridTo="-96,-126 -24,-136 86,-116; -96,-30 -4,-34 82,-22; -74,72 4,58 74,48">
+            <Rect x="0" y="0" width="734" height="441" color="#ffffff" />
+            <Rect id="stage_card" x="140" y="54" width="455" height="325" radius="30"
+                  color="#F8FBFF" opacity="0.66" />
+            <Text id="caption" x="32" y="405" value="characters7: Skeleton/Bone + ModelProfile + Path morph head turn" fontSize="18" color="#3F5877" opacity="0.42" />
 
-          <Circle id="skin_underpaint"
-                  x={curve("0.00:0:ease_in_out, 3.00:-22:ease_in_out")}
-                  y="-24"
-                  radius="108"
-                  fill="url(#skin_soft)"
-                  opacity="0.58"
-                  scaleX={curve("0.00:0.92:ease_in_out, 1.50:0.74:ease_in_out, 3.00:0.50:ease_in_out")}
-                  scaleY={curve("0.00:1.03:ease_in_out, 3.00:1.00:ease_in_out")}
-                  transformOriginX="0"
-                  transformOriginY="-24" />
+            <Character id="face_head_turn"
+                       rig="face_turn_2d_v1"
+                       modelProfile="2d_humanoid_vector_v1"
+                       x={curve("0.00:367:ease_in_out, 3.00:318:ease_in_out")}
+                       y="223"
+                       scale="1.02"
+                       rotation="0"
+                       opacity="1">
+              <Part id="head_art" attachTo="head" brush="face_line" opacity="1">
+                <Group id="head_deform_grid"
+                       deformGrid="3x3"
+                       deformAmount={curve("0.00:0:linear, 1.40:0.45:ease_in_out, 3.00:1.0:ease_in_out")}
+                       gridFrom="-110,-130 0,-130 110,-130; -110,-30 0,-30 110,-30; -110,70 0,70 110,70"
+                       gridTo="-96,-126 -24,-136 86,-116; -96,-30 -4,-34 82,-22; -74,72 4,58 74,48">
 
-          <Path id="face_outline_morph"
-                d={morph("0:M 0 -106 C -25 -106 -48 -101 -45 -83 C -48 -67 -49 -57 -51 -48 C -59 -67 -72 -77 -71 -59 C -70 -37 -58 -24 -49 -26 C -49 -2 -40 17 -17 41 C -8 50 17 50 33 42 C 53 31 59 11 61 -7 C 63 -20 74 -30 82 -48 C 91 -67 77 -82 68 -63 C 63 -56 61 -49 59 -54 C 56 -79 41 -101 16 -105 C 10 -106 4 -106 0 -106 Z", "1.5:M -63 -108 C -47 -114 -21 -117 -4 -105 C 12 -92 24 -79 34 -65 C 42 -49 48 -63 57 -72 C 70 -80 80 -73 75 -55 C 72 -38 61 -25 49 -28 C 46 -8 34 9 12 22 C -4 30 -29 37 -43 27 C -53 18 -55 3 -59 -12 C -62 -26 -58 -39 -62 -49 C -66 -59 -73 -68 -68 -79 C -62 -90 -61 -101 -63 -108 C -63 -108 -63 -108 -63 -108 Z", "3:M -27 -114 C -9 -111 8 -93 29 -76 C 38 -68 44 -67 51 -73 C 59 -80 75 -89 79 -79 C 85 -63 75 -47 70 -41 C 67 -33 69 -14 68 -4 C 69 10 86 25 78 31 C 62 40 46 48 41 39 C 39 27 43 15 36 12 C 26 11 13 20 -2 19 C -14 16 -13 2 -17 -7 C -23 -15 -37 -29 -35 -39 C -33 -52 -20 -57 -22 -71 Z")}
-                fill="#FDE9DEAA"
-                stroke="#3F5877"
-                strokeWidth="2.8"
-                lineCap="round"
-                lineJoin="round" />
+                  <Circle id="skin_underpaint"
+                          x={curve("0.00:0:ease_in_out, 3.00:-22:ease_in_out")}
+                          y="-24"
+                          radius="108"
+                          fill="url(#skin_soft)"
+                          opacity="0.58"
+                          scaleX={curve("0.00:0.92:ease_in_out, 1.50:0.74:ease_in_out, 3.00:0.50:ease_in_out")}
+                          scaleY={curve("0.00:1.03:ease_in_out, 3.00:1.00:ease_in_out")}
+                          transformOriginX="0"
+                          transformOriginY="-24" />
 
-          <Path id="face_side_shadow"
-                d={morph("0:M 54 -70 C 61 -44 59 -8 46 22 C 40 34 31 42 20 45 C 36 42 52 30 62 8 C 72 -18 76 -48 68 -66 Z", "1.5:M 28 -76 C 42 -52 44 -12 29 18 C 19 35 0 37 -24 30 C -3 32 22 17 37 -8 C 49 -30 49 -58 38 -75 Z", "3:M 36 -72 C 55 -55 63 -24 61 3 C 62 22 75 30 79 31 C 57 44 42 42 40 33 C 30 8 18 -12 45 -38 Z")}
-                fill="url(#face_side_shade)"
-                stroke="none"
-                opacity={curve("0.00:0.0:linear, 1.20:0.36:ease_in_out, 3.00:0.68:ease_in_out")} />
+                  <Path id="face_outline_morph"
+                        d={morph("0:M 0 -106 C -25 -106 -48 -101 -45 -83 C -48 -67 -49 -57 -51 -48 C -59 -67 -72 -77 -71 -59 C -70 -37 -58 -24 -49 -26 C -49 -2 -40 17 -17 41 C -8 50 17 50 33 42 C 53 31 59 11 61 -7 C 63 -20 74 -30 82 -48 C 91 -67 77 -82 68 -63 C 63 -56 61 -49 59 -54 C 56 -79 41 -101 16 -105 C 10 -106 4 -106 0 -106 Z", "1.5:M -63 -108 C -47 -114 -21 -117 -4 -105 C 12 -92 24 -79 34 -65 C 42 -49 48 -63 57 -72 C 70 -80 80 -73 75 -55 C 72 -38 61 -25 49 -28 C 46 -8 34 9 12 22 C -4 30 -29 37 -43 27 C -53 18 -55 3 -59 -12 C -62 -26 -58 -39 -62 -49 C -66 -59 -73 -68 -68 -79 C -62 -90 -61 -101 -63 -108 C -63 -108 -63 -108 -63 -108 Z", "3:M -27 -114 C -9 -111 8 -93 29 -76 C 38 -68 44 -67 51 -73 C 59 -80 75 -89 79 -79 C 85 -63 75 -47 70 -41 C 67 -33 69 -14 68 -4 C 69 10 86 25 78 31 C 62 40 46 48 41 39 C 39 27 43 15 36 12 C 26 11 13 20 -2 19 C -14 16 -13 2 -17 -7 C -23 -15 -37 -29 -35 -39 C -33 -52 -20 -57 -22 -71 Z")}
+                        fill="#FDE9DEAA"
+                        stroke="#3F5877"
+                        strokeWidth="2.8"
+                        lineCap="round"
+                        lineJoin="round" />
 
-          <Path id="face_center_axis"
-                brush="soft_line"
-                d={morph("0:M 0 -98 C -2 -60 -3 -20 0 35", "1.5:M -14 -98 C -8 -60 -3 -24 8 24", "3:M -20 -100 C -4 -65 20 -30 42 20")}
-                opacity={curve("0.00:0.38:ease_in_out, 3.00:0.20:ease_in_out")} />
+                  <Path id="face_side_shadow"
+                        d={morph("0:M 54 -70 C 61 -44 59 -8 46 22 C 40 34 31 42 20 45 C 36 42 52 30 62 8 C 72 -18 76 -48 68 -66 Z", "1.5:M 28 -76 C 42 -52 44 -12 29 18 C 19 35 0 37 -24 30 C -3 32 22 17 37 -8 C 49 -30 49 -58 38 -75 Z", "3:M 36 -72 C 55 -55 63 -24 61 3 C 62 22 75 30 79 31 C 57 44 42 42 40 33 C 30 8 18 -12 45 -38 Z")}
+                        fill="url(#face_side_shade)"
+                        stroke="none"
+                        opacity={curve("0.00:0.0:linear, 1.20:0.36:ease_in_out, 3.00:0.68:ease_in_out")} />
 
-          <Group id="feature_layer"
-                 x={curve("0.00:0:ease_in_out, 1.50:-20:ease_in_out, 3.00:-34:ease_in_out")}
-                 scaleX={curve("0.00:1.0:ease_in_out, 1.50:0.72:ease_in_out, 3.00:0.38:ease_in_out")}
-                 scaleY="1"
-                 skewY={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
-                 transformOriginX="0"
-                 transformOriginY="-20">
-            <Path id="eye_near"
-                  d={morph("0:M -34 -36 C -18 -44 1 -43 16 -34", "1.5:M -25 -38 C -8 -45 10 -42 24 -31", "3:M -10 -42 C 7 -46 25 -39 36 -28")}
-                  stroke="#3F5877"
-                  strokeWidth="2.4"
-                  lineCap="round"
-                  fill="none" />
-            <Path id="eye_far"
-                  d={morph("0:M 32 -36 C 45 -42 59 -40 70 -31", "1.5:M 34 -38 C 44 -41 54 -38 62 -31", "3:M 34 -39 C 40 -40 47 -36 51 -30")}
-                  stroke="#3F5877"
-                  strokeWidth="2.0"
-                  lineCap="round"
-                  fill="none"
-                  opacity={curve("0.00:0.90:ease_in_out, 2.00:0.46:ease_in_out, 3.00:0.18:ease_in_out")} />
-            <Path id="nose_bridge"
-                  d={morph("0:M 4 -22 C 2 -8 1 6 -4 15", "1.5:M 12 -28 C 18 -10 16 6 6 17", "3:M 33 -36 C 52 -20 59 -4 47 10")}
-                  stroke="#8E6C75"
-                  strokeWidth="1.8"
-                  lineCap="round"
-                  fill="none"
-                  opacity="0.62" />
-            <Path id="mouth_line"
-                  d={morph("0:M -25 25 C -8 35 16 35 34 24", "1.5:M -24 22 C -6 31 19 28 36 17", "3:M 0 18 C 16 25 40 18 54 8")}
-                  stroke="#A66C73"
-                  strokeWidth="2.2"
-                  lineCap="round"
-                  fill="none" />
-          </Group>
+                  <Path id="face_center_axis"
+                        brush="soft_line"
+                        d={morph("0:M 0 -98 C -2 -60 -3 -20 0 35", "1.5:M -14 -98 C -8 -60 -3 -24 8 24", "3:M -20 -100 C -4 -65 20 -30 42 20")}
+                        opacity={curve("0.00:0.38:ease_in_out, 3.00:0.20:ease_in_out")} />
 
-          <Path id="ear_hint"
-                d={morph("0:M 74 -54 C 86 -60 91 -48 85 -34 C 82 -25 77 -18 70 -14", "1.5:M 65 -70 C 85 -78 95 -58 86 -37 C 80 -22 67 -18 58 -26", "3:M 58 -76 C 82 -92 100 -68 87 -41 C 78 -24 61 -24 50 -36")}
-                stroke="#3F5877"
-                strokeWidth="2.1"
-                lineCap="round"
-                fill="none"
-                opacity={curve("0.00:0.55:ease_in_out, 3.00:0.92:ease_in_out")} />
-        </Group>
-      </Part>
-    </Character>
+                  <Group id="feature_layer"
+                         x={curve("0.00:0:ease_in_out, 1.50:-20:ease_in_out, 3.00:-34:ease_in_out")}
+                         scaleX={curve("0.00:1.0:ease_in_out, 1.50:0.72:ease_in_out, 3.00:0.38:ease_in_out")}
+                         scaleY="1"
+                         skewY={curve("0.00:0:ease_in_out, 3.00:-8:ease_in_out")}
+                         transformOriginX="0"
+                         transformOriginY="-20">
+                    <Path id="eye_near"
+                          d={morph("0:M -34 -36 C -18 -44 1 -43 16 -34", "1.5:M -25 -38 C -8 -45 10 -42 24 -31", "3:M -10 -42 C 7 -46 25 -39 36 -28")}
+                          stroke="#3F5877"
+                          strokeWidth="2.4"
+                          lineCap="round"
+                          fill="none" />
+                    <Path id="eye_far"
+                          d={morph("0:M 32 -36 C 45 -42 59 -40 70 -31", "1.5:M 34 -38 C 44 -41 54 -38 62 -31", "3:M 34 -39 C 40 -40 47 -36 51 -30")}
+                          stroke="#3F5877"
+                          strokeWidth="2.0"
+                          lineCap="round"
+                          fill="none"
+                          opacity={curve("0.00:0.90:ease_in_out, 2.00:0.46:ease_in_out, 3.00:0.18:ease_in_out")} />
+                    <Path id="nose_bridge"
+                          d={morph("0:M 4 -22 C 2 -8 1 6 -4 15", "1.5:M 12 -28 C 18 -10 16 6 6 17", "3:M 33 -36 C 52 -20 59 -4 47 10")}
+                          stroke="#8E6C75"
+                          strokeWidth="1.8"
+                          lineCap="round"
+                          fill="none"
+                          opacity="0.62" />
+                    <Path id="mouth_line"
+                          d={morph("0:M -25 25 C -8 35 16 35 34 24", "1.5:M -24 22 C -6 31 19 28 36 17", "3:M 0 18 C 16 25 40 18 54 8")}
+                          stroke="#A66C73"
+                          strokeWidth="2.2"
+                          lineCap="round"
+                          fill="none" />
+                  </Group>
+
+                  <Path id="ear_hint"
+                        d={morph("0:M 74 -54 C 86 -60 91 -48 85 -34 C 82 -25 77 -18 70 -14", "1.5:M 65 -70 C 85 -78 95 -58 86 -37 C 80 -22 67 -18 58 -26", "3:M 58 -76 C 82 -92 100 -68 87 -41 C 78 -24 61 -24 50 -36")}
+                        stroke="#3F5877"
+                        strokeWidth="2.1"
+                        lineCap="round"
+                        fill="none"
+                        opacity={curve("0.00:0.55:ease_in_out, 3.00:0.92:ease_in_out")} />
+                </Group>
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <ApplyAction target="face_head_turn" action="head_turn_left" at="0s" />

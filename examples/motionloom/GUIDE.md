@@ -8,7 +8,7 @@ This guide is for AI agents and contributors generating MotionLoom DSL. Prefer s
 - Write graph attributes in MotionLoom DSL form: `fps={60}`, `duration="3s"`, `size={[1920,1080]}`, not `fps="60"` or `size="[1920,1080]"`.
 - Keep `<Present from="..." />` outside `<Scene>`. The `from` value should match the scene id.
 - Use `<Present from="scene0" />` for scene output. Use `scene:scene0` only inside `<Tex from="scene:scene0" />`.
-- Prefer `curve("...")` for animation timing instead of long inline arithmetic.
+- Prefer `curve("...")` for world timing instead of long inline arithmetic.
 - Do not write arithmetic around `curve(...)` unless the runtime explicitly supports that context. Put full start/end values inside the curve points.
 - Every generated standalone scene must include at least one semantic `Group id="..."`.
 - Do not generate anonymous `<Group>` nodes. If the scene has parts, split them into semantic groups such as `background_group`, `eye_main`, `sclera_group`, `iris_group`, `highlight_group`, `lash_group`, `character_left`, or `chart_bars`.
@@ -45,20 +45,20 @@ Use these for charts, dashboard-style scenes, cards, labels, simple data motion,
   - Animated business bar chart.
   - Good reference for `Defs`, gradients, Rect bars, Text labels, and timed bar growth.
 - `scene/components/card_ani.motionloom`
-  - Card-style animation reference.
+  - Card-style world reference.
 - `scene/components/polyline_and_path.motionloom`
   - Basic line/path primitive reference.
 
 ### Curve Motion
 
-Use these when the task is mainly about timing, easing, or explaining animation curves.
+Use these when the task is mainly about timing, easing, or explaining world curves.
 
 - `scene/curve_motion/ease_in_out_bezier.motionloom`
   - Reference for comparing built-in `ease_in_out` with custom cubic `ease(...)`.
 
 ### Eyes
 
-Use these for anime eye structure, iris rendering, highlight layout, and blink animation.
+Use these for anime eye structure, iris rendering, highlight layout, and blink world.
 
 - `scene/eyes/eyes1/eyes_level0.motionloom` through `scene/eyes/eyes1/eyes_level12.motionloom`
   - Progressive eye construction references.
@@ -69,13 +69,13 @@ Use these for anime eye structure, iris rendering, highlight layout, and blink a
   - Paired high-detail eyes.
   - Good reference for iris groups, mirrored left/right eye structure, highlights, and eyelid masses.
 - `scene/eyes/eyes2/eyes_level3.motionloom`
-  - Blink animation reference using open-eye and closed-eye layers.
+  - Blink world reference using open-eye and closed-eye layers.
 - `scene/eyes/eyes3/eyes_level1.motionloom`
   - Additional eye style reference.
 
 ### Characters
 
-Use these for character assembly, face/hair/vector trace experiments, stick figures, and simple scene animation.
+Use these for character assembly, face/hair/vector trace experiments, stick figures, and simple scene world.
 
 - `scene/characters/characters1/character_level1.motionloom` through `scene/characters/characters1/character_level5.motionloom`
   - Progressive character/vector construction references.
@@ -89,9 +89,9 @@ Use these for character assembly, face/hair/vector trace experiments, stick figu
 - `scene/characters/characters3/stickman_jump_walk_handshake.motionloom`
   - Simple action sequence reference: jump, walk, handshake.
 
-### Animation GLB Experiments
+### World GLB Experiments
 
-Use these for unified `<Animation>` experiments that combine static backgrounds with GLB actors, camera control, retarget maps, and reusable humanoid actions.
+Use these for unified `<World>` experiments that combine static backgrounds with GLB actors, camera control, retarget maps, and reusable humanoid actions.
 
 - `world/scenes/glb_camera_static_bg_level1.motionloom`
   - Static forest background plus one GLB actor and orbit camera.

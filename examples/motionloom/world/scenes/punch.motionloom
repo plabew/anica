@@ -62,7 +62,7 @@
                 opacity="1" />
 
     <Camera id="fixed_camera"
-            mode="orbit"
+            control="orbit"
             target="anime"
             yaw="0"
             pitch="0"

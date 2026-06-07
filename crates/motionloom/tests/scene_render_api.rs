@@ -8,7 +8,15 @@ fn public_scene_render_api_draws_cpu_frame() {
   <Background color="#000000" />
 
   <Scene id="api_scene">
-    <Rect x="4" y="6" width="10" height="8" color="#ff0000" />
+    <Timeline>
+      <Track id="main" z="0">
+        <Sequence duration="1s">
+          <Layer>
+            <Rect x="4" y="6" width="10" height="8" color="#ff0000" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
   <Present from="api_scene" />
 </Graph>

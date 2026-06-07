@@ -491,6 +491,8 @@ struct ColorParams {
     tint_g: f32,
     tint_b: f32,
     tint_alpha: f32,
+    bloom_threshold: f32,
+    bloom_intensity: f32,
 };
 
 @group(0) @binding(0)
@@ -664,6 +666,37 @@ fn color_correct(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Store back as BGRA in byte representation.
     textureStore(dst_tex, coord, out_px);
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn bloom_prefilter(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= color_params.width || gid.y >= color_params.height) {
+        return;
+    }
+    let coord = vec2<i32>(i32(gid.x), i32(gid.y));
+    let px = textureLoad(src_tex, coord, 0);
+    // Input bytes are BGRA. In RGBA texture terms: r=B, g=G, b=R.
+    let b = px.r;
+    let g = px.g;
+    let r = px.b;
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let threshold = clamp(color_params.bloom_threshold, 0.0, 0.999);
+    let knee = max(1.0 - threshold, 0.001);
+    let mask = clamp((luma - threshold) / knee, 0.0, 1.0);
+    textureStore(dst_tex, coord, vec4<f32>(b * mask, g * mask, r * mask, px.a * mask));
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn bloom_composite(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= color_params.width || gid.y >= color_params.height) {
+        return;
+    }
+    let coord = vec2<i32>(i32(gid.x), i32(gid.y));
+    let bloom = textureLoad(src_tex, coord, 0);
+    let base = textureLoad(orig_tex, coord, 0);
+    let intensity = clamp(color_params.bloom_intensity, 0.0, 8.0);
+    let out_rgb = clamp(base.rgb + bloom.rgb * intensity, vec3<f32>(0.0), vec3<f32>(1.0));
+    textureStore(dst_tex, coord, vec4<f32>(out_rgb, base.a));
 }
 "#;
 
@@ -1937,6 +1970,35 @@ struct WgpuColorParams {
     tint_g: f32,
     tint_b: f32,
     tint_alpha: f32,
+    bloom_threshold: f32,
+    bloom_intensity: f32,
+}
+
+fn blur_sigma_scale_for_render_size(
+    width: u32,
+    height: u32,
+    transform_ref_width: f32,
+    transform_ref_height: f32,
+) -> f32 {
+    if transform_ref_width <= 1.0 || transform_ref_height <= 1.0 || width == 0 || height == 0 {
+        return 1.0;
+    }
+    let scale_x = width as f32 / transform_ref_width.max(1.0);
+    let scale_y = height as f32 / transform_ref_height.max(1.0);
+    let scale = scale_x.min(scale_y);
+    if scale.is_finite() {
+        scale.clamp(0.01, 4.0)
+    } else {
+        1.0
+    }
+}
+
+fn scale_signed_blur_sigma(sigma: f32, scale: f32) -> f32 {
+    (sigma * scale).clamp(-64.0, 64.0)
+}
+
+fn scale_blur_sigma(sigma: f32, scale: f32) -> f32 {
+    (sigma * scale).clamp(0.0, 64.0)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1953,6 +2015,8 @@ struct WgpuBgraEffectContext {
     blur_h_pipeline: wgpu::ComputePipeline,
     blur_v_pipeline: wgpu::ComputePipeline,
     color_pipeline: wgpu::ComputePipeline,
+    bloom_prefilter_pipeline: wgpu::ComputePipeline,
+    bloom_composite_pipeline: wgpu::ComputePipeline,
     blur_params_global_buffer: wgpu::Buffer,
     color_params_global_buffer: wgpu::Buffer,
     src_texture: Option<wgpu::Texture>,
@@ -2085,6 +2149,24 @@ impl WgpuBgraEffectContext {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+        let bloom_prefilter_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("anica-wgpu-bgra-bloom-prefilter"),
+                layout: Some(&pipeline_layout),
+                module: &shader_module,
+                entry_point: Some("bloom_prefilter"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        let bloom_composite_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("anica-wgpu-bgra-bloom-composite"),
+                layout: Some(&pipeline_layout),
+                module: &shader_module,
+                entry_point: Some("bloom_composite"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
 
         let blur_params_global_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("anica-wgpu-blur-params-global"),
@@ -2106,6 +2188,8 @@ impl WgpuBgraEffectContext {
             blur_h_pipeline,
             blur_v_pipeline,
             color_pipeline,
+            bloom_prefilter_pipeline,
+            bloom_composite_pipeline,
             blur_params_global_buffer,
             color_params_global_buffer,
             src_texture: None,
@@ -2276,6 +2360,9 @@ impl WgpuBgraEffectContext {
         tint_lightness: f32,
         tint_alpha: f32,
         blur_sigma: f32,
+        bloom_threshold: f32,
+        bloom_intensity: f32,
+        bloom_sigma: f32,
         local_layers: &[VideoLocalMaskLayer],
     ) -> Result<(), String> {
         if self.device_lost.load(Ordering::Relaxed) {
@@ -2293,6 +2380,23 @@ impl WgpuBgraEffectContext {
                 data.len()
             ));
         }
+
+        let sigma_scale = blur_sigma_scale_for_render_size(
+            width,
+            height,
+            transform_ref_width,
+            transform_ref_height,
+        );
+        let blur_sigma = scale_signed_blur_sigma(blur_sigma, sigma_scale);
+        let bloom_sigma = scale_blur_sigma(bloom_sigma, sigma_scale);
+        let mut scaled_local_layers =
+            SmallVec::<[VideoLocalMaskLayer; VIDEO_MAX_LOCAL_MASK_LAYERS]>::new();
+        for layer in local_layers.iter().take(VIDEO_MAX_LOCAL_MASK_LAYERS) {
+            let mut layer = *layer;
+            layer.blur_sigma = scale_signed_blur_sigma(layer.blur_sigma, sigma_scale);
+            scaled_local_layers.push(layer);
+        }
+        let local_layers = scaled_local_layers.as_slice();
 
         self.ensure_resources(width, height);
         let src = self.texture(WgpuTextureSlot::Src)?;
@@ -2324,6 +2428,7 @@ impl WgpuBgraEffectContext {
             SmallVec::<[SharpenStage; 2]>::new()
         };
         let has_global_blur_or_sharpen = has_global_blur || !sharpen_stages.is_empty();
+        let has_bloom = bloom_intensity > 0.001 && bloom_sigma > 0.001;
         let has_global_rotation = rotation_deg.abs() >= 0.001;
         let has_global_transform = (transform_scale - 1.0).abs() >= 0.001
             || transform_pos_x.abs() >= 0.001
@@ -2359,7 +2464,7 @@ impl WgpuBgraEffectContext {
                     has_shape && (has_color || has_blur)
                 });
 
-        if !has_global_blur_or_sharpen && !has_global_color && !has_any_local_effect {
+        if !has_global_blur_or_sharpen && !has_global_color && !has_any_local_effect && !has_bloom {
             return Ok(());
         }
 
@@ -2378,6 +2483,7 @@ impl WgpuBgraEffectContext {
                                  rotation: f32,
                                  transform_enabled: bool,
                                  tint_rgba: (f32, f32, f32, f32),
+                                 bloom: (f32, f32),
                                  mask: Option<&VideoLocalMaskLayer>|
          -> WgpuColorParams {
             let ref_w = transform_ref_width.max(1.0);
@@ -2441,6 +2547,8 @@ impl WgpuBgraEffectContext {
                 tint_g: tint_rgba.1.clamp(0.0, 1.0),
                 tint_b: tint_rgba.2.clamp(0.0, 1.0),
                 tint_alpha: tint_rgba.3.clamp(0.0, 1.0),
+                bloom_threshold: bloom.0.clamp(0.0, 1.0),
+                bloom_intensity: bloom.1.clamp(0.0, 8.0),
             }
         };
         let global_blur_params = make_blur_params(blur_sigma);
@@ -2454,6 +2562,7 @@ impl WgpuBgraEffectContext {
             rotation_deg,
             true,
             (tint_r, tint_g, tint_b, tint_alpha),
+            (bloom_threshold, bloom_intensity),
             None,
         );
         let color_params_size = std::mem::size_of::<WgpuColorParams>() as u64;
@@ -2527,6 +2636,7 @@ impl WgpuBgraEffectContext {
                     0.0,
                     false,
                     (0.0, 0.0, 0.0, 0.0),
+                    (0.0, 0.0),
                     None,
                 );
                 let stage_blur_buf =
@@ -2652,6 +2762,7 @@ impl WgpuBgraEffectContext {
                 0.0,
                 false,
                 (0.0, 0.0, 0.0, 0.0),
+                (0.0, 0.0),
                 None,
             );
             let local_sharpen_params = make_color_params(
@@ -2664,6 +2775,7 @@ impl WgpuBgraEffectContext {
                 0.0,
                 false,
                 (0.0, 0.0, 0.0, 0.0),
+                (0.0, 0.0),
                 None,
             );
             let blend_color_params = make_color_params(
@@ -2676,6 +2788,7 @@ impl WgpuBgraEffectContext {
                 0.0,
                 false,
                 (0.0, 0.0, 0.0, 0.0),
+                (0.0, 0.0),
                 Some(layer),
             );
             let blur_params_buffer =
@@ -2797,6 +2910,98 @@ impl WgpuBgraEffectContext {
             current = blend_out;
         }
 
+        if has_bloom {
+            let bloom_blur_params = make_blur_params(bloom_sigma);
+            let bloom_color_params = make_color_params(
+                0.0,
+                1.0,
+                1.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                false,
+                (0.0, 0.0, 0.0, 0.0),
+                (bloom_threshold, bloom_intensity),
+                None,
+            );
+            let bloom_blur_buf =
+                make_params_buffer("anica-wgpu-bloom-blur-params", blur_params_size);
+            let bloom_color_buf =
+                make_params_buffer("anica-wgpu-bloom-color-params", color_params_size);
+            self.queue
+                .write_buffer(&bloom_blur_buf, 0, Self::as_bytes(&bloom_blur_params));
+            self.queue
+                .write_buffer(&bloom_color_buf, 0, Self::as_bytes(&bloom_color_params));
+
+            let (prefilter, blur_tmp, blurred, out) = match current {
+                WgpuTextureSlot::Src => (
+                    WgpuTextureSlot::Tmp,
+                    WgpuTextureSlot::Dst,
+                    WgpuTextureSlot::Tmp,
+                    WgpuTextureSlot::Dst,
+                ),
+                WgpuTextureSlot::Tmp => (
+                    WgpuTextureSlot::Src,
+                    WgpuTextureSlot::Dst,
+                    WgpuTextureSlot::Src,
+                    WgpuTextureSlot::Dst,
+                ),
+                WgpuTextureSlot::Dst => (
+                    WgpuTextureSlot::Tmp,
+                    WgpuTextureSlot::Src,
+                    WgpuTextureSlot::Tmp,
+                    WgpuTextureSlot::Src,
+                ),
+            };
+
+            self.dispatch_pass(
+                &mut encoder,
+                &self.bloom_prefilter_pipeline,
+                current,
+                prefilter,
+                current,
+                &bloom_blur_buf,
+                &bloom_color_buf,
+                width,
+                height,
+            )?;
+            self.dispatch_pass(
+                &mut encoder,
+                &self.blur_h_pipeline,
+                prefilter,
+                blur_tmp,
+                prefilter,
+                &bloom_blur_buf,
+                &bloom_color_buf,
+                width,
+                height,
+            )?;
+            self.dispatch_pass(
+                &mut encoder,
+                &self.blur_v_pipeline,
+                blur_tmp,
+                blurred,
+                blur_tmp,
+                &bloom_blur_buf,
+                &bloom_color_buf,
+                width,
+                height,
+            )?;
+            self.dispatch_pass(
+                &mut encoder,
+                &self.bloom_composite_pipeline,
+                blurred,
+                out,
+                current,
+                &bloom_blur_buf,
+                &bloom_color_buf,
+                width,
+                height,
+            )?;
+            current = out;
+        }
+
         let readback = self
             .readback_buffer
             .as_ref()
@@ -2888,25 +3093,67 @@ pub fn bgra_cpu_safe_mode_notice() -> Option<String> {
 /// thread shutdown because wgpu's own internal TLS is destroyed first.)
 static IMAGE_WGPU_BGRA_CONTEXT: OnceLock<Mutex<Option<WgpuBgraEffectContext>>> = OnceLock::new();
 
+#[derive(Clone, Copy, Debug)]
+pub struct BgraGpuEffectParams {
+    pub brightness: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub lut_mix: f32,
+    pub opacity: f32,
+    pub rotation_deg: f32,
+    pub transform_scale: f32,
+    pub transform_pos_x: f32,
+    pub transform_pos_y: f32,
+    pub transform_ref_width: f32,
+    pub transform_ref_height: f32,
+    pub tint_hue: f32,
+    pub tint_saturation: f32,
+    pub tint_lightness: f32,
+    pub tint_alpha: f32,
+    /// Signed blur contract: positive = blur, negative = sharpen.
+    pub blur_sigma: f32,
+    pub bloom_threshold: f32,
+    pub bloom_intensity: f32,
+    pub bloom_sigma: f32,
+}
+
+impl Default for BgraGpuEffectParams {
+    fn default() -> Self {
+        Self {
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            lut_mix: 0.0,
+            opacity: 1.0,
+            rotation_deg: 0.0,
+            transform_scale: 1.0,
+            transform_pos_x: 0.0,
+            transform_pos_y: 0.0,
+            transform_ref_width: 0.0,
+            transform_ref_height: 0.0,
+            tint_hue: 0.0,
+            tint_saturation: 0.0,
+            tint_lightness: 0.0,
+            tint_alpha: 0.0,
+            blur_sigma: 0.0,
+            bloom_threshold: 1.0,
+            bloom_intensity: 0.0,
+            bloom_sigma: 0.0,
+        }
+    }
+}
+
 /// Public entry point for GPU-accelerated BGRA effects processing.
 /// Used by image clips (and any non-video BGRA source) to run blur, color
 /// correction, rotation, tint overlay, etc. through the same WGPU compute
 /// pipeline that video clips use.  Returns `true` when GPU processing
 /// succeeded; the caller should fall back to CPU only when this returns `false`.
-pub fn process_bgra_effects(
+pub fn process_bgra_effects_with_params(
     data: &mut Vec<u8>,
     width: u32,
     height: u32,
-    brightness: f32,
-    contrast: f32,
-    saturation: f32,
-    lut_mix: f32,
-    rotation_deg: f32,
-    blur_sigma: f32,
-    tint_hue: f32,
-    tint_saturation: f32,
-    tint_lightness: f32,
-    tint_alpha: f32,
+    params: BgraGpuEffectParams,
+    local_layers: &[VideoLocalMaskLayer],
 ) -> bool {
     if WGPU_BGRA_CPU_SAFE_MODE.load(Ordering::Relaxed) {
         return false;
@@ -2941,23 +3188,26 @@ pub fn process_bgra_effects(
         data,
         width,
         height,
-        brightness,
-        contrast,
-        saturation,
-        lut_mix,
-        1.0, // opacity (always 1.0 here, applied separately in UI)
-        rotation_deg,
-        1.0, // transform_scale (always 1.0, position done in UI)
-        0.0, // transform_pos_x (always 0.0)
-        0.0, // transform_pos_y (always 0.0)
-        0.0, // transform_ref_width (always 0.0)
-        0.0, // transform_ref_height (always 0.0)
-        tint_hue,
-        tint_saturation,
-        tint_lightness,
-        tint_alpha,
-        blur_sigma,
-        &[], // no local mask layers for now
+        params.brightness,
+        params.contrast,
+        params.saturation,
+        params.lut_mix,
+        params.opacity,
+        params.rotation_deg,
+        params.transform_scale,
+        params.transform_pos_x,
+        params.transform_pos_y,
+        params.transform_ref_width,
+        params.transform_ref_height,
+        params.tint_hue,
+        params.tint_saturation,
+        params.tint_lightness,
+        params.tint_alpha,
+        params.blur_sigma,
+        params.bloom_threshold,
+        params.bloom_intensity,
+        params.bloom_sigma,
+        local_layers,
     ) {
         Ok(()) => true,
         Err(err) => {
@@ -2974,6 +3224,42 @@ pub fn process_bgra_effects(
             false
         }
     }
+}
+
+pub fn process_bgra_effects(
+    data: &mut Vec<u8>,
+    width: u32,
+    height: u32,
+    brightness: f32,
+    contrast: f32,
+    saturation: f32,
+    lut_mix: f32,
+    rotation_deg: f32,
+    blur_sigma: f32,
+    tint_hue: f32,
+    tint_saturation: f32,
+    tint_lightness: f32,
+    tint_alpha: f32,
+) -> bool {
+    process_bgra_effects_with_params(
+        data,
+        width,
+        height,
+        BgraGpuEffectParams {
+            brightness,
+            contrast,
+            saturation,
+            lut_mix,
+            rotation_deg,
+            blur_sigma,
+            tint_hue,
+            tint_saturation,
+            tint_lightness,
+            tint_alpha,
+            ..BgraGpuEffectParams::default()
+        },
+        &[],
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -3107,6 +3393,9 @@ struct PixelProcessKey {
     tint_lightness: i16,
     tint_alpha: i16,
     blur_sigma: i16,
+    bloom_threshold: i16,
+    bloom_intensity: i16,
+    bloom_sigma: i16,
     rotation_deg: i16,
     transform_scale: i16,
     transform_pos_x: i16,
@@ -3130,6 +3419,9 @@ impl PixelProcessKey {
         tint_lightness: f32,
         tint_alpha: f32,
         blur_sigma: f32,
+        bloom_threshold: f32,
+        bloom_intensity: f32,
+        bloom_sigma: f32,
         rotation_deg: f32,
         transform_scale: f32,
         transform_pos_x: f32,
@@ -3181,6 +3473,9 @@ impl PixelProcessKey {
             tint_lightness: (tint_lightness * SCALE).round() as i16,
             tint_alpha: (tint_alpha * SCALE).round() as i16,
             blur_sigma: (effective_blur_sigma * BLUR_SCALE).round() as i16,
+            bloom_threshold: (bloom_threshold * SCALE).round() as i16,
+            bloom_intensity: (bloom_intensity * SCALE).round() as i16,
+            bloom_sigma: (bloom_sigma * BLUR_SCALE).round() as i16,
             rotation_deg: (rotation_deg * ROT_SCALE).round() as i16,
             transform_scale: (transform_scale * SCALE).round() as i16,
             transform_pos_x: (transform_pos_x * SCALE).round() as i16,
@@ -3524,6 +3819,9 @@ pub struct VideoElement {
     lut_mix: f32,
     opacity: f32,
     blur_sigma: f32,
+    bloom_threshold: f32,
+    bloom_intensity: f32,
+    bloom_sigma: f32,
     tint_hue: f32,
     tint_saturation: f32,
     tint_lightness: f32,
@@ -3560,6 +3858,9 @@ impl VideoElement {
             lut_mix: 0.0,
             opacity: 1.0,
             blur_sigma: 0.0,
+            bloom_threshold: 1.0,
+            bloom_intensity: 0.0,
+            bloom_sigma: 0.0,
             tint_hue: 0.0,
             tint_saturation: 0.0,
             tint_lightness: 0.0,
@@ -3614,6 +3915,13 @@ impl VideoElement {
         // > 0 : blur sigma
         // < 0 : sharpen amount
         self.blur_sigma = blur_sigma.clamp(-64.0, 64.0);
+        self
+    }
+
+    pub fn bloom(mut self, threshold: f32, intensity: f32, sigma: f32) -> Self {
+        self.bloom_threshold = threshold.clamp(0.0, 1.0);
+        self.bloom_intensity = intensity.clamp(0.0, 8.0);
+        self.bloom_sigma = sigma.clamp(0.0, 64.0);
         self
     }
 
@@ -3997,6 +4305,10 @@ impl VideoElement {
             || self.tint_alpha.abs() >= 0.001
     }
 
+    fn has_bloom_effect(&self) -> bool {
+        self.bloom_intensity > 0.001 && self.bloom_sigma > 0.001
+    }
+
     fn has_transform_effects(&self) -> bool {
         self.rotation_deg.abs() >= 0.001
             || (self.transform_scale - 1.0).abs() >= 0.001
@@ -4019,7 +4331,15 @@ impl VideoElement {
 
     #[cfg(target_os = "macos")]
     fn apply_metal_nv12_effects_surface(&self, surface: &CVPixelBuffer) -> Option<CVPixelBuffer> {
-        let sigma = self.effective_signed_blur_sigma();
+        let sigma = scale_signed_blur_sigma(
+            self.effective_signed_blur_sigma(),
+            blur_sigma_scale_for_render_size(
+                surface.get_width() as u32,
+                surface.get_height() as u32,
+                self.transform_ref_width,
+                self.transform_ref_height,
+            ),
+        );
         let has_color = self.has_nv12_color_processing();
         if sigma.abs() <= 0.001 && !has_color {
             return Some(surface.clone());
@@ -4115,7 +4435,15 @@ impl VideoElement {
         pending_slot: &Entity<Option<PendingNv12Blur>>,
         cx: &mut gpui::App,
     ) -> bool {
-        let sigma = self.effective_signed_blur_sigma();
+        let sigma = scale_signed_blur_sigma(
+            self.effective_signed_blur_sigma(),
+            blur_sigma_scale_for_render_size(
+                surface.get_width() as u32,
+                surface.get_height() as u32,
+                self.transform_ref_width,
+                self.transform_ref_height,
+            ),
+        );
         let has_color = self.has_nv12_color_processing();
         if sigma.abs() <= 0.001 && !has_color {
             // No blur/color needed — nothing to submit.
@@ -4297,6 +4625,9 @@ impl VideoElement {
                     self.tint_lightness,
                     self.tint_alpha,
                     sigma,
+                    self.bloom_threshold,
+                    self.bloom_intensity,
+                    self.bloom_sigma,
                     &local_layers,
                 ) {
                     Ok(()) => {
@@ -4327,9 +4658,16 @@ impl VideoElement {
         let local_mask_active = self.local_mask_active();
         let has_local_blur = self.has_local_blur_effects();
         let has_color_effects = self.has_color_or_alpha_effects();
+        let has_bloom = self.has_bloom_effect();
         let has_local_effects =
             local_mask_active && (has_local_blur || self.has_local_color_or_alpha_effects());
-        if !has_blur && !has_sharpen && !has_color_effects && !has_local_effects && !has_transform {
+        if !has_blur
+            && !has_sharpen
+            && !has_color_effects
+            && !has_bloom
+            && !has_local_effects
+            && !has_transform
+        {
             return;
         }
         if self.apply_wgpu_bgra_effects(data, width, height) {
@@ -4385,6 +4723,7 @@ impl VideoElement {
         self.has_color_or_alpha_effects()
             || self.has_transform_effects()
             || self.effective_signed_blur_sigma().abs() >= 0.001
+            || self.has_bloom_effect()
             || has_localized_effect
     }
 
@@ -4394,8 +4733,8 @@ impl VideoElement {
         #[cfg(target_os = "macos")]
         {
             // NV12 Metal path already supports global color/blur/LUT/tint processing.
-            // Keep BGRA fallback only for local-mask compositing.
-            self.local_mask_active() || has_localized_effect
+            // Keep BGRA fallback only for local-mask compositing or effects not covered by NV12.
+            self.has_bloom_effect() || self.local_mask_active() || has_localized_effect
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -4404,6 +4743,7 @@ impl VideoElement {
             has_color_or_alpha
                 || has_transform
                 || self.blur_sigma.abs() >= 0.001
+                || self.has_bloom_effect()
                 || has_localized_effect
         }
     }
@@ -4516,6 +4856,9 @@ impl Element for VideoElement {
             self.tint_lightness,
             self.tint_alpha,
             self.blur_sigma,
+            self.bloom_threshold,
+            self.bloom_intensity,
+            self.bloom_sigma,
             self.rotation_deg,
             self.transform_scale,
             self.transform_pos_x,

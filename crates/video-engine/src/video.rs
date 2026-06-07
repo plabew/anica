@@ -99,6 +99,9 @@ pub struct VideoOptions {
     pub preview_scale: Option<f32>,
     /// Optional preview max dimension (applies to the larger side). Defaults to None.
     pub preview_max_dim: Option<u32>,
+    /// Optional exact preview output size. When set, the GStreamer pipeline inserts videoscale.
+    pub preview_width: Option<u32>,
+    pub preview_height: Option<u32>,
     /// Optional preview framerate cap (e.g. 15/20/30). Defaults to None (keep source fps).
     pub preview_fps: Option<u32>,
     /// Optional appsink queue length for preview frames. Defaults to 1.
@@ -125,6 +128,8 @@ impl Default for VideoOptions {
             speed: Some(1.0),
             preview_scale: None,
             preview_max_dim: None,
+            preview_width: None,
+            preview_height: None,
             preview_fps: None,
             appsink_max_buffers: Some(1),
             prefer_surface: true,
@@ -459,10 +464,37 @@ impl Video {
             // limits the output rate.  Forcing an exact framerate here causes negotiation
             // failure when the source fps (e.g. 29.97) cannot be converted by
             // `videorate drop-only=true` to the requested target (e.g. 60/1).
-            let preview_caps = format!(
-                "video/x-raw,format={preview_format},pixel-aspect-ratio=1/1",
-                preview_format = preview_format,
-            );
+            let preview_size = options
+                .preview_width
+                .zip(options.preview_height)
+                .filter(|(w, h)| *w >= 2 && *h >= 2);
+            let preview_caps = if let Some((width, height)) = preview_size {
+                format!(
+                    "video/x-raw,format={preview_format},pixel-aspect-ratio=1/1,width={width},height={height}",
+                    preview_format = preview_format,
+                    width = width,
+                    height = height,
+                )
+            } else {
+                format!(
+                    "video/x-raw,format={preview_format},pixel-aspect-ratio=1/1",
+                    preview_format = preview_format,
+                )
+            };
+            let appsink_chain = if preview_size.is_some() {
+                format!(
+                    r#"videoscale ! {preview_caps} !
+                       appsink name=engine_sink sync=true drop=true max-buffers={appsink_max_buffers} enable-last-sample=false"#,
+                    preview_caps = preview_caps,
+                    appsink_max_buffers = appsink_max_buffers,
+                )
+            } else {
+                format!(
+                    r#"appsink name=engine_sink caps={preview_caps} sync=true drop=true max-buffers={appsink_max_buffers} enable-last-sample=false"#,
+                    preview_caps = preview_caps,
+                    appsink_max_buffers = appsink_max_buffers,
+                )
+            };
             let video_sink = if options.benchmark_raw_appsink {
                 // Benchmark-only path: expose decoder output as-is.
                 format!(
@@ -473,17 +505,12 @@ impl Video {
                 if let Some(fps) = preview_fps {
                     format!(
                         r#"videorate drop-only=true max-rate={fps} !
-                            appsink name=engine_sink caps={preview_caps} sync=true drop=true max-buffers={appsink_max_buffers} enable-last-sample=false"#,
+                            {appsink_chain}"#,
                         fps = fps,
-                        preview_caps = preview_caps,
-                        appsink_max_buffers = appsink_max_buffers,
+                        appsink_chain = appsink_chain,
                     )
                 } else {
-                    format!(
-                        r#"appsink name=engine_sink caps={preview_caps} sync=true drop=true max-buffers={appsink_max_buffers} enable-last-sample=false"#,
-                        preview_caps = preview_caps,
-                        appsink_max_buffers = appsink_max_buffers,
-                    )
+                    appsink_chain
                 }
             };
             // Visual preview path: decode video only, discard audio/text entirely.
@@ -538,10 +565,12 @@ impl Video {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         // Track each pipeline lifecycle in terminal logs to debug boundary stalls and leaks.
         log::info!(
-            "[Video {}] init audio_only={} preview_max_dim={:?} preview_fps={:?} raw_appsink={}",
+            "[Video {}] init audio_only={} preview_max_dim={:?} preview_size={:?}x{:?} preview_fps={:?} raw_appsink={}",
             id,
             options.is_audio_only,
             options.preview_max_dim,
+            options.preview_width,
+            options.preview_height,
             options.preview_fps,
             options.benchmark_raw_appsink,
         );
@@ -598,7 +627,7 @@ impl Video {
                 && width > 0
                 && height > 0
             {
-                let clamped = scale.clamp(0.1, 1.0);
+                let clamped = scale.clamp(0.01, 1.0);
                 let target_w = ((width as f32) * clamped).round().max(2.0) as i32;
                 let target_h = ((height as f32) * clamped).round().max(2.0) as i32;
 

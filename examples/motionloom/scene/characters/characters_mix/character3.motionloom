@@ -21,434 +21,443 @@
                       stops="0:#B57768, 1:#E5B98B" />
     </Defs>
 
-    <Rect x="0" y="0" width="406" height="482" color="url(#bg_diag)" />
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
 
-    <!-- dark diagonal block in background -->
-    <Path id="bg_shadow"
-          d="M -20 455
-             C 84 384 185 315 297 254
-             C 354 223 405 197 430 180
-             L 430 482 L -20 482 Z"
-          fill="#1B2027"
-          opacity="0.58" />
+            <Rect x="0" y="0" width="406" height="482" color="url(#bg_diag)" />
 
-    <!-- back hair / orange underside -->
-    <Path id="hair_back"
-          d="M 39 104
-             C 77 48 126 16 187 12
-             C 238 5 296 20 339 58
-             C 361 80 366 123 359 173
-             C 371 182 381 195 388 214
-             L 353 215
-             L 352 236
-             L 325 231
-             L 313 260
-             L 286 256
-             C 263 295 229 317 197 317
-             C 160 317 128 296 106 260
-             L 78 262
-             L 72 237
-             L 47 236
-             L 47 215
-             L 10 213
-             C 20 190 29 177 41 169
-             C 35 141 34 120 39 104 Z"
-          fill="#BF6749" />
+            <!-- dark diagonal block in background -->
+            <Path id="bg_shadow"
+                  d="M -20 455
+                     C 84 384 185 315 297 254
+                     C 354 223 405 197 430 180
+                     L 430 482 L -20 482 Z"
+                  fill="#1B2027"
+                  opacity="0.58" />
 
-    <!-- main hair cap -->
-    <Path id="hair_cap"
-          d="M 39 104
-             C 78 47 129 18 184 13
-             C 198 4 218 3 240 13
-             C 286 12 323 33 350 60
-             C 361 83 365 123 359 159
-             L 386 216
-             L 342 204
-             L 343 228
-             L 307 216
-             L 307 239
-             L 268 218
-             L 252 245
-             L 223 214
-             L 195 250
-             L 168 215
-             L 139 242
-             L 130 208
-             L 93 231
-             L 96 205
-             L 53 218
-             L 64 188
-             L 8 202
-             L 39 137 Z"
-          fill="url(#hair_gold)" />
+            <!-- back hair / orange underside -->
+            <Path id="hair_back"
+                  d="M 39 104
+                     C 77 48 126 16 187 12
+                     C 238 5 296 20 339 58
+                     C 361 80 366 123 359 173
+                     C 371 182 381 195 388 214
+                     L 353 215
+                     L 352 236
+                     L 325 231
+                     L 313 260
+                     L 286 256
+                     C 263 295 229 317 197 317
+                     C 160 317 128 296 106 260
+                     L 78 262
+                     L 72 237
+                     L 47 236
+                     L 47 215
+                     L 10 213
+                     C 20 190 29 177 41 169
+                     C 35 141 34 120 39 104 Z"
+                  fill="#BF6749" />
 
-    <!-- face -->
-    <Path id="face"
-          d="M 111 170
-             C 137 140 170 130 204 132
-             C 241 132 275 146 298 177
-             C 314 198 318 235 312 272
-             C 304 320 252 353 207 360
-             C 163 350 117 318 100 275
-             C 88 244 91 196 111 170 Z"
-          fill="url(#face_skin)" />
+            <!-- main hair cap -->
+            <Path id="hair_cap"
+                  d="M 39 104
+                     C 78 47 129 18 184 13
+                     C 198 4 218 3 240 13
+                     C 286 12 323 33 350 60
+                     C 361 83 365 123 359 159
+                     L 386 216
+                     L 342 204
+                     L 343 228
+                     L 307 216
+                     L 307 239
+                     L 268 218
+                     L 252 245
+                     L 223 214
+                     L 195 250
+                     L 168 215
+                     L 139 242
+                     L 130 208
+                     L 93 231
+                     L 96 205
+                     L 53 218
+                     L 64 188
+                     L 8 202
+                     L 39 137 Z"
+                  fill="url(#hair_gold)" />
 
-    <!-- side face shadows -->
-    <Path id="left_face_shadow"
-          d="M 104 187
-             C 91 211 88 246 99 278
-             C 83 261 73 232 75 203
-             C 84 193 93 188 104 187 Z"
-          fill="#8E716D"
-          opacity="0.55" />
+            <!-- face -->
+            <Path id="face"
+                  d="M 111 170
+                     C 137 140 170 130 204 132
+                     C 241 132 275 146 298 177
+                     C 314 198 318 235 312 272
+                     C 304 320 252 353 207 360
+                     C 163 350 117 318 100 275
+                     C 88 244 91 196 111 170 Z"
+                  fill="url(#face_skin)" />
 
-    <Path id="right_face_shadow"
-          d="M 302 187
-             C 318 209 320 248 309 279
-             C 329 254 334 224 324 201
-             C 318 194 311 190 302 187 Z"
-          fill="#8E716D"
-          opacity="0.55" />
+            <!-- side face shadows -->
+            <Path id="left_face_shadow"
+                  d="M 104 187
+                     C 91 211 88 246 99 278
+                     C 83 261 73 232 75 203
+                     C 84 193 93 188 104 187 Z"
+                  fill="#8E716D"
+                  opacity="0.55" />
 
-    <!-- ears -->
-    <Path id="left_ear"
-          d="M 80 253 L 61 282 L 84 302 L 107 291 Z"
-          fill="#E5B5A3" />
-    <Path id="right_ear"
-          d="M 326 253 L 345 282 L 322 302 L 299 291 Z"
-          fill="#E5B5A3" />
+            <Path id="right_face_shadow"
+                  d="M 302 187
+                     C 318 209 320 248 309 279
+                     C 329 254 334 224 324 201
+                     C 318 194 311 190 302 187 Z"
+                  fill="#8E716D"
+                  opacity="0.55" />
 
-    <!-- neck -->
-    <Path id="neck"
-          d="M 150 336
-             C 168 354 236 354 257 335
-             L 252 411
-             C 236 436 220 454 203 455
-             C 184 451 166 431 153 410 Z"
-          fill="url(#neck_shadow)" />
+            <!-- ears -->
+            <Path id="left_ear"
+                  d="M 80 253 L 61 282 L 84 302 L 107 291 Z"
+                  fill="#E5B5A3" />
+            <Path id="right_ear"
+                  d="M 326 253 L 345 282 L 322 302 L 299 291 Z"
+                  fill="#E5B5A3" />
 
-    <!-- shirt collar / black clothes -->
-    <Path id="black_clothes"
-          d="M 0 482
-             L 0 443
-             C 51 419 100 399 148 393
-             C 164 425 183 443 203 455
-             C 224 442 242 423 257 393
-             C 310 402 358 421 406 449
-             L 406 482 Z"
-          fill="#080B0F" />
+            <!-- neck -->
+            <Path id="neck"
+                  d="M 150 336
+                     C 168 354 236 354 257 335
+                     L 252 411
+                     C 236 436 220 454 203 455
+                     C 184 451 166 431 153 410 Z"
+                  fill="url(#neck_shadow)" />
 
-    <Path id="left_collar_skin"
-          d="M 139 394
-             C 154 424 177 444 203 455
-             C 184 462 159 437 139 394 Z"
-          fill="#FFE1C8" />
-    <Path id="right_collar_shadow"
-          d="M 257 394
-             C 243 424 224 444 203 455
-             C 223 462 246 435 257 394 Z"
-          fill="#D0A79A" />
+            <!-- shirt collar / black clothes -->
+            <Path id="black_clothes"
+                  d="M 0 482
+                     L 0 443
+                     C 51 419 100 399 148 393
+                     C 164 425 183 443 203 455
+                     C 224 442 242 423 257 393
+                     C 310 402 358 421 406 449
+                     L 406 482 Z"
+                  fill="#080B0F" />
 
-    <!-- warm anime eyes, kept under the front bangs -->
-    <Group id="left_eye" x="110" y="186" scale="0.68" opacity="1">
-      <Path id="left_eye_upper_shadow"
-            d="M 9 54
-               C 22 24 47 12 72 16
-               C 91 19 104 34 110 55
-               C 91 42 73 37 54 38
-               C 35 38 20 44 9 54 Z"
-            fill="#2A1A20"
-            opacity="0.96" />
-      <Path id="left_eye_sclera"
-            d="M 11 59
-               C 24 39 42 31 62 32
-               C 84 33 101 44 108 61
-               C 101 86 82 101 58 101
-               C 34 101 17 86 11 59 Z"
-            fill="url(#sclera_warm)"
-            stroke="none" />
-      <Path id="left_eye_upper_lash"
-            d="M 8 54
-               C 22 24 48 12 74 16
-               C 92 19 105 34 111 55"
-            stroke="#22151B"
-            strokeWidth="6"
-            lineCap="round"
-            fill="none" />
-      <Path id="left_eye_lower_lash"
-            d="M 20 82
-               C 34 99 65 106 91 90"
-            stroke="#22151B"
-            strokeWidth="3"
-            lineCap="round"
-            fill="none" />
-      <Path id="left_eye_iris"
-            d="M 38 59
-               C 39 41 50 31 64 32
-               C 79 33 89 45 88 63
-               C 87 82 76 95 62 95
-               C 47 94 37 78 38 59 Z"
-            fill="url(#iris_gold)"
-            stroke="#5B332F"
-            strokeWidth="2" />
-      <Path id="left_eye_iris_cap"
-            d="M 39 55
-               C 49 43 77 43 87 56
-               C 75 61 51 61 39 55 Z"
-            fill="#291821"
-            opacity="0.96" />
-      <Path id="left_eye_pupil"
-            d="M 48 66
-               L 78 66
-               C 75 77 70 82 63 82
-               C 56 82 51 77 48 66 Z"
-            fill="#4B241E"
-            opacity="0.88" />
-      <Path id="left_eye_gold_glow"
-            d="M 42 78
-               C 51 94 75 94 84 78
-               C 76 99 49 99 42 78 Z"
-            fill="#FFE8A0"
-            opacity="0.58" />
-    </Group>
+            <Path id="left_collar_skin"
+                  d="M 139 394
+                     C 154 424 177 444 203 455
+                     C 184 462 159 437 139 394 Z"
+                  fill="#FFE1C8" />
+            <Path id="right_collar_shadow"
+                  d="M 257 394
+                     C 243 424 224 444 203 455
+                     C 223 462 246 435 257 394 Z"
+                  fill="#D0A79A" />
 
-    <Group id="right_eye" x="225" y="186" scale="0.68" opacity="1">
-      <Path id="right_eye_upper_shadow"
-            d="M 9 54
-               C 22 24 47 12 72 16
-               C 91 19 104 34 110 55
-               C 91 42 73 37 54 38
-               C 35 38 20 44 9 54 Z"
-            fill="#2A1A20"
-            opacity="0.96" />
-      <Path id="right_eye_sclera"
-            d="M 11 59
-               C 24 39 42 31 62 32
-               C 84 33 101 44 108 61
-               C 101 86 82 101 58 101
-               C 34 101 17 86 11 59 Z"
-            fill="url(#sclera_warm)"
-            stroke="none" />
-      <Path id="right_eye_upper_lash"
-            d="M 8 54
-               C 22 24 48 12 74 16
-               C 92 19 105 34 111 55"
-            stroke="#22151B"
-            strokeWidth="6"
-            lineCap="round"
-            fill="none" />
-      <Path id="right_eye_lower_lash"
-            d="M 20 82
-               C 34 99 65 106 91 90"
-            stroke="#22151B"
-            strokeWidth="3"
-            lineCap="round"
-            fill="none" />
-      <Path id="right_eye_iris"
-            d="M 38 59
-               C 39 41 50 31 64 32
-               C 79 33 89 45 88 63
-               C 87 82 76 95 62 95
-               C 47 94 37 78 38 59 Z"
-            fill="url(#iris_gold)"
-            stroke="#5B332F"
-            strokeWidth="2" />
-      <Path id="right_eye_iris_cap"
-            d="M 39 55
-               C 49 43 77 43 87 56
-               C 75 61 51 61 39 55 Z"
-            fill="#291821"
-            opacity="0.96" />
-      <Path id="right_eye_pupil"
-            d="M 48 66
-               L 78 66
-               C 75 77 70 82 63 82
-               C 56 82 51 77 48 66 Z"
-            fill="#4B241E"
-            opacity="0.88" />
-      <Path id="right_eye_gold_glow"
-            d="M 42 78
-               C 51 94 75 94 84 78
-               C 76 99 49 99 42 78 Z"
-            fill="#FFE8A0"
-            opacity="0.58" />
-    </Group>
+            <!-- warm anime eyes, kept under the front bangs -->
+            <Group id="left_eye" x="110" y="186" scale="0.68" opacity="1">
+              <Path id="left_eye_upper_shadow"
+                    d="M 9 54
+                       C 22 24 47 12 72 16
+                       C 91 19 104 34 110 55
+                       C 91 42 73 37 54 38
+                       C 35 38 20 44 9 54 Z"
+                    fill="#2A1A20"
+                    opacity="0.96" />
+              <Path id="left_eye_sclera"
+                    d="M 11 59
+                       C 24 39 42 31 62 32
+                       C 84 33 101 44 108 61
+                       C 101 86 82 101 58 101
+                       C 34 101 17 86 11 59 Z"
+                    fill="url(#sclera_warm)"
+                    stroke="none" />
+              <Path id="left_eye_upper_lash"
+                    d="M 8 54
+                       C 22 24 48 12 74 16
+                       C 92 19 105 34 111 55"
+                    stroke="#22151B"
+                    strokeWidth="6"
+                    lineCap="round"
+                    fill="none" />
+              <Path id="left_eye_lower_lash"
+                    d="M 20 82
+                       C 34 99 65 106 91 90"
+                    stroke="#22151B"
+                    strokeWidth="3"
+                    lineCap="round"
+                    fill="none" />
+              <Path id="left_eye_iris"
+                    d="M 38 59
+                       C 39 41 50 31 64 32
+                       C 79 33 89 45 88 63
+                       C 87 82 76 95 62 95
+                       C 47 94 37 78 38 59 Z"
+                    fill="url(#iris_gold)"
+                    stroke="#5B332F"
+                    strokeWidth="2" />
+              <Path id="left_eye_iris_cap"
+                    d="M 39 55
+                       C 49 43 77 43 87 56
+                       C 75 61 51 61 39 55 Z"
+                    fill="#291821"
+                    opacity="0.96" />
+              <Path id="left_eye_pupil"
+                    d="M 48 66
+                       L 78 66
+                       C 75 77 70 82 63 82
+                       C 56 82 51 77 48 66 Z"
+                    fill="#4B241E"
+                    opacity="0.88" />
+              <Path id="left_eye_gold_glow"
+                    d="M 42 78
+                       C 51 94 75 94 84 78
+                       C 76 99 49 99 42 78 Z"
+                    fill="#FFE8A0"
+                    opacity="0.58" />
+            </Group>
 
-    <!-- small nose and mouth -->
-    <Group id="nose_mouth" x="162" y="238" scale="0.92" opacity="1">
-      <Path id="nose_main_shadow"
-            d="M 36 8
-               C 27 17 23 31 25 43
-               C 31 37 37 31 43 24
-               C 43 15 41 10 36 8 Z"
-            fill="url(#nose_shadow)"
-            opacity="0.82" />
-      <Path id="nose_inner_cut"
-            d="M 43 13
-               C 41 23 41 31 44 39"
-            stroke="#8E5D55"
-            strokeWidth="3"
-            lineCap="round"
-            fill="none"
-            opacity="0.62" />
-      <Path id="nose_short_line"
-            d="M 35 27
-               C 37 32 39 36 42 39"
-            stroke="#7A514B"
-            strokeWidth="2"
-            lineCap="round"
-            fill="none"
-            opacity="0.7" />
-      <Path id="nostril_left"
-            d="M 41 62
-               C 36 61 32 59 29 55"
-            stroke="#2B1714"
-            strokeWidth="3"
-            lineCap="round"
-            fill="none" />
-      <Path id="nostril_right_soft"
-            d="M 61 58
-               C 65 55 70 54 75 56"
-            stroke="#9C765F"
-            strokeWidth="2"
-            lineCap="round"
-            fill="none"
-            opacity="0.5" />
-      <Path id="mouth"
-            d="M 26 82
-               C 40 77 56 77 68 80"
-            stroke="#22110F"
-            strokeWidth="4"
-            lineCap="round"
-            fill="none" />
-      <Path id="lower_lip"
-            d="M 41 96
-               C 50 90 65 90 74 96
-               C 66 102 49 102 41 96 Z"
-            fill="url(#lip_soft)"
-            stroke="#7D4B45"
-            strokeWidth="2"
-            opacity="0.9" />
-      <Path id="lip_highlight"
-            d="M 49 95
-               C 56 93 65 93 70 96"
-            stroke="#D79A88"
-            strokeWidth="1.4"
-            lineCap="round"
-            fill="none"
-            opacity="0.55" />
-    </Group>
+            <Group id="right_eye" x="225" y="186" scale="0.68" opacity="1">
+              <Path id="right_eye_upper_shadow"
+                    d="M 9 54
+                       C 22 24 47 12 72 16
+                       C 91 19 104 34 110 55
+                       C 91 42 73 37 54 38
+                       C 35 38 20 44 9 54 Z"
+                    fill="#2A1A20"
+                    opacity="0.96" />
+              <Path id="right_eye_sclera"
+                    d="M 11 59
+                       C 24 39 42 31 62 32
+                       C 84 33 101 44 108 61
+                       C 101 86 82 101 58 101
+                       C 34 101 17 86 11 59 Z"
+                    fill="url(#sclera_warm)"
+                    stroke="none" />
+              <Path id="right_eye_upper_lash"
+                    d="M 8 54
+                       C 22 24 48 12 74 16
+                       C 92 19 105 34 111 55"
+                    stroke="#22151B"
+                    strokeWidth="6"
+                    lineCap="round"
+                    fill="none" />
+              <Path id="right_eye_lower_lash"
+                    d="M 20 82
+                       C 34 99 65 106 91 90"
+                    stroke="#22151B"
+                    strokeWidth="3"
+                    lineCap="round"
+                    fill="none" />
+              <Path id="right_eye_iris"
+                    d="M 38 59
+                       C 39 41 50 31 64 32
+                       C 79 33 89 45 88 63
+                       C 87 82 76 95 62 95
+                       C 47 94 37 78 38 59 Z"
+                    fill="url(#iris_gold)"
+                    stroke="#5B332F"
+                    strokeWidth="2" />
+              <Path id="right_eye_iris_cap"
+                    d="M 39 55
+                       C 49 43 77 43 87 56
+                       C 75 61 51 61 39 55 Z"
+                    fill="#291821"
+                    opacity="0.96" />
+              <Path id="right_eye_pupil"
+                    d="M 48 66
+                       L 78 66
+                       C 75 77 70 82 63 82
+                       C 56 82 51 77 48 66 Z"
+                    fill="#4B241E"
+                    opacity="0.88" />
+              <Path id="right_eye_gold_glow"
+                    d="M 42 78
+                       C 51 94 75 94 84 78
+                       C 76 99 49 99 42 78 Z"
+                    fill="#FFE8A0"
+                    opacity="0.58" />
+            </Group>
 
-    <!-- bangs over face -->
-    <Path id="bangs_over_face"
-          d="M 88 129
-             L 119 47
-             C 139 33 160 22 185 16
-             L 155 164
-             L 130 164
-             L 123 207
-             L 93 197
-             L 96 165 Z"
-          fill="#F3C36C" />
+            <!-- small nose and mouth -->
+            <Group id="nose_mouth" x="162" y="238" scale="0.92" opacity="1">
+              <Path id="nose_main_shadow"
+                    d="M 36 8
+                       C 27 17 23 31 25 43
+                       C 31 37 37 31 43 24
+                       C 43 15 41 10 36 8 Z"
+                    fill="url(#nose_shadow)"
+                    opacity="0.82" />
+              <Path id="nose_inner_cut"
+                    d="M 43 13
+                       C 41 23 41 31 44 39"
+                    stroke="#8E5D55"
+                    strokeWidth="3"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.62" />
+              <Path id="nose_short_line"
+                    d="M 35 27
+                       C 37 32 39 36 42 39"
+                    stroke="#7A514B"
+                    strokeWidth="2"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.7" />
+              <Path id="nostril_left"
+                    d="M 41 62
+                       C 36 61 32 59 29 55"
+                    stroke="#2B1714"
+                    strokeWidth="3"
+                    lineCap="round"
+                    fill="none" />
+              <Path id="nostril_right_soft"
+                    d="M 61 58
+                       C 65 55 70 54 75 56"
+                    stroke="#9C765F"
+                    strokeWidth="2"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.5" />
+              <Path id="mouth"
+                    d="M 26 82
+                       C 40 77 56 77 68 80"
+                    stroke="#22110F"
+                    strokeWidth="4"
+                    lineCap="round"
+                    fill="none" />
+              <Path id="lower_lip"
+                    d="M 41 96
+                       C 50 90 65 90 74 96
+                       C 66 102 49 102 41 96 Z"
+                    fill="url(#lip_soft)"
+                    stroke="#7D4B45"
+                    strokeWidth="2"
+                    opacity="0.9" />
+              <Path id="lip_highlight"
+                    d="M 49 95
+                       C 56 93 65 93 70 96"
+                    stroke="#D79A88"
+                    strokeWidth="1.4"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.55" />
+            </Group>
 
-    <Path id="bang_mid_left"
-          d="M 148 41
-             C 164 27 181 19 203 15
-             L 195 194
-             L 164 164
-             L 155 218
-             L 131 199 Z"
-          fill="#EAB45F" />
+            <!-- bangs over face -->
+            <Path id="bangs_over_face"
+                  d="M 88 129
+                     L 119 47
+                     C 139 33 160 22 185 16
+                     L 155 164
+                     L 130 164
+                     L 123 207
+                     L 93 197
+                     L 96 165 Z"
+                  fill="#F3C36C" />
 
-    <Path id="bang_center"
-          d="M 199 17
-             C 213 8 231 8 249 17
-             L 264 203
-             L 230 196
-             L 223 244
-             L 199 210 Z"
-          fill="#F4C777" />
+            <Path id="bang_mid_left"
+                  d="M 148 41
+                     C 164 27 181 19 203 15
+                     L 195 194
+                     L 164 164
+                     L 155 218
+                     L 131 199 Z"
+                  fill="#EAB45F" />
 
-    <Path id="bang_right"
-          d="M 242 17
-             C 280 19 319 37 350 60
-             L 342 203
-             L 306 195
-             L 307 233
-             L 274 207
-             L 264 164 Z"
-          fill="#F5CA75" />
+            <Path id="bang_center"
+                  d="M 199 17
+                     C 213 8 231 8 249 17
+                     L 264 203
+                     L 230 196
+                     L 223 244
+                     L 199 210 Z"
+                  fill="#F4C777" />
 
-    <Path id="bang_far_right"
-          d="M 330 74
-             C 356 95 361 132 356 162
-             L 386 216
-             L 343 204
-             L 343 228
-             L 315 219
-             L 308 164 Z"
-          fill="#F1BF69" />
+            <Path id="bang_right"
+                  d="M 242 17
+                     C 280 19 319 37 350 60
+                     L 342 203
+                     L 306 195
+                     L 307 233
+                     L 274 207
+                     L 264 164 Z"
+                  fill="#F5CA75" />
 
-    <Path id="bang_far_left"
-          d="M 39 104
-             C 64 70 91 47 121 35
-             L 97 165
-             L 64 188
-             L 8 202
-             L 39 137 Z"
-          fill="#F5C573" />
+            <Path id="bang_far_right"
+                  d="M 330 74
+                     C 356 95 361 132 356 162
+                     L 386 216
+                     L 343 204
+                     L 343 228
+                     L 315 219
+                     L 308 164 Z"
+                  fill="#F1BF69" />
 
-    <!-- hair shadows / strand lines -->
-    <Path id="hair_shadow_streaks"
-          d="M 120 46
-             C 99 82 84 113 74 153
-             M 162 33
-             C 141 69 127 107 119 151
-             M 201 24
-             C 197 66 195 112 195 194
-             M 247 31
-             C 258 76 263 123 263 203
-             M 287 42
-             C 313 86 325 132 323 186
-             M 338 83
-             C 347 116 350 145 344 184"
-          stroke="#9F6C5A"
-          strokeWidth="6"
-          lineCap="round"
-          fill="none"
-          opacity="0.62" />
+            <Path id="bang_far_left"
+                  d="M 39 104
+                     C 64 70 91 47 121 35
+                     L 97 165
+                     L 64 188
+                     L 8 202
+                     L 39 137 Z"
+                  fill="#F5C573" />
 
-    <Path id="sharp_bang_edges"
-          d="M 155 164 L 130 164 L 123 207
-             M 195 194 L 164 164 L 155 218
-             M 264 203 L 230 196 L 223 244
-             M 307 195 L 307 233 L 274 207
-             M 342 203 L 343 228"
-          stroke="#C16C4B"
-          strokeWidth="2"
-          lineCap="round"
-          fill="none"
-          opacity="0.7" />
+            <!-- hair shadows / strand lines -->
+            <Path id="hair_shadow_streaks"
+                  d="M 120 46
+                     C 99 82 84 113 74 153
+                     M 162 33
+                     C 141 69 127 107 119 151
+                     M 201 24
+                     C 197 66 195 112 195 194
+                     M 247 31
+                     C 258 76 263 123 263 203
+                     M 287 42
+                     C 313 86 325 132 323 186
+                     M 338 83
+                     C 347 116 350 145 344 184"
+                  stroke="#9F6C5A"
+                  strokeWidth="6"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.62" />
 
-    <!-- jaw definition -->
-    <Path id="jaw_soft"
-          d="M 100 276
-             C 117 319 163 350 207 360
-             C 252 352 304 320 312 272"
-          stroke="#D2AFA1"
-          strokeWidth="2"
-          lineCap="round"
-          fill="none"
-          opacity="0.5" />
+            <Path id="sharp_bang_edges"
+                  d="M 155 164 L 130 164 L 123 207
+                     M 195 194 L 164 164 L 155 218
+                     M 264 203 L 230 196 L 223 244
+                     M 307 195 L 307 233 L 274 207
+                     M 342 203 L 343 228"
+                  stroke="#C16C4B"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.7" />
 
-    <!-- lower orange hair chunks -->
-    <Path id="lower_hair_chunks"
-          d="M 78 262 L 100 281 L 92 298 L 62 282 Z
-             M 106 260 L 128 289 L 113 310 L 91 294 Z
-             M 298 260 L 277 290 L 291 309 L 315 291 Z
-             M 326 253 L 345 282 L 321 300 L 302 280 Z"
-          fill="#C96F4F"
-          opacity="0.95" />
+            <!-- jaw definition -->
+            <Path id="jaw_soft"
+                  d="M 100 276
+                     C 117 319 163 350 207 360
+                     C 252 352 304 320 312 272"
+                  stroke="#D2AFA1"
+                  strokeWidth="2"
+                  lineCap="round"
+                  fill="none"
+                  opacity="0.5" />
+
+            <!-- lower orange hair chunks -->
+            <Path id="lower_hair_chunks"
+                  d="M 78 262 L 100 281 L 92 298 L 62 282 Z
+                     M 106 260 L 128 289 L 113 310 L 91 294 Z
+                     M 298 260 L 277 290 L 291 309 L 315 291 Z
+                     M 326 253 L 345 282 L 321 300 L 302 280 Z"
+                  fill="#C96F4F"
+                  opacity="0.95" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="faceless_blond_hair_portrait" />

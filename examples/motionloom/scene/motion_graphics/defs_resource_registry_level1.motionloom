@@ -1,0 +1,137 @@
+<!-- Defs resource registry demo: Font, Mask, Precompose, Component, and Use are reusable resources. Filter is parsed/registered here but not applied until Layer filter pipeline is implemented. -->
+<Graph fps={30} duration="6s" size={[1280,720]} renderSize={[1280,720]}>
+  <Background color="#071018" />
+
+  <Scene id="defs_resource_registry_level1">
+    <Defs>
+      <Font id="display" family="Avenir Next Condensed" fallback="system" />
+
+      <LinearGradient id="bg_grad" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#071018, 0.42:#123A55, 0.70:#25215F, 1:#090B12" />
+      <LinearGradient id="card_grad" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#65F7FF, 0.52:#EAFEFF, 1:#FFB000" />
+      <RadialGradient id="spark_grad" cx="0.50" cy="0.50" r="0.62"
+                      stops="0:#FFFFFF, 0.38:#65F7FFCC, 1:#65F7FF00" />
+
+      <Filter id="soft_glow">
+        <Blur radius="14" />
+        <ColorMatrix saturation="1.20" brightness="1.05" />
+      </Filter>
+
+      <Mask id="title_wipe"
+            shape="rect"
+            x={curve("0:-220:ease_in_out, 1.10:112:ease_in_out, 3.60:112:linear, 5.20:780:ease_in_out, 6.00:1280:linear")}
+            y="168"
+            width="620"
+            height="122"
+            radius="30"
+            feather="18" />
+
+      <Mask id="panel_clip"
+            shape="rect"
+            x="116"
+            y="330"
+            width="1048"
+            height="220"
+            radius="34"
+            feather="0" />
+
+      <Component id="spark_dot">
+        <Circle x="0" y="0" radius="18" fill="url(#spark_grad)" blend="screen" opacity="0.86" />
+        <Circle x="0" y="0" radius="4" color="#FFFFFF" blend="screen" opacity="0.95" />
+      </Component>
+
+      <Precompose id="neon_panel" size={[1280,720]}>
+        <Rect x="116" y="330" width="1048" height="220" radius="34"
+              fill="url(#card_grad)"
+              opacity="0.24" />
+        <Path d="M 86 506 C 260 360 420 560 590 420 C 740 290 900 348 1198 256"
+              stroke="#65F7FF"
+              strokeWidth="26"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.78"
+              trimStart={curve("0:0.00:ease_in_out, 1.00:0.00:linear, 6.00:0.20:ease_in_out")}
+              trimEnd={curve("0:0.04:ease_in_out, 1.00:0.68:ease_in_out, 6.00:1.00:ease_in_out")} />
+        <Path d="M 86 506 C 260 360 420 560 590 420 C 740 290 900 348 1198 256"
+              stroke="#FFFFFF"
+              strokeWidth="5"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.72"
+              trimStart={curve("0:0.00:ease_in_out, 1.20:0.08:ease_in_out, 6.00:0.45:ease_in_out")}
+              trimEnd={curve("0:0.02:ease_in_out, 1.20:0.62:ease_in_out, 6.00:1.00:ease_in_out")} />
+      </Precompose>
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer>
+
+            <Rect x="0" y="0" width="1280" height="720" fill="url(#bg_grad)" />
+
+            <Group id="ambient_sparks" opacity="1">
+              <Repeat id="spark_row"
+                      count="18"
+                      x="130"
+                      y="118"
+                      xStep="60"
+                      yStep="0"
+                      rotationStep="17"
+                      scale="0.68"
+                      scaleStep="-0.010"
+                      opacity="0.60"
+                      opacityStep="-0.018">
+                <Use ref="spark_dot"
+                     x="0"
+                     y={curve("0:0:ease_in_out, 2:26:ease_in_out, 4:-12:ease_in_out, 6:0:ease_in_out")}
+                     rotation={curve("0:0:linear, 6:180:linear")}
+                     scale={curve("0:0.8:ease_in_out, 3:1.25:ease_in_out, 6:0.8:ease_in_out")}
+                     blend="screen" />
+              </Repeat>
+            </Group>
+
+            <Layer id="masked_neon_panel" source="neon_panel" mask="panel_clip" blend="screen" opacity="1" />
+
+            <Group id="masked_title" mask="title_wipe" maskMode="alpha">
+              <Text id="title"
+                    value="DEFS REGISTRY"
+                    font="display"
+                    x="112"
+                    y="232"
+                    fontSize="92"
+                    color="#EAFEFF" />
+              <Text value="Mask + Precompose + Component + Font"
+                    font="display"
+                    x="116"
+                    y="282"
+                    fontSize="32"
+                    color="#65F7FF"
+                    opacity="0.86" />
+            </Group>
+
+            <Use ref="spark_dot"
+                 x={curve("0:190:ease_in_out, 2.5:642:ease_in_out, 6:1088:ease_in_out")}
+                 y={curve("0:496:ease_in_out, 2.5:380:ease_in_out, 6:506:ease_in_out")}
+                 scale={curve("0:1.0:ease_in_out, 2.5:2.2:ease_in_out, 6:1.2:ease_in_out")}
+                 blend="screen"
+                 opacity="0.96" />
+
+            <Text value="Resource nodes live in Defs. Instances stay in the scene flow."
+                  x="112"
+                  y="642"
+                  font="display"
+                  fontSize="28"
+                  color="#FFFFFF"
+                  opacity={curve("0:0:linear, 1.20:0.74:ease_in_out, 5.30:0.74:linear, 6.00:0:ease_in_out")} />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="defs_resource_registry_level1" />
+</Graph>

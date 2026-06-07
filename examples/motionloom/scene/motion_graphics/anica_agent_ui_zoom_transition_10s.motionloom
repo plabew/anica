@@ -1,0 +1,120 @@
+<!-- Image nodes are GPU-native in scene render. Relative paths are resolved from the renderer process cwd; this example assumes the Anica repo root as cwd. -->
+<Graph fps={30} duration="10s" size={[1920,1080]} renderSize={[1920,1080]}>
+  <Background color="#FF4D8D" />
+
+  <Scene id="anica_agent_ui_zoom_transition_10s">
+    <Defs>
+      <RadialGradient id="hot_bg" cx="0.18" cy="0.18" r="0.98"
+                      stops="0:#FFF36A, 0.36:#FF4D8D, 0.72:#7657FF, 1:#11D6C4" />
+      <RadialGradient id="cool_bg" cx="0.72" cy="0.24" r="0.98"
+                      stops="0:#7AF7FF, 0.38:#4F7DFF, 0.70:#7B3DFF, 1:#120B2C" />
+      <RadialGradient id="spot_white" cx="0.50" cy="0.50" r="0.52"
+                      stops="0:#FFFFFFDD, 0.46:#FFFFFF44, 1:#FFFFFF00" />
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="10s" out="hold">
+          <Layer>
+
+            <Rect x="0" y="0" width="1920" height="1080" fill="url(#hot_bg)" />
+            <Circle x={curve("0:250:linear, 4.9:250:linear, 5.25:1520:ease_in_out, 10:1520:linear")}
+                    y={curve("0:160:linear, 4.9:160:linear, 5.25:300:ease_in_out, 10:300:linear")}
+                    radius="520"
+                    fill="url(#spot_white)"
+                    opacity="0.50" />
+            <Circle x={curve("0:1550:linear, 4.9:1550:linear, 5.25:340:ease_in_out, 10:340:linear")}
+                    y={curve("0:840:linear, 4.9:840:linear, 5.25:780:ease_in_out, 10:780:linear")}
+                    radius="430"
+                    color="#00FFE0"
+                    opacity="0.23" />
+            <Rect x={curve("0:1920:linear, 4.9:1920:linear, 5.16:0:ease_in_out, 10:0:linear")}
+                  y="0"
+                  width="1920"
+                  height="1080"
+                  fill="url(#cool_bg)"
+                  opacity={curve("0:0:linear, 4.85:0:linear, 5.18:1:ease_in_out, 10:1:linear")} />
+
+            <Text value="AI editing timeline"
+                  x="118"
+                  y="154"
+                  fontSize="56"
+                  color="#FFFFFF"
+                  opacity={curve("0:0:linear, 0.35:0.92:ease_in_out, 0.95:0.92:linear, 1.15:0:ease_in_out, 9.15:0:linear, 9.55:0.90:ease_in_out, 10:0:ease_in_out")} />
+            <Text value="silent cuts  /  multilingual subtitles"
+                  x="122"
+                  y="206"
+                  fontSize="26"
+                  color="#FFFFFF"
+                  opacity={curve("0:0:linear, 0.45:0.70:ease_in_out, 0.95:0.70:linear, 1.15:0:ease_in_out, 9.20:0:linear, 9.58:0.66:ease_in_out, 10:0:ease_in_out")} />
+
+            <!-- First screenshot: start with the full 2880x1800 UI framed inside 1920x1080, then punch zoom to the right-side AI panel with small hand-held jitter. -->
+            <Group id="shot_01_main"
+                   x={curve("0:-190:linear, 1.00:-190:linear, 2.00:-190:linear, 2.28:-1620:ease(0.12,1.0,0.16,1), 2.62:-1638:linear, 2.92:-1608:linear, 3.28:-1630:linear, 3.64:-1614:linear, 4.06:-1636:linear, 4.52:-1610:linear, 4.82:-1624:linear, 5.10:-3300:ease_in_out, 10:-3300:linear")}
+                   y={curve("0:-184:linear, 1.00:-184:linear, 2.00:-184:linear, 2.28:-690:ease(0.12,1.0,0.16,1), 2.62:-706:linear, 2.92:-676:linear, 3.28:-700:linear, 3.64:-684:linear, 4.06:-704:linear, 4.52:-682:linear, 4.82:-694:linear, 5.10:-694:linear, 10:-694:linear")}
+                   scale={curve("0:0.56:linear, 1.00:0.56:linear, 2.00:0.56:linear, 2.28:1.18:ease(0.12,1.0,0.16,1), 5.10:1.18:linear, 10:1.18:linear")}
+                   transformOriginX="780"
+                   transformOriginY="500"
+                   opacity={curve("0:0:linear, 0.95:0:linear, 1.00:1:ease_in_out, 4.86:1:linear, 5.12:0:ease_in_out, 10:0:linear")}>
+              <Rect x="-46" y="-46" width="2972" height="1892" radius="60" color="#000000" opacity="0.32" />
+              <Image src="examples/motionloom/sample_assets/README/readme_showcase1.png" x="0" y="0" scale="1" opacity="1" />
+            </Group>
+
+            <Group id="shot_01_trail_a"
+                   x={curve("0:-190:linear, 4.74:-1580:linear, 5.16:-3480:ease_in_out, 10:-3480:linear")}
+                   y={curve("0:-184:linear, 4.74:-690:linear, 5.16:-690:linear, 10:-690:linear")}
+                   scale="1.18"
+                   transformOriginX="780"
+                   transformOriginY="500"
+                   opacity={curve("0:0:linear, 4.72:0:linear, 4.86:0.28:ease_in_out, 5.18:0:ease_in_out, 10:0:linear")}>
+              <Image src="examples/motionloom/sample_assets/README/readme_showcase1.png" x="0" y="0" scale="1" opacity="1" />
+            </Group>
+            <Group id="shot_01_trail_b"
+                   x={curve("0:-190:linear, 4.78:-1460:linear, 5.20:-3120:ease_in_out, 10:-3120:linear")}
+                   y={curve("0:-184:linear, 4.78:-682:linear, 5.20:-682:linear, 10:-682:linear")}
+                   scale="1.18"
+                   transformOriginX="780"
+                   transformOriginY="500"
+                   opacity={curve("0:0:linear, 4.76:0:linear, 4.90:0.16:ease_in_out, 5.22:0:ease_in_out, 10:0:linear")}>
+              <Image src="examples/motionloom/sample_assets/README/readme_showcase1.png" x="0" y="0" scale="1" opacity="1" />
+            </Group>
+
+            <!-- Second screenshot: fast left-moving reveal into a full-view frame, then the same right-side punch zoom. -->
+            <Group id="shot_02_trail_a"
+                   x={curve("0:2260:linear, 4.82:2260:linear, 5.12:280:ease_in_out, 5.36:-190:ease_out, 10:-190:linear")}
+                   y="-184"
+                   scale="0.56"
+                   transformOriginX="780"
+                   transformOriginY="500"
+                   opacity={curve("0:0:linear, 4.84:0:linear, 5.00:0.22:ease_in_out, 5.30:0:ease_in_out, 10:0:linear")}>
+              <Image src="examples/motionloom/sample_assets/README/readme_showcase2.png" x="0" y="0" scale="1" opacity="1" />
+            </Group>
+            <Group id="shot_02_trail_b"
+                   x={curve("0:2460:linear, 4.86:2460:linear, 5.16:620:ease_in_out, 5.38:-190:ease_out, 10:-190:linear")}
+                   y="-184"
+                   scale="0.56"
+                   transformOriginX="780"
+                   transformOriginY="500"
+                   opacity={curve("0:0:linear, 4.88:0:linear, 5.04:0.15:ease_in_out, 5.34:0:ease_in_out, 10:0:linear")}>
+              <Image src="examples/motionloom/sample_assets/README/readme_showcase2.png" x="0" y="0" scale="1" opacity="1" />
+            </Group>
+            <Group id="shot_02_main"
+                   x={curve("0:2260:linear, 4.80:2260:linear, 5.12:-190:ease_in_out, 6.00:-190:linear, 6.28:-1620:ease(0.12,1.0,0.16,1), 6.64:-1606:linear, 6.96:-1642:linear, 7.32:-1612:linear, 7.72:-1636:linear, 8.16:-1608:linear, 8.58:-1640:linear, 9.00:-1620:linear, 9.28:-1620:linear, 9.58:-3300:ease_in_out, 10:-3300:linear")}
+                   y={curve("0:-184:linear, 4.80:-184:linear, 5.12:-184:ease_in_out, 6.00:-184:linear, 6.28:-690:ease(0.12,1.0,0.16,1), 6.64:-674:linear, 6.96:-704:linear, 7.32:-682:linear, 7.72:-700:linear, 8.16:-676:linear, 8.58:-706:linear, 9.00:-690:linear, 9.58:-690:linear, 10:-690:linear")}
+                   scale={curve("0:0.56:linear, 5.12:0.56:linear, 6.00:0.56:linear, 6.28:1.18:ease(0.12,1.0,0.16,1), 9.28:1.18:linear, 9.58:1.18:linear, 10:1.18:linear")}
+                   transformOriginX="780"
+                   transformOriginY="500"
+                   opacity={curve("0:0:linear, 4.86:0:linear, 5.08:1:ease_in_out, 9.20:1:linear, 9.62:0:ease_in_out, 10:0:linear")}>
+              <Rect x="-46" y="-46" width="2972" height="1892" radius="60" color="#000000" opacity="0.32" />
+              <Image src="examples/motionloom/sample_assets/README/readme_showcase2.png" x="0" y="0" scale="1" opacity="1" />
+            </Group>
+
+            <Rect x="0" y="0" width="1920" height="1080" color="#FFFFFF" opacity={curve("0:0.16:linear, 0.70:0:ease_in_out, 9.30:0:linear, 9.78:0.20:ease_in_out, 10:0.34:ease_in_out")} />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="anica_agent_ui_zoom_transition_10s" />
+</Graph>

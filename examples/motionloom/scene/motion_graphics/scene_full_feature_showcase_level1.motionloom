@@ -1,0 +1,300 @@
+<!-- Scene full-feature showcase: covers Defs, resources, timeline, composition, primitives, camera, character, component/repeat, mask/matte, image, svg, pixel art, and local-time Precompose. -->
+<Graph fps={30} duration="8s" size={[1280,720]} renderSize={[1280,720]}>
+  <Background color="#05070B" />
+
+  <Scene id="scene_full_feature_showcase_level1">
+    <Defs>
+      <Font id="display" family="Avenir Next Condensed" fallback="system" />
+
+      <LinearGradient id="bg_grad" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#06111F, 0.42:#122E4B, 0.74:#281747, 1:#07090F" />
+      <LinearGradient id="panel_grad" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#FFFFFF22, 0.54:#65F7FF18, 1:#FFB00016" />
+      <LinearGradient id="bar_grad" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#65F7FF, 0.62:#3B82F6, 1:#1D2E7A" />
+      <LinearGradient id="hot_grad" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#FF3D77, 0.50:#FFB000, 1:#65F7FF" />
+      <RadialGradient id="orb_grad" cx="0.50" cy="0.50" r="0.66"
+                      stops="0:#FFFFFF, 0.24:#65F7FFEE, 0.72:#3B82F688, 1:#3B82F600" />
+      <RadialGradient id="skin_grad" cx="0.50" cy="0.34" r="0.70"
+                      stops="0:#FFF6EC, 0.55:#FFD8C7, 1:#E9A88F" />
+
+      <Brush id="ink" stroke="#EAFEFF" strokeWidth="4" strokeStyle="pencil" strokeRoughness="0.22" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="fine_ink" stroke="#09111F" strokeWidth="3" lineCap="round" lineJoin="round" fill="none" />
+
+      <Filter id="reserved_soft_glow">
+        <Blur radius="14" />
+        <ColorMatrix saturation="1.18" brightness="1.04" />
+      </Filter>
+
+      <Mask id="title_wipe"
+            shape="rect"
+            x={curve("0:-320:ease_in_out, 0.9:86:ease_in_out, 5.9:86:linear, 7.6:1320:ease_in_out")}
+            y="58"
+            width="710"
+            height="128"
+            radius="36"
+            feather="18" />
+
+      <Mask id="panel_clip" shape="rect" x="62" y="212" width="742" height="378" radius="34" feather="0" />
+      <Mask id="matte_sweep" shape="rect"
+            x={curve("0:-320:ease_in_out, 1.2:80:ease_in_out, 6.6:680:ease_in_out, 8:1320:ease_in_out")}
+            y="188"
+            width="420"
+            height="430"
+            radius="44"
+            feather="26" />
+
+      <Component id="spark_dot">
+        <Circle x="0" y="0" radius="9" fill="url(#orb_grad)" blend="screen" opacity="0.82" />
+        <Circle x="0" y="0" radius="2.3" color="#FFFFFF" blend="screen" opacity="1" />
+      </Component>
+
+      <Component id="diamond_tick">
+        <Path d="M 0 -14 L 14 0 L 0 14 L -14 0 Z" fill="#FFB000" opacity="0.92" />
+        <Path d="M -6 0 L -1 5 L 8 -6" stroke="#071018" strokeWidth="3" lineCap="round" lineJoin="round" fill="none" />
+      </Component>
+
+      <Precompose id="ribbon_source" duration="2s" size={[1280,720]}>
+        <Path d="M -60 522 C 148 300 292 602 500 382 C 704 166 892 258 1340 122"
+              stroke="#65F7FF"
+              strokeWidth="30"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.88"
+              trimStart={curve("0:0.00:ease_in_out, 2:0.16:ease_in_out")}
+              trimEnd={curve("0:0.04:ease_in_out, 2:1.00:ease_in_out")} />
+        <Path d="M -60 522 C 148 300 292 602 500 382 C 704 166 892 258 1340 122"
+              stroke="#FFFFFF"
+              strokeWidth="5"
+              lineCap="round"
+              fill="none"
+              blend="screen"
+              opacity="0.72"
+              trimStart={curve("0:0.02:ease_in_out, 2:0.44:ease_in_out")}
+              trimEnd={curve("0:0.08:ease_in_out, 2:1.00:ease_in_out")} />
+      </Precompose>
+
+      <Precompose id="panel_source" duration="3s" size={[1280,720]}>
+        <Rect x="62" y="212" width="742" height="378" radius="34" fill="url(#panel_grad)" stroke="#FFFFFF30" strokeWidth="2" />
+        <Line x1="112" y1="520" x2="754" y2="520" stroke="#FFFFFF33" strokeWidth="2" />
+        <Polyline points="120,482 206,440 292,466 378,358 464,396 550,314 636,348 732,268"
+                  stroke="#65F7FF"
+                  strokeWidth="8"
+                  lineCap="round"
+                  lineJoin="round"
+                  trimEnd={curve("0:0:ease_in_out, 1.2:1:ease_in_out, 3:1:linear")}
+                  blend="screen" />
+        <Repeat id="bar_repeater" count="5" x="142" y="520" xStep="104" rotationStep="0" scale="1" opacity="1">
+          <Rect x="0"
+                y={curve("0:0:ease_in_out, 1.2:-110:ease_in_out, 3:-170:ease_in_out")}
+                width="52"
+                height={curve("0:0:ease_in_out, 1.2:110:ease_in_out, 3:170:ease_in_out")}
+                radius="10"
+                fill="url(#bar_grad)" />
+        </Repeat>
+      </Precompose>
+
+      <Palette id="pixel_palette">
+        <Color key="." value="#00000000" />
+        <Color key="a" value="#65F7FF" />
+        <Color key="b" value="#FFB000" />
+        <Color key="c" value="#FFFFFF" />
+        <Color key="d" value="#FF3D77" />
+      </Palette>
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_background" z="-100">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer id="scene_background_layer">
+            <Rect x="0" y="0" width="1280" height="720" fill="url(#bg_grad)" />
+            <Circle x="1040" y="92" radius="270" fill="url(#orb_grad)" blend="screen" opacity="0.22" />
+            <Circle x="80" y="680" radius="320" color="#FF3D77" blend="screen" opacity="0.10" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="ambient_starfield_track" z="-90">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer id="ambient_starfield_layer" blend="screen">
+            <Repeat id="ambient_starfield" count="24" x="56" y="44" xStep="52" yStep="0" rotationStep="9" scale="0.72" scaleStep="-0.008" opacity="0.64" opacityStep="-0.018">
+              <Use ref="spark_dot"
+                   y={curve("0:0:ease_in_out, 4:28:ease_in_out, 8:0:ease_in_out")}
+                   rotation={curve("0:0:linear, 8:240:linear")}
+                   blend="screen" />
+            </Repeat>
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="title_track" z="-80">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer id="title_layer">
+            <Group id="masked_title" mask="title_wipe" maskMode="alpha">
+              <Text value="SCENE SYSTEM"
+                    font="display"
+                    x="82"
+                    y="134"
+                    fontSize="82"
+                    color="#EAFEFF"
+                    visibleChars={curve("0:0:linear, 0.7:12:ease_in_out, 8:12:linear")} />
+              <Text value="resources, timeline, composition, drawing, camera, character"
+                    font="display"
+                    x="88"
+                    y="178"
+                    fontSize="24"
+                    color="#65F7FF"
+                    opacity="0.82" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="svg_badge_track" z="-70">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer id="svg_badge_layer">
+            <Svg id="svg_badge"
+                 src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'><rect x='12' y='12' width='96' height='96' rx='24' fill='%2365F7FF'/><path d='M35 64 L54 82 L88 38' stroke='%23071118' stroke-width='12' stroke-linecap='round' stroke-linejoin='round' fill='none'/></svg>"
+                 x="1050"
+                 y="118"
+                 scale={curve("0:0.70:ease_in_out, 4:0.86:ease_in_out, 8:0.70:ease_in_out")}
+                 opacity="0.90" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="background_composite" z="0">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer id="soft_ui_image" blend="screen" opacity="0.14">
+            <Image src="examples/motionloom/sample_assets/README/readme_showcase1.png"
+                   x="348"
+                   y="236"
+                   scale="0.18"
+                   opacity="0.85" />
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="panel_track" z="10">
+        <Sequence from="0.4s" duration="7s" out="hold">
+          <Layer id="panel_layer" source="panel_source" sourceTime="local" out="hold" mask="panel_clip" opacity="1" />
+          <Layer id="ribbon_layer" source="ribbon_source" sourceTime="local" timeOffset="0.7s" playbackRate="0.85" out="loop" matte="matte_sweep" matteMode="alpha" blend="screen" opacity="0.92" />
+        </Sequence>
+      </Track>
+
+      <Track id="chain_metrics" z="20">
+        <Chain from="1.35s" gap="-0.12s">
+          <Sequence id="metric_a" duration="0.75s" out="hold">
+            <Layer blend="screen">
+              <Use ref="diamond_tick" x="122" y="642" scale={curve("0:0:ease_out, 0.55:1:ease_out, 0.75:0.92:ease_in_out")} />
+              <Text value="Timeline" font="display" x="150" y="652" fontSize="28" color="#FFFFFF" opacity={curve("0:0:linear, 0.45:1:ease_out")} />
+            </Layer>
+          </Sequence>
+          <Sequence id="metric_b" duration="0.75s" out="hold">
+            <Layer blend="screen">
+              <Use ref="diamond_tick" x="332" y="642" scale={curve("0:0:ease_out, 0.55:1:ease_out, 0.75:0.92:ease_in_out")} />
+              <Text value="Layer" font="display" x="360" y="652" fontSize="28" color="#FFFFFF" opacity={curve("0:0:linear, 0.45:1:ease_out")} />
+            </Layer>
+          </Sequence>
+          <Sequence id="metric_c" duration="0.75s" out="hold">
+            <Layer blend="screen">
+              <Use ref="diamond_tick" x="510" y="642" scale={curve("0:0:ease_out, 0.55:1:ease_out, 0.75:0.92:ease_in_out")} />
+              <Text value="Local time" font="display" x="538" y="652" fontSize="28" color="#FFFFFF" opacity={curve("0:0:linear, 0.45:1:ease_out")} />
+            </Layer>
+          </Sequence>
+        </Chain>
+      </Track>
+
+      <Track id="camera_track" role="camera" z="1000">
+        <Sequence from="1.0s" duration="6.2s" out="hold">
+          <Camera id="moving_camera"
+                  x={curve("0:0:ease_in_out, 3:28:ease_in_out, 6.2:-18:ease_in_out")}
+                  y={curve("0:0:ease_in_out, 3:-14:ease_in_out, 6.2:8:ease_in_out")}
+                  zoom={curve("0:1.00:ease_in_out, 3:1.05:ease_in_out, 6.2:1.00:ease_in_out")}
+                  rotation={curve("0:-0.6:ease_in_out, 3:0.7:ease_in_out, 6.2:0:ease_in_out")} />
+        </Sequence>
+      </Track>
+
+      <Track id="camera_content_track" space="world" z="30">
+        <Sequence from="1.0s" duration="6.2s" out="hold">
+          <Layer id="camera_content_layer">
+            <Group id="camera_content" x="0" y="0" opacity="1">
+              <Path d="M 856 522 C 892 438 960 418 1036 486 C 1100 544 1184 520 1228 442"
+                    brush="ink"
+                    trimEnd={curve("0:0:ease_in_out, 2.1:1:ease_in_out, 6.2:1:linear")}
+                    opacity="0.62" />
+              <Group id="face_shape_demo"
+                     x="1016"
+                     y="414"
+                     scaleX={curve("0:1.00:ease_in_out, 3:0.82:ease_in_out, 6.2:1.06:ease_in_out")}
+                     scaleY={curve("0:1.00:ease_in_out, 3:1.02:ease_in_out, 6.2:0.98:ease_in_out")}
+                     opacity="0.96">
+                <Path d="M -63 -18 C -58 -74 -24 -104 14 -102 C 56 -98 78 -58 76 -12 C 74 52 35 90 -12 88 C -52 84 -72 42 -63 -18 Z"
+                      fill="url(#skin_grad)"
+                      stroke="#111827"
+                      strokeWidth="4" />
+                <Circle x="-24" y="-18" radius="6" color="#111827" />
+                <Circle x="25" y="-16" radius="6" color="#111827" />
+                <Path d="M -20 30 C -4 44 24 42 38 26"
+                      stroke="#111827"
+                      strokeWidth="3"
+                      lineCap="round"
+                      lineJoin="round"
+                      fill="none" />
+              </Group>
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="character_track" space="world" z="40">
+        <Sequence from="1.4s" duration="6.2s" out="hold">
+          <Layer id="character_layer" opacity={curve("0:0:linear, 0.5:1:ease_out, 6.2:1:linear")}>
+            <Character id="host" x={curve("0:960:ease_out, 1.2:915:ease_out, 6.2:940:ease_in_out")} y="420" scale="1.05" rotation={curve("0:-2:ease_in_out, 3:2:ease_in_out, 6.2:-1:ease_in_out")}>
+              <Part id="head_part" x="0" y="0" anchorX="0" anchorY="0">
+                <Circle x="0" y="0" radius="72" fill="url(#skin_grad)" stroke="#111827" strokeWidth="4" />
+                <Circle x="-26" y="-12" radius="7" color="#111827" />
+                <Circle x="28" y="-10" radius="7" color="#111827" />
+                <Path d="M -22 26 C -6 40 22 39 40 24" brush="fine_ink" />
+              </Part>
+              <Part id="antenna" x="0" y="-68" rotation={curve("0:-12:ease_in_out, 3:12:ease_in_out, 6.2:-8:ease_in_out")}>
+                <Line x1="0" y1="0" x2="0" y2="-52" stroke="#EAFEFF" strokeWidth="4" taperEnd="0.8" />
+                <Circle x="0" y="-60" radius="11" fill="url(#orb_grad)" blend="screen" opacity="0.82" />
+                <Circle x="0" y="-60" radius="3" color="#FFFFFF" blend="screen" opacity="1" />
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+
+      <Track id="pixel_and_foreground" z="50">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer blend="screen" opacity="0.92">
+            <PixelGrid id="pixel_micro_logo" x="104" y="238" pixelSize="10" palette="pixel_palette" opacity={curve("0:0:linear, 0.8:1:ease_in_out, 8:1:linear")}>
+              <![CDATA[
+              ..aa..bb..cc..
+              .aaaa.bbbb.ccc.
+              aa..aa..bb..cc
+              aa..aa..bb..dd
+              .aaaa.bbbb.ddd.
+              ..aa..bb..dd..
+              ]]>
+            </PixelGrid>
+            <Shadow x="0" y="18" blur="28" color="#000000" opacity="0.34" />
+            <Rect x="74" y="602" width="1132" height="52" radius="22" color="#000000" opacity="0.28" />
+            <Line x1="98" y1="628" x2="1182" y2="628" stroke="#FFFFFF22" strokeWidth="2" />
+            <Polyline points="104,628 220,628 332,628 510,628 676,628 832,628 1060,628"
+                      stroke="#65F7FF"
+                      strokeWidth="4"
+                      trimEnd={curve("0:0:linear, 2.6:1:ease_in_out, 8:1:linear")}
+                      blend="screen" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="scene_full_feature_showcase_level1" />
+</Graph>

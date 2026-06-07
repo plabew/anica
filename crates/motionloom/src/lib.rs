@@ -1,83 +1,101 @@
 // =========================================
 // crates/motionloom/src/lib.rs
 
-pub mod animation;
-pub mod clip;
 pub mod common;
 pub mod dsl;
+pub mod error;
+pub mod process;
+pub mod root;
 pub mod scene;
+pub mod world;
 
 // Compatibility module aliases. Public API names stay stable while the source
 // tree is split by product domain.
-pub use clip::export_adapter;
-pub use clip::model;
-pub use clip::preview_adapter;
-pub use clip::transitions;
 pub use common::backend;
 pub use common::curve as eval;
-pub use common::effect as effects;
-pub use common::error;
-pub use common::graph;
 pub use common::keyframe;
-pub use common::pass as effect_kernel_map;
-pub use common::process_catalog;
-pub use common::runtime;
+pub use process::adapters::clip::export_adapter;
+pub use process::adapters::clip::model;
+pub use process::adapters::clip::preview_adapter;
+pub use process::adapters::clip::transitions;
+pub use process::effect as effects;
+pub use process::graph;
+pub use process::pass as effect_kernel_map;
+pub use process::process_catalog;
+pub use process::runtime;
+pub use root as graph_root;
 pub use scene::model as scene_model;
 pub use scene::render as scene_render;
 
-pub use animation::{
-    AnimationAction, AnimationActionBone, AnimationActionPose, AnimationActor,
-    AnimationApplyAction, AnimationBackground, AnimationBackgroundFit, AnimationBoneAxis,
-    AnimationBoneAxisMap, AnimationCamera, AnimationCameraMode, AnimationCameraProjection,
-    AnimationFrameRenderer, AnimationGpuDiagnostics, AnimationGraph, AnimationMaterial,
-    AnimationMaterialStyle, AnimationModelProfile, AnimationPathStyle, AnimationPlay,
-    AnimationPresent, AnimationProfileRetarget, AnimationRenderError, AnimationRenderProgress,
-    AnimationRetarget, AnimationRetargetMap, AnimationSpritePlayback, AnimationTime,
-    AnimationWorld, CharacterDesignGpuViewport, CharacterDesignViewportFrame, GlbLoadError,
-    GlbMeshData, GlbMetadata, diagnose_animation_glb_gpu_plan,
-    diagnose_animation_graph_actor_gpu_frame, is_animation_graph_script, load_glb_mesh_data,
-    load_glb_metadata, parse_animation_graph_script, parse_glb_mesh_data, parse_glb_metadata,
-    render_animation_frame, render_animation_graph_to_video_with_progress,
-};
-pub use common::effect::{LayerColorBlurEffects, PerClipColorBlurEffects, combine_clip_with_layer};
-pub use common::error::{GraphParseError, RuntimeCompileError};
 pub use common::keyframe::ScalarKeyframe;
-pub use common::pass::{default_kernel_for_effect, resolve_pass_kernel};
-pub use common::process_catalog::{
+pub use dsl::{
+    ActionBoneNode, ActionNode, ActionPoseNode, ApplyActionNode, BackgroundNode, GraphScript,
+    ImageNode, ModelProfileBoneAxisMapNode, ModelProfileBoneAxisNode, ModelProfileNode,
+    ModelProfileRetargetMapNode, ModelProfileRetargetNode, SkeletonBoneNode, SkeletonNode, SvgNode,
+    is_graph_script, parse_graph_script,
+};
+pub use error::{GraphParseError, MotionLoomError, RootGraphError, RuntimeCompileError};
+pub use eval::sample_anim_f32;
+pub use process::adapters::clip::model::{
+    AnimF32, ClipZoomSpec, ColorRgba, LayerEffectClip, LocalMaskLayer, MAX_LOCAL_MASK_LAYERS,
+    SlideDirection, TextStyle, VideoEffect, ZoomStyle,
+};
+pub use process::effect::{
+    LayerColorBlurEffects, PerClipColorBlurEffects, combine_clip_with_layer,
+};
+pub use process::error::{
+    MotionLoomProcessError, ProcessError, ProcessGraphError, ProcessParseError, ProcessRuntimeError,
+};
+pub use process::model::{
+    AlphaMode, BlendMode, BufferElemType, BufferNode, BufferUsage, ColorSpace, EffectNode,
+    GraphApplyScope, InputNode, InputType, LayerNode, LoadOp, OutputNode, OutputTarget, PassCache,
+    PassKind, PassNode, PassParam, PassRole, PassTransitionClips, PassTransitionEasing,
+    PassTransitionFallback, PassTransitionMode, PresentNode, PresentTarget, Quality, ResourceRef,
+    SampleAddress, SampleConfig, SampleFilter, StoreOp, TexNode, TexUsage, TextureFormat,
+};
+pub use process::parser::{ProcessGraph, is_process_graph_script, parse_process_graph_script};
+pub use process::pass::{default_kernel_for_effect, resolve_pass_kernel};
+pub use process::process_catalog::{
     PROCESS_CATEGORIES, PROCESS_EFFECTS, ProcessCategory, ProcessEffectDefinition,
     is_known_process_kernel, kernel_source_by_name, process_effect_for_id, process_effects,
     process_effects_for_category,
 };
-pub use common::runtime::{
+pub use process::runtime::{
     BlurSharpenMode, RuntimeFrameOutput, RuntimeProgram, compile_runtime_program, eval_time_expr,
 };
-pub use dsl::{
-    ActionBoneNode, ActionNode, ActionPoseNode, AlphaMode, ApplyActionNode, BackgroundNode,
-    BlendMode, BufferElemType, BufferNode, BufferUsage, ColorSpace, EffectNode, GraphApplyScope,
-    GraphScript, ImageNode, InputNode, InputType, LayerNode, LoadOp, ModelProfileBoneAxisMapNode,
-    ModelProfileBoneAxisNode, ModelProfileNode, ModelProfileRetargetMapNode,
-    ModelProfileRetargetNode, OutputNode, OutputTarget, PassCache, PassKind, PassNode, PassParam,
-    PassRole, PassTransitionClips, PassTransitionEasing, PassTransitionFallback,
-    PassTransitionMode, PresentNode, PresentTarget, Quality, ResourceRef, SampleAddress,
-    SampleConfig, SampleFilter, SkeletonBoneNode, SkeletonNode, StoreOp, SvgNode, TexNode,
-    TexUsage, TextNode, TextureFormat, is_graph_script, parse_graph_script,
-};
-pub use eval::sample_anim_f32;
-pub use model::{
-    AnimF32, ClipZoomSpec, ColorRgba, LayerEffectClip, LocalMaskLayer, MAX_LOCAL_MASK_LAYERS,
-    SlideDirection, TextStyle, VideoEffect, ZoomStyle,
+pub use root::{
+    MotionLoomDocument, MotionLoomRenderProgress, RootGraphDomain, RootGraphShell,
+    inspect_root_graph, parse_motionloom_document,
+    render_motionloom_document_to_video_with_progress,
 };
 pub use scene::{
-    BrushDef, CameraNode, CharacterNode, CircleNode, DefsNode, FaceJawNode, GradientDef,
-    GradientStop, GroupNode, LineNode, LinearGradientDef, MaskNode, PaletteColorDef, PaletteNode,
-    PartNode, PathNode, PixelGridNode, PolylineNode, PrecomposeNode, RadialGradientDef, RectNode,
-    RepeatNode, SceneLayerNode, SceneNode, SceneRootNode, ShadowNode,
+    BrushDef, CameraNode, CharacterNode, CircleNode, ComponentNode, DefsNode, FaceJawNode,
+    FilterDef, FilterStepDef, FontDef, GradientDef, GradientStop, GroupNode, LineNode,
+    LinearGradientDef, MaskNode, PaletteColorDef, PaletteNode, PartNode, PathNode, PixelGridNode,
+    PolylineNode, PrecomposeNode, RadialGradientDef, RectNode, RepeatNode, SceneChainNode,
+    SceneLayerNode, SceneNode, SceneRootNode, SceneSequenceNode, SceneTimelineNode, SceneTrackNode,
+    ShadowNode, TextAlignMode, TextAnimatorNode, TextEffectNode, TextGlowEffectNode,
+    TextLayoutNode, TextNode, TextOverflowMode, TextSelectorKind, TextStyleOverrideNode,
+    TextTransformNode, TextWrapMode, UseNode,
 };
 pub use scene_render::{
     MotionLoomSceneRenderError, SceneRenderError, SceneRenderProfile, SceneRenderProgress,
-    SceneRenderer, next_scene_output_path, next_scene_output_path_for_profile, render_scene_frame,
-    render_scene_graph_frame, render_scene_graph_to_video,
-    render_scene_graph_to_video_with_progress,
+    SceneRenderer, clear_scene_asset_roots, next_scene_output_path,
+    next_scene_output_path_for_profile, render_scene_frame, render_scene_graph_frame,
+    render_scene_graph_to_video, render_scene_graph_to_video_with_progress, set_scene_asset_roots,
+};
+pub use world::error::{MotionLoomWorldError, WorldAssetError, WorldError, WorldParseError};
+pub use world::{
+    CharacterDesignGpuViewport, CharacterDesignViewportFrame, GlbLoadError, GlbMeshData,
+    GlbMetadata, WorldAction, WorldActionBone, WorldActionPose, WorldActor, WorldApplyAction,
+    WorldBackground, WorldBackgroundFit, WorldBoneAxis, WorldBoneAxisMap, WorldCamera,
+    WorldCameraControl, WorldCameraMode, WorldCameraProjection, WorldFrameRenderer,
+    WorldGpuDiagnostics, WorldGraph, WorldMaterial, WorldMaterialStyle, WorldModelProfile,
+    WorldNode, WorldPathStyle, WorldPlay, WorldPresent, WorldProfileRetarget, WorldRenderError,
+    WorldRenderProgress, WorldRetarget, WorldRetargetMap, WorldSpritePlayback, WorldTime,
+    diagnose_world_glb_gpu_plan, diagnose_world_graph_actor_gpu_frame, is_world_graph_script,
+    load_glb_mesh_data, load_glb_metadata, parse_glb_mesh_data, parse_glb_metadata,
+    parse_world_graph_script, render_world_frame, render_world_graph_to_video_with_progress,
 };
 
 /// FrameContext carries the minimum timeline state needed for effect evaluation.

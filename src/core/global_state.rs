@@ -16,7 +16,7 @@ use gpui::EventEmitter;
 use log::info;
 use motionloom::{
     LayerEffectClip as MotionLoomLayerEffectClip, RuntimeFrameOutput, RuntimeProgram,
-    compile_runtime_program, is_graph_script, keyframe, parse_graph_script, transitions,
+    compile_runtime_program, is_graph_script, keyframe, parse_process_graph_script, transitions,
 };
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -49,7 +49,7 @@ fn motionloom_runtime_for_script(script: &str) -> Option<RuntimeProgram> {
     {
         return existing.clone();
     }
-    let compiled = parse_graph_script(script)
+    let compiled = parse_process_graph_script(script)
         .ok()
         .and_then(|graph| compile_runtime_program(graph).ok());
     if let Ok(mut cache) = motionloom_runtime_cache().lock() {
@@ -1704,6 +1704,9 @@ impl ExportColorMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewFps {
+    Fps5,
+    Fps10,
+    Fps15,
     Fps24,
     Fps25,
     Fps30,
@@ -1720,6 +1723,9 @@ pub enum PreviewFps {
 impl PreviewFps {
     pub fn from_value(value: u32) -> Option<Self> {
         match value {
+            5 => Some(PreviewFps::Fps5),
+            10 => Some(PreviewFps::Fps10),
+            15 => Some(PreviewFps::Fps15),
             24 => Some(PreviewFps::Fps24),
             25 => Some(PreviewFps::Fps25),
             30 => Some(PreviewFps::Fps30),
@@ -1737,6 +1743,9 @@ impl PreviewFps {
 
     pub fn value(self) -> u32 {
         match self {
+            PreviewFps::Fps5 => 5,
+            PreviewFps::Fps10 => 10,
+            PreviewFps::Fps15 => 15,
             PreviewFps::Fps24 => 24,
             PreviewFps::Fps25 => 25,
             PreviewFps::Fps30 => 30,
@@ -1748,6 +1757,109 @@ impl PreviewFps {
             PreviewFps::Fps100 => 100,
             PreviewFps::Fps120 => 120,
             PreviewFps::Fps144 => 144,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewResolution {
+    Full,
+    P720,
+    P480,
+    P360,
+    P240,
+    P144,
+}
+
+impl PreviewResolution {
+    pub fn from_max_dim(max_dim: Option<u32>) -> Self {
+        match max_dim {
+            None => PreviewResolution::Full,
+            Some(720) => PreviewResolution::P720,
+            Some(480) => PreviewResolution::P480,
+            Some(360) => PreviewResolution::P360,
+            Some(240) => PreviewResolution::P240,
+            Some(144) => PreviewResolution::P144,
+            _ => PreviewResolution::P480,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PreviewResolution::Full => "Preview Full",
+            PreviewResolution::P720 => "Preview 720p",
+            PreviewResolution::P480 => "Preview 480p",
+            PreviewResolution::P360 => "Preview 360p",
+            PreviewResolution::P240 => "Preview 240p",
+            PreviewResolution::P144 => "Preview 144p",
+        }
+    }
+
+    pub fn settings_label(self) -> &'static str {
+        match self {
+            PreviewResolution::Full => "Full",
+            PreviewResolution::P720 => "720p",
+            PreviewResolution::P480 => "480p",
+            PreviewResolution::P360 => "360p",
+            PreviewResolution::P240 => "240p",
+            PreviewResolution::P144 => "144p",
+        }
+    }
+
+    pub fn max_dim(self) -> Option<u32> {
+        match self {
+            PreviewResolution::Full => None,
+            PreviewResolution::P720 => Some(720),
+            PreviewResolution::P480 => Some(480),
+            PreviewResolution::P360 => Some(360),
+            PreviewResolution::P240 => Some(240),
+            PreviewResolution::P144 => Some(144),
+        }
+    }
+
+    pub fn scale_for_canvas(self, canvas_w: f32, canvas_h: f32) -> Option<f32> {
+        let target_h = self.max_dim()? as f32;
+        if !canvas_w.is_finite() || !canvas_h.is_finite() || canvas_h <= 0.0 {
+            return None;
+        }
+        Some((target_h / canvas_h).clamp(0.01, 1.0))
+    }
+
+    pub fn max_dim_for_canvas(self, canvas_w: f32, canvas_h: f32) -> Option<u32> {
+        let scale = self.scale_for_canvas(canvas_w, canvas_h)?;
+        let larger_side = canvas_w.max(canvas_h);
+        if !larger_side.is_finite() || larger_side <= 0.0 {
+            return None;
+        }
+        Some((larger_side * scale).round().clamp(2.0, u32::MAX as f32) as u32)
+    }
+
+    pub fn size_for_canvas(self, canvas_w: f32, canvas_h: f32) -> Option<(u32, u32)> {
+        fn even_dim(value: f32) -> u32 {
+            let mut dim = value.round().clamp(2.0, u32::MAX as f32) as u32;
+            if dim % 2 != 0 {
+                dim = dim.saturating_add(1);
+            }
+            dim
+        }
+
+        let scale = self.scale_for_canvas(canvas_w, canvas_h)?;
+        if !canvas_w.is_finite() || !canvas_h.is_finite() || canvas_w <= 0.0 || canvas_h <= 0.0 {
+            return None;
+        }
+        Some((even_dim(canvas_w * scale), even_dim(canvas_h * scale)))
+    }
+
+    pub fn pixelate(self) -> bool {
+        matches!(self, PreviewResolution::P144)
+    }
+
+    pub fn proxy_quality(self) -> Option<PreviewQuality> {
+        match self {
+            PreviewResolution::P480 => Some(PreviewQuality::High),
+            PreviewResolution::P360 => Some(PreviewQuality::Medium),
+            PreviewResolution::P144 => Some(PreviewQuality::Low),
+            PreviewResolution::Full | PreviewResolution::P720 | PreviewResolution::P240 => None,
         }
     }
 }
@@ -1811,15 +1923,6 @@ impl MacPreviewRenderMode {
 }
 
 impl PreviewQuality {
-    pub fn label(self) -> &'static str {
-        match self {
-            PreviewQuality::Full => "Preview Full",
-            PreviewQuality::High => "Preview Medium",
-            PreviewQuality::Medium => "Preview Low",
-            PreviewQuality::Low => "Preview Super Low",
-        }
-    }
-
     pub fn max_dim(self) -> Option<u32> {
         match self {
             PreviewQuality::Full => None,
@@ -1827,10 +1930,6 @@ impl PreviewQuality {
             PreviewQuality::Medium => Some(360),
             PreviewQuality::Low => Some(144),
         }
-    }
-
-    pub fn pixelate(self) -> bool {
-        matches!(self, PreviewQuality::Low)
     }
 }
 
@@ -1945,6 +2044,7 @@ pub struct GlobalState {
     pub selected_layer_effect_clip_id: Option<u64>,
     pub selected_semantic_clip_id: Option<u64>,
     pub project_file_path: Option<PathBuf>,
+    pub motionloom_asset_root: Option<PathBuf>,
 
     // --- Timeline Tracks ---
     pub v1_clips: Vec<Clip>,
@@ -1988,6 +2088,7 @@ pub struct GlobalState {
     // Runtime diagnostic: estimated on-screen present FPS and present drops.
     pub preview_present_fps: f32,
     pub preview_present_dropped_frames: u64,
+    pub preview_resolution: PreviewResolution,
     pub preview_quality: PreviewQuality,
     pub proxy_render_mode_high: ProxyRenderMode,
     pub proxy_render_mode_medium: ProxyRenderMode,
@@ -2054,6 +2155,7 @@ impl Default for GlobalState {
             selected_layer_effect_clip_id: None,
             selected_semantic_clip_id: None,
             project_file_path: None,
+            motionloom_asset_root: None,
 
             v1_clips: Vec::new(),
             // Keep A1 reserved for main-track linked audio by default.
@@ -2088,10 +2190,11 @@ impl Default for GlobalState {
             export_progress_total: Duration::ZERO,
             export_eta: None,
             export_color_mode: ExportColorMode::Hybrid,
-            preview_fps: PreviewFps::Fps60,
+            preview_fps: PreviewFps::Fps30,
             preview_video_input_fps: 0.0,
             preview_present_fps: 0.0,
             preview_present_dropped_frames: 0,
+            preview_resolution: PreviewResolution::P480,
             preview_quality: PreviewQuality::Full,
             proxy_render_mode_high: ProxyRenderMode::Nv12Surface,
             proxy_render_mode_medium: ProxyRenderMode::Nv12Surface,
@@ -2191,6 +2294,16 @@ impl GlobalState {
         self.motionloom_scene_render_revision =
             self.motionloom_scene_render_revision.saturating_add(1);
         Ok(self.motionloom_scene_render_revision)
+    }
+
+    pub fn set_motionloom_asset_root(&mut self, root: Option<PathBuf>) -> bool {
+        let changed = self.motionloom_asset_root != root;
+        self.motionloom_asset_root = root.clone();
+        match root {
+            Some(root) => motionloom::set_scene_asset_roots(vec![root]),
+            None => motionloom::clear_scene_asset_roots(),
+        }
+        changed
     }
 
     // Ensure the first audio lane exists so V1-linked audio can always be inserted on A1.
@@ -2777,6 +2890,36 @@ impl GlobalState {
             }
         }
         best.unwrap_or((0.0, 0.0, 0.0, 0.0))
+    }
+
+    pub fn layer_bloom_at(&self, timeline_time: Duration) -> Option<(f32, f32, f32)> {
+        let mut best: Option<(f32, f32, f32)> = None;
+        let mut best_weighted_intensity = 0.0_f32;
+        for layer in &self.layer_effect_clips {
+            let end = layer.end();
+            if timeline_time < layer.start || timeline_time >= end {
+                continue;
+            }
+            let strength = layer.envelope_factor_at(timeline_time).clamp(0.0, 1.0);
+            if let Some(runtime_out) = motionloom_output_for_layer(layer, timeline_time)
+                && let (Some(threshold), Some(intensity), Some(sigma)) = (
+                    runtime_out.layer_bloom_threshold,
+                    runtime_out.layer_bloom_intensity,
+                    runtime_out.layer_bloom_sigma,
+                )
+            {
+                let weighted_intensity = (intensity.clamp(0.0, 8.0) * strength).clamp(0.0, 8.0);
+                if weighted_intensity > best_weighted_intensity && sigma > 0.001 {
+                    best_weighted_intensity = weighted_intensity;
+                    best = Some((
+                        threshold.clamp(0.0, 1.0),
+                        weighted_intensity,
+                        sigma.clamp(0.0, 64.0),
+                    ));
+                }
+            }
+        }
+        best
     }
 
     pub fn layer_transition_dissolve_mix_at(&self, timeline_time: Duration) -> Option<f32> {
@@ -4009,6 +4152,10 @@ impl GlobalState {
         if let Some(value) = PreviewFps::from_value(fps) {
             self.preview_fps = value;
         }
+    }
+
+    pub fn set_preview_resolution(&mut self, resolution: PreviewResolution) {
+        self.preview_resolution = resolution;
     }
 
     pub fn set_preview_video_input_fps(&mut self, fps: f32) {
@@ -9645,6 +9792,33 @@ impl GlobalState {
     }
 
     // --Export-------------------------
+    pub fn export_error_summary(err: &str) -> String {
+        let mut fallback: Option<String> = None;
+        for raw in err.lines() {
+            let line = raw.trim();
+            if line.is_empty() {
+                continue;
+            }
+            fallback.get_or_insert_with(|| line.to_string());
+
+            let lower = line.to_ascii_lowercase();
+            let is_generic_ffmpeg_header =
+                line == "FFmpeg failed." || line == "STDERR:" || lower.contains("ffmpeg failed");
+            if is_generic_ffmpeg_header {
+                continue;
+            }
+
+            let mut summary = line.to_string();
+            const MAX_LEN: usize = 220;
+            if summary.chars().count() > MAX_LEN {
+                summary = summary.chars().take(MAX_LEN).collect::<String>();
+                summary.push_str("...");
+            }
+            return summary;
+        }
+        fallback.unwrap_or_else(|| "Export failed.".to_string())
+    }
+
     pub fn export_begin(&mut self, out_path: String, total_duration: Duration) {
         self.export_in_progress = true;
         self.export_last_error = None;
@@ -9685,13 +9859,8 @@ impl GlobalState {
 
     pub fn export_fail(&mut self, err: String) {
         self.export_in_progress = false;
-        // Surface the first error line in the timeline status area for quick diagnosis.
-        let first_line = err
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .unwrap_or("Export failed.");
-        self.ui_notice = Some(format!("Export failed: {}", first_line));
+        let summary = Self::export_error_summary(&err);
+        self.ui_notice = Some(format!("Export failed: {}", summary));
         self.export_last_error = Some(err);
         self.export_eta = None;
     }
@@ -9819,4 +9988,52 @@ fn round_up_to_step(value: Duration, step: Duration) -> Duration {
     let s = step.as_secs().max(1);
     let rounded = v.div_ceil(s) * s;
     Duration::from_secs(rounded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::motionloom_runtime_for_script;
+
+    const PROCESS_LAYER_FX_SCRIPT: &str = r#"
+<Graph fps={60} size={[1920,1080]}>
+  <Process id="layer_fx">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_hsla_overlay" kind="compute"
+          effect="hsla_overlay"
+          in={["src"]} out={["out"]}
+          params={{
+            hue: "210.0",
+            saturation: "0.70",
+            lightness: "0.41",
+            alpha: "0.45"
+          }} />
+  </Process>
+  <Present from="layer_fx" />
+</Graph>
+"#;
+
+    const LEGACY_LAYER_FX_SCRIPT: &str = r#"
+<Graph fps={60} size={[1920,1080]}>
+  <Input id="clip0" type="video" from="input:clip0" />
+  <Tex id="src" fmt="rgba16f" from="clip0" />
+  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+  <Pass id="fx_hsla_overlay" kind="compute"
+        effect="hsla_overlay"
+        in={["src"]} out={["out"]}
+        params={{ hue: "210.0", saturation: "0.70", lightness: "0.41", alpha: "0.45" }} />
+  <Present from="out" />
+</Graph>
+"#;
+
+    #[test]
+    fn motionloom_runtime_accepts_process_layer_fx_script() {
+        assert!(motionloom_runtime_for_script(PROCESS_LAYER_FX_SCRIPT).is_some());
+    }
+
+    #[test]
+    fn motionloom_runtime_rejects_legacy_root_level_layer_fx_script() {
+        assert!(motionloom_runtime_for_script(LEGACY_LAYER_FX_SCRIPT).is_none());
+    }
 }

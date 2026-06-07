@@ -25,12 +25,12 @@ use gpui_component::{
 };
 use image::{ImageBuffer, Rgba};
 use motionloom::{
-    AnimationFrameRenderer, AnimationGraph, AnimationPathStyle, AnimationRenderProgress,
-    RuntimeProgram, SceneRenderProfile, SceneRenderProgress, compile_runtime_program,
-    is_animation_graph_script, is_graph_script, load_glb_mesh_data,
-    next_scene_output_path_for_profile, parse_animation_graph_script, parse_graph_script,
-    render_animation_graph_to_video_with_progress, render_scene_graph_frame,
-    render_scene_graph_to_video_with_progress,
+    GraphScript, MotionLoomDocument, MotionLoomRenderProgress, RuntimeProgram, SceneRenderProfile,
+    WorldFrameRenderer, WorldGraph, WorldPathStyle, compile_runtime_program, is_graph_script,
+    is_world_graph_script, load_glb_mesh_data, next_scene_output_path_for_profile,
+    parse_graph_script, parse_motionloom_document, parse_process_graph_script,
+    parse_world_graph_script, render_motionloom_document_to_video_with_progress,
+    render_scene_graph_frame,
 };
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -44,6 +44,7 @@ use crate::ui::motionloom_templates::LayerEffectTemplateKind;
 const THUMB_MAX_DIM: u32 = 640;
 const SCENE_RENDER_PROGRESS_EVERY_FRAMES: u32 = 10;
 const SCENE_RENDER_PROGRESS_POLL_MS: u64 = 120;
+const SCENE_RENDER_LOG_MAX_LINES: usize = 10;
 const SCENE_LIVE_PREVIEW_144P_MAX_DIM: u32 = 256;
 const SCENE_LIVE_PREVIEW_360P_MAX_DIM: u32 = 640;
 const SCENE_LIVE_PREVIEW_480P_MAX_DIM: u32 = 854;
@@ -51,13 +52,14 @@ const SCENE_LIVE_SCROLL_RENDER_DEBOUNCE_MS: u64 = 2000;
 const SCENE_LIVE_INPUT_RENDER_DEBOUNCE_MS: u64 = 120;
 const SCENE_LIVE_PRERENDER_MAX_FRAMES: u32 = 240;
 const SCENE_LIVE_PRERENDER_POLL_MS: u64 = 16;
+const SCENE_LIVE_IDLE_POLL_MS: u64 = 120;
 const DEFAULT_SCENE_LIVE_NODE_ID: &str = "iris_outer_soft";
 const DEFAULT_SCENE_LIVE_ATTR: &str = "x";
 
 type SceneLivePreviewCacheKey = (u64, u32, SceneLivePreviewQuality, u32, u32);
 
-struct AnimationLivePreviewRequest {
-    graph: AnimationGraph,
+struct WorldLivePreviewRequest {
+    graph: WorldGraph,
     frame: u32,
     asset_root: PathBuf,
     response_tx: Sender<Result<(u32, u32, Vec<u8>), String>>,
@@ -118,6 +120,9 @@ enum SceneRenderMode {
     CompatibilityCpu,
     GpuNativeH264,
     GpuNativeProRes,
+    GpuNativeProRes4444,
+    GpuNativePngSequence,
+    GpuNativeCurrentFramePng,
 }
 
 impl SceneRenderMode {
@@ -126,6 +131,9 @@ impl SceneRenderMode {
             SceneRenderMode::CompatibilityCpu => "Compatibility Render (CPU)",
             SceneRenderMode::GpuNativeH264 => "GPU Render",
             SceneRenderMode::GpuNativeProRes => "GPU Render (ProRes)",
+            SceneRenderMode::GpuNativeProRes4444 => "GPU Render (ProRes 4444 Alpha)",
+            SceneRenderMode::GpuNativePngSequence => "GPU Render (PNG Sequence)",
+            SceneRenderMode::GpuNativeCurrentFramePng => "GPU Render Current Frame (PNG)",
         }
     }
 
@@ -134,7 +142,23 @@ impl SceneRenderMode {
             SceneRenderMode::CompatibilityCpu => SceneRenderProfile::Cpu,
             SceneRenderMode::GpuNativeH264 => SceneRenderProfile::Gpu,
             SceneRenderMode::GpuNativeProRes => SceneRenderProfile::GpuProRes,
+            SceneRenderMode::GpuNativeProRes4444 => SceneRenderProfile::GpuProRes4444,
+            SceneRenderMode::GpuNativePngSequence => SceneRenderProfile::GpuPngSequence,
+            SceneRenderMode::GpuNativeCurrentFramePng => SceneRenderProfile::Gpu,
         }
+    }
+
+    const fn adds_media_pool_clip(self) -> bool {
+        !matches!(self, SceneRenderMode::GpuNativePngSequence)
+    }
+
+    const fn preserves_alpha_output(self) -> bool {
+        matches!(
+            self,
+            SceneRenderMode::GpuNativeProRes4444
+                | SceneRenderMode::GpuNativePngSequence
+                | SceneRenderMode::GpuNativeCurrentFramePng
+        )
     }
 }
 
@@ -432,12 +456,14 @@ pub struct MotionLoomPage {
     scene_live_render_defer_token: u64,
     scene_live_async_render_key: Option<SceneLivePreviewCacheKey>,
     scene_live_async_render_token: u64,
-    animation_live_preview_tx: Sender<AnimationLivePreviewRequest>,
+    world_live_preview_tx: Sender<WorldLivePreviewRequest>,
     scene_live_prerender_token: u64,
     scene_live_prerendering: bool,
     scene_live_prerender_progress: Option<(u32, u32)>,
     scene_live_prerender_cancel: Option<Arc<AtomicBool>>,
     scene_render_progress: Option<SceneRenderProgressUi>,
+    scene_render_log: Vec<String>,
+    scene_render_log_collapsed: bool,
     scene_live_knob_node_id: String,
     scene_live_knob_attr: String,
     scene_live_knob_input: Option<Entity<InputState>>,
@@ -458,6 +484,8 @@ pub struct MotionLoomPage {
     scene_template_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     scene_template_selected_label: String,
     scene_template_modal_open: bool,
+    scene_render_modal_open: bool,
+    pending_non_alpha_scene_render_mode: Option<SceneRenderMode>,
     glb_inspector_modal_open: bool,
     glb_inspector_report: Option<GlbSkeletonInspectReport>,
     // Template picker state
@@ -508,12 +536,14 @@ impl MotionLoomPage {
             scene_live_render_defer_token: 0,
             scene_live_async_render_key: None,
             scene_live_async_render_token: 0,
-            animation_live_preview_tx: Self::spawn_animation_live_preview_worker(),
+            world_live_preview_tx: Self::spawn_world_live_preview_worker(),
             scene_live_prerender_token: 0,
             scene_live_prerendering: false,
             scene_live_prerender_progress: None,
             scene_live_prerender_cancel: None,
             scene_render_progress: None,
+            scene_render_log: Vec::new(),
+            scene_render_log_collapsed: false,
             scene_live_knob_node_id: DEFAULT_SCENE_LIVE_NODE_ID.to_string(),
             scene_live_knob_attr: DEFAULT_SCENE_LIVE_ATTR.to_string(),
             scene_live_knob_input: None,
@@ -536,6 +566,8 @@ impl MotionLoomPage {
                 .map(|template| template.label.to_string())
                 .unwrap_or_default(),
             scene_template_modal_open: false,
+            scene_render_modal_open: false,
+            pending_non_alpha_scene_render_mode: None,
             glb_inspector_modal_open: false,
             glb_inspector_report: None,
             template_modal_open: false,
@@ -609,7 +641,7 @@ impl MotionLoomPage {
         Ok(Arc::new(RenderImage::new(frames)))
     }
 
-    fn animation_asset_root() -> PathBuf {
+    fn world_asset_root() -> PathBuf {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         for candidate in [
             cwd.join("examples/motionloom/world"),
@@ -624,17 +656,17 @@ impl MotionLoomPage {
         PathBuf::from("examples/motionloom/world")
     }
 
-    fn spawn_animation_live_preview_worker() -> Sender<AnimationLivePreviewRequest> {
-        let (request_tx, request_rx) = mpsc::channel::<AnimationLivePreviewRequest>();
+    fn spawn_world_live_preview_worker() -> Sender<WorldLivePreviewRequest> {
+        let (request_tx, request_rx) = mpsc::channel::<WorldLivePreviewRequest>();
         std::thread::spawn(move || {
-            let mut renderer = AnimationFrameRenderer::new();
+            let mut renderer = WorldFrameRenderer::new();
             while let Ok(mut request) = request_rx.recv() {
                 while let Ok(next_request) = request_rx.try_recv() {
                     request = next_request;
                 }
                 let result = renderer
                     .render_frame_gpu(&request.graph, request.frame, &request.asset_root)
-                    .map_err(|err| format!("Animation live render error: {err}"))
+                    .map_err(|err| format!("World live render error: {err}"))
                     .map(|rgba| {
                         let (w, h) = rgba.dimensions();
                         let mut bgra = rgba.into_raw();
@@ -649,13 +681,36 @@ impl MotionLoomPage {
         request_tx
     }
 
-    fn uses_pure_animation_renderer(raw: &str) -> bool {
-        is_animation_graph_script(raw)
+    fn uses_pure_world_renderer(raw: &str) -> bool {
+        is_world_graph_script(raw)
             && !raw.contains("<Tex")
             && !raw.contains("<Pass")
             && !raw.contains("<Layer")
             && !raw.contains("<Scene")
             && !raw.contains("<Clip")
+    }
+
+    fn scene_live_poll_ms(preview_playing: bool) -> u64 {
+        if preview_playing {
+            SCENE_LIVE_PRERENDER_POLL_MS
+        } else {
+            SCENE_LIVE_IDLE_POLL_MS
+        }
+    }
+
+    fn render_scene_live_preview_bgra(
+        graph: &GraphScript,
+        frame: u32,
+    ) -> Result<(u32, u32, Vec<u8>, Option<String>), String> {
+        let rgba = render_scene_graph_frame(graph, frame, SceneRenderProfile::Gpu)
+            .map_err(|err| format!("Scene live render error: GPU preview failed: {err}"))?;
+
+        let (w, h) = rgba.dimensions();
+        let mut bgra = rgba.into_raw();
+        for px in bgra.chunks_mut(4) {
+            px.swap(0, 2);
+        }
+        Ok((w, h, bgra, None))
     }
 
     fn script_hash(script: &str) -> u64 {
@@ -787,8 +842,8 @@ impl MotionLoomPage {
             }
             return Ok(None);
         }
-        if Self::uses_pure_animation_renderer(&raw) {
-            return self.animation_live_preview_image(&raw, frame, cx);
+        if Self::uses_pure_world_renderer(&raw) {
+            return self.world_live_preview_image(&raw, frame, cx);
         }
 
         let graph = parse_graph_script(&raw).map_err(|err| {
@@ -842,32 +897,23 @@ impl MotionLoomPage {
             self.scene_live_async_render_key = Some(key);
             self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
             let token = self.scene_live_async_render_token;
-            let (tx, rx) = mpsc::channel::<Result<(u32, u32, Vec<u8>), String>>();
+            let (tx, rx) = mpsc::channel::<Result<(u32, u32, Vec<u8>, Option<String>), String>>();
             std::thread::spawn(move || {
-                let result =
-                    render_scene_graph_frame(&preview_graph, frame, SceneRenderProfile::Gpu)
-                        .map_err(|err| format!("Scene live render error: {err}"))
-                        .map(|rgba| {
-                            let (w, h) = rgba.dimensions();
-                            let mut bgra = rgba.into_raw();
-                            for px in bgra.chunks_mut(4) {
-                                px.swap(0, 2);
-                            }
-                            (w, h, bgra)
-                        });
+                let result = Self::render_scene_live_preview_bgra(&preview_graph, frame);
                 let _ = tx.send(result);
             });
             cx.spawn(async move |view, cx| {
+                let mut poll_ms = SCENE_LIVE_PRERENDER_POLL_MS;
                 loop {
-                    Timer::after(Duration::from_millis(SCENE_LIVE_PRERENDER_POLL_MS)).await;
                     let mut done = false;
                     let _ = view.update(cx, |this, cx| {
+                        poll_ms = Self::scene_live_poll_ms(this.preview_playing);
                         if this.scene_live_async_render_token != token {
                             done = true;
                             return;
                         }
                         match rx.try_recv() {
-                            Ok(Ok((w, h, bgra))) => {
+                            Ok(Ok((w, h, bgra, warning))) => {
                                 this.scene_live_async_render_key = None;
                                 if let Ok(image) = Self::render_image_from_bgra(w, h, bgra) {
                                     this.scene_live_preview_cache_key = Some(key);
@@ -876,18 +922,25 @@ impl MotionLoomPage {
                                     this.scene_live_preview_frame_cache
                                         .insert(key, (image, w, h));
                                 }
+                                if let Some(warning) = warning {
+                                    this.push_scene_render_log(warning);
+                                }
                                 done = true;
                                 cx.notify();
                             }
                             Ok(Err(err)) => {
                                 this.scene_live_async_render_key = None;
-                                this.status_line = err;
+                                this.status_line = err.clone();
+                                this.push_scene_render_log(format!("LIVE PREVIEW ERROR: {err}"));
                                 done = true;
                                 cx.notify();
                             }
                             Err(mpsc::TryRecvError::Empty) => {}
                             Err(mpsc::TryRecvError::Disconnected) => {
                                 this.scene_live_async_render_key = None;
+                                this.push_scene_render_log(
+                                    "LIVE PREVIEW ERROR: render worker disconnected.".to_string(),
+                                );
                                 done = true;
                                 cx.notify();
                             }
@@ -896,6 +949,7 @@ impl MotionLoomPage {
                     if done {
                         break;
                     }
+                    Timer::after(Duration::from_millis(poll_ms)).await;
                 }
             })
             .detach();
@@ -906,15 +960,15 @@ impl MotionLoomPage {
         Ok(None)
     }
 
-    fn animation_live_preview_image(
+    fn world_live_preview_image(
         &mut self,
         raw: &str,
         frame: u32,
         cx: &mut Context<Self>,
     ) -> Result<Option<(Arc<RenderImage>, u32, u32)>, String> {
-        let graph = parse_animation_graph_script(raw).map_err(|err| {
+        let graph = parse_world_graph_script(raw).map_err(|err| {
             format!(
-                "Animation live parse error at line {}: {}",
+                "World live parse error at line {}: {}",
                 err.line, err.message
             )
         })?;
@@ -958,23 +1012,24 @@ impl MotionLoomPage {
             self.scene_live_async_render_key = Some(key);
             self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
             let token = self.scene_live_async_render_token;
-            let asset_root = Self::animation_asset_root();
+            let asset_root = Self::world_asset_root();
             let (tx, rx) = mpsc::channel::<Result<(u32, u32, Vec<u8>), String>>();
-            let request = AnimationLivePreviewRequest {
+            let request = WorldLivePreviewRequest {
                 graph: preview_graph,
                 frame,
                 asset_root,
                 response_tx: tx,
             };
-            if let Err(err) = self.animation_live_preview_tx.send(request) {
-                self.animation_live_preview_tx = Self::spawn_animation_live_preview_worker();
-                let _ = self.animation_live_preview_tx.send(err.0);
+            if let Err(err) = self.world_live_preview_tx.send(request) {
+                self.world_live_preview_tx = Self::spawn_world_live_preview_worker();
+                let _ = self.world_live_preview_tx.send(err.0);
             }
             cx.spawn(async move |view, cx| {
+                let mut poll_ms = SCENE_LIVE_PRERENDER_POLL_MS;
                 loop {
-                    Timer::after(Duration::from_millis(SCENE_LIVE_PRERENDER_POLL_MS)).await;
                     let mut done = false;
                     let _ = view.update(cx, |this, cx| {
+                        poll_ms = Self::scene_live_poll_ms(this.preview_playing);
                         if this.scene_live_async_render_token != token {
                             done = true;
                             return;
@@ -994,13 +1049,17 @@ impl MotionLoomPage {
                             }
                             Ok(Err(err)) => {
                                 this.scene_live_async_render_key = None;
-                                this.status_line = err;
+                                this.status_line = err.clone();
+                                this.push_scene_render_log(format!("LIVE PREVIEW ERROR: {err}"));
                                 done = true;
                                 cx.notify();
                             }
                             Err(mpsc::TryRecvError::Empty) => {}
                             Err(mpsc::TryRecvError::Disconnected) => {
                                 this.scene_live_async_render_key = None;
+                                this.push_scene_render_log(
+                                    "LIVE PREVIEW ERROR: render worker disconnected.".to_string(),
+                                );
                                 done = true;
                                 cx.notify();
                             }
@@ -1009,6 +1068,7 @@ impl MotionLoomPage {
                     if done {
                         break;
                     }
+                    Timer::after(Duration::from_millis(poll_ms)).await;
                 }
             })
             .detach();
@@ -1074,7 +1134,7 @@ impl MotionLoomPage {
     }
 
     fn scene_live_filter_tags() -> &'static [&'static str] {
-        &["Group", "Actor", "Action", "Pose", "ApplyAction"]
+        &["Group", "Part", "Actor", "Action", "Pose", "ApplyAction"]
     }
 
     fn synthetic_scene_live_target_id(tag_name: &str, ordinal: usize) -> String {
@@ -1220,6 +1280,7 @@ impl MotionLoomPage {
             tag,
             "Character"
                 | "Group"
+                | "Part"
                 | "Actor"
                 | "Action"
                 | "Pose"
@@ -1260,6 +1321,13 @@ impl MotionLoomPage {
                     "transformOriginX",
                     "transformOriginY",
                     "opacity",
+                ] {
+                    Self::push_scene_live_attr(&mut attrs, attr);
+                }
+            }
+            "Part" => {
+                for attr in [
+                    "x", "y", "rotation", "scale", "anchorX", "anchorY", "opacity",
                 ] {
                     Self::push_scene_live_attr(&mut attrs, attr);
                 }
@@ -1748,13 +1816,17 @@ impl MotionLoomPage {
     }
 
     fn script_playback_spec(&self) -> Option<(f32, u32)> {
-        if Self::uses_pure_animation_renderer(&self.script_text) {
-            let graph = parse_animation_graph_script(&self.script_text).ok()?;
+        if Self::uses_pure_world_renderer(&self.script_text) {
+            let graph = parse_world_graph_script(&self.script_text).ok()?;
             let fps = graph.fps;
             let total = ((graph.duration_ms as f64 / 1000.0) * fps as f64).round() as u32;
             return Some((fps, total.max(1)));
         }
-        let graph = parse_graph_script(&self.script_text).ok()?;
+        let graph = if self.script_text.contains("<Process") {
+            parse_process_graph_script(&self.script_text).ok()?
+        } else {
+            parse_graph_script(&self.script_text).ok()?
+        };
         let fps = graph.fps;
         let total = ((graph.duration_ms as f64 / 1000.0) * fps as f64).round() as u32;
         Some((fps, total.max(1)))
@@ -1822,7 +1894,17 @@ impl MotionLoomPage {
             if step > 0 {
                 this.preview_frame_accum -= step as f32;
                 let frame_count = this.playback_frame_count().max(1);
-                this.preview_frame = (this.preview_frame + step) % frame_count;
+                let last_frame = frame_count.saturating_sub(1);
+                let next_frame = this.preview_frame.saturating_add(step);
+                if next_frame >= last_frame {
+                    this.stop_preview_playback_at_end(frame_count);
+                    this.status_line =
+                        format!("Playback finished at frame {}.", this.preview_frame);
+                    cx.notify();
+                    return;
+                }
+
+                this.preview_frame = next_frame;
                 cx.notify();
             }
 
@@ -1834,8 +1916,8 @@ impl MotionLoomPage {
 
     fn start_scene_live_prerender(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let raw = self.script_text.clone();
-        if Self::uses_pure_animation_renderer(&raw) {
-            self.start_animation_live_prerender(raw, window, cx);
+        if Self::uses_pure_world_renderer(&raw) {
+            self.start_world_live_prerender(raw, window, cx);
             return;
         }
         let Ok(graph) = parse_graph_script(&raw) else {
@@ -1925,11 +2007,12 @@ impl MotionLoomPage {
         });
 
         cx.spawn_in(window, async move |view, window| {
+            let mut poll_ms = SCENE_LIVE_PRERENDER_POLL_MS;
             loop {
-                Timer::after(Duration::from_millis(SCENE_LIVE_PRERENDER_POLL_MS)).await;
                 let mut done = false;
                 let mut should_notify = false;
                 let _ = view.update_in(window, |this, _window, cx| {
+                    poll_ms = Self::scene_live_poll_ms(this.preview_playing);
                     if this.scene_live_prerender_token != token {
                         done = true;
                         return;
@@ -1963,12 +2046,25 @@ impl MotionLoomPage {
                                 this.scene_live_prerendering = false;
                                 this.scene_live_prerender_progress = None;
                                 this.scene_live_prerender_cancel = None;
+                                let finished_frame_count = result.as_ref().map(|frames| *frames).unwrap_or(total_frames);
                                 match result {
                                     Ok(frames) => {
-                                        this.status_line =
-                                            format!("RAM preview cached {} frame(s).", frames);
+                                        if this.preview_playing {
+                                            this.stop_preview_playback_at_end(frames.max(1));
+                                            this.status_line = format!(
+                                                "RAM preview cached {} frame(s); playback stopped at end.",
+                                                frames
+                                            );
+                                        } else {
+                                            this.status_line =
+                                                format!("RAM preview cached {} frame(s).", frames);
+                                        }
                                     }
                                     Err(err) => {
+                                        if this.preview_playing {
+                                            this.stop_preview_playback();
+                                            this.preview_frame = finished_frame_count.saturating_sub(1);
+                                        }
                                         this.status_line = format!("RAM preview failed: {err}");
                                     }
                                 }
@@ -1995,18 +2091,19 @@ impl MotionLoomPage {
                 if done {
                     break;
                 }
+                Timer::after(Duration::from_millis(poll_ms)).await;
             }
         })
         .detach();
     }
 
-    fn start_animation_live_prerender(
+    fn start_world_live_prerender(
         &mut self,
         raw: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Ok(graph) = parse_animation_graph_script(&raw) else {
+        let Ok(graph) = parse_world_graph_script(&raw) else {
             return;
         };
         let final_size = graph.render_size.unwrap_or(graph.size);
@@ -2038,7 +2135,7 @@ impl MotionLoomPage {
         self.scene_live_prerendering = true;
         self.scene_live_prerender_progress = Some((0, total_frames));
 
-        enum AnimationLivePrerenderEvent {
+        enum WorldLivePrerenderEvent {
             Frame {
                 frame: u32,
                 width: u32,
@@ -2048,10 +2145,10 @@ impl MotionLoomPage {
             Finished(Result<u32, String>),
         }
 
-        let asset_root = Self::animation_asset_root();
-        let (tx, rx) = mpsc::channel::<AnimationLivePrerenderEvent>();
+        let asset_root = Self::world_asset_root();
+        let (tx, rx) = mpsc::channel::<WorldLivePrerenderEvent>();
         std::thread::spawn(move || {
-            let mut renderer = AnimationFrameRenderer::new();
+            let mut renderer = WorldFrameRenderer::new();
             for frame in 0..total_frames {
                 if cancel.load(Ordering::Relaxed) {
                     return;
@@ -2059,8 +2156,7 @@ impl MotionLoomPage {
                 let rgba = match renderer.render_frame_gpu(&preview_graph, frame, &asset_root) {
                     Ok(rgba) => rgba,
                     Err(err) => {
-                        let _ =
-                            tx.send(AnimationLivePrerenderEvent::Finished(Err(err.to_string())));
+                        let _ = tx.send(WorldLivePrerenderEvent::Finished(Err(err.to_string())));
                         return;
                     }
                 };
@@ -2070,7 +2166,7 @@ impl MotionLoomPage {
                     px.swap(0, 2);
                 }
                 if tx
-                    .send(AnimationLivePrerenderEvent::Frame {
+                    .send(WorldLivePrerenderEvent::Frame {
                         frame,
                         width,
                         height,
@@ -2084,15 +2180,16 @@ impl MotionLoomPage {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            let _ = tx.send(AnimationLivePrerenderEvent::Finished(Ok(total_frames)));
+            let _ = tx.send(WorldLivePrerenderEvent::Finished(Ok(total_frames)));
         });
 
         cx.spawn_in(window, async move |view, window| {
+            let mut poll_ms = SCENE_LIVE_PRERENDER_POLL_MS;
             loop {
-                Timer::after(Duration::from_millis(SCENE_LIVE_PRERENDER_POLL_MS)).await;
                 let mut done = false;
                 let mut should_notify = false;
                 let _ = view.update_in(window, |this, _window, cx| {
+                    poll_ms = Self::scene_live_poll_ms(this.preview_playing);
                     if this.scene_live_prerender_token != token {
                         done = true;
                         return;
@@ -2100,7 +2197,7 @@ impl MotionLoomPage {
 
                     loop {
                         match rx.try_recv() {
-                            Ok(AnimationLivePrerenderEvent::Frame {
+                            Ok(WorldLivePrerenderEvent::Frame {
                                 frame,
                                 width,
                                 height,
@@ -2122,16 +2219,31 @@ impl MotionLoomPage {
                                     should_notify = true;
                                 }
                             }
-                            Ok(AnimationLivePrerenderEvent::Finished(result)) => {
+                            Ok(WorldLivePrerenderEvent::Finished(result)) => {
                                 this.scene_live_prerendering = false;
                                 this.scene_live_prerender_progress = None;
                                 this.scene_live_prerender_cancel = None;
+                                let finished_frame_count = result.as_ref().map(|frames| *frames).unwrap_or(total_frames);
                                 match result {
                                     Ok(frames) => {
-                                        this.status_line =
-                                            format!("GPU RAM preview cached {} frame(s).", frames);
+                                        if this.preview_playing {
+                                            this.stop_preview_playback_at_end(frames.max(1));
+                                            this.status_line = format!(
+                                                "GPU RAM preview cached {} frame(s); playback stopped at end.",
+                                                frames
+                                            );
+                                        } else {
+                                            this.status_line = format!(
+                                                "GPU RAM preview cached {} frame(s).",
+                                                frames
+                                            );
+                                        }
                                     }
                                     Err(err) => {
+                                        if this.preview_playing {
+                                            this.stop_preview_playback();
+                                            this.preview_frame = finished_frame_count.saturating_sub(1);
+                                        }
                                         this.status_line = format!("GPU RAM preview failed: {err}");
                                     }
                                 }
@@ -2158,21 +2270,32 @@ impl MotionLoomPage {
                 if done {
                     break;
                 }
+                Timer::after(Duration::from_millis(poll_ms)).await;
             }
         })
         .detach();
     }
 
     fn step_preview_frame(&mut self, delta: i32) {
-        self.preview_playing = false;
-        self.preview_last_tick = None;
-        self.preview_frame_accum = 0.0;
+        self.stop_preview_playback();
         self.cancel_scene_live_prerender();
         if delta >= 0 {
             self.preview_frame = self.preview_frame.saturating_add(delta as u32);
         } else {
             self.preview_frame = self.preview_frame.saturating_sub(delta.unsigned_abs());
         }
+    }
+
+    fn stop_preview_playback(&mut self) {
+        self.preview_playing = false;
+        self.preview_play_token = self.preview_play_token.wrapping_add(1);
+        self.preview_last_tick = None;
+        self.preview_frame_accum = 0.0;
+    }
+
+    fn stop_preview_playback_at_end(&mut self, frame_count: u32) {
+        self.preview_frame = frame_count.max(1).saturating_sub(1);
+        self.stop_preview_playback();
     }
 
     fn toggle_preview_playback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2425,6 +2548,15 @@ impl MotionLoomPage {
                 Some(SceneRenderMode::GpuNativeH264)
             }
             "gpu_prores" | "gpu-prores" | "prores_gpu" => Some(SceneRenderMode::GpuNativeProRes),
+            "gpu_prores4444" | "gpu-prores4444" | "gpu_prores_4444" | "prores4444_gpu"
+            | "prores_4444" => Some(SceneRenderMode::GpuNativeProRes4444),
+            "gpu_png" | "gpu-png" | "png" | "png_sequence" | "png-sequence" => {
+                Some(SceneRenderMode::GpuNativePngSequence)
+            }
+            "gpu_png_frame" | "gpu-png-frame" | "png_frame" | "png-current-frame"
+            | "current_frame_png" | "current-frame-png" => {
+                Some(SceneRenderMode::GpuNativeCurrentFramePng)
+            }
             "compatibility_cpu" | "compatibility-cpu" | "cpu" | "cpu_render" => {
                 Some(SceneRenderMode::CompatibilityCpu)
             }
@@ -2592,8 +2724,8 @@ impl MotionLoomPage {
             return;
         }
 
-        if Self::uses_pure_animation_renderer(&raw) {
-            match parse_animation_graph_script(&raw) {
+        if Self::uses_pure_world_renderer(&raw) {
+            match parse_world_graph_script(&raw) {
                 Ok(graph) => {
                     self.graph_runtime = None;
                     self.preview_frame = 0;
@@ -2602,7 +2734,7 @@ impl MotionLoomPage {
                     self.preview_frame_accum = 0.0;
                     self.invalidate_scene_live_preview_cache();
                     self.status_line = format!(
-                        "Animation DSL active | worlds={} actors={} fps={:.2} duration={}ms",
+                        "World DSL active | worlds={} actors={} fps={:.2} duration={}ms",
                         graph.worlds.len(),
                         graph
                             .worlds
@@ -2615,16 +2747,19 @@ impl MotionLoomPage {
                 }
                 Err(err) => {
                     self.graph_runtime = None;
-                    self.status_line = format!(
-                        "Animation parse error at line {}: {}",
-                        err.line, err.message
-                    );
+                    self.status_line =
+                        format!("World parse error at line {}: {}", err.line, err.message);
                 }
             }
             return;
         }
 
-        match parse_graph_script(&raw) {
+        let parsed_runtime_graph = if raw.contains("<Process") {
+            parse_process_graph_script(&raw)
+        } else {
+            parse_graph_script(&raw)
+        };
+        match parsed_runtime_graph {
             Ok(graph) => match compile_runtime_program(graph.clone()) {
                 Ok(runtime) => {
                     if !runtime.unsupported_kernels().is_empty() {
@@ -2659,39 +2794,97 @@ impl MotionLoomPage {
         }
     }
 
+    fn push_scene_render_log(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        if self
+            .scene_render_log
+            .last()
+            .is_some_and(|last| last == &message)
+        {
+            return;
+        }
+        self.scene_render_log.push(message);
+        if self.scene_render_log.len() > SCENE_RENDER_LOG_MAX_LINES {
+            let excess = self.scene_render_log.len() - SCENE_RENDER_LOG_MAX_LINES;
+            self.scene_render_log.drain(0..excess);
+        }
+    }
+
     fn render_scene_to_media_pool(
         &mut self,
         mode: SceneRenderMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.scene_render_modal_open = false;
+        self.pending_non_alpha_scene_render_mode = None;
         let raw = self.script_text.clone();
-        if Self::uses_pure_animation_renderer(&raw) {
-            self.render_animation_to_media_pool(raw, mode, window, cx);
+        if mode == SceneRenderMode::GpuNativeCurrentFramePng {
+            self.render_current_frame_png_to_media_pool(raw, window, cx);
             return;
         }
-        let graph = match parse_graph_script(&raw) {
-            Ok(graph) => graph,
+        self.scene_render_log.clear();
+        self.push_scene_render_log(format!("{} requested.", mode.label()));
+        let document = match parse_motionloom_document(&raw) {
+            Ok(document) => document,
             Err(err) => {
                 self.status_line = format!(
-                    "Scene graph parse error at line {}: {}",
+                    "MotionLoom graph parse error at line {}: {}",
                     err.line, err.message
                 );
+                self.push_scene_render_log(format!("ERROR: {}", self.status_line));
+                cx.notify();
                 return;
             }
         };
-        if !graph.has_scene_nodes() {
-            self.status_line =
-                "Graph needs at least one node: <Background>, <Scene>, <Text>, <Image>, <Svg>, <Rect>, <Circle>, <Line>, <Polyline>, <Path>, <Camera>, or <Group>."
-                    .to_string();
-            return;
-        }
+        self.push_scene_render_log("Graph parsed.".to_string());
+        let (duration_ms, fps, world_only) = match &document {
+            MotionLoomDocument::Scene(graph) => {
+                if !graph.has_scene_nodes() && graph.world_sources.is_empty() {
+                    self.status_line =
+                        "Graph needs at least one renderable Scene or World node.".to_string();
+                    self.push_scene_render_log(format!("ERROR: {}", self.status_line));
+                    cx.notify();
+                    return;
+                }
+                (graph.duration_ms, graph.fps, false)
+            }
+            MotionLoomDocument::World(graph) => (graph.duration_ms, graph.fps, true),
+            MotionLoomDocument::Process(graph) => (graph.duration_ms, graph.fps, false),
+            MotionLoomDocument::Mixed(shell)
+                if shell.has_scene || shell.has_world || shell.has_process =>
+            {
+                let graph = match parse_graph_script(&raw) {
+                    Ok(graph) => graph,
+                    Err(err) => {
+                        self.status_line = format!(
+                            "Scene/World graph parse error at line {}: {}",
+                            err.line, err.message
+                        );
+                        self.push_scene_render_log(format!("ERROR: {}", self.status_line));
+                        cx.notify();
+                        return;
+                    }
+                };
+                (graph.duration_ms, graph.fps, false)
+            }
+            MotionLoomDocument::Mixed(_) => {
+                self.status_line =
+                    "Render supports Scene/World graphs and Scene/World + Process graphs. Process-only Layer FX graphs need a source clip and should be exported from the timeline."
+                        .to_string();
+                self.push_scene_render_log(format!("ERROR: {}", self.status_line));
+                cx.notify();
+                return;
+            }
+        };
 
         let (ffmpeg_path, output_dir) = {
             let gs = self.global.read(cx);
             if !gs.media_tools_ready_for_preview_gen() {
                 self.status_line =
-                    "MISSING_FFMPEG: MotionLoom scene render requires FFmpeg.".to_string();
+                    "MISSING_FFMPEG: MotionLoom graph render requires FFmpeg.".to_string();
+                self.push_scene_render_log(format!("ERROR: {}", self.status_line));
+                cx.notify();
                 return;
             }
             (
@@ -2700,19 +2893,42 @@ impl MotionLoomPage {
             )
         };
         let profile = mode.profile();
-        let output_path = match next_scene_output_path_for_profile(&output_dir, profile) {
-            Ok(path) => path,
-            Err(err) => {
-                self.status_line = format!("Scene output path error: {err}");
-                return;
+        let output_path = if world_only {
+            let prefix = match mode {
+                SceneRenderMode::CompatibilityCpu => "motionloom_world",
+                SceneRenderMode::GpuNativeH264 => "motionloom_world_gpu",
+                SceneRenderMode::GpuNativeProRes => "motionloom_world_gpu_prores",
+                SceneRenderMode::GpuNativeProRes4444 => "motionloom_world_gpu_prores4444",
+                SceneRenderMode::GpuNativePngSequence => "motionloom_world_gpu_png",
+                SceneRenderMode::GpuNativeCurrentFramePng => "motionloom_world_frame",
+            };
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0);
+            if profile.is_png_sequence() {
+                output_dir.join(format!("{prefix}_{stamp}"))
+            } else {
+                output_dir.join(format!("{prefix}_{stamp}.{}", profile.output_extension()))
+            }
+        } else {
+            match next_scene_output_path_for_profile(&output_dir, profile) {
+                Ok(path) => path,
+                Err(err) => {
+                    self.status_line = format!("Scene output path error: {err}");
+                    self.push_scene_render_log(format!("ERROR: {}", self.status_line));
+                    cx.notify();
+                    return;
+                }
             }
         };
-        let duration = Duration::from_millis(graph.duration_ms);
+        let duration = Duration::from_millis(duration_ms);
         let global = self.global.clone();
         let ffmpeg_for_render = ffmpeg_path.clone();
-        let total_frames = ((graph.duration_ms as f64 / 1000.0) * graph.fps as f64)
+        let total_frames = ((duration_ms as f64 / 1000.0) * fps as f64)
             .round()
             .max(1.0) as u32;
+        let asset_root = Self::world_asset_root();
 
         self.status_line = format!(
             "{} started: {}...",
@@ -2722,6 +2938,11 @@ impl MotionLoomPage {
                 .and_then(|name| name.to_str())
                 .unwrap_or("motionloom_scene.mov")
         );
+        self.push_scene_render_log(format!(
+            "Starting worker: {} frames @ {:.2} fps.",
+            total_frames, fps
+        ));
+        self.push_scene_render_log(format!("Output: {}", output_path.display()));
         self.scene_render_progress = Some(SceneRenderProgressUi {
             label: mode.label(),
             rendered_frames: 0,
@@ -2730,7 +2951,8 @@ impl MotionLoomPage {
         cx.notify();
 
         enum SceneRenderEvent {
-            Progress(SceneRenderProgress),
+            Log(String),
+            Progress(MotionLoomRenderProgress),
             Finished(Result<PathBuf, String>),
         }
 
@@ -2739,9 +2961,20 @@ impl MotionLoomPage {
         std::thread::spawn(move || {
             let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let tx_progress = tx.clone();
-                render_scene_graph_to_video_with_progress(
+                eprintln!(
+                    "[motionloom-render] started mode={} output={}",
+                    mode.label(),
+                    output_path_for_thread.display()
+                );
+                let _ = tx_progress.send(SceneRenderEvent::Log(format!(
+                    "Worker started: {} -> {}",
+                    mode.label(),
+                    output_path_for_thread.display()
+                )));
+                render_motionloom_document_to_video_with_progress(
                     &ffmpeg_for_render,
-                    &graph,
+                    &raw,
+                    &asset_root,
                     &output_path_for_thread,
                     profile,
                     SCENE_RENDER_PROGRESS_EVERY_FRAMES,
@@ -2754,10 +2987,27 @@ impl MotionLoomPage {
             }))
             .unwrap_or_else(|payload| {
                 Err(format!(
-                    "Scene render worker panicked: {}",
+                    "MotionLoom render worker panicked: {}",
                     panic_payload_to_string(payload)
                 ))
             });
+            match &render_result {
+                Ok(path) => {
+                    eprintln!(
+                        "[motionloom-render] finished mode={} output={}",
+                        mode.label(),
+                        path.display()
+                    );
+                    let _ = tx.send(SceneRenderEvent::Log(format!(
+                        "Worker finished: {}",
+                        path.display()
+                    )));
+                }
+                Err(err) => {
+                    eprintln!("[motionloom-render] failed mode={}: {err}", mode.label());
+                    let _ = tx.send(SceneRenderEvent::Log(format!("ERROR: {err}")));
+                }
+            }
             let _ = tx.send(SceneRenderEvent::Finished(render_result));
         });
 
@@ -2765,10 +3015,14 @@ impl MotionLoomPage {
             loop {
                 gpui::Timer::after(Duration::from_millis(SCENE_RENDER_PROGRESS_POLL_MS)).await;
 
-                let mut latest_progress: Option<SceneRenderProgress> = None;
+                let mut latest_progress: Option<MotionLoomRenderProgress> = None;
+                let mut log_messages: Vec<String> = Vec::new();
                 let mut finished: Option<Result<PathBuf, String>> = None;
                 loop {
                     match rx.try_recv() {
+                        Ok(SceneRenderEvent::Log(message)) => {
+                            log_messages.push(message);
+                        }
                         Ok(SceneRenderEvent::Progress(progress)) => {
                             latest_progress = Some(progress);
                         }
@@ -2779,6 +3033,8 @@ impl MotionLoomPage {
                         Err(mpsc::TryRecvError::Empty) => break,
                         Err(mpsc::TryRecvError::Disconnected) => {
                             finished = Some(Err("Scene render worker disconnected.".to_string()));
+                            log_messages
+                                .push("ERROR: Scene render worker disconnected.".to_string());
                             break;
                         }
                     }
@@ -2786,23 +3042,31 @@ impl MotionLoomPage {
 
                 let has_finished = finished.is_some();
                 let _ = view.update_in(window, |this, _window, cx| {
+                    for message in log_messages {
+                        this.push_scene_render_log(message);
+                    }
                     if let Some(progress) = latest_progress {
-                        let pct = ((progress.rendered_frames as f32 / progress.total_frames as f32)
-                            * 100.0)
+                        let rendered_frames = progress.rendered_frames();
+                        let total_frames = progress.total_frames();
+                        let pct = ((rendered_frames as f32 / total_frames as f32) * 100.0)
                             .round()
                             .clamp(0.0, 100.0) as u32;
                         this.scene_render_progress = Some(SceneRenderProgressUi {
                             label: mode.label(),
-                            rendered_frames: progress.rendered_frames,
-                            total_frames: progress.total_frames,
+                            rendered_frames,
+                            total_frames,
                         });
                         this.status_line = format!(
                             "{}: {}% ({}/{})",
                             mode.label(),
                             pct,
-                            progress.rendered_frames,
-                            progress.total_frames
+                            rendered_frames,
+                            total_frames
                         );
+                        this.push_scene_render_log(format!(
+                            "Progress: {}% ({}/{})",
+                            pct, rendered_frames, total_frames
+                        ));
                     }
 
                     if let Some(result) = finished {
@@ -2810,28 +3074,45 @@ impl MotionLoomPage {
                         match result {
                             Ok(path) => {
                                 let path_str = path.to_string_lossy().to_string();
-                                global.update(cx, |gs, cx| {
-                                    gs.add_media_pool_item(path.clone(), duration);
-                                    gs.ui_notice = Some(format!(
-                                        "MotionLoom scene added to Media Pool: {path_str}"
-                                    ));
-                                    cx.emit(MediaPoolUiEvent::StateChanged);
-                                    cx.notify();
-                                });
+                                if mode.adds_media_pool_clip() {
+                                    global.update(cx, |gs, cx| {
+                                        gs.add_media_pool_item(path.clone(), duration);
+                                        gs.ui_notice = Some(format!(
+                                            "MotionLoom graph added to Media Pool: {path_str}"
+                                        ));
+                                        cx.emit(MediaPoolUiEvent::StateChanged);
+                                        cx.notify();
+                                    });
 
-                                let clip = Self::build_imported_clip(&path_str);
-                                this.clips.push(clip);
-                                this.selected_idx = Some(this.clips.len().saturating_sub(1));
+                                    let clip = Self::build_imported_clip(&path_str);
+                                    this.clips.push(clip);
+                                    this.selected_idx = Some(this.clips.len().saturating_sub(1));
+                                } else {
+                                    global.update(cx, |gs, cx| {
+                                        gs.ui_notice = Some(format!(
+                                            "MotionLoom graph PNG sequence saved: {path_str}"
+                                        ));
+                                        cx.notify();
+                                    });
+                                }
+
                                 this.status_line = format!(
                                     "{} done: {}",
                                     mode.label(),
                                     path.file_name()
                                         .and_then(|name| name.to_str())
-                                        .unwrap_or("motionloom_scene.mov")
+                                        .unwrap_or("motionloom_scene")
                                 );
+                                this.push_scene_render_log(format!("Done: {}", path.display()));
                             }
                             Err(err) => {
                                 this.status_line = format!("{} failed: {err}", mode.label());
+                                this.push_scene_render_log(format!("ERROR: {err}"));
+                                global.update(cx, |gs, cx| {
+                                    gs.ui_notice =
+                                        Some(format!("MotionLoom {} failed: {err}", mode.label()));
+                                    cx.notify();
+                                });
                             }
                         }
                     }
@@ -2846,123 +3127,250 @@ impl MotionLoomPage {
         .detach();
     }
 
-    fn render_animation_to_media_pool(
+    fn request_scene_render_from_modal(
         &mut self,
-        raw: String,
         mode: SceneRenderMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let graph = match parse_animation_graph_script(&raw) {
-            Ok(graph) => graph,
-            Err(err) => {
-                self.status_line = format!(
-                    "Animation graph parse error at line {}: {}",
-                    err.line, err.message
-                );
-                return;
-            }
-        };
+        if self.scene_script_uses_transparent_background() && !mode.preserves_alpha_output() {
+            self.pending_non_alpha_scene_render_mode = Some(mode);
+            cx.notify();
+            return;
+        }
+        self.pending_non_alpha_scene_render_mode = None;
+        self.render_scene_to_media_pool(mode, window, cx);
+    }
 
-        let (ffmpeg_path, output_dir) = {
+    fn scene_script_uses_transparent_background(&self) -> bool {
+        let Ok(graph) = parse_graph_script(&self.script_text) else {
+            return false;
+        };
+        graph
+            .backgrounds
+            .last()
+            .is_some_and(|background| Self::is_transparent_color_literal(&background.color))
+    }
+
+    fn is_transparent_color_literal(value: &str) -> bool {
+        let trimmed = value.trim();
+        if trimmed.eq_ignore_ascii_case("transparent") {
+            return true;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let inner = trimmed.trim_start_matches('[').trim_end_matches(']');
+            let parts = inner
+                .split(',')
+                .map(str::trim)
+                .filter_map(|part| part.parse::<f32>().ok())
+                .collect::<Vec<_>>();
+            return parts.len() == 4 && parts[3].abs() <= f32::EPSILON;
+        }
+
+        let Some(hex) = trimmed
+            .strip_prefix('#')
+            .or_else(|| trimmed.strip_prefix("0x"))
+        else {
+            return false;
+        };
+        hex.len() == 8 && hex[6..].eq_ignore_ascii_case("00")
+    }
+
+    fn render_current_frame_png_to_media_pool(
+        &mut self,
+        raw: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scene_render_modal_open = false;
+        self.scene_render_log.clear();
+        self.push_scene_render_log(format!(
+            "{} requested.",
+            SceneRenderMode::GpuNativeCurrentFramePng.label()
+        ));
+        let output_dir = {
             let gs = self.global.read(cx);
-            if !gs.media_tools_ready_for_preview_gen() {
-                self.status_line =
-                    "MISSING_FFMPEG: MotionLoom animation render requires FFmpeg.".to_string();
-                return;
-            }
-            (
-                gs.ffmpeg_path.clone(),
-                gs.generated_media_root_dir().join("motionloom_generated"),
-            )
+            gs.generated_media_root_dir().join("motionloom_generated")
         };
-        let profile = mode.profile();
-        let prefix = match mode {
-            SceneRenderMode::CompatibilityCpu => "motionloom_animation",
-            SceneRenderMode::GpuNativeH264 => "motionloom_animation_gpu",
-            SceneRenderMode::GpuNativeProRes => "motionloom_animation_gpu_prores",
-        };
+        let requested_frame = self.preview_frame;
+        let global = self.global.clone();
+        let is_world = Self::uses_pure_world_renderer(&raw);
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_millis())
             .unwrap_or(0);
-        let output_path =
-            output_dir.join(format!("{prefix}_{stamp}.{}", profile.output_extension()));
-        let asset_root = Self::animation_asset_root();
-        let duration = Duration::from_millis(graph.duration_ms);
-        let global = self.global.clone();
-        let ffmpeg_for_render = ffmpeg_path.clone();
-        let output_path_for_thread = output_path.clone();
-        let total_frames = ((graph.duration_ms as f64 / 1000.0) * graph.fps as f64)
-            .round()
-            .max(1.0) as u32;
 
-        self.status_line = format!(
-            "{} started: {}...",
-            mode.label(),
-            output_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("motionloom_animation.mov")
-        );
-        self.scene_render_progress = Some(SceneRenderProgressUi {
-            label: mode.label(),
-            rendered_frames: 0,
-            total_frames,
-        });
-        cx.notify();
-
-        enum AnimationRenderEvent {
-            Progress(AnimationRenderProgress),
-            Finished(Result<PathBuf, String>),
+        enum CurrentFrameRenderEvent {
+            Log(String),
+            Finished(Result<(PathBuf, u32), String>),
         }
 
-        let (tx, rx) = mpsc::channel::<AnimationRenderEvent>();
-        std::thread::spawn(move || {
-            let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let tx_progress = tx.clone();
-                render_animation_graph_to_video_with_progress(
-                    &ffmpeg_for_render,
-                    &graph,
-                    &asset_root,
-                    &output_path_for_thread,
-                    profile,
-                    SCENE_RENDER_PROGRESS_EVERY_FRAMES,
-                    move |progress| {
-                        let _ = tx_progress.send(AnimationRenderEvent::Progress(progress));
-                    },
-                )
-                .map(|_| output_path_for_thread.clone())
-                .map_err(|err| err.to_string())
-            }))
-            .unwrap_or_else(|payload| {
-                Err(format!(
-                    "Animation render worker panicked: {}",
-                    panic_payload_to_string(payload)
-                ))
+        let (tx, rx) = mpsc::channel::<CurrentFrameRenderEvent>();
+
+        if is_world {
+            let graph = match parse_world_graph_script(&raw) {
+                Ok(graph) => graph,
+                Err(err) => {
+                    self.status_line = format!(
+                        "World graph parse error at line {}: {}",
+                        err.line, err.message
+                    );
+                    self.push_scene_render_log(format!("ERROR: {}", self.status_line));
+                    cx.notify();
+                    return;
+                }
+            };
+            let fps = graph.fps.max(1.0);
+            let total_frames =
+                (((graph.duration_ms as f32 / 1000.0).max(1.0 / fps) * fps).round() as u32).max(1);
+            let frame = requested_frame.min(total_frames.saturating_sub(1));
+            let output_path =
+                output_dir.join(format!("motionloom_world_frame_{stamp}_f{frame:06}.png"));
+            let asset_root = Self::world_asset_root();
+
+            self.status_line = format!("PNG current frame started: frame {frame}...");
+            self.push_scene_render_log(format!("Frame: {frame}/{total_frames}"));
+            self.push_scene_render_log(format!("Output: {}", output_path.display()));
+            self.scene_render_progress = Some(SceneRenderProgressUi {
+                label: SceneRenderMode::GpuNativeCurrentFramePng.label(),
+                rendered_frames: 0,
+                total_frames: 1,
             });
-            let _ = tx.send(AnimationRenderEvent::Finished(render_result));
-        });
+            cx.notify();
+
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = tx.send(CurrentFrameRenderEvent::Log(format!(
+                        "PNG worker started: {}",
+                        output_path.display()
+                    )));
+                    if let Some(parent) = output_path.parent() {
+                        fs::create_dir_all(parent)
+                            .map_err(|err| format!("Failed to create output directory: {err}"))?;
+                    }
+                    let mut renderer = WorldFrameRenderer::default();
+                    let image = renderer
+                        .render_frame_gpu(&graph, frame, &asset_root)
+                        .map_err(|err| err.to_string())?;
+                    image
+                        .save(&output_path)
+                        .map_err(|err| format!("Failed to save PNG frame: {err}"))?;
+                    Ok((output_path, frame))
+                }))
+                .unwrap_or_else(|payload| {
+                    Err(format!(
+                        "PNG current frame worker panicked: {}",
+                        panic_payload_to_string(payload)
+                    ))
+                });
+                match &result {
+                    Ok((path, _)) => {
+                        let _ = tx.send(CurrentFrameRenderEvent::Log(format!(
+                            "PNG worker finished: {}",
+                            path.display()
+                        )));
+                    }
+                    Err(err) => {
+                        let _ = tx.send(CurrentFrameRenderEvent::Log(format!("ERROR: {err}")));
+                    }
+                }
+                let _ = tx.send(CurrentFrameRenderEvent::Finished(result));
+            });
+        } else {
+            let graph = match parse_graph_script(&raw) {
+                Ok(graph) => graph,
+                Err(err) => {
+                    self.status_line = format!(
+                        "Scene graph parse error at line {}: {}",
+                        err.line, err.message
+                    );
+                    self.push_scene_render_log(format!("ERROR: {}", self.status_line));
+                    cx.notify();
+                    return;
+                }
+            };
+            if !graph.has_scene_nodes() {
+                self.status_line =
+                    "Graph needs at least one node before exporting a PNG frame.".to_string();
+                self.push_scene_render_log(format!("ERROR: {}", self.status_line));
+                cx.notify();
+                return;
+            }
+            let fps = graph.fps.max(1.0);
+            let total_frames =
+                (((graph.duration_ms as f32 / 1000.0).max(1.0 / fps) * fps).round() as u32).max(1);
+            let frame = requested_frame.min(total_frames.saturating_sub(1));
+            let output_path =
+                output_dir.join(format!("motionloom_scene_frame_{stamp}_f{frame:06}.png"));
+
+            self.status_line = format!("PNG current frame started: frame {frame}...");
+            self.push_scene_render_log(format!("Frame: {frame}/{total_frames}"));
+            self.push_scene_render_log(format!("Output: {}", output_path.display()));
+            self.scene_render_progress = Some(SceneRenderProgressUi {
+                label: SceneRenderMode::GpuNativeCurrentFramePng.label(),
+                rendered_frames: 0,
+                total_frames: 1,
+            });
+            cx.notify();
+
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = tx.send(CurrentFrameRenderEvent::Log(format!(
+                        "PNG worker started: {}",
+                        output_path.display()
+                    )));
+                    if let Some(parent) = output_path.parent() {
+                        fs::create_dir_all(parent)
+                            .map_err(|err| format!("Failed to create output directory: {err}"))?;
+                    }
+                    let image = render_scene_graph_frame(&graph, frame, SceneRenderProfile::Gpu)
+                        .map_err(|err| err.to_string())?;
+                    image
+                        .save(&output_path)
+                        .map_err(|err| format!("Failed to save PNG frame: {err}"))?;
+                    Ok((output_path, frame))
+                }))
+                .unwrap_or_else(|payload| {
+                    Err(format!(
+                        "PNG current frame worker panicked: {}",
+                        panic_payload_to_string(payload)
+                    ))
+                });
+                match &result {
+                    Ok((path, _)) => {
+                        let _ = tx.send(CurrentFrameRenderEvent::Log(format!(
+                            "PNG worker finished: {}",
+                            path.display()
+                        )));
+                    }
+                    Err(err) => {
+                        let _ = tx.send(CurrentFrameRenderEvent::Log(format!("ERROR: {err}")));
+                    }
+                }
+                let _ = tx.send(CurrentFrameRenderEvent::Finished(result));
+            });
+        }
 
         cx.spawn_in(window, async move |view, window| {
             loop {
                 gpui::Timer::after(Duration::from_millis(SCENE_RENDER_PROGRESS_POLL_MS)).await;
-
-                let mut latest_progress: Option<AnimationRenderProgress> = None;
-                let mut finished: Option<Result<PathBuf, String>> = None;
+                let mut finished: Option<Result<(PathBuf, u32), String>> = None;
+                let mut log_messages: Vec<String> = Vec::new();
                 loop {
                     match rx.try_recv() {
-                        Ok(AnimationRenderEvent::Progress(progress)) => {
-                            latest_progress = Some(progress);
+                        Ok(CurrentFrameRenderEvent::Log(message)) => {
+                            log_messages.push(message);
                         }
-                        Ok(AnimationRenderEvent::Finished(result)) => {
+                        Ok(CurrentFrameRenderEvent::Finished(result)) => {
                             finished = Some(result);
                             break;
                         }
                         Err(mpsc::TryRecvError::Empty) => break,
                         Err(mpsc::TryRecvError::Disconnected) => {
                             finished =
-                                Some(Err("Animation render worker disconnected.".to_string()));
+                                Some(Err("PNG current frame worker disconnected.".to_string()));
+                            log_messages
+                                .push("ERROR: PNG current frame worker disconnected.".to_string());
                             break;
                         }
                     }
@@ -2970,34 +3378,18 @@ impl MotionLoomPage {
 
                 let has_finished = finished.is_some();
                 let _ = view.update_in(window, |this, _window, cx| {
-                    if let Some(progress) = latest_progress {
-                        let pct = ((progress.rendered_frames as f32 / progress.total_frames as f32)
-                            * 100.0)
-                            .round()
-                            .clamp(0.0, 100.0) as u32;
-                        this.scene_render_progress = Some(SceneRenderProgressUi {
-                            label: mode.label(),
-                            rendered_frames: progress.rendered_frames,
-                            total_frames: progress.total_frames,
-                        });
-                        this.status_line = format!(
-                            "{}: {}% ({}/{})",
-                            mode.label(),
-                            pct,
-                            progress.rendered_frames,
-                            progress.total_frames
-                        );
+                    for message in log_messages {
+                        this.push_scene_render_log(message);
                     }
-
                     if let Some(result) = finished {
                         this.scene_render_progress = None;
                         match result {
-                            Ok(path) => {
+                            Ok((path, frame)) => {
                                 let path_str = path.to_string_lossy().to_string();
                                 global.update(cx, |gs, cx| {
-                                    gs.add_media_pool_item(path.clone(), duration);
+                                    gs.add_media_pool_item(path.clone(), Duration::from_secs(1));
                                     gs.ui_notice = Some(format!(
-                                        "MotionLoom animation added to Media Pool: {path_str}"
+                                        "MotionLoom PNG frame added to Media Pool: {path_str}"
                                     ));
                                     cx.emit(MediaPoolUiEvent::StateChanged);
                                     cx.notify();
@@ -3007,19 +3399,21 @@ impl MotionLoomPage {
                                 this.clips.push(clip);
                                 this.selected_idx = Some(this.clips.len().saturating_sub(1));
                                 this.status_line = format!(
-                                    "{} done: {}",
-                                    mode.label(),
+                                    "PNG current frame done: frame {} -> {}",
+                                    frame,
                                     path.file_name()
                                         .and_then(|name| name.to_str())
-                                        .unwrap_or("motionloom_animation.mov")
+                                        .unwrap_or("motionloom_frame.png")
                                 );
+                                this.push_scene_render_log(format!("Done: {}", path.display()));
                             }
                             Err(err) => {
-                                this.status_line = format!("{} failed: {err}", mode.label());
+                                this.status_line = format!("PNG current frame failed: {err}");
+                                this.push_scene_render_log(format!("ERROR: {err}"));
                             }
                         }
+                        cx.notify();
                     }
-                    cx.notify();
                 });
 
                 if has_finished {
@@ -3087,6 +3481,198 @@ impl MotionLoomPage {
             .items_center()
             .justify_center()
             .child(label)
+    }
+
+    fn scene_render_choice_button(mode: SceneRenderMode) -> gpui::Div {
+        div()
+            .w_full()
+            .rounded_lg()
+            .border_1()
+            .border_color(white().opacity(0.14))
+            .bg(white().opacity(0.055))
+            .hover(|s| s.bg(white().opacity(0.10)))
+            .cursor_pointer()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(white().opacity(0.94))
+                    .child(mode.label()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.56))
+                    .child(match mode {
+                        SceneRenderMode::CompatibilityCpu => {
+                            "Compatibility path. Slower, useful when GPU-native output has issues."
+                        }
+                        SceneRenderMode::GpuNativeH264 => "Fast H.264 MP4. No alpha channel.",
+                        SceneRenderMode::GpuNativeProRes => {
+                            "High-quality ProRes 422 MOV. No alpha channel."
+                        }
+                        SceneRenderMode::GpuNativeProRes4444 => {
+                            "Alpha-preserving ProRes 4444 MOV for transparent overlays."
+                        }
+                        SceneRenderMode::GpuNativePngSequence => {
+                            "Alpha-preserving PNG frames in an output folder."
+                        }
+                        SceneRenderMode::GpuNativeCurrentFramePng => {
+                            "Alpha-preserving PNG for the current preview frame. Adds the image to Media Pool."
+                        }
+                    }),
+            )
+    }
+
+    fn render_scene_render_modal_overlay(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let choice = |mode: SceneRenderMode| {
+            Self::scene_render_choice_button(mode).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    this.request_scene_render_from_modal(mode, window, cx);
+                }),
+            )
+        };
+        let pending_non_alpha_mode = self.pending_non_alpha_scene_render_mode;
+
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .bg(rgba(0x0000009e))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.scene_render_modal_open = false;
+                    this.pending_non_alpha_scene_render_mode = None;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(520.0))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(white().opacity(0.16))
+                    .bg(rgb(0x111827))
+                    .shadow_2xl()
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| {
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(white().opacity(0.96))
+                                    .child("Render MotionLoom Scene"),
+                            )
+                            .child(Self::control_button("Close").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.scene_render_modal_open = false;
+                                    this.pending_non_alpha_scene_render_mode = None;
+                                    cx.notify();
+                                }),
+                            )),
+                    )
+                    .when_some(pending_non_alpha_mode, |el, mode| {
+                        el.child(
+                            div()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(rgba(0xf59e0baa))
+                                .bg(rgba(0x3b250880))
+                                .p_3()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(rgba(0xffe0a3ff))
+                                        .child("Transparent background warning"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(white().opacity(0.72))
+                                        .child(
+                                            "This script uses a transparent background, but the selected render mode does not support alpha output.",
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(white().opacity(0.72))
+                                        .child(format!(
+                                            "Selected mode: {}. The render can continue, but the transparent background will not be preserved.",
+                                            mode.label()
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(white().opacity(0.72))
+                                        .child(
+                                            "Use ProRes 4444 Alpha or PNG output if you need transparency.",
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(Self::control_button("Back").on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.pending_non_alpha_scene_render_mode = None;
+                                        cx.notify();
+                                    }),
+                                ))
+                                .child(Self::control_button("Render Anyway").on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.render_scene_to_media_pool(mode, window, cx);
+                                    }),
+                                )),
+                        )
+                    })
+                    .when(pending_non_alpha_mode.is_none(), |el| {
+                        el.child(
+                            div()
+                                .text_xs()
+                                .text_color(white().opacity(0.62))
+                                .child("Choose a render mode. Use ProRes 4444 Alpha or PNG output for transparent background output."),
+                        )
+                        .child(choice(SceneRenderMode::GpuNativeH264))
+                        .child(choice(SceneRenderMode::GpuNativeProRes))
+                        .child(choice(SceneRenderMode::GpuNativeProRes4444))
+                        .child(choice(SceneRenderMode::GpuNativeCurrentFramePng))
+                        .child(choice(SceneRenderMode::GpuNativePngSequence))
+                        .child(choice(SceneRenderMode::CompatibilityCpu))
+                    }),
+            )
     }
 
     fn scene_live_chip(label: String, active: bool) -> gpui::Div {
@@ -3270,6 +3856,7 @@ impl MotionLoomPage {
         self.import_modal_open = false;
         self.asset_modal_open = false;
         self.scene_template_modal_open = false;
+        self.scene_render_modal_open = false;
         self.glb_inspector_modal_open = false;
         self.template_modal_open = true;
         self.template_selected.clear();
@@ -3328,6 +3915,7 @@ impl MotionLoomPage {
         self.import_modal_open = false;
         self.asset_modal_open = false;
         self.template_modal_open = false;
+        self.scene_render_modal_open = false;
         self.glb_inspector_modal_open = false;
 
         self.ensure_scene_template_select(window, cx);
@@ -3551,6 +4139,7 @@ impl MotionLoomPage {
         self.asset_modal_open = false;
         self.template_modal_open = false;
         self.scene_template_modal_open = false;
+        self.scene_render_modal_open = false;
 
         match self.build_glb_skeleton_report() {
             Ok(report) => {
@@ -3575,27 +4164,26 @@ impl MotionLoomPage {
     fn build_glb_skeleton_report(&self) -> Result<GlbSkeletonInspectReport, String> {
         let raw = self.script_text.trim();
         if raw.is_empty() {
-            return Err("Inspect GLB needs a MotionLoom animation DSL script.".to_string());
+            return Err("Inspect GLB needs a MotionLoom world DSL script.".to_string());
         }
-        if !is_animation_graph_script(raw) {
+        if !is_world_graph_script(raw) {
             return Err(
-                "Inspect GLB requires a unified <Graph> containing <Animation> or <World>."
-                    .to_string(),
+                "Inspect GLB requires a unified <Graph> containing <World> or <World>.".to_string(),
             );
         }
-        let graph = parse_animation_graph_script(raw).map_err(|err| {
+        let graph = parse_world_graph_script(raw).map_err(|err| {
             format!(
-                "Animation parse error before GLB inspect at line {}: {}",
+                "World parse error before GLB inspect at line {}: {}",
                 err.line, err.message
             )
         })?;
-        let asset_root = Self::animation_asset_root();
+        let asset_root = Self::world_asset_root();
         let mut actors = Vec::<GlbSkeletonActorReport>::new();
 
         for world in &graph.worlds {
             for actor in &world.actors {
                 let path =
-                    Self::resolve_animation_model_path(&asset_root, &actor.model, actor.path_style);
+                    Self::resolve_world_model_path(&asset_root, &actor.model, actor.path_style);
                 let current_retarget = actor
                     .retarget
                     .as_deref()
@@ -3747,9 +4335,7 @@ impl MotionLoomPage {
         }
 
         if actors.is_empty() {
-            return Err(
-                "No <Actor model=\"...glb\"> found in current animation graph.".to_string(),
-            );
+            return Err("No <Actor model=\"...glb\"> found in current world graph.".to_string());
         }
 
         let retarget_draft = Self::build_retarget_draft(&actors);
@@ -3781,15 +4367,15 @@ impl MotionLoomPage {
         })
     }
 
-    fn resolve_animation_model_path(
+    fn resolve_world_model_path(
         asset_root: &Path,
         src: &str,
-        path_style: AnimationPathStyle,
+        path_style: WorldPathStyle,
     ) -> PathBuf {
         let path = Path::new(src);
         match path_style {
-            AnimationPathStyle::Absolute => path.to_path_buf(),
-            AnimationPathStyle::Relative => {
+            WorldPathStyle::Absolute => path.to_path_buf(),
+            WorldPathStyle::Relative => {
                 if path.is_absolute() {
                     path.to_path_buf()
                 } else {
@@ -3876,7 +4462,7 @@ impl MotionLoomPage {
     fn build_model_profile_draft(
         actor_id: &str,
         model: &str,
-        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        mesh: &motionloom::world::gltf_loader::GlbMeshData,
         maps: &[(String, String)],
         calibrated: bool,
     ) -> String {
@@ -3942,7 +4528,7 @@ impl MotionLoomPage {
     }
 
     fn calibrate_bone_axis_map(
-        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        mesh: &motionloom::world::gltf_loader::GlbMeshData,
         maps: &[(String, String)],
     ) -> GlbAxisCalibration {
         let bone_to_node = Self::bone_to_node_name(maps);
@@ -4278,7 +4864,7 @@ impl MotionLoomPage {
     }
 
     fn infer_bone_axis_map_lines(
-        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        mesh: &motionloom::world::gltf_loader::GlbMeshData,
         maps: &[(String, String)],
     ) -> Vec<String> {
         let bone_to_node = Self::bone_to_node_name(maps);
@@ -4484,7 +5070,7 @@ impl MotionLoomPage {
     }
 
     fn infer_rest_pose_correction_lines(
-        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        mesh: &motionloom::world::gltf_loader::GlbMeshData,
         maps: &[(String, String)],
     ) -> Vec<String> {
         let bone_to_node = Self::bone_to_node_name(maps);
@@ -4541,7 +5127,7 @@ impl MotionLoomPage {
     }
 
     fn node_name_to_index(
-        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
     ) -> HashMap<String, usize> {
         nodes
             .iter()
@@ -4647,7 +5233,7 @@ impl MotionLoomPage {
         child: Option<&str>,
         fallback_child: Option<&str>,
         target: [f32; 3],
-        _mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        _mesh: &motionloom::world::gltf_loader::GlbMeshData,
         global: &[[f32; 16]],
         positions: &[[f32; 3]],
         bone_to_node: &HashMap<String, String>,
@@ -4690,7 +5276,7 @@ impl MotionLoomPage {
         bone: &str,
         child: Option<&str>,
         parent: Option<&str>,
-        mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        mesh: &motionloom::world::gltf_loader::GlbMeshData,
         global: &[[f32; 16]],
         positions: &[[f32; 3]],
         bone_to_node: &HashMap<String, String>,
@@ -4727,7 +5313,7 @@ impl MotionLoomPage {
     fn infer_twist_binding(
         bone: &str,
         target: &[f32; 3],
-        _mesh: &motionloom::animation::gltf_loader::GlbMeshData,
+        _mesh: &motionloom::world::gltf_loader::GlbMeshData,
         global: &[[f32; 16]],
         bone_to_node: &HashMap<String, String>,
         node_name_to_index: &HashMap<String, usize>,
@@ -4786,7 +5372,7 @@ impl MotionLoomPage {
     }
 
     fn glb_global_node_matrices(
-        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
     ) -> Vec<[f32; 16]> {
         let local = nodes
             .iter()
@@ -4808,7 +5394,7 @@ impl MotionLoomPage {
 
     fn compute_glb_global_node_matrix(
         index: usize,
-        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
         local: &[[f32; 16]],
         global: &mut [Option<[f32; 16]>],
     ) -> [f32; 16] {
@@ -5109,7 +5695,7 @@ impl MotionLoomPage {
     }
 
     fn glb_joint_tree_lines(
-        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
         joint_node_indices: &HashSet<usize>,
     ) -> Vec<String> {
         let mut lines = Vec::new();
@@ -5135,7 +5721,7 @@ impl MotionLoomPage {
 
     fn joint_subtree_contains_joint(
         index: usize,
-        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
         joint_node_indices: &HashSet<usize>,
     ) -> bool {
         joint_node_indices.contains(&index)
@@ -5149,7 +5735,7 @@ impl MotionLoomPage {
     fn push_glb_joint_tree_line(
         index: usize,
         depth: usize,
-        nodes: &[motionloom::animation::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
         joint_node_indices: &HashSet<usize>,
         lines: &mut Vec<String>,
     ) {
@@ -5383,7 +5969,7 @@ impl MotionLoomPage {
                         div()
                             .text_xs()
                             .text_color(white().opacity(0.66))
-                            .child("This reads the current animation DSL once, lists GLB skin joints, generates humanoid_v1 Retarget, simulates rotationX/Y/Z endpoint movement for Auto Calibration Preview, and builds copyable ModelProfile drafts. It does not affect frame preview/render speed."),
+                            .child("This reads the current world DSL once, lists GLB skin joints, generates humanoid_v1 Retarget, simulates rotationX/Y/Z endpoint movement for Auto Calibration Preview, and builds copyable ModelProfile drafts. It does not affect frame preview/render speed."),
                     )
                     .child(
                         div()
@@ -5810,6 +6396,7 @@ impl MotionLoomPage {
         self.template_modal_open = false;
         self.asset_modal_open = false;
         self.scene_template_modal_open = false;
+        self.scene_render_modal_open = false;
         self.glb_inspector_modal_open = false;
         self.import_modal_open = true;
         self.status_line = "Source/import panel opened.".to_string();
@@ -5819,6 +6406,7 @@ impl MotionLoomPage {
         self.template_modal_open = false;
         self.import_modal_open = false;
         self.scene_template_modal_open = false;
+        self.scene_render_modal_open = false;
         self.glb_inspector_modal_open = false;
         self.asset_modal_open = true;
         self.asset_context_menu = None;
@@ -7106,6 +7694,111 @@ impl Render for MotionLoomPage {
 
         let scene_live_preview_label = self.scene_live_preview_label();
         let scene_render_progress = self.scene_render_progress.clone();
+        let scene_render_log = self.scene_render_log.clone();
+        let scene_render_log_collapsed = self.scene_render_log_collapsed;
+        let scene_render_log_has_error = scene_render_log.iter().any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("error") || lower.contains("failed") || lower.contains("panic")
+        });
+        let scene_render_log_panel = if scene_render_log.is_empty() {
+            None
+        } else {
+            Some(
+                div()
+                    .w_full()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if scene_render_log_has_error {
+                        rgba(0xff6655bb)
+                    } else {
+                        rgba(0x79c7ff55)
+                    })
+                    .bg(if scene_render_log_has_error {
+                        rgba(0x1a080bcc)
+                    } else {
+                        rgba(0x05070dcc)
+                    })
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(if scene_render_log_has_error {
+                                        rgba(0xffaaa0ff)
+                                    } else {
+                                        rgba(0xbdeaffff)
+                                    })
+                                    .child(if scene_render_log_has_error {
+                                        "Render Log"
+                                    } else {
+                                        "Render Log"
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        Self::control_button(if scene_render_log_collapsed {
+                                            "+"
+                                        } else {
+                                            "-"
+                                        })
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                this.scene_render_log_collapsed =
+                                                    !this.scene_render_log_collapsed;
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    )
+                                    .child(Self::control_button("X").on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.scene_render_log.clear();
+                                            this.scene_render_log_collapsed = false;
+                                            cx.notify();
+                                        }),
+                                    )),
+                            ),
+                    )
+                    .when(scene_render_log_collapsed, |el| {
+                        el.child(
+                            div()
+                                .text_xs()
+                                .text_color(white().opacity(0.56))
+                                .child(format!("{} line(s) hidden", scene_render_log.len())),
+                        )
+                    })
+                    .when(!scene_render_log_collapsed, |el| {
+                        el.children(scene_render_log.into_iter().map(|line| {
+                            let lower = line.to_ascii_lowercase();
+                            let is_error = lower.contains("error")
+                                || lower.contains("failed")
+                                || lower.contains("panic");
+                            div()
+                                .text_xs()
+                                .text_color(if is_error {
+                                    rgba(0xff8a80ee)
+                                } else {
+                                    rgba(0xffffffb8)
+                                })
+                                .child(line)
+                        }))
+                    }),
+            )
+        };
         let scene_live_preview_card = match self.scene_live_preview_image(self.preview_frame, cx) {
             Ok(Some((image, w, h))) => div()
                 .w_full()
@@ -7457,36 +8150,17 @@ impl Render for MotionLoomPage {
                                     cx.notify();
                                 }),
                             ))
-                            .child(
-                                Self::control_button("Compatibility Render (CPU)").on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _, window, cx| {
-                                        this.render_scene_to_media_pool(
-                                            SceneRenderMode::CompatibilityCpu,
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                                ),
-                            )
-                            .child(Self::control_button("GPU Render").on_mouse_down(
+                            .child(Self::control_button("Render…").on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| {
-                                    this.render_scene_to_media_pool(
-                                        SceneRenderMode::GpuNativeH264,
-                                        window,
-                                        cx,
-                                    );
-                                }),
-                            ))
-                            .child(Self::control_button("GPU Render (ProRes)").on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| {
-                                    this.render_scene_to_media_pool(
-                                        SceneRenderMode::GpuNativeProRes,
-                                        window,
-                                        cx,
-                                    );
+                                cx.listener(move |this, _, _, cx| {
+                                    this.import_modal_open = false;
+                                    this.asset_modal_open = false;
+                                    this.template_modal_open = false;
+                                    this.scene_template_modal_open = false;
+                                    this.glb_inspector_modal_open = false;
+                                    this.scene_render_modal_open = true;
+                                    this.status_line = "Render mode selector opened.".to_string();
+                                    cx.notify();
                                 }),
                             )),
                     ),
@@ -7601,7 +8275,8 @@ impl Render for MotionLoomPage {
                                 )),
                         )
                     }),
-            );
+            )
+            .when_some(scene_render_log_panel, |el, panel| el.child(panel));
 
         // --- Template picker modal overlay (rendered on top when open) ---
         let template_modal = if self.template_modal_open {
@@ -7630,6 +8305,11 @@ impl Render for MotionLoomPage {
         };
         let glb_inspector_modal = if self.glb_inspector_modal_open {
             Some(self.render_glb_inspector_modal_overlay(cx))
+        } else {
+            None
+        };
+        let scene_render_modal = if self.scene_render_modal_open {
+            Some(self.render_scene_render_modal_overlay(cx))
         } else {
             None
         };
@@ -7718,6 +8398,9 @@ impl Render for MotionLoomPage {
             .when(self.asset_modal_open, |el| el.child(asset_modal.unwrap()))
             .when(self.glb_inspector_modal_open, |el| {
                 el.child(glb_inspector_modal.unwrap())
+            })
+            .when(self.scene_render_modal_open, |el| {
+                el.child(scene_render_modal.unwrap())
             })
             .when(self.template_modal_open, |el| {
                 el.child(template_modal.unwrap())

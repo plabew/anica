@@ -2,28 +2,36 @@
   <Background color="#f7f7f7" />
 
   <Scene id="character5_part_right_leg_front">
-
     <Defs>
       <Brush id="rig_bone" stroke="#1f2a37" strokeWidth="8" strokeStyle="pencil" strokeRoughness="0.6" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
       <Brush id="rig_joint" stroke="#2f6fed" strokeWidth="4" lineCap="round" lineJoin="round" fill="none" />
       <Brush id="rig_volume" stroke="#64748b" strokeWidth="2.8" strokeStyle="pencil" strokeRoughness="0.5" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.55" />
     </Defs>
 
-    <Character id="character5_right_leg_front" x="360" y="230" opacity="1">
-      <Part id="right_upper_leg_front" label="Right upper leg front" role="upper_leg_r" brush="rig_bone" anchorX="0" anchorY="0">
-        <Path id="right_upper_leg_bone" d="M 0 0 L 42 172" />
-        <Path id="right_upper_leg_volume" brush="rig_volume" d="M 14 2 C 32 54 45 112 54 172 M -14 4 C -4 60 12 118 30 176" />
-        <Path id="right_hip_joint" brush="rig_joint" d="M -15 0 C -15 -9 -9 -15 0 -15 C 9 -15 15 -9 15 0 C 15 9 9 15 0 15 C -9 15 -15 9 -15 0 Z" />
-        <Path id="right_knee_joint" brush="rig_joint" d="M 26 172 C 26 162 32 156 42 156 C 52 156 58 162 58 172 C 58 182 52 188 42 188 C 32 188 26 182 26 172 Z" />
-      </Part>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
 
-      <Part id="right_lower_leg_front" label="Right lower leg front" role="lower_leg_r" brush="rig_bone" anchorX="42" anchorY="172">
-        <Path id="right_lower_leg_bone" d="M 42 172 L 58 340" />
-        <Path id="right_lower_leg_volume" brush="rig_volume" d="M 54 174 C 64 226 67 286 70 340 M 30 176 C 40 230 45 288 46 344" />
-        <Path id="right_ankle_joint" brush="rig_joint" d="M 44 340 C 44 332 50 326 58 326 C 66 326 72 332 72 340 C 72 348 66 354 58 354 C 50 354 44 348 44 340 Z" />
-        <Path id="right_foot_bone" d="M 58 340 L 116 362" />
-      </Part>
-    </Character>
+            <Character id="character5_right_leg_front" x="360" y="230" opacity="1">
+              <Part id="right_upper_leg_front" label="Right upper leg front" role="upper_leg_r" brush="rig_bone" anchorX="0" anchorY="0">
+                <Path id="right_upper_leg_bone" d="M 0 0 L 42 172" />
+                <Path id="right_upper_leg_volume" brush="rig_volume" d="M 14 2 C 32 54 45 112 54 172 M -14 4 C -4 60 12 118 30 176" />
+                <Path id="right_hip_joint" brush="rig_joint" d="M -15 0 C -15 -9 -9 -15 0 -15 C 9 -15 15 -9 15 0 C 15 9 9 15 0 15 C -9 15 -15 9 -15 0 Z" />
+                <Path id="right_knee_joint" brush="rig_joint" d="M 26 172 C 26 162 32 156 42 156 C 52 156 58 162 58 172 C 58 182 52 188 42 188 C 32 188 26 182 26 172 Z" />
+              </Part>
+
+              <Part id="right_lower_leg_front" label="Right lower leg front" role="lower_leg_r" brush="rig_bone" anchorX="42" anchorY="172">
+                <Path id="right_lower_leg_bone" d="M 42 172 L 58 340" />
+                <Path id="right_lower_leg_volume" brush="rig_volume" d="M 54 174 C 64 226 67 286 70 340 M 30 176 C 40 230 45 288 46 344" />
+                <Path id="right_ankle_joint" brush="rig_joint" d="M 44 340 C 44 332 50 326 58 326 C 66 326 72 332 72 340 C 72 348 66 354 58 354 C 50 354 44 348 44 340 Z" />
+                <Path id="right_foot_bone" d="M 58 340 L 116 362" />
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="character5_part_right_leg_front" />

@@ -40,67 +40,76 @@
              fill="none" />
     </Defs>
 
-    <Rect x="0" y="0" width="734" height="441" color="#ffffff" />
-    <Rect id="turn_stage_card" x="126" y="68" width="488" height="300" radius="34"
-          color="#F8FBFF" opacity="0.72" />
-    <Text id="caption" x="28" y="410" value="Level3: dynamic spacing turn - hold / smear / pop / settle" fontSize="18" color="#3F5877" opacity="0.45" />
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
 
-    <Character id="face_dynamic_spacing_turn"
-               rig="face_dynamic_spacing_2d_v1"
-               modelProfile="2d_humanoid_vector_dynamic_spacing_v1"
-               x="0"
-               y="0"
-               scale="1"
-               rotation="0"
-               opacity="1">
+            <Rect x="0" y="0" width="734" height="441" color="#ffffff" />
+            <Rect id="turn_stage_card" x="126" y="68" width="488" height="300" radius="34"
+                  color="#F8FBFF" opacity="0.72" />
+            <Text id="caption" x="28" y="410" value="Level3: dynamic spacing turn - hold / smear / pop / settle" fontSize="18" color="#3F5877" opacity="0.45" />
 
-      <Part id="front_view_part" attachTo="view_front" opacity="1">
-        <Group id="face_view_front"
-               brush="face_outline_line"
-               x={curve("0.00:210:linear, 0.96:210:linear, 1.04:196:ease_in, 1.08:184:linear, 3.00:184:linear")}
-               y={curve("0.00:0:linear, 1.04:0:linear, 1.08:-2:linear, 3.00:-2:linear")}
-               scaleX={curve("0.00:1.00:linear, 0.96:1.00:linear, 1.08:0.68:ease_in")}
-               scaleY={curve("0.00:1.00:linear, 1.08:1.04:ease_in")}
-               skewY={curve("0.00:0:linear, 1.08:-8:ease_in")}
-               transformOriginX="342.1"
-               transformOriginY="204.15"
-               opacity={curve("0.00:1.00:linear, 1.035:1.00:linear, 1.055:0.00:linear, 3.00:0.00:linear")}>
-          <Path id="front_face_outline" d="M 124.9 126.8 C 119.9 127.8, 102.8 129.6, 95.3 132.4 C 87.9 135.2, 83.5 135.1, 80.1 143.8 C 76.7 152.5, 77.6 180.9, 74.8 184.5 C 71.9 188.1, 66.8 168.7, 63.3 165.3 C 59.7 161.8, 55 160.7, 53.5 163.9 C 52 167, 52.6 177.1, 54.3 184 C 56 190.8, 60.4 201.1, 63.8 205.1 C 67.3 209.2, 72.1 202.4, 75.1 208.1 C 78.1 213.9, 76.3 228.7, 81.8 239.6 C 87.4 250.5, 101.6 266.5, 108.5 273.4 C 115.5 280.2, 116.7 280, 123.4 280.7 C 130.1 281.4, 140 281.5, 148.6 277.4 C 157.2 273.3, 169.1 263.6, 175 256.1 C 181 248.7, 182 240, 184.3 232.6 C 186.6 225.2, 184.9 220.1, 189 211.9 C 193 203.7, 205 190.7, 208.6 183.6 C 212.2 176.5, 210.8 173.6, 210.8 169.6 C 210.7 165.5, 209.9 160.1, 208.2 159.1 C 206.5 158, 202.9 160.8, 200.8 163.2 C 198.6 165.6, 196.6 170.8, 195.1 173.4 C 193.7 175.9, 194 182.7, 192.1 178.4 C 190.2 174.1, 186.9 155.4, 183.5 147.5 C 180.2 139.7, 175.5 134.7, 171.9 131.3 C 168.2 128, 168.9 128.1, 161.5 127.4 C 154.1 126.8, 133.1 127.5, 127.4 127.5" />
-          <Path id="front_top_hint" d="M 120.9 127.8 C 123.8 127.8, 135.4 127.8, 138.3 127.8" opacity="0.58" />
-        </Group>
-      </Part>
+            <Character id="face_dynamic_spacing_turn"
+                       rig="face_dynamic_spacing_2d_v1"
+                       modelProfile="2d_humanoid_vector_dynamic_spacing_v1"
+                       x="0"
+                       y="0"
+                       scale="1"
+                       rotation="0"
+                       opacity="1">
 
-      <Part id="smear_view_part" attachTo="view_smear" opacity="1">
-        <Group id="turn_smear_outline"
-               brush="smear_line"
-               x={curve("0.00:0:linear, 1.04:0:linear, 1.10:18:linear, 1.16:30:linear, 3.00:30:linear")}
-               y="0"
-               scaleX={curve("0.00:1.00:linear, 1.04:1.00:linear, 1.10:1.16:linear, 1.16:0.86:linear, 3.00:0.86:linear")}
-               skewY={curve("0.00:0:linear, 1.04:0:linear, 1.12:-16:linear, 3.00:-16:linear")}
-               transformOriginX="367"
-               transformOriginY="220"
-               opacity={curve("0.00:0.00:linear, 1.035:0.00:linear, 1.065:1.00:linear, 1.135:1.00:linear, 1.17:0.00:linear, 3.00:0.00:linear")}>
-          <Path id="smear_profile_a" d="M 310 128 C 340 112 382 120 410 154 C 434 183 424 226 386 254 C 356 276 316 268 294 238 C 276 211 286 161 310 128" />
-          <Path id="smear_profile_b" d="M 330 132 C 362 136 404 158 426 188 C 446 216 428 244 388 262" opacity="0.50" />
-          <Path id="smear_profile_c" d="M 294 158 C 318 182 322 220 304 250" opacity="0.42" />
-        </Group>
-      </Part>
+              <Part id="front_view_part" attachTo="view_front" opacity="1">
+                <Group id="face_view_front"
+                       brush="face_outline_line"
+                       x={curve("0.00:210:linear, 0.96:210:linear, 1.04:196:ease_in, 1.08:184:linear, 3.00:184:linear")}
+                       y={curve("0.00:0:linear, 1.04:0:linear, 1.08:-2:linear, 3.00:-2:linear")}
+                       scaleX={curve("0.00:1.00:linear, 0.96:1.00:linear, 1.08:0.68:ease_in")}
+                       scaleY={curve("0.00:1.00:linear, 1.08:1.04:ease_in")}
+                       skewY={curve("0.00:0:linear, 1.08:-8:ease_in")}
+                       transformOriginX="342.1"
+                       transformOriginY="204.15"
+                       opacity={curve("0.00:1.00:linear, 1.035:1.00:linear, 1.055:0.00:linear, 3.00:0.00:linear")}>
+                  <Path id="front_face_outline" d="M 124.9 126.8 C 119.9 127.8, 102.8 129.6, 95.3 132.4 C 87.9 135.2, 83.5 135.1, 80.1 143.8 C 76.7 152.5, 77.6 180.9, 74.8 184.5 C 71.9 188.1, 66.8 168.7, 63.3 165.3 C 59.7 161.8, 55 160.7, 53.5 163.9 C 52 167, 52.6 177.1, 54.3 184 C 56 190.8, 60.4 201.1, 63.8 205.1 C 67.3 209.2, 72.1 202.4, 75.1 208.1 C 78.1 213.9, 76.3 228.7, 81.8 239.6 C 87.4 250.5, 101.6 266.5, 108.5 273.4 C 115.5 280.2, 116.7 280, 123.4 280.7 C 130.1 281.4, 140 281.5, 148.6 277.4 C 157.2 273.3, 169.1 263.6, 175 256.1 C 181 248.7, 182 240, 184.3 232.6 C 186.6 225.2, 184.9 220.1, 189 211.9 C 193 203.7, 205 190.7, 208.6 183.6 C 212.2 176.5, 210.8 173.6, 210.8 169.6 C 210.7 165.5, 209.9 160.1, 208.2 159.1 C 206.5 158, 202.9 160.8, 200.8 163.2 C 198.6 165.6, 196.6 170.8, 195.1 173.4 C 193.7 175.9, 194 182.7, 192.1 178.4 C 190.2 174.1, 186.9 155.4, 183.5 147.5 C 180.2 139.7, 175.5 134.7, 171.9 131.3 C 168.2 128, 168.9 128.1, 161.5 127.4 C 154.1 126.8, 133.1 127.5, 127.4 127.5" />
+                  <Path id="front_top_hint" d="M 120.9 127.8 C 123.8 127.8, 135.4 127.8, 138.3 127.8" opacity="0.58" />
+                </Group>
+              </Part>
 
-      <Part id="side_view_part" attachTo="view_side" opacity="1">
-        <Group id="face_view_side"
-               brush="face_outline_line"
-               x={curve("0.00:-176:linear, 1.125:-176:linear, 1.20:-176:linear, 1.34:-206:ease_out, 1.52:-200:ease_in_out, 3.00:-200:linear")}
-               y={curve("0.00:0:linear, 1.20:0:linear, 1.34:-3:ease_out, 1.52:0:ease_in_out")}
-               scaleX={curve("0.00:1.06:linear, 1.20:1.06:linear, 1.34:0.97:ease_out, 1.52:1.00:ease_in_out")}
-               scaleY={curve("0.00:1.00:linear, 1.20:1.00:linear, 1.34:1.04:ease_out, 1.52:1.00:ease_in_out")}
-               rotation={curve("0.00:0:linear, 1.20:0:linear, 1.34:-2:ease_out, 1.52:0:ease_in_out")}
-               transformOriginX="360.25"
-               transformOriginY="198.75"
-               opacity={curve("0.00:0.00:linear, 1.125:0.00:linear, 1.155:1.00:linear, 3.00:1.00:linear")}>
-          <Path id="side_face_outline" d="M 507.6 119 C 509.2 119.3, 513.2 118.7, 517.2 120.5 C 521.2 122.4, 524 123.8, 531.6 130 C 539.3 136.1, 555.7 151.5, 563.3 157.3 C 570.8 163, 573.5 164.5, 577.1 164.7 C 580.8 164.9, 582.1 161, 585.3 158.6 C 588.5 156.2, 592 151.7, 596.5 150.3 C 601 148.8, 609.4 146.6, 612.3 150 C 615.2 153.4, 615 163.8, 613.9 170.5 C 612.7 177.2, 607.5 186.6, 605.4 190.4 C 603.3 194.2, 601.7 189.2, 601.2 193.5 C 600.7 197.8, 602.8 210.4, 602.6 216.2 C 602.4 222, 600.2 224.6, 600.3 228.3 C 600.3 232, 601.3 234.5, 602.8 238.6 C 604.3 242.7, 606.9 248.6, 609.2 252.8 C 611.5 257.1, 621.5 260.3, 616.6 264.1 C 611.6 267.9, 586.6 278.8, 579.4 275.7 C 572.2 272.6, 577.9 249.9, 573.3 245.5 C 568.6 241.2, 557.6 248.5, 551.5 249.7 C 545.3 250.9, 541.2 253.1, 536.6 252.7 C 531.9 252.2, 526.4 249.8, 523.6 246.8 C 520.9 243.8, 521.1 237.9, 520.2 234.6 C 519.4 231.2, 519.4 228.2, 518.4 226.4 C 517.5 224.6, 515.2 225, 514.7 223.7 C 514.2 222.3, 515.8 220, 515.4 218.5 C 515 217, 514.9 218.6, 512.1 214.8 C 509.4 211, 499 203.1, 499 195.8 C 499.1 188.6, 510.9 178.3, 512.4 171.3 C 513.9 164.4, 509.1 159.8, 507.8 154.3 C 506.6 148.8, 505 144.2, 505.1 138.4 C 505.2 132.6, 507.8 122.7, 508.3 119.5" />
-        </Group>
-      </Part>
-    </Character>
+              <Part id="smear_view_part" attachTo="view_smear" opacity="1">
+                <Group id="turn_smear_outline"
+                       brush="smear_line"
+                       x={curve("0.00:0:linear, 1.04:0:linear, 1.10:18:linear, 1.16:30:linear, 3.00:30:linear")}
+                       y="0"
+                       scaleX={curve("0.00:1.00:linear, 1.04:1.00:linear, 1.10:1.16:linear, 1.16:0.86:linear, 3.00:0.86:linear")}
+                       skewY={curve("0.00:0:linear, 1.04:0:linear, 1.12:-16:linear, 3.00:-16:linear")}
+                       transformOriginX="367"
+                       transformOriginY="220"
+                       opacity={curve("0.00:0.00:linear, 1.035:0.00:linear, 1.065:1.00:linear, 1.135:1.00:linear, 1.17:0.00:linear, 3.00:0.00:linear")}>
+                  <Path id="smear_profile_a" d="M 310 128 C 340 112 382 120 410 154 C 434 183 424 226 386 254 C 356 276 316 268 294 238 C 276 211 286 161 310 128" />
+                  <Path id="smear_profile_b" d="M 330 132 C 362 136 404 158 426 188 C 446 216 428 244 388 262" opacity="0.50" />
+                  <Path id="smear_profile_c" d="M 294 158 C 318 182 322 220 304 250" opacity="0.42" />
+                </Group>
+              </Part>
+
+              <Part id="side_view_part" attachTo="view_side" opacity="1">
+                <Group id="face_view_side"
+                       brush="face_outline_line"
+                       x={curve("0.00:-176:linear, 1.125:-176:linear, 1.20:-176:linear, 1.34:-206:ease_out, 1.52:-200:ease_in_out, 3.00:-200:linear")}
+                       y={curve("0.00:0:linear, 1.20:0:linear, 1.34:-3:ease_out, 1.52:0:ease_in_out")}
+                       scaleX={curve("0.00:1.06:linear, 1.20:1.06:linear, 1.34:0.97:ease_out, 1.52:1.00:ease_in_out")}
+                       scaleY={curve("0.00:1.00:linear, 1.20:1.00:linear, 1.34:1.04:ease_out, 1.52:1.00:ease_in_out")}
+                       rotation={curve("0.00:0:linear, 1.20:0:linear, 1.34:-2:ease_out, 1.52:0:ease_in_out")}
+                       transformOriginX="360.25"
+                       transformOriginY="198.75"
+                       opacity={curve("0.00:0.00:linear, 1.125:0.00:linear, 1.155:1.00:linear, 3.00:1.00:linear")}>
+                  <Path id="side_face_outline" d="M 507.6 119 C 509.2 119.3, 513.2 118.7, 517.2 120.5 C 521.2 122.4, 524 123.8, 531.6 130 C 539.3 136.1, 555.7 151.5, 563.3 157.3 C 570.8 163, 573.5 164.5, 577.1 164.7 C 580.8 164.9, 582.1 161, 585.3 158.6 C 588.5 156.2, 592 151.7, 596.5 150.3 C 601 148.8, 609.4 146.6, 612.3 150 C 615.2 153.4, 615 163.8, 613.9 170.5 C 612.7 177.2, 607.5 186.6, 605.4 190.4 C 603.3 194.2, 601.7 189.2, 601.2 193.5 C 600.7 197.8, 602.8 210.4, 602.6 216.2 C 602.4 222, 600.2 224.6, 600.3 228.3 C 600.3 232, 601.3 234.5, 602.8 238.6 C 604.3 242.7, 606.9 248.6, 609.2 252.8 C 611.5 257.1, 621.5 260.3, 616.6 264.1 C 611.6 267.9, 586.6 278.8, 579.4 275.7 C 572.2 272.6, 577.9 249.9, 573.3 245.5 C 568.6 241.2, 557.6 248.5, 551.5 249.7 C 545.3 250.9, 541.2 253.1, 536.6 252.7 C 531.9 252.2, 526.4 249.8, 523.6 246.8 C 520.9 243.8, 521.1 237.9, 520.2 234.6 C 519.4 231.2, 519.4 228.2, 518.4 226.4 C 517.5 224.6, 515.2 225, 514.7 223.7 C 514.2 222.3, 515.8 220, 515.4 218.5 C 515 217, 514.9 218.6, 512.1 214.8 C 509.4 211, 499 203.1, 499 195.8 C 499.1 188.6, 510.9 178.3, 512.4 171.3 C 513.9 164.4, 509.1 159.8, 507.8 154.3 C 506.6 148.8, 505 144.2, 505.1 138.4 C 505.2 132.6, 507.8 122.7, 508.3 119.5" />
+                </Group>
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="characters7_dynamic_spacing_turn" />

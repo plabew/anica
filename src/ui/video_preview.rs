@@ -3,7 +3,7 @@
 // src/ui/video_preview.rs
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,8 @@ use crate::core::effects::{PerClipColorBlurEffects, combine_clip_with_layer};
 #[cfg(target_os = "macos")]
 use crate::core::global_state::MacPreviewRenderMode;
 use crate::core::global_state::PreviewQuality;
-use crate::core::global_state::{AudioTrack, GlobalState, PlaybackUiEvent, SubtitleClip};
+use crate::core::global_state::PreviewResolution;
+use crate::core::global_state::{AppPage, AudioTrack, GlobalState, PlaybackUiEvent, SubtitleClip};
 use crate::core::proxy;
 use crate::core::proxy::ProxyStatus;
 use crate::core::waveform;
@@ -185,6 +186,9 @@ struct MacVideoEffectKey {
     lut_mix: i16,
     opacity: i16,
     blur_sigma: i16,
+    bloom_threshold: i16,
+    bloom_intensity: i16,
+    bloom_sigma: i16,
 }
 
 #[cfg(target_os = "macos")]
@@ -196,6 +200,9 @@ impl MacVideoEffectKey {
         lut_mix: f32,
         opacity: f32,
         blur_sigma: f32,
+        bloom_threshold: f32,
+        bloom_intensity: f32,
+        bloom_sigma: f32,
     ) -> Self {
         Self {
             brightness: (brightness * COLOR_KEY_SCALE).round() as i16,
@@ -204,6 +211,9 @@ impl MacVideoEffectKey {
             lut_mix: (lut_mix * COLOR_KEY_SCALE).round() as i16,
             opacity: (opacity * COLOR_KEY_SCALE).round() as i16,
             blur_sigma: (blur_sigma * COLOR_KEY_SCALE).round() as i16,
+            bloom_threshold: (bloom_threshold * COLOR_KEY_SCALE).round() as i16,
+            bloom_intensity: (bloom_intensity * COLOR_KEY_SCALE).round() as i16,
+            bloom_sigma: (bloom_sigma * COLOR_KEY_SCALE).round() as i16,
         }
     }
 }
@@ -594,8 +604,11 @@ pub struct VideoPreview {
     max_image_cached_seen: usize,
     max_seek_entries_seen: usize,
     last_preview_fps: u32,
+    last_preview_resolution: PreviewResolution,
     last_preview_quality: PreviewQuality,
     last_pump_playhead: Option<Duration>,
+    last_playback_ui_tick_instant: Option<Instant>,
+    playback_ended_pause: bool,
     scrub_refresh_until: Option<Instant>,
     blur_interaction_until: Option<Instant>,
     last_clip_blur_sigmas: HashMap<u64, f32>,
@@ -610,6 +623,7 @@ pub struct VideoPreview {
     present_fps_ema: f32,
     present_refresh_interval_estimate_s: f32,
     present_dropped_frames_total: u64,
+    last_present_sample_playhead: Option<Duration>,
     memory_tuning: PreviewMemoryTuning,
     audio_track_time_indices: HashMap<usize, AudioTrackTimeIndex>,
     audio_track_index_token: u64,
@@ -620,9 +634,35 @@ pub struct VideoPreview {
 }
 
 impl VideoPreview {
+    fn playback_ui_tick_interval(preview_fps: u32) -> Duration {
+        let ui_fps = preview_fps.max(15);
+        Duration::from_secs_f64(1.0 / ui_fps as f64)
+    }
+
+    fn playhead_is_at_or_near_end(playhead: Duration, total: Duration) -> bool {
+        if total.is_zero() || playhead >= total {
+            return true;
+        }
+
+        // The timeline label rounds to milliseconds, but clip/media durations can carry
+        // sub-frame drift. Treat "visibly at end" as end-idle so playback stops like manual pause.
+        total.saturating_sub(playhead) <= Duration::from_millis(80)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn path_needs_alpha_preserving_decode(path: &str) -> bool {
+        let Some(name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
+            return false;
+        };
+        let name = name.to_ascii_lowercase();
+        name.contains("prores4444") || name.contains("prores_4444")
+    }
+
     pub fn new(global: Entity<GlobalState>, cx: &mut Context<Self>) -> Self {
-        cx.subscribe(&global, |_, _, evt: &PlaybackUiEvent, cx| {
-            if matches!(evt, PlaybackUiEvent::Tick) {
+        cx.subscribe(&global, |_, global, evt: &PlaybackUiEvent, cx| {
+            if matches!(evt, PlaybackUiEvent::Tick)
+                && global.read(cx).active_page == AppPage::Editor
+            {
                 cx.notify();
             }
         })
@@ -659,9 +699,12 @@ impl VideoPreview {
             max_audio_cached_seen: 0,
             max_image_cached_seen: 0,
             max_seek_entries_seen: 0,
-            last_preview_fps: 60,
+            last_preview_fps: 30,
+            last_preview_resolution: PreviewResolution::P480,
             last_preview_quality: PreviewQuality::Full,
             last_pump_playhead: None,
+            last_playback_ui_tick_instant: None,
+            playback_ended_pause: false,
             scrub_refresh_until: None,
             blur_interaction_until: None,
             last_clip_blur_sigmas: HashMap::new(),
@@ -676,6 +719,7 @@ impl VideoPreview {
             present_fps_ema: 0.0,
             present_refresh_interval_estimate_s: 0.0,
             present_dropped_frames_total: 0,
+            last_present_sample_playhead: None,
             memory_tuning,
             audio_track_time_indices: HashMap::new(),
             audio_track_index_token: 0,
@@ -2628,6 +2672,7 @@ impl VideoPreview {
             playhead,
             visual_clips,
             preview_fps,
+            preview_resolution,
             preview_quality,
             canvas_w,
             canvas_h,
@@ -2642,6 +2687,7 @@ impl VideoPreview {
                 gs.playhead,
                 Self::resolve_visible_clips(gs, gs.playhead),
                 gs.preview_fps.value(),
+                gs.preview_resolution,
                 gs.preview_quality,
                 gs.canvas_w,
                 gs.canvas_h,
@@ -2669,6 +2715,8 @@ impl VideoPreview {
         let mut next_order = Vec::new();
         let full_preview_max_dim =
             (canvas_w.max(canvas_h) as u32).clamp(1, DEFAULT_IMAGE_MAX_DIM_FULL);
+        let preview_target_max_dim = preview_resolution.max_dim_for_canvas(canvas_w, canvas_h);
+        let preview_target_size = preview_resolution.size_for_canvas(canvas_w, canvas_h);
 
         if self.drop_removed_timeline_media_caches(
             &timeline_video_ids,
@@ -2678,7 +2726,10 @@ impl VideoPreview {
             changed = true;
         }
 
-        if preview_fps != self.last_preview_fps || preview_quality != self.last_preview_quality {
+        if preview_fps != self.last_preview_fps
+            || preview_resolution != self.last_preview_resolution
+            || preview_quality != self.last_preview_quality
+        {
             // Reset decode caches when preview settings change so old resolution/fps resources can be released.
             let cached_image_ids: Vec<u64> = self.image_cache.keys().copied().collect();
             for clip_id in cached_image_ids {
@@ -2707,6 +2758,7 @@ impl VideoPreview {
             #[cfg(target_os = "macos")]
             self.mac_surface_mode_keys.clear();
             self.last_preview_fps = preview_fps;
+            self.last_preview_resolution = preview_resolution;
             self.last_preview_quality = preview_quality;
             changed = true;
         }
@@ -2726,7 +2778,7 @@ impl VideoPreview {
                 active_image_ids.insert(id);
                 Self::touch_cache(&mut self.image_last_used, &mut self.cache_touch_counter, id);
                 let image_target_max_dim =
-                    Some(preview_quality.max_dim().unwrap_or(full_preview_max_dim));
+                    Some(preview_target_max_dim.unwrap_or(full_preview_max_dim));
                 let needs_reload = (self.image_cache_paths.get(&id) != Some(&path_str))
                     || !self.image_cache.contains_key(&id);
                 if needs_reload && !self.image_decode_in_flight.contains(&id) {
@@ -2738,7 +2790,7 @@ impl VideoPreview {
                     let decode_path = path_str.clone();
                     let cache_path = path_str.clone();
                     let max_dim = image_target_max_dim;
-                    let pixelate = preview_quality.pixelate();
+                    let pixelate = preview_resolution.pixelate();
                     let clip_id = id;
                     cx.spawn(async move |view, cx| {
                         let result = cx
@@ -2780,8 +2832,11 @@ impl VideoPreview {
                 id,
             );
             let mut clip_path = path_str.clone();
-            let requested_max_dim = preview_quality.max_dim();
-            if let Some(max_dim) = requested_max_dim {
+            let requested_max_dim = preview_target_max_dim;
+            let proxy_lookup_max_dim = preview_resolution
+                .proxy_quality()
+                .and_then(|quality| quality.max_dim());
+            if let Some(max_dim) = proxy_lookup_max_dim {
                 let lookup = self
                     .global
                     .update(cx, |gs, _| gs.lookup_proxy_for_path(&path_str, max_dim));
@@ -2792,24 +2847,39 @@ impl VideoPreview {
             }
             let use_proxy = clip_path != path_str;
             #[cfg(target_os = "macos")]
-            let (clip_opacity, clip_lut_mix, target_prefer_surface) = {
+            let (clip_opacity, clip_lut_mix, clip_bloom, target_prefer_surface) = {
                 let gs = self.global.read(cx);
                 let opacity = Self::get_clip_opacity(gs, id).unwrap_or(1.0);
                 let lut_mix = Self::get_clip_lut_mix(gs, id).unwrap_or(0.0);
+                let bloom = gs.layer_bloom_at(playhead).unwrap_or((1.0, 0.0, 0.0));
+                let (_, _, _, tint_alpha) =
+                    Self::get_clip_tint(gs, id).unwrap_or((0.0, 0.0, 0.0, 0.0));
                 let (transform_scale, pos_x, pos_y, rotation_deg) =
                     Self::get_clip_transform(gs, id, playhead).unwrap_or((1.0, 0.0, 0.0, 0.0));
                 let local_mask_layers = Self::get_clip_local_mask_layers(gs, id);
-                let manual_surface_mode =
-                    if gs.mac_preview_render_mode == MacPreviewRenderMode::FullBgra {
-                        false
-                    } else if use_proxy {
-                        gs.proxy_render_mode_for_quality(preview_quality)
-                            .prefer_surface()
-                    } else {
-                        true
-                    };
+                let manual_surface_mode = if gs.mac_preview_render_mode
+                    == MacPreviewRenderMode::FullBgra
+                {
+                    false
+                } else if Self::path_needs_alpha_preserving_decode(&path_str) {
+                    false
+                } else if use_proxy {
+                    preview_resolution
+                        .proxy_quality()
+                        .map(|quality| gs.proxy_render_mode_for_quality(quality).prefer_surface())
+                        .unwrap_or(true)
+                } else {
+                    true
+                };
                 // Opacity is supported on the NV12 surface path via `paint_surface_anica`
                 // parameters; keep BGRA fallback only for features not yet supported there.
+                let force_bgra_for_global_effects = b.abs() > 0.001
+                    || (c - 1.0).abs() > 0.001
+                    || (s - 1.0).abs() > 0.001
+                    || (opacity - 1.0).abs() > 0.001
+                    || lut_mix.abs() > 0.001
+                    || blur_sigma.abs() > 0.001
+                    || tint_alpha.abs() > 0.001;
                 let force_bgra_for_transform = (transform_scale - 1.0).abs() > 0.001
                     || pos_x.abs() > 0.001
                     || pos_y.abs() > 0.001
@@ -2826,10 +2896,16 @@ impl VideoPreview {
                     let has_blur = layer.blur_sigma.abs() > 0.001;
                     has_shape && (has_color || has_blur)
                 });
+                let force_bgra_for_bloom = bloom.1 > 0.001 && bloom.2 > 0.001;
                 (
                     opacity,
                     lut_mix,
-                    manual_surface_mode && !force_bgra_for_transform && !force_bgra_for_local_mask,
+                    bloom,
+                    manual_surface_mode
+                        && !force_bgra_for_global_effects
+                        && !force_bgra_for_transform
+                        && !force_bgra_for_local_mask
+                        && !force_bgra_for_bloom,
                 )
             };
             let path_changed = self.video_cache_paths.get(&id) != Some(&clip_path);
@@ -2859,7 +2935,12 @@ impl VideoPreview {
                 let path = PathBuf::from(&clip_path);
                 if let Ok(url) = Url::from_file_path(&path) {
                     let preview_scale = None;
-                    let preview_max_dim = if use_proxy { None } else { requested_max_dim };
+                    let preview_size = if use_proxy { None } else { preview_target_size };
+                    let preview_max_dim = if use_proxy || preview_size.is_some() {
+                        None
+                    } else {
+                        requested_max_dim
+                    };
                     #[cfg(target_os = "macos")]
                     let prefer_surface = target_prefer_surface;
                     #[cfg(not(target_os = "macos"))]
@@ -2872,6 +2953,8 @@ impl VideoPreview {
                         frame_buffer_capacity: Some(self.memory_tuning.frame_buffer_capacity),
                         preview_scale,
                         preview_max_dim,
+                        preview_width: preview_size.map(|(width, _)| width),
+                        preview_height: preview_size.map(|(_, height)| height),
                         preview_fps: Some(preview_fps),
                         appsink_max_buffers: Some(self.memory_tuning.appsink_max_buffers),
                         prefer_surface,
@@ -2881,11 +2964,13 @@ impl VideoPreview {
                     };
                     if let Ok(video) = Video::new_with_options(&url, opts) {
                         log::info!(
-                            "[Preview] create visual player clip={} path={} proxy={} fps={}",
+                            "[Preview] create visual player clip={} path={} proxy={} fps={} resolution={} target_size={:?}",
                             id,
                             clip_path,
                             use_proxy,
-                            preview_fps
+                            preview_fps,
+                            preview_resolution.settings_label(),
+                            preview_size
                         );
                         // Keep visual decode separate from audio routing to avoid ghost audio after clip unlink/delete.
                         // Boot in paused state first; transport pass below decides whether to unpause.
@@ -2929,6 +3014,9 @@ impl VideoPreview {
                         clip_lut_mix,
                         clip_opacity,
                         blur_sigma,
+                        clip_bloom.0,
+                        clip_bloom.1,
+                        clip_bloom.2,
                     );
                     self.mac_video_effect_keys.insert(id, effect_key);
                 }
@@ -3256,6 +3344,50 @@ impl VideoPreview {
         }
     }
 
+    fn stop_after_playback_end(&mut self, cx: &mut Context<Self>) {
+        self.pump_running = false;
+        self.pump_token = self.pump_token.wrapping_add(1);
+        self.last_pump_instant = None;
+        self.last_pump_playhead = None;
+        self.last_playback_ui_tick_instant = None;
+        self.playback_ended_pause = true;
+        self.scrub_refresh_until = None;
+        self.blur_interaction_until = None;
+        self.video_input_fps_window_start = None;
+        self.video_input_fps_window_frames = 0;
+        self.present_last_frame_instant = None;
+        self.present_fps_window_start = None;
+        self.present_fps_window_frames = 0;
+        self.last_present_sample_playhead = None;
+
+        let no_visual = HashSet::new();
+        let no_audio = HashSet::new();
+        let playhead = self.global.read(cx).playhead;
+        self.log_active_set_transition(playhead, &no_visual, &no_audio);
+        self.update_visual_player_transport(&no_visual);
+        self.update_audio_player_transport(&no_audio);
+        for (clip_id, player) in &self.visual_players {
+            if !player.paused() {
+                player.set_paused(true);
+            }
+            self.visual_paused_state.insert(*clip_id, true);
+            if !player.muted() {
+                player.set_muted(true);
+            }
+        }
+        for player in self.audio_players.values() {
+            if !player.paused() {
+                player.set_paused(true);
+            }
+            if !player.muted() {
+                player.set_muted(true);
+            }
+        }
+        for clip_id in self.audio_players.keys() {
+            self.audio_paused_state.insert(*clip_id, true);
+        }
+    }
+
     fn schedule_pump_frame(&mut self, token: u64, window: &mut Window, cx: &mut Context<Self>) {
         // Drive playback from animation frames to avoid timer wake starvation on busy event loops.
         cx.on_next_frame(window, move |this, window, cx| {
@@ -3268,6 +3400,7 @@ impl VideoPreview {
             let now = Instant::now();
             let dt = now.saturating_duration_since(this.last_pump_instant.unwrap_or(now));
             this.last_pump_instant = Some(now);
+            let editor_visible = this.global.read(cx).active_page == AppPage::Editor;
 
             let (playhead_before_tick, next_ph, end) = {
                 let gs = this.global.read(cx);
@@ -3285,26 +3418,32 @@ impl VideoPreview {
                 .map(|last| (last.as_secs_f64() - playhead_before_tick.as_secs_f64()).abs() > 0.050)
                 .unwrap_or(false);
 
+            let preview_fps = this.global.read(cx).preview_fps.value();
+            let ui_tick_interval = Self::playback_ui_tick_interval(preview_fps);
+            let should_emit_ui_tick = editor_visible
+                && (end
+                    || this.last_playback_ui_tick_instant.is_none_or(|last| {
+                        now.saturating_duration_since(last) >= ui_tick_interval
+                    }));
+            if should_emit_ui_tick {
+                this.last_playback_ui_tick_instant = Some(now);
+            }
+
             this.global.update(cx, |gs, cx| {
                 gs.playhead = next_ph;
                 if end {
                     gs.is_playing = false;
                 }
-                cx.emit(PlaybackUiEvent::Tick);
+                if should_emit_ui_tick {
+                    cx.emit(PlaybackUiEvent::Tick);
+                }
             });
 
             if end {
-                for (clip_id, v) in &this.visual_players {
-                    v.set_paused(true);
-                    this.visual_paused_state.insert(*clip_id, true);
+                this.stop_after_playback_end(cx);
+                if editor_visible {
+                    cx.notify();
                 }
-                for (clip_id, p) in &this.audio_players {
-                    p.set_paused(true);
-                    this.audio_paused_state.insert(*clip_id, true);
-                }
-                this.pump_running = false;
-                this.last_pump_playhead = None;
-                cx.notify();
                 return;
             }
 
@@ -3376,7 +3515,9 @@ impl VideoPreview {
             this.update_visual_player_transport(&active_visual_ids);
             this.update_audio_player_transport(&active_audio_ids);
             this.last_pump_playhead = Some(current_playhead);
-            cx.notify();
+            if editor_visible {
+                cx.notify();
+            }
 
             // Keep pumping while playback remains active.
             if this.pump_token == token && this.global.read(cx).is_playing {
@@ -3388,8 +3529,28 @@ impl VideoPreview {
     }
 
     fn ensure_pump_running(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let playing_now = self.global.read(cx).is_playing;
+        let (playing_now, playhead, total, editor_visible) = {
+            let gs = self.global.read(cx);
+            (
+                gs.is_playing,
+                gs.playhead,
+                Self::sequence_total(gs),
+                gs.active_page == AppPage::Editor,
+            )
+        };
         if !playing_now {
+            return;
+        }
+        if Self::playhead_is_at_or_near_end(playhead, total) {
+            self.global.update(cx, |gs, cx| {
+                gs.playhead = total;
+                gs.is_playing = false;
+                if editor_visible {
+                    cx.emit(PlaybackUiEvent::Tick);
+                    cx.notify();
+                }
+            });
+            self.stop_after_playback_end(cx);
             return;
         }
         if self.pump_running {
@@ -3400,6 +3561,9 @@ impl VideoPreview {
         self.pump_token = self.pump_token.wrapping_add(1);
         let token = self.pump_token;
         self.last_pump_instant = Some(Instant::now());
+        self.last_playback_ui_tick_instant = None;
+        self.playback_ended_pause = false;
+        self.last_present_sample_playhead = None;
         self.reset_present_metrics(cx);
 
         self.sync_video_engine(cx);
@@ -3449,6 +3613,7 @@ impl VideoPreview {
         self.present_last_frame_instant = None;
         self.present_fps_window_start = None;
         self.present_fps_window_frames = 0;
+        self.last_present_sample_playhead = None;
         self.present_fps_ema = 0.0;
         self.present_refresh_interval_estimate_s = 0.0;
         self.present_dropped_frames_total = 0;
@@ -3460,6 +3625,9 @@ impl VideoPreview {
     fn sample_present_fps(&mut self, cx: &mut Context<Self>, is_playing: bool) {
         if !is_playing {
             self.present_last_frame_instant = None;
+            self.present_fps_window_start = None;
+            self.present_fps_window_frames = 0;
+            self.last_present_sample_playhead = None;
             return;
         }
 
@@ -3528,7 +3696,14 @@ impl VideoPreview {
         }
     }
 
-    fn sample_video_input_fps(&mut self, cx: &mut Context<Self>) {
+    fn sample_video_input_fps(&mut self, cx: &mut Context<Self>, is_playing: bool) {
+        if !is_playing {
+            self.video_input_fps_window_start = None;
+            self.video_input_fps_window_frames = 0;
+            self.last_video_frame_counters.clear();
+            return;
+        }
+
         let now = Instant::now();
         if self.video_input_fps_window_start.is_none() {
             self.video_input_fps_window_start = Some(now);
@@ -3619,28 +3794,48 @@ impl Render for VideoPreview {
             // Keep RAF requested from render (GPUI expects this API to be called in paint/render path).
             window.request_animation_frame();
         } else {
-            // Paused mode still needs immediate sync + seek so timeline scrub and inspector edits refresh.
-            self.sync_video_engine(cx);
-            self.apply_transport_and_seek_when_paused(cx);
-            if let Some(until) = self.scrub_refresh_until {
-                if Instant::now() < until {
-                    window.request_animation_frame();
-                } else {
-                    self.scrub_refresh_until = None;
+            let playhead = self.global.read(cx).playhead;
+            let ended_idle = Self::playhead_is_at_or_near_end(playhead, total);
+            if ended_idle {
+                if !self.playback_ended_pause {
+                    self.stop_after_playback_end(cx);
                 }
-            }
-            if self.blur_fast_mode_active() {
-                // Keep refreshing while blur is actively changing; when it settles we auto-render HQ pass.
-                window.request_animation_frame();
+                self.scrub_refresh_until = None;
+                self.blur_interaction_until = None;
+            } else {
+                self.playback_ended_pause = false;
+                // Paused mode still needs immediate sync + seek so timeline scrub and inspector edits refresh.
+                self.sync_video_engine(cx);
+                self.apply_transport_and_seek_when_paused(cx);
+                if let Some(until) = self.scrub_refresh_until {
+                    if Instant::now() < until {
+                        window.request_animation_frame();
+                    } else {
+                        self.scrub_refresh_until = None;
+                    }
+                }
+                if self.blur_fast_mode_active() {
+                    // Keep refreshing while blur is actively changing; when it settles we auto-render HQ pass.
+                    window.request_animation_frame();
+                }
             }
         }
 
-        self.sample_video_input_fps(cx);
-        self.sample_present_fps(cx, is_playing);
+        let current_playhead = self.global.read(cx).playhead;
+        self.sample_video_input_fps(cx, is_playing);
+        if is_playing {
+            if self.last_present_sample_playhead != Some(current_playhead) {
+                self.last_present_sample_playhead = Some(current_playhead);
+                self.sample_present_fps(cx, true);
+            }
+        } else {
+            self.sample_present_fps(cx, false);
+        }
 
         let gs = self.global.read(cx);
         let mut canvas_w = gs.canvas_w;
         let mut canvas_h = gs.canvas_h;
+
         if canvas_w <= 0.0 || canvas_h <= 0.0 {
             canvas_w = 920.0;
             canvas_h = 2080.0;
@@ -3695,6 +3890,9 @@ impl Render for VideoPreview {
                 opacity: f32,
                 blur_sigma: f32,
                 lut_mix: f32,
+                bloom_threshold: f32,
+                bloom_intensity: f32,
+                bloom_sigma: f32,
                 local_mask_layers: Vec<VideoLocalMaskLayer>,
                 local_mask_enabled: bool,
                 local_mask_center_x: f32,
@@ -3717,6 +3915,8 @@ impl Render for VideoPreview {
                     let opacity = Self::get_clip_opacity(gs, *clip_id).unwrap_or(1.0);
                     let blur_sigma = Self::get_clip_blur_sigma(gs, *clip_id).unwrap_or(0.0);
                     let lut_mix = Self::get_clip_lut_mix(gs, *clip_id).unwrap_or(0.0);
+                    let (bloom_threshold, bloom_intensity, bloom_sigma) =
+                        gs.layer_bloom_at(gs.playhead).unwrap_or((1.0, 0.0, 0.0));
                     let local_mask_layers = Self::get_clip_local_mask_layers(gs, *clip_id);
                     let active_layer_idx = active_local_mask_layer
                         .min(local_mask_layers.len().saturating_sub(1))
@@ -3738,6 +3938,9 @@ impl Render for VideoPreview {
                         opacity,
                         blur_sigma,
                         lut_mix,
+                        bloom_threshold,
+                        bloom_intensity,
+                        bloom_sigma,
                         local_mask_layers,
                         local_mask_enabled: active_local_layer.enabled,
                         local_mask_center_x: active_local_layer.center_x,
@@ -3766,6 +3969,8 @@ impl Render for VideoPreview {
                 let opacity = cd.opacity;
                 let blur_sigma = cd.blur_sigma;
                 let lut_mix = cd.lut_mix;
+                let (bloom_threshold, bloom_intensity, bloom_sigma) =
+                    (cd.bloom_threshold, cd.bloom_intensity, cd.bloom_sigma);
                 let local_mask_layers = &cd.local_mask_layers;
                 let local_mask_enabled = cd.local_mask_enabled;
                 let local_mask_center_x = cd.local_mask_center_x;
@@ -3881,6 +4086,7 @@ impl Render for VideoPreview {
                                             (alpha * opacity).clamp(0.0, 1.0),
                                         )
                                         .blur_sigma(blur_sigma)
+                                        .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
                                         .rotation_deg(rotation_deg)
                                         .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
                                         .opacity(element_opacity)
@@ -3946,6 +4152,7 @@ impl Render for VideoPreview {
                                         (alpha * opacity).clamp(0.0, 1.0),
                                     )
                                     .blur_sigma(blur_sigma)
+                                    .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
                                     .rotation_deg(rotation_deg)
                                     .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
                                     .opacity(element_opacity)
@@ -4001,6 +4208,7 @@ impl Render for VideoPreview {
                                 .lut_mix(lut_mix)
                                 .tint_overlay(hue, sat, light, (alpha * opacity).clamp(0.0, 1.0))
                                 .blur_sigma(blur_sigma)
+                                .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
                                 .rotation_deg(rotation_deg)
                                 .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
                                 .opacity(opacity)

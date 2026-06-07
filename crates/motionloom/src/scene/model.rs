@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::dsl::{ImageNode, SvgNode, TextNode};
+use crate::scene::dsl::{ImageNode, SvgNode};
+use crate::scene::text::TextNode;
 
 fn default_scene_blend() -> String {
     "normal".to_string()
@@ -46,6 +47,14 @@ fn default_scene_one() -> String {
     "1".to_string()
 }
 
+fn default_scene_source_time() -> String {
+    "local".to_string()
+}
+
+fn default_scene_out_hold() -> String {
+    "hold".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneRootNode {
@@ -58,6 +67,10 @@ pub struct SceneRootNode {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SceneNode {
     Defs(DefsNode),
+    Timeline(SceneTimelineNode),
+    Track(SceneTrackNode),
+    Sequence(SceneSequenceNode),
+    Chain(SceneChainNode),
     Palette(PaletteNode),
     PixelGrid(PixelGridNode),
     Text(TextNode),
@@ -75,9 +88,54 @@ pub enum SceneNode {
     Repeat(RepeatNode),
     Mask(MaskNode),
     Precompose(PrecomposeNode),
+    Use(UseNode),
     Layer(SceneLayerNode),
     Camera(CameraNode),
     Character(CharacterNode),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTimelineNode {
+    pub id: Option<String>,
+    pub children: Vec<SceneNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTrackNode {
+    pub id: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default = "default_scene_track_space")]
+    pub space: String,
+    pub z: i32,
+    #[serde(default = "default_scene_zero")]
+    pub z_depth: String,
+    pub children: Vec<SceneNode>,
+}
+
+fn default_scene_track_space() -> String {
+    "world".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneSequenceNode {
+    pub id: Option<String>,
+    pub from_ms: u64,
+    pub duration_ms: u64,
+    pub out: String,
+    pub children: Vec<SceneNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneChainNode {
+    pub id: Option<String>,
+    pub from_ms: u64,
+    pub gap_ms: i64,
+    pub children: Vec<SceneNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -87,6 +145,52 @@ pub struct DefsNode {
     pub gradients: Vec<GradientDef>,
     #[serde(default)]
     pub brushes: Vec<BrushDef>,
+    #[serde(default)]
+    pub masks: Vec<MaskNode>,
+    #[serde(default)]
+    pub precomposes: Vec<PrecomposeNode>,
+    #[serde(default)]
+    pub components: Vec<ComponentNode>,
+    #[serde(default)]
+    pub filters: Vec<FilterDef>,
+    #[serde(default)]
+    pub fonts: Vec<FontDef>,
+    #[serde(default)]
+    pub palettes: Vec<PaletteNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentNode {
+    pub id: String,
+    pub children: Vec<SceneNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FontDef {
+    pub id: String,
+    pub family: Option<String>,
+    pub path: Option<String>,
+    pub fallback: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterDef {
+    pub id: String,
+    pub steps: Vec<FilterStepDef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterStepDef {
+    pub kind: String,
+    pub radius: Option<String>,
+    pub saturation: Option<String>,
+    pub brightness: Option<String>,
+    pub contrast: Option<String>,
+    pub opacity: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -552,15 +656,17 @@ pub struct MaskNode {
 #[serde(rename_all = "camelCase")]
 pub struct PrecomposeNode {
     pub id: String,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
     pub size: Option<(u32, u32)>,
     pub children: Vec<SceneNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SceneLayerNode {
+pub struct UseNode {
     pub id: Option<String>,
-    pub source: String,
+    pub ref_id: String,
     pub x: String,
     pub y: String,
     pub rotation: String,
@@ -580,29 +686,83 @@ pub struct SceneLayerNode {
     pub opacity: String,
     #[serde(default = "default_scene_blend")]
     pub blend: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneLayerNode {
+    pub id: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    pub x: String,
+    pub y: String,
+    pub rotation: String,
+    pub scale: String,
+    #[serde(default = "default_scene_one")]
+    pub scale_x: String,
+    #[serde(default = "default_scene_one")]
+    pub scale_y: String,
+    #[serde(default = "default_scene_zero")]
+    pub skew_x: String,
+    #[serde(default = "default_scene_zero")]
+    pub skew_y: String,
+    #[serde(default = "default_scene_zero")]
+    pub transform_origin_x: String,
+    #[serde(default = "default_scene_zero")]
+    pub transform_origin_y: String,
+    #[serde(default)]
+    pub z_depth: Option<String>,
+    pub opacity: String,
+    #[serde(default = "default_scene_blend")]
+    pub blend: String,
+    #[serde(default)]
+    pub effect: Option<String>,
+    #[serde(default = "default_scene_source_time")]
+    pub source_time: String,
+    #[serde(default)]
+    pub time_offset_ms: i64,
+    #[serde(default = "default_scene_one")]
+    pub playback_rate: String,
+    #[serde(default = "default_scene_out_hold")]
+    pub out: String,
+    #[serde(default)]
+    pub mask: Option<String>,
+    #[serde(default = "default_scene_mask_mode")]
+    pub mask_mode: String,
     #[serde(default)]
     pub matte: Option<String>,
     #[serde(default = "default_scene_matte_mode")]
     pub matte_mode: String,
     #[serde(default = "default_scene_false")]
     pub invert_matte: String,
+    #[serde(default)]
+    pub children: Vec<SceneNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CameraNode {
     pub id: Option<String>,
-    pub mode: String,
     pub x: String,
     pub y: String,
     pub target_x: Option<String>,
     pub target_y: Option<String>,
     pub anchor_x: String,
     pub anchor_y: String,
+    #[serde(default = "default_scene_zero")]
+    pub offset_x: String,
+    #[serde(default = "default_scene_zero")]
+    pub offset_y: String,
+    #[serde(default = "default_scene_zero")]
+    pub shake_x: String,
+    #[serde(default = "default_scene_zero")]
+    pub shake_y: String,
     pub zoom: String,
     pub rotation: String,
     pub opacity: String,
     pub follow: Option<String>,
+    #[serde(default)]
+    pub dead_zone: Option<String>,
     pub viewport: Option<String>,
     pub world_bounds: Option<String>,
     pub children: Vec<SceneNode>,

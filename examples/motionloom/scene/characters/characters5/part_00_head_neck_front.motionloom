@@ -2,25 +2,33 @@
   <Background color="#f7f7f7" />
 
   <Scene id="character5_part_head_neck_front">
-
     <Defs>
       <Brush id="rig_bone" stroke="#1f2a37" strokeWidth="7" strokeStyle="pencil" strokeRoughness="0.6" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" />
       <Brush id="rig_joint" stroke="#2f6fed" strokeWidth="4" lineCap="round" lineJoin="round" fill="none" />
       <Brush id="rig_guide" stroke="#94a3b8" strokeWidth="2" strokeStyle="pencil" strokeRoughness="0.4" strokeCopies="2" lineCap="round" lineJoin="round" fill="none" opacity="0.45" />
     </Defs>
 
-    <Character id="character5_head_neck_front" x="360" y="170" opacity="1">
-      <Part id="head_blank_front" label="Blank head front" role="head" brush="rig_bone" anchorX="0" anchorY="0">
-        <Path id="head_outer_shape" d="M -86 0 C -86 -54 -50 -94 0 -96 C 50 -94 86 -54 86 0 C 86 55 50 94 0 96 C -50 94 -86 55 -86 0 Z" />
-        <Path id="head_center_guide" brush="rig_guide" d="M 0 -96 L 0 96 M -64 0 L 64 0" />
-      </Part>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
 
-      <Part id="neck_front" label="Neck front" role="neck" brush="rig_bone" y="96" anchorX="0" anchorY="0">
-        <Path id="neck_bone" d="M 0 0 L 0 82" />
-        <Path id="neck_joint_top" brush="rig_joint" d="M -12 0 C -12 -7 -7 -12 0 -12 C 7 -12 12 -7 12 0 C 12 7 7 12 0 12 C -7 12 -12 7 -12 0 Z" />
-        <Path id="neck_joint_base" brush="rig_joint" d="M -14 82 C -14 74 -8 68 0 68 C 8 68 14 74 14 82 C 14 90 8 96 0 96 C -8 96 -14 90 -14 82 Z" />
-      </Part>
-    </Character>
+            <Character id="character5_head_neck_front" x="360" y="170" opacity="1">
+              <Part id="head_blank_front" label="Blank head front" role="head" brush="rig_bone" anchorX="0" anchorY="0">
+                <Path id="head_outer_shape" d="M -86 0 C -86 -54 -50 -94 0 -96 C 50 -94 86 -54 86 0 C 86 55 50 94 0 96 C -50 94 -86 55 -86 0 Z" />
+                <Path id="head_center_guide" brush="rig_guide" d="M 0 -96 L 0 96 M -64 0 L 64 0" />
+              </Part>
+
+              <Part id="neck_front" label="Neck front" role="neck" brush="rig_bone" y="96" anchorX="0" anchorY="0">
+                <Path id="neck_bone" d="M 0 0 L 0 82" />
+                <Path id="neck_joint_top" brush="rig_joint" d="M -12 0 C -12 -7 -7 -12 0 -12 C 7 -12 12 -7 12 0 C 12 7 7 12 0 12 C -7 12 -12 7 -12 0 Z" />
+                <Path id="neck_joint_base" brush="rig_joint" d="M -14 82 C -14 74 -8 68 0 68 C 8 68 14 74 14 82 C 14 90 8 96 0 96 C -8 96 -14 90 -14 82 Z" />
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="character5_part_head_neck_front" />

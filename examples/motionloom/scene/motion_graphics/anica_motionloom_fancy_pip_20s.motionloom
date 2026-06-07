@@ -1,0 +1,382 @@
+<!-- Font note: uses common macOS fonts (Avenir Next Condensed, Helvetica Neue, Menlo); unavailable families fall back to the renderer default. -->
+<Graph fps={30} duration="20s" size={[1920,1080]} renderSize={[1920,1080]}>
+  <Background color="#FFF2C8" />
+
+  <Scene id="anica_motionloom_fancy_pip_20s">
+    <Defs>
+      <LinearGradient id="bg_sorbet" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#FFF4C6, 0.34:#FFE3F1, 0.66:#C9F4FF, 1:#D7F9D2" />
+      <LinearGradient id="card_glass" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFFFFFEE, 0.70:#FFFFFFCC, 1:#F7FBFFAA" />
+      <LinearGradient id="hot_ribbon" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#FF4F8B, 0.35:#FFB000, 0.68:#52E8FF, 1:#7B61FF" />
+      <LinearGradient id="cool_ribbon" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#1E48FF, 0.40:#52E8FF, 0.72:#FFFFFF, 1:#FFB000" />
+      <LinearGradient id="audio_bar_grad" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFFFFF, 0.22:#52E8FF, 0.72:#7B61FF, 1:#FF4F8B" />
+      <RadialGradient id="pop_bloom_cyan" cx="0.50" cy="0.50" r="0.78"
+                      stops="0:#52E8FF66, 0.44:#52E8FF1F, 1:#52E8FF00" />
+      <RadialGradient id="pop_bloom_pink" cx="0.50" cy="0.50" r="0.74"
+                      stops="0:#FF4F8B66, 0.45:#FF4F8B22, 1:#FF4F8B00" />
+      <RadialGradient id="orb_white" cx="0.50" cy="0.50" r="0.58"
+                      stops="0:#FFFFFF, 0.30:#FFFFFFDD, 1:#FFFFFF00" />
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="20s" out="hold">
+          <Layer>
+
+            <Rect x="0" y="0" width="1920" height="1080" fill="url(#bg_sorbet)" />
+
+            <!-- Playful background dots and stickers. -->
+            <Circle x={curve("0:190:ease_in_out, 10:240:ease_in_out, 20:175:ease_in_out")}
+                    y={curve("0:160:ease_in_out, 12:205:ease_in_out, 20:150:ease_in_out")}
+                    radius="260"
+                    color="url(#pop_bloom_pink)"
+                    blend="screen"
+                    opacity="0.80" />
+            <Circle x={curve("0:1600:ease_in_out, 9:1480:ease_in_out, 20:1620:ease_in_out")}
+                    y={curve("0:820:ease_in_out, 12:760:ease_in_out, 20:850:ease_in_out")}
+                    radius="340"
+                    color="url(#pop_bloom_cyan)"
+                    blend="screen"
+                    opacity="0.92" />
+
+            <Repeat id="confetti_left" count="16" x="70" y="105" xStep="44" yStep="28" rotationStep="18" opacity="0.65" opacityStep="-0.012">
+              <Rect x="0" y="0" width="20" height="8" radius="4" color="#FF4F8B" rotation={curve("0:0:linear, 20:360:linear")} />
+            </Repeat>
+            <Repeat id="confetti_right" count="18" x="1210" y="100" xStep="42" yStep="22" rotationStep="-16" opacity="0.60" opacityStep="-0.010">
+              <Circle x="0" y="0" radius="6" color="#1E48FF" />
+            </Repeat>
+
+            <!-- 0-4s opening: make MotionLoom feel like a show. -->
+            <Group id="opening"
+                   opacity={curve("0:1:linear, 3.70:1:linear, 4.45:0:ease_in_out, 20:0:linear")}
+                   scale={curve("0:0.96:ease_in_out, 3.50:1.02:ease_in_out")}
+                   transformOriginX="960"
+                   transformOriginY="540">
+              <Text value="MotionLoom"
+                    x="center"
+                    y="378"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="188"
+                    color="#111827"
+                    opacity={curve("0:0:ease_in_out, 0.60:1:ease_in_out")}
+                    visibleChars={curve("0:0:ease_out, 1.05:10:ease_out, 20:10:linear")} />
+              <Text value="the video language inside Anica"
+                    x="center"
+                    y="482"
+                    fontFamily="Helvetica Neue"
+                    fontSize="38"
+                    color="#3B4350"
+                    opacity={curve("0:0:linear, 1.00:0:ease_in_out, 1.60:0.92:ease_in_out")}
+                    visibleChars={curve("0:0:linear, 1.20:0:linear, 2.15:37:ease_out, 20:37:linear")} />
+              <Path d="M 470 592 C 630 500 772 688 930 592 C 1088 496 1260 680 1448 560"
+                    stroke="url(#hot_ribbon)"
+                    strokeWidth="18"
+                    lineCap="round"
+                    fill="none"
+                    trimStart={curve("0:0.48:ease_in_out, 1.35:0:ease_in_out, 3.65:0.08:ease_in_out")}
+                    trimEnd={curve("0:0.52:ease_in_out, 1.35:1:ease_in_out, 3.65:0.92:ease_in_out")}
+                    opacity="0.96" />
+              <Text value="SCENE  WORLD  CURVE  VECTOR  GPU"
+                    x="center"
+                    y="680"
+                    fontFamily="Menlo"
+                    fontSize="26"
+                    color="#111827"
+                    opacity={curve("0:0:linear, 2.0:0:ease_in_out, 2.65:0.72:ease_in_out")} />
+            </Group>
+
+            <!-- 4-9s picture-in-picture: Curve Motion example. -->
+            <Group id="curve_pip"
+                   x={curve("3.80:-760:ease_in_out, 4.70:130:ease_in_out, 8.60:130:linear, 9.30:-760:ease_in_out, 20:-760:linear")}
+                   y="150"
+                   rotation={curve("3.80:-8:ease_in_out, 4.70:-2:ease_in_out, 8.60:1:ease_in_out")}
+                   opacity={curve("3.80:0:ease_in_out, 4.55:1:ease_in_out, 8.65:1:linear, 9.20:0:ease_in_out")}>
+              <Rect x="0" y="0" width="760" height="455" radius="42" fill="url(#card_glass)" stroke="#11182722" strokeWidth="2" />
+              <Rect x="0" y="0" width="760" height="78" radius="42" color="#111827" opacity="0.96" />
+              <Text value="PICTURE-IN-PICTURE 01"
+                    x="42"
+                    y="48"
+                    fontFamily="Menlo"
+                    fontSize="18"
+                    color="#FFE36B"
+                    opacity="0.95" />
+              <Text value="Curve Motion"
+                    x="42"
+                    y="138"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="62"
+                    color="#111827" />
+              <Text value="Two lines, two easings, one timeline."
+                    x="46"
+                    y="182"
+                    fontFamily="Helvetica Neue"
+                    fontSize="24"
+                    color="#485465" />
+
+              <Line x1="94" y1="262" x2="650" y2="262" stroke="#11182722" strokeWidth="4" />
+              <Line x1="94" y1="340" x2="650" y2="340" stroke="#11182722" strokeWidth="4" />
+              <Text value="ease_in_out"
+                    x="92"
+                    y="244"
+                    fontFamily="Menlo"
+                    fontSize="18"
+                    color="#1E48FF" />
+              <Line x1="94" y1="262"
+                    x2={curve("4.10:94:ease_in_out, 6.20:650:linear, 8.70:650:linear")}
+                    y2="262"
+                    stroke="#1E48FF"
+                    strokeWidth="13"
+                    lineCap="round" />
+              <Circle x={curve("4.10:94:ease_in_out, 6.20:650:linear, 8.70:650:linear")}
+                      y="262"
+                      radius="23"
+                      color="#FFFFFF"
+                      stroke="#1E48FF"
+                      strokeWidth="6" />
+
+              <Text value="ease(0.82,0,0.58,1)"
+                    x="92"
+                    y="322"
+                    fontFamily="Menlo"
+                    fontSize="18"
+                    color="#FF4F8B" />
+              <Line x1="94" y1="340"
+                    x2={curve("4.10:94:ease(0.82,0,0.58,1), 6.20:650:linear, 8.70:650:linear")}
+                    y2="340"
+                    stroke="#FF4F8B"
+                    strokeWidth="13"
+                    lineCap="round" />
+              <Circle x={curve("4.10:94:ease(0.82,0,0.58,1), 6.20:650:linear, 8.70:650:linear")}
+                      y="340"
+                      radius="23"
+                      color="#FFFFFF"
+                      stroke="#FF4F8B"
+                      strokeWidth="6" />
+            </Group>
+
+            <Group id="curve_caption"
+                   opacity={curve("4.20:0:ease_in_out, 5.05:1:ease_in_out, 8.30:1:linear, 9.00:0:ease_in_out, 20:0:linear")}
+                   x="975"
+                   y="218">
+              <Text value="Curves are not presets."
+                    x="0"
+                    y="0"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="92"
+                    color="#111827" />
+              <Text value="They are part of the language."
+                    x="0"
+                    y="78"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="92"
+                    color="#111827" />
+              <Text value="Animate numbers, paths, opacity, masks, cameras and scenes with the same syntax."
+                    x="4"
+                    y="150"
+                    fontFamily="Helvetica Neue"
+                    fontSize="29"
+                    color="#4B5563" />
+              <Path d="M 10 214 C 130 190 258 238 390 214 C 520 190 650 230 790 206"
+                    stroke="url(#hot_ribbon)"
+                    strokeWidth="9"
+                    lineCap="round"
+                    fill="none"
+                    trimStart={curve("4.80:0.5:ease_in_out, 5.75:0:ease_in_out")}
+                    trimEnd={curve("4.80:0.5:ease_in_out, 5.75:1:ease_in_out")} />
+            </Group>
+
+            <!-- 9-14s picture-in-picture: Audio spectrum style outcome. -->
+            <Group id="audio_pip"
+                   x={curve("8.90:2020:ease_in_out, 9.75:1010:ease_in_out, 13.55:1010:linear, 14.30:2020:ease_in_out, 20:2020:linear")}
+                   y="150"
+                   rotation={curve("8.90:7:ease_in_out, 9.75:2:ease_in_out, 13.55:-1:ease_in_out")}
+                   opacity={curve("8.90:0:ease_in_out, 9.65:1:ease_in_out, 13.65:1:linear, 14.18:0:ease_in_out")}>
+              <Rect x="0" y="0" width="780" height="455" radius="42" color="#071018" stroke="#FFFFFF22" strokeWidth="2" />
+              <Circle x="610" y="105" radius="190" color="url(#pop_bloom_cyan)" blend="screen" opacity="0.65" />
+              <Text value="PICTURE-IN-PICTURE 02"
+                    x="44"
+                    y="52"
+                    fontFamily="Menlo"
+                    fontSize="18"
+                    color="#52E8FF" />
+              <Text value="Audio Spectrum"
+                    x="44"
+                    y="118"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="64"
+                    color="#FFFFFF" />
+              <Text value="Pseudo reactive bars. Real motion graph energy."
+                    x="48"
+                    y="162"
+                    fontFamily="Helvetica Neue"
+                    fontSize="23"
+                    color="#9FB2C7" />
+              <Line x1="72" y1="365" x2="710" y2="365" stroke="#FFFFFF33" strokeWidth="2" />
+
+              <Rect x="86" y="365 - (112 + 76*(0.5 + 0.5*sin($time.sec*5.1 + 0.0)))" width="28" height="112 + 76*(0.5 + 0.5*sin($time.sec*5.1 + 0.0))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="134" y="365 - (138 + 92*(0.5 + 0.5*sin($time.sec*5.9 + 0.8)))" width="28" height="138 + 92*(0.5 + 0.5*sin($time.sec*5.9 + 0.8))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="182" y="365 - (92 + 118*(0.5 + 0.5*sin($time.sec*6.7 + 1.6)))" width="28" height="92 + 118*(0.5 + 0.5*sin($time.sec*6.7 + 1.6))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="230" y="365 - (168 + 72*(0.5 + 0.5*sin($time.sec*7.4 + 2.4)))" width="28" height="168 + 72*(0.5 + 0.5*sin($time.sec*7.4 + 2.4))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="278" y="365 - (126 + 104*(0.5 + 0.5*sin($time.sec*4.8 + 3.2)))" width="28" height="126 + 104*(0.5 + 0.5*sin($time.sec*4.8 + 3.2))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="326" y="365 - (190 + 48*(0.5 + 0.5*sin($time.sec*6.1 + 4.0)))" width="28" height="190 + 48*(0.5 + 0.5*sin($time.sec*6.1 + 4.0))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="374" y="365 - (118 + 110*(0.5 + 0.5*sin($time.sec*5.5 + 4.8)))" width="28" height="118 + 110*(0.5 + 0.5*sin($time.sec*5.5 + 4.8))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="422" y="365 - (84 + 146*(0.5 + 0.5*sin($time.sec*7.0 + 5.6)))" width="28" height="84 + 146*(0.5 + 0.5*sin($time.sec*7.0 + 5.6))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="470" y="365 - (154 + 88*(0.5 + 0.5*sin($time.sec*5.8 + 6.4)))" width="28" height="154 + 88*(0.5 + 0.5*sin($time.sec*5.8 + 6.4))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="518" y="365 - (104 + 122*(0.5 + 0.5*sin($time.sec*6.4 + 7.2)))" width="28" height="104 + 122*(0.5 + 0.5*sin($time.sec*6.4 + 7.2))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="566" y="365 - (172 + 70*(0.5 + 0.5*sin($time.sec*4.9 + 8.0)))" width="28" height="172 + 70*(0.5 + 0.5*sin($time.sec*4.9 + 8.0))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="614" y="365 - (128 + 96*(0.5 + 0.5*sin($time.sec*6.9 + 8.8)))" width="28" height="128 + 96*(0.5 + 0.5*sin($time.sec*6.9 + 8.8))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+              <Rect x="662" y="365 - (96 + 118*(0.5 + 0.5*sin($time.sec*5.7 + 9.6)))" width="28" height="96 + 118*(0.5 + 0.5*sin($time.sec*5.7 + 9.6))" radius="14" fill="url(#audio_bar_grad)" blend="screen" />
+            </Group>
+
+            <Group id="audio_caption"
+                   opacity={curve("9.20:0:ease_in_out, 10.05:1:ease_in_out, 13.45:1:linear, 14.10:0:ease_in_out, 20:0:linear")}
+                   x="130"
+                   y="226">
+              <Text value="Not a mockup."
+                    x="0"
+                    y="0"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="98"
+                    color="#111827" />
+              <Text value="It is a renderable graph."
+                    x="0"
+                    y="84"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="98"
+                    color="#111827" />
+              <Text value="MotionLoom turns design language into frames, previews, and exports."
+                    x="4"
+                    y="160"
+                    fontFamily="Helvetica Neue"
+                    fontSize="30"
+                    color="#4B5563" />
+              <Text value="curve() + sin() + gradients + scene primitives"
+                    x="4"
+                    y="220"
+                    fontFamily="Menlo"
+                    fontSize="24"
+                    color="#1E48FF" />
+            </Group>
+
+            <!-- 14-18s capabilities board. -->
+            <Group id="capability_board"
+                   opacity={curve("14.00:0:ease_in_out, 14.75:1:ease_in_out, 17.70:1:linear, 18.50:0:ease_in_out, 20:0:linear")}
+                   scale={curve("14.00:0.96:ease_in_out, 15.20:1:ease_in_out")}
+                   transformOriginX="960"
+                   transformOriginY="540">
+              <Text value="One DSL. Many outputs."
+                    x="center"
+                    y="190"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="112"
+                    color="#111827" />
+              <Text value="Motion graphics, vector animation, pixel art, title systems, and GPU effects."
+                    x="center"
+                    y="262"
+                    fontFamily="Helvetica Neue"
+                    fontSize="30"
+                    color="#4B5563" />
+
+              <Group id="cap_scene" x="220" y="390" rotation="-2">
+                <Rect x="0" y="0" width="430" height="230" radius="34" fill="url(#card_glass)" stroke="#11182724" strokeWidth="2" />
+                <Text value="Scene"
+                      x="34"
+                      y="66"
+                      fontFamily="Avenir Next Condensed"
+                      fontSize="56"
+                      color="#111827" />
+                <Path d="M 42 142 C 120 62 176 218 254 140 C 314 80 356 120 390 88"
+                      stroke="#FF4F8B"
+                      strokeWidth="10"
+                      lineCap="round"
+                      fill="none"
+                      trimStart={curve("14.70:0.5:ease_in_out, 15.60:0:ease_in_out")}
+                      trimEnd={curve("14.70:0.5:ease_in_out, 15.60:1:ease_in_out")} />
+              </Group>
+
+              <Group id="cap_world" x="745" y="390" rotation="1.5">
+                <Rect x="0" y="0" width="430" height="230" radius="34" fill="url(#card_glass)" stroke="#11182724" strokeWidth="2" />
+                <Text value="World"
+                      x="34"
+                      y="66"
+                      fontFamily="Avenir Next Condensed"
+                      fontSize="56"
+                      color="#111827" />
+                <Circle x="220" y="140" radius="62" color="#1E48FF" opacity="0.85" />
+                <Circle x="178" y="118" radius="20" color="#FFFFFF" />
+                <Path d="M 120 176 C 178 216 260 216 318 176"
+                      stroke="#111827"
+                      strokeWidth="8"
+                      lineCap="round"
+                      fill="none" />
+              </Group>
+
+              <Group id="cap_export" x="1270" y="390" rotation="-1.5">
+                <Rect x="0" y="0" width="430" height="230" radius="34" fill="url(#card_glass)" stroke="#11182724" strokeWidth="2" />
+                <Text value="Export"
+                      x="34"
+                      y="66"
+                      fontFamily="Avenir Next Condensed"
+                      fontSize="56"
+                      color="#111827" />
+                <Rect x="54" y="126" width="80" height="48" radius="14" color="#111827" />
+                <Rect x="154" y="126" width="80" height="48" radius="14" color="#FF4F8B" />
+                <Rect x="254" y="126" width="80" height="48" radius="14" color="#52E8FF" />
+                <Text value="MP4  GIF  WEBM"
+                      x="56"
+                      y="202"
+                      fontFamily="Menlo"
+                      fontSize="20"
+                      color="#4B5563" />
+              </Group>
+
+              <Path d="M 318 726 C 564 680 778 770 960 718 C 1180 654 1368 774 1600 704"
+                    stroke="url(#cool_ribbon)"
+                    strokeWidth="14"
+                    lineCap="round"
+                    fill="none"
+                    trimStart={curve("14.90:0.5:ease_in_out, 16.10:0:ease_in_out")}
+                    trimEnd={curve("14.90:0.5:ease_in_out, 16.10:1:ease_in_out")} />
+            </Group>
+
+            <!-- 18-20s closing lockup. -->
+            <Group id="closing"
+                   opacity={curve("17.90:0:ease_in_out, 18.45:1:ease_in_out, 19.55:1:linear, 20.00:0:ease_in_out")}
+                   scale={curve("17.90:0.92:ease_in_out, 19.70:1.02:ease_in_out")}
+                   transformOriginX="960"
+                   transformOriginY="540">
+              <Text value="Made with Anica"
+                    x="center"
+                    y="432"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="144"
+                    color="#111827" />
+              <Text value="MotionLoom: scene language for videos that move."
+                    x="center"
+                    y="535"
+                    fontFamily="Helvetica Neue"
+                    fontSize="34"
+                    color="#4B5563" />
+              <Circle x="960" y="665" radius={curve("18.00:20:ease_in_out, 19.20:82:ease_in_out, 20.00:112:ease_in_out")}
+                      color="url(#orb_white)"
+                      blend="screen"
+                      opacity="0.88" />
+              <Text value="Anica"
+                    x="center"
+                    y="684"
+                    fontFamily="Avenir Next Condensed"
+                    fontSize="68"
+                    color="#111827" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="anica_motionloom_fancy_pip_20s" />
+</Graph>

@@ -2,87 +2,95 @@
   <Background color="#191919" />
 
   <Scene id="ash_bw_portrait">
-    <!-- neck / collar -->
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
-          d="M188 406 L230 406 L248 546 L210 570 L172 546 Z" />
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M143 412 C116 427 101 450 91 480 L174 443 L190 512 L211 570 L225 512 L247 443 L329 480 C319 450 303 426 277 412 L234 433 L210 457 L186 433 Z" />
-    <Path fill="none" stroke="#111111" strokeWidth="4"
-          d="M196 435 L212 566" />
-    <Path fill="none" stroke="#111111" strokeWidth="4"
-          d="M226 435 L212 566" />
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
-          d="M212 502 L236 502 L236 528 L218 528 Z" />
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
+            <!-- neck / collar -->
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+                  d="M188 406 L230 406 L248 546 L210 570 L172 546 Z" />
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M143 412 C116 427 101 450 91 480 L174 443 L190 512 L211 570 L225 512 L247 443 L329 480 C319 450 303 426 277 412 L234 433 L210 457 L186 433 Z" />
+            <Path fill="none" stroke="#111111" strokeWidth="4"
+                  d="M196 435 L212 566" />
+            <Path fill="none" stroke="#111111" strokeWidth="4"
+                  d="M226 435 L212 566" />
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+                  d="M212 502 L236 502 L236 528 L218 528 Z" />
 
-    <!-- back hair -->
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M78 240 L34 342 L115 354 L79 376 L136 373 L118 418 L174 389 L210 405 L246 389 L302 418 L284 373 L341 376 L305 354 L386 342 L342 240 L300 270 L272 250 L238 270 L210 252 L182 270 L148 250 L120 270 Z" />
+            <!-- back hair -->
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M78 240 L34 342 L115 354 L79 376 L136 373 L118 418 L174 389 L210 405 L246 389 L302 418 L284 373 L341 376 L305 354 L386 342 L342 240 L300 270 L272 250 L238 270 L210 252 L182 270 L148 250 L120 270 Z" />
 
-    <!-- face -->
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M91 236 C99 190 135 157 190 151 C263 143 326 178 336 245 C340 316 290 382 213 389 C142 383 93 323 91 236 Z" />
+            <!-- face -->
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M91 236 C99 190 135 157 190 151 C263 143 326 178 336 245 C340 316 290 382 213 389 C142 383 93 323 91 236 Z" />
 
-    <!-- ears -->
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M92 272 C56 262 61 337 101 350 C126 358 130 322 112 310 C100 300 96 285 92 272 Z" />
-    <Path fill="none" stroke="#111111" strokeWidth="4"
-          d="M92 288 C75 297 83 328 105 335 M100 303 C118 307 116 329 100 327" />
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M334 272 C370 262 365 337 325 350 C300 358 296 322 314 310 C326 300 330 285 334 272 Z" />
-    <Path fill="none" stroke="#111111" strokeWidth="4"
-          d="M334 288 C351 297 343 328 321 335 M326 303 C308 307 310 329 326 327" />
+            <!-- ears -->
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M92 272 C56 262 61 337 101 350 C126 358 130 322 112 310 C100 300 96 285 92 272 Z" />
+            <Path fill="none" stroke="#111111" strokeWidth="4"
+                  d="M92 288 C75 297 83 328 105 335 M100 303 C118 307 116 329 100 327" />
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M334 272 C370 262 365 337 325 350 C300 358 296 322 314 310 C326 300 330 285 334 272 Z" />
+            <Path fill="none" stroke="#111111" strokeWidth="4"
+                  d="M334 288 C351 297 343 328 321 335 M326 303 C308 307 310 329 326 327" />
 
-    <!-- hair bangs -->
-    <Path fill="#111111" stroke="#111111" strokeWidth="3"
-          d="M178 236 L205 182 L210 291 Z" />
-    <Path fill="#111111" stroke="#111111" strokeWidth="3"
-          d="M216 182 L216 300 L268 210 Z" />
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M93 235 C124 204 162 190 201 188 L186 263 L166 246 L151 291 L126 268 L107 323 Z" />
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M333 235 C304 204 265 190 225 188 L242 264 L264 246 L279 291 L304 268 L323 323 Z" />
+            <!-- hair bangs -->
+            <Path fill="#111111" stroke="#111111" strokeWidth="3"
+                  d="M178 236 L205 182 L210 291 Z" />
+            <Path fill="#111111" stroke="#111111" strokeWidth="3"
+                  d="M216 182 L216 300 L268 210 Z" />
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M93 235 C124 204 162 190 201 188 L186 263 L166 246 L151 291 L126 268 L107 323 Z" />
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M333 235 C304 204 265 190 225 188 L242 264 L264 246 L279 291 L304 268 L323 323 Z" />
 
-    <!-- cap brim -->
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M74 238 C123 203 174 187 232 188 C285 189 330 204 376 235 C344 252 306 260 262 256 C221 252 189 252 153 263 C122 272 94 259 74 238 Z" />
+            <!-- cap brim -->
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M74 238 C123 203 174 187 232 188 C285 189 330 204 376 235 C344 252 306 260 262 256 C221 252 189 252 153 263 C122 272 94 259 74 238 Z" />
 
-    <!-- cap body -->
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M76 235 L91 121 L136 82 L206 50 L276 61 L361 111 L374 224 C321 192 257 174 199 184 C151 192 113 211 76 235 Z" />
-    <Path fill="none" stroke="#111111" strokeWidth="5"
-          d="M134 83 L116 112 L105 235" />
-    <Path fill="none" stroke="#111111" strokeWidth="4"
-          d="M90 121 C135 82 186 59 206 50" />
+            <!-- cap body -->
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M76 235 L91 121 L136 82 L206 50 L276 61 L361 111 L374 224 C321 192 257 174 199 184 C151 192 113 211 76 235 Z" />
+            <Path fill="none" stroke="#111111" strokeWidth="5"
+                  d="M134 83 L116 112 L105 235" />
+            <Path fill="none" stroke="#111111" strokeWidth="4"
+                  d="M90 121 C135 82 186 59 206 50" />
 
-    <!-- top button -->
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
-          d="M183 57 C197 47 224 47 239 58 L183 58 Z" />
+            <!-- top button -->
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="4"
+                  d="M183 57 C197 47 224 47 239 58 L183 58 Z" />
 
-    <!-- closed happy eyes -->
-    <Path fill="none" stroke="#111111" strokeWidth="6"
-          d="M147 304 C163 290 184 290 199 304" />
-    <Path fill="none" stroke="#111111" strokeWidth="6"
-          d="M231 304 C249 290 274 290 291 304" />
+            <!-- closed happy eyes -->
+            <Path fill="none" stroke="#111111" strokeWidth="6"
+                  d="M147 304 C163 290 184 290 199 304" />
+            <Path fill="none" stroke="#111111" strokeWidth="6"
+                  d="M231 304 C249 290 274 290 291 304" />
 
-    <!-- cheek marks -->
-    <Path fill="none" stroke="#111111" strokeWidth="4"
-          d="M154 325 L181 316 L169 331" />
-    <Path fill="none" stroke="#111111" strokeWidth="4"
-          d="M284 325 L257 316 L269 331" />
+            <!-- cheek marks -->
+            <Path fill="none" stroke="#111111" strokeWidth="4"
+                  d="M154 325 L181 316 L169 331" />
+            <Path fill="none" stroke="#111111" strokeWidth="4"
+                  d="M284 325 L257 316 L269 331" />
 
-    <!-- nose -->
-    <Path fill="none" stroke="#111111" strokeWidth="3"
-          d="M214 319 C220 329 217 336 211 342" />
+            <!-- nose -->
+            <Path fill="none" stroke="#111111" strokeWidth="3"
+                  d="M214 319 C220 329 217 336 211 342" />
 
-    <!-- mouth -->
-    <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
-          d="M164 355 C190 368 238 370 267 356 C263 385 172 385 164 355 Z" />
-    <Path fill="none" stroke="#111111" strokeWidth="3"
-          d="M169 358 C196 365 236 366 263 358" />
+            <!-- mouth -->
+            <Path fill="#f2f2f2" stroke="#111111" strokeWidth="5"
+                  d="M164 355 C190 368 238 370 267 356 C263 385 172 385 164 355 Z" />
+            <Path fill="none" stroke="#111111" strokeWidth="3"
+                  d="M169 358 C196 365 236 366 263 358" />
 
-    <!-- chin / jaw shadow lines -->
-    <Path fill="none" stroke="#111111" strokeWidth="4"
-          d="M160 378 C182 397 238 397 263 377" />
+            <!-- chin / jaw shadow lines -->
+            <Path fill="none" stroke="#111111" strokeWidth="4"
+                  d="M160 378 C182 397 238 397 263 377" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
 
   <Present from="ash_bw_portrait" />

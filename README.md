@@ -233,7 +233,7 @@ src/
 crates/
   video-engine/             GStreamer playback and frame decoding
   gpui-video-renderer/      GPUI rendering bridge for video preview
-  motionloom/               Compositing and animation DSL runtime
+  motionloom/               Compositing and world DSL runtime
   gpu-effect-export-engine/ GPU-effect export helpers
   ai-subtitle-engine/       Cloud/Local ONNX Whisper subtitle generation
 

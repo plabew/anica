@@ -1,0 +1,163 @@
+<!-- Four-shot stick-fight storyboard: generic black-and-white action blocking, no character likeness. -->
+<Graph fps={30} duration="8s" size={[1600,900]} renderSize={[1600,900]}>
+  <Background color="#F4F4F1" />
+
+  <Scene id="stick_fight_storyboard_4shot">
+    <Defs>
+      <LinearGradient id="paper_grad" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FAFAF8, 0.62:#ECECE8, 1:#DCDCD8" />
+      <LinearGradient id="ink_wash" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#FFFFFF, 0.60:#E6E6E2, 1:#BDBDB8" />
+      <Brush id="ink_heavy" stroke="#111111" strokeWidth="8" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="ink_mid" stroke="#111111" strokeWidth="5" lineCap="round" lineJoin="round" fill="none" />
+      <Brush id="ink_thin" stroke="#111111" strokeWidth="2.5" lineCap="round" lineJoin="round" fill="none" />
+    </Defs>
+
+    <Timeline>
+      <Track id="paper" space="screen" z="0">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="1600" height="900" fill="url(#paper_grad)" />
+            <Rect x="42" y="42" width="1516" height="816" fill="#FFFFFF" stroke="#111111" strokeWidth="10" />
+            <Text value="STICK FIGHT STORYBOARD" x="72" y="94" fontSize="34" color="#111111" opacity="0.42" />
+          </Layer>
+        </Sequence>
+      </Track>
+      <Track id="shot_01_faceoff" space="world" z="10">
+        <Sequence from="0s" duration="2s" out="hold">
+          <Layer opacity={curve("0:0:ease_in_out, 0.18:1:ease_in_out, 1.86:1:linear, 2:0:ease_in_out")}>
+            <Text value="01  FACE OFF" x="74" y="150" fontSize="28" color="#111111" opacity="0.60" />
+            <Path d="M 82 680 C 320 620 532 626 782 676 C 1030 728 1260 710 1514 642" stroke="#111111" strokeWidth="5" fill="none" opacity="0.42" />
+            <Line x1="114" y1="710" x2="1484" y2="710" stroke="#111111" strokeWidth="4" opacity="0.22" />
+            <Line x1="224" y1="320" x2="224" y2="678" stroke="#111111" strokeWidth="8" opacity="0.24" />
+            <Line x1="1310" y1="294" x2="1310" y2="660" stroke="#111111" strokeWidth="8" opacity="0.22" />
+            <Path d="M 170 314 C 210 288 246 288 284 314 M 1260 288 C 1306 260 1352 264 1394 294" stroke="#111111" strokeWidth="4" fill="none" opacity="0.22" />
+
+            <Group id="fighter_a_ready" x={curve("0:330:ease_out, 2:360:ease_in_out")} y="560" scale="1.18">
+              <Circle x="0" y="-122" radius="34" color="#111111" />
+              <Line x1="0" y1="-84" x2="0" y2="8" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="0" y1="-48" x2="-62" y2="-12" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="0" y1="-48" x2="58" y2="-82" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="0" y1="8" x2="-42" y2="90" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="0" y1="8" x2="58" y2="88" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Path d="M -34 -64 C -86 -94 -128 -142 -172 -198" stroke="#111111" strokeWidth="16" lineCap="round" fill="none" opacity="0.86" />
+            </Group>
+
+            <Group id="fighter_b_ready" x={curve("0:1170:ease_out, 2:1140:ease_in_out")} y="552" scale="1.04">
+              <Circle x="0" y="-122" radius="34" fill="#FFFFFF" stroke="#111111" strokeWidth="7" />
+              <Line x1="0" y1="-84" x2="0" y2="10" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="0" y1="-48" x2="-70" y2="-86" stroke="#111111" strokeWidth="8" lineCap="round" />
+              <Line x1="0" y1="-48" x2="62" y2="-10" stroke="#111111" strokeWidth="8" lineCap="round" />
+              <Line x1="0" y1="10" x2="-56" y2="92" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="0" y1="10" x2="46" y2="92" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Path d="M 28 -58 C 92 -86 132 -118 178 -172" stroke="#111111" strokeWidth="12" lineCap="round" fill="none" opacity="0.70" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+      <Track id="shot_02_dash" space="world" z="20">
+        <Sequence from="2s" duration="2s" out="hold">
+          <Layer opacity={curve("0:0:ease_in_out, 0.12:1:ease_in_out, 1.86:1:linear, 2:0:ease_in_out")}>
+            <Text value="02  DASH" x="74" y="150" fontSize="28" color="#111111" opacity="0.60" />
+            <Rect x="58" y="132" width="1484" height="686" color="#FFFFFF" opacity="0.74" />
+            <Repeat count="18" x="94" y="150" yStep="34" opacity="0.62" opacityStep="-0.018">
+              <Line x1="0" y1="0" x2="900" y2={curve("0:8:linear, 2:-42:linear")} stroke="#111111" strokeWidth="4" lineCap="round" />
+            </Repeat>
+            <Repeat count="24" x="240" y="232" yStep="18" opacity="0.42" opacityStep="-0.010">
+              <Line x1="0" y1="0" x2="520" y2="-34" stroke="#111111" strokeWidth="2" lineCap="round" />
+            </Repeat>
+
+            <Group id="dash_afterimage_1" x="445" y="528" scale="1.14" opacity="0.22" rotation="-22">
+              <Circle x="0" y="-122" radius="30" color="#111111" />
+              <Line x1="0" y1="-86" x2="80" y2="0" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="44" y1="-48" x2="138" y2="-78" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="72" y1="0" x2="-18" y2="78" stroke="#111111" strokeWidth="10" lineCap="round" />
+            </Group>
+            <Group id="dash_attacker" x={curve("0:350:ease_in_out, 0.55:680:ease_in_out, 2:780:linear")} y={curve("0:532:ease_in_out, 0.55:450:ease_in_out, 2:460:linear")} scale="1.18" rotation="-24">
+              <Circle x="0" y="-122" radius="31" color="#111111" />
+              <Line x1="0" y1="-84" x2="92" y2="0" stroke="#111111" strokeWidth="11" lineCap="round" />
+              <Line x1="48" y1="-50" x2="164" y2="-88" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="48" y1="-50" x2="96" y2="16" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="92" y1="0" x2="24" y2="94" stroke="#111111" strokeWidth="11" lineCap="round" />
+              <Line x1="92" y1="0" x2="194" y2="84" stroke="#111111" strokeWidth="11" lineCap="round" />
+              <Path d="M -34 -70 C -118 -92 -194 -130 -272 -206" stroke="#111111" strokeWidth="18" lineCap="round" fill="none" opacity="0.68" />
+            </Group>
+
+            <Group id="defender_brace" x="1216" y="548" scale="1.08" rotation="10">
+              <Circle x="0" y="-122" radius="34" fill="#FFFFFF" stroke="#111111" strokeWidth="7" />
+              <Line x1="0" y1="-84" x2="0" y2="12" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="0" y1="-42" x2="-92" y2="-82" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="0" y1="-42" x2="-78" y2="28" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="0" y1="12" x2="-50" y2="94" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="0" y1="12" x2="70" y2="86" stroke="#111111" strokeWidth="10" lineCap="round" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+      <Track id="shot_03_clash" space="world" z="30">
+        <Sequence from="4s" duration="2s" out="hold">
+          <Layer opacity={curve("0:0:ease_in_out, 0.10:1:ease_in_out, 1.88:1:linear, 2:0:ease_in_out")}>
+            <Text value="03  IMPACT" x="74" y="150" fontSize="28" color="#111111" opacity="0.60" />
+            <Rect x="58" y="132" width="1484" height="686" color="#FFFFFF" opacity="0.88" />
+            <Repeat count="40" x="800" y="452" rotationStep="9" opacity="0.75" opacityStep="-0.005">
+              <Line x1="0" y1="0" x2="720" y2="0" stroke="#111111" strokeWidth="4" lineCap="round" />
+            </Repeat>
+            <Repeat count="18" x="800" y="452" rotationStep="20" opacity="0.80" opacityStep="-0.012">
+              <Line x1="0" y1="0" x2="310" y2="0" stroke="#111111" strokeWidth="11" lineCap="round" />
+            </Repeat>
+            <Circle x="800" y="452" radius={curve("0:24:ease_out, 0.45:74:ease_out, 2:46:ease_in_out")} color="#111111" opacity="0.18" />
+            <Path d="M 738 416 L 780 438 L 812 390 L 846 438 L 900 420 L 868 468 L 928 500 L 850 498 L 816 560 L 782 500 L 706 512 L 754 462 Z" fill="#111111" opacity="0.92" />
+
+            <Group id="left_close" x="430" y="492" scale="1.8" rotation="-6">
+              <Circle x="-92" y="-74" radius="42" fill="#111111" />
+              <Line x1="-52" y1="-48" x2="108" y2="-8" stroke="#111111" strokeWidth="18" lineCap="round" />
+              <Circle x="154" y="4" radius="34" fill="#111111" />
+              <Path d="M -138 -112 L -92 -138 L -54 -112" stroke="#FFFFFF" strokeWidth="5" fill="none" opacity="0.75" />
+            </Group>
+            <Group id="right_close" x="1170" y="492" scale="1.8" rotation="186">
+              <Circle x="-92" y="-74" radius="42" fill="#FFFFFF" stroke="#111111" strokeWidth="7" />
+              <Line x1="-52" y1="-48" x2="108" y2="-8" stroke="#111111" strokeWidth="18" lineCap="round" />
+              <Circle x="154" y="4" radius="34" fill="#FFFFFF" stroke="#111111" strokeWidth="8" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+      <Track id="shot_04_knockback" space="world" z="40">
+        <Sequence from="6s" duration="2s" out="hold">
+          <Layer opacity={curve("0:0:ease_in_out, 0.12:1:ease_in_out, 1.88:1:linear, 2:1:linear")}>
+            <Text value="04  KNOCKBACK" x="74" y="150" fontSize="28" color="#111111" opacity="0.60" />
+            <Path d="M 88 718 C 310 646 560 654 820 708 C 1078 762 1290 738 1510 664" stroke="#111111" strokeWidth="5" fill="none" opacity="0.36" />
+            <Repeat count="28" x="542" y="520" rotationStep="13" opacity="0.52" opacityStep="-0.009">
+              <Line x1="0" y1="0" x2="720" y2="0" stroke="#111111" strokeWidth="3" lineCap="round" />
+            </Repeat>
+            <Repeat count="20" x="970" y="260" rotationStep="18" opacity="0.40" opacityStep="-0.012">
+              <Line x1="0" y1="0" x2="180" y2="0" stroke="#111111" strokeWidth="5" lineCap="round" />
+            </Repeat>
+            <Path d="M 340 690 L 384 640 L 420 690 Z M 1160 646 L 1206 584 L 1258 668 Z M 1290 342 L 1328 306 L 1350 360 Z" fill="#111111" opacity="0.36" />
+
+            <Group id="winner_stance" x="560" y="596" scale="1.14" rotation="-4">
+              <Circle x="0" y="-122" radius="32" color="#111111" />
+              <Line x1="0" y1="-84" x2="0" y2="14" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="0" y1="-44" x2="-72" y2="-24" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="0" y1="-44" x2="120" y2="-90" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="0" y1="14" x2="-70" y2="94" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="0" y1="14" x2="54" y2="100" stroke="#111111" strokeWidth="10" lineCap="round" />
+            </Group>
+
+            <Group id="launched_defender" x={curve("0:1050:ease_out, 0.75:1190:ease_out, 2:1280:linear")} y={curve("0:470:ease_out, 0.75:290:ease_out, 2:242:linear")} scale="1.16" rotation={curve("0:24:ease_out, 0.75:54:ease_out, 2:74:linear")}>
+              <Circle x="0" y="-122" radius="34" fill="#FFFFFF" stroke="#111111" strokeWidth="7" />
+              <Line x1="0" y1="-84" x2="0" y2="12" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="0" y1="-48" x2="-102" y2="-86" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="0" y1="-48" x2="90" y2="-122" stroke="#111111" strokeWidth="9" lineCap="round" />
+              <Line x1="0" y1="12" x2="-92" y2="78" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Line x1="0" y1="12" x2="92" y2="82" stroke="#111111" strokeWidth="10" lineCap="round" />
+              <Path d="M -80 20 C -150 50 -210 72 -290 82" stroke="#111111" strokeWidth="14" lineCap="round" fill="none" opacity="0.52" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="stick_fight_storyboard_4shot" />
+</Graph>

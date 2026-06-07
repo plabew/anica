@@ -1,5 +1,5 @@
 
-  <!-- Graph ，Reusable humanoid_v1 action. Copy this Action into a GLB animation graph,
+  <!-- Graph ，Reusable humanoid_v1 action. Copy this Action into a GLB world graph,
        then attach it with: <ApplyAction target="actor_id" action="wave_hand" at="0s" loop="true" /> -->
 
   <Action id="wave_hand" skeleton="humanoid_v1" duration="2s">
