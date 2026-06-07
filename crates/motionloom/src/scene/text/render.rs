@@ -99,7 +99,8 @@ pub(crate) struct TextAnimatorRasterParams<'a> {
     pub(crate) value: &'a str,
     pub(crate) base_color: [u8; 4],
     pub(crate) base_opacity: f32,
-    pub(crate) pad: i32,
+    pub(crate) offset_x: i32,
+    pub(crate) offset_y: i32,
     pub(crate) raster_scale: f32,
     pub(crate) max_lines: Option<usize>,
     pub(crate) global_time_ms: i64,
@@ -452,8 +453,9 @@ pub(crate) fn draw_text_buffer_with_animators(
 
             let physical_glyph = glyph.physical((0.0, 0.0), 1.0);
             let glyph_color = Color::rgba(visual.color[0], visual.color[1], visual.color[2], 255);
-            let anchor_x = physical_glyph.x as f32 + params.pad as f32 + glyph.w.max(1.0) * 0.5;
-            let anchor_y = run.line_y + physical_glyph.y as f32 + params.pad as f32;
+            let anchor_x =
+                physical_glyph.x as f32 + params.offset_x as f32 + glyph.w.max(1.0) * 0.5;
+            let anchor_y = run.line_y + physical_glyph.y as f32 + params.offset_y as f32;
             let (sin_t, cos_t) = visual.rotation.to_radians().sin_cos();
 
             swash_cache.with_pixels(
@@ -461,8 +463,8 @@ pub(crate) fn draw_text_buffer_with_animators(
                 physical_glyph.cache_key,
                 glyph_color,
                 |x, y, color| {
-                    let raw_x = physical_glyph.x + x + params.pad;
-                    let raw_y = run.line_y as i32 + physical_glyph.y + y + params.pad;
+                    let raw_x = physical_glyph.x + x + params.offset_x;
+                    let raw_y = run.line_y as i32 + physical_glyph.y + y + params.offset_y;
                     let local_x = raw_x as f32 - anchor_x;
                     let local_y = raw_y as f32 - anchor_y;
                     let scaled_x = local_x * visual.scale_x;

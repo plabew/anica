@@ -1,0 +1,161 @@
+<Graph fps={30} duration="8s" size={[1080,1920]} renderSize={[1080,1920]}>
+  <Background color="#000000" />
+
+  <Scene id="anica_typewriter_float_8s">
+    <Defs>
+      <RadialGradient id="soft_white_glow" cx="0.50" cy="0.44" r="0.72"
+                      stops="0:#FFFFFF44, 0.28:#FFFFFF16, 0.68:#FFFFFF04, 1:#FFFFFF00" />
+    </Defs>
+
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="8s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="1080" height="1920" color="#0B1220" />
+
+            <Circle id="ambient_glow"
+                    x={curve("0:520:ease_in_out, 3.8:585:ease_in_out, 8:492:ease_in_out")}
+                    y={curve("0:760:ease_in_out, 3.8:690:ease_in_out, 8:845:ease_in_out")}
+                    radius={curve("0:430:ease_in_out, 4:540:ease_in_out, 8:460:ease_in_out")}
+                    fill="url(#soft_white_glow)"
+                    opacity="0.34 + 0.08*(0.5 + 0.5*sin($time.sec*1.15))"
+                    blend="screen" />
+
+            <Repeat id="slow_star_field" count="44" x="90" y="180" xStep="28" yStep="36" opacity="0.32" opacityStep="-0.003">
+              <Circle x="10*sin($time.sec*0.52)" y="20*sin($time.sec*0.38 + 1.2)" radius="1.5 + 0.8*(0.5 + 0.5*sin($time.sec*2.0))" color="#FFFFFF" opacity="0.24" />
+            </Repeat>
+
+            <Repeat id="scanlines" count="28" x="0" y="220" yStep="48" opacity="0.16" opacityStep="-0.003">
+              <Line x1="0" y1="0" x2="1080" y2="0" stroke="#FFFFFF" strokeWidth="1" opacity="0.18" />
+            </Repeat>
+
+            <Group id="floating_field"
+                   x={curve("0:-14:ease_in_out, 2.5:20:ease_in_out, 5.5:-18:ease_in_out, 8:12:ease_in_out")}
+                   y={curve("0:18:ease_in_out, 3:-26:ease_in_out, 6:16:ease_in_out, 8:-10:ease_in_out")}
+                   scale={curve("0:0.96:ease_out, 3.8:1.025:ease_in_out, 8:0.99:ease_in_out")}
+                   transformOriginX="540" transformOriginY="910">
+
+              <Text id="ghost_anica"
+                    value="ANICA"
+                    x="center"
+                    y="900"
+                    fontFamily="Avenir Next Condensed"
+                    fontWeight="900"
+                    fontSize="236"
+                    textGap="-8"
+                    renderScale="4x"
+                    color="#FFFFFF"
+                    opacity={curve("0:0:linear, 0.45:0.15:ease_out, 2.30:0.15:linear, 3.05:0:ease_in, 8:0:linear")}
+                    scale="1.05"
+                    transformOriginX="540" transformOriginY="900" />
+
+              <Text id="type_anica"
+                    value="ANICA"
+                    x="center"
+                    y="900"
+                    fontFamily="Avenir Next Condensed"
+                    fontWeight="900"
+                    fontSize="236"
+                    textGap="-8"
+                    renderScale="4x"
+                    color="#FFFFFF"
+                    visibleChars={curve("0:0:linear, 0.35:0:linear, 1.55:5:linear, 2.15:5:linear, 3.05:0:linear, 8:0:linear")}
+                    opacity={curve("0:0:linear, 0.35:1:ease_out, 3.10:1:linear, 3.18:0:linear, 8:0:linear")} />
+
+              <Text id="ghost_vfx"
+                    value="VFX"
+                    x="center"
+                    y="900"
+                    fontFamily="Avenir Next Condensed"
+                    fontWeight="900"
+                    fontSize="268"
+                    textGap="-8"
+                    renderScale="4x"
+                    color="#FFFFFF"
+                    opacity={curve("0:0:linear, 3.00:0:linear, 3.55:0.14:ease_out, 4.92:0.14:linear, 5.55:0:ease_in, 8:0:linear")}
+                    scale="1.055"
+                    transformOriginX="540" transformOriginY="900" />
+
+              <Text id="type_vfx"
+                    value="VFX"
+                    x="center"
+                    y="900"
+                    fontFamily="Avenir Next Condensed"
+                    fontWeight="900"
+                    fontSize="268"
+                    textGap="-8"
+                    renderScale="4x"
+                    color="#FFFFFF"
+                    visibleChars={curve("0:0:linear, 3.15:0:linear, 4.05:3:linear, 4.75:3:linear, 5.45:0:linear, 8:0:linear")}
+                    opacity={curve("0:0:linear, 3.10:0:linear, 3.22:1:ease_out, 5.50:1:linear, 5.58:0:linear, 8:0:linear")} />
+
+              <Text id="ghost_motion"
+                    value="MOTION"
+                    x="center"
+                    y="900"
+                    fontFamily="Avenir Next Condensed"
+                    fontWeight="900"
+                    fontSize="214"
+                    textGap="-8"
+                    renderScale="4x"
+                    color="#FFFFFF"
+                    opacity={curve("0:0:linear, 5.30:0:linear, 5.92:0.14:ease_out, 8:0.14:linear")}
+                    scale="1.045"
+                    transformOriginX="540" transformOriginY="900" />
+
+              <Text id="type_motion"
+                    value="MOTION"
+                    x="center"
+                    y="900"
+                    fontFamily="Avenir Next Condensed"
+                    fontWeight="900"
+                    fontSize="214"
+                    textGap="-8"
+                    renderScale="4x"
+                    color="#FFFFFF"
+                    visibleChars={curve("0:0:linear, 5.55:0:linear, 7.05:6:linear, 8:6:linear")}
+                    opacity={curve("0:0:linear, 5.50:0:linear, 5.62:1:ease_out, 8:1:linear")} />
+            </Group>
+
+            <Line id="horizontal_cut"
+                  x1={curve("0:540:ease_out, 0.90:158:ease_out, 8:110:ease_in_out")}
+                  y1="982"
+                  x2={curve("0:540:ease_out, 0.90:922:ease_out, 8:970:ease_in_out")}
+                  y2="982"
+                  stroke="#FFFFFF"
+                  strokeWidth="2.5"
+                  opacity={curve("0:0:linear, 0.65:0.70:ease_out, 7.60:0.70:linear, 8:0.18:ease_in")} />
+
+            <Rect id="cursor_anica"
+                  x={curve("0.35:270:linear, 1.55:920:linear, 2.15:920:linear, 3.05:270:linear, 8:270:linear")}
+                  y="930"
+                  width="6"
+                  height="196"
+                  color="#FFFFFF"
+                  opacity={curve("0:0:linear, 0.35:1:linear, 3.05:1:linear, 3.12:0:linear, 8:0:linear")} />
+
+            <Rect id="cursor_vfx"
+                  x={curve("0:486:linear, 3.15:486:linear, 4.05:796:linear, 4.75:796:linear, 5.45:486:linear, 8:486:linear")}
+                  y="930"
+                  width="6"
+                  height="216"
+                  color="#FFFFFF"
+                  opacity={curve("0:0:linear, 3.15:0:linear, 3.22:1:linear, 5.45:1:linear, 5.55:0:linear, 8:0:linear")} />
+
+            <Rect id="cursor_motion"
+                  x={curve("0:232:linear, 5.55:232:linear, 7.05:970:linear, 8:970:linear")}
+                  y="930"
+                  width="6"
+                  height="176"
+                  color="#FFFFFF"
+                  opacity={curve("0:0:linear, 5.55:0:linear, 5.62:1:linear, 8:0.35:linear")} />
+
+            <Rect x="0" y="0" width="1080" height="1920" color="#000000" opacity={curve("0:0.22:linear, 1:0.04:ease_out, 7.35:0.04:linear, 8:0.16:ease_in")} />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="anica_typewriter_float_8s" />
+</Graph>

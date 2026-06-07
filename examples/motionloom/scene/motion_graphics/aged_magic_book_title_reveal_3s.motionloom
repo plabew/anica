@@ -1,0 +1,254 @@
+<!-- Original magical parchment title reveal. Inspired by old fantasy book-map intros; no licensed logo/text is reproduced. -->
+<Graph fps={30} duration="7s" size={[1920,1080]} renderSize={[1920,1080]}>
+  <Background color="#B7894F" />
+
+  <Scene id="aged_magic_book_title_reveal_7s">
+    <Defs>
+      <RadialGradient id="parchment_base" cx="0.54" cy="0.48" r="0.88"
+                      stops="0:#D7B173, 0.38:#B8894A, 0.72:#6A4326, 1:#1A0F0A" />
+      <RadialGradient id="warm_patch" cx="0.50" cy="0.50" r="0.72"
+                      stops="0:#E3BF7C88, 0.44:#B47A3E44, 1:#2A160900" />
+      <RadialGradient id="ink_cloud" cx="0.50" cy="0.50" r="0.72"
+                      stops="0:#080304F2, 0.36:#180708D8, 0.72:#2A0E0B5C, 1:#2A0E0B00" />
+      <RadialGradient id="burn_hole" cx="0.50" cy="0.50" r="0.70"
+                      stops="0:#050203FF, 0.55:#110607EE, 0.82:#2F120CA8, 1:#2F120C00" />
+      <LinearGradient id="title_gold" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#F2D895, 0.26:#C7A15B, 0.58:#8A6537, 1:#E3C174" />
+      <LinearGradient id="faded_gold" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#E7C37D, 0.56:#A47A43, 1:#5F3A24" />
+      <LinearGradient id="fold_light" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#00000000, 0.45:#F1D28B44, 0.52:#12080799, 0.62:#00000000, 1:#00000000" />
+      <LinearGradient id="ink_line" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#07030300, 0.24:#070303AA, 0.74:#070303AA, 1:#07030300" />
+      <LinearGradient id="page_left_wash" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#00000066, 0.30:#00000022, 0.78:#00000000, 1:#00000000" />
+      <LinearGradient id="page_right_warmth" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#00000000, 0.34:#C08A4240, 0.74:#E5B76C22, 1:#00000044" />
+      <LinearGradient id="gold_sweep" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#FFFFFF00, 0.34:#FFE7A355, 0.50:#FFFFFFCC, 0.66:#FFE7A355, 1:#FFFFFF00" />
+      <LinearGradient id="film_scratch" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#FFFFFF00, 0.32:#FFF1BE44, 0.66:#14090566, 1:#FFFFFF00" />
+      <LinearGradient id="turn_shadow" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#00000000, 0.20:#100605BB, 0.48:#050202EE, 0.74:#B47A3E33, 1:#00000000" />
+      <LinearGradient id="turn_highlight" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#FFFFFF00, 0.44:#F7D99B55, 0.54:#FFFFFF88, 0.68:#F7D99B33, 1:#FFFFFF00" />
+    </Defs>
+
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="7s" out="hold">
+          <Layer>
+            <Group id="page_a_swap_out"
+                   x={curve("0:0:linear, 3.05:0:linear, 4.18:-430:ease_in_out, 6.5:-430:linear")}
+                   scale={curve("0:1:linear, 3.05:1:linear, 4.18:0.982:ease_in_out, 6.5:0.982:linear")}
+                   opacity={curve("0:1:linear, 3.30:1:linear, 4.28:0.08:ease_in, 6.5:0:linear")}
+                   transformOriginX="960" transformOriginY="540">
+            <Rect x="0" y="0" width="1920" height="1080" fill="url(#parchment_base)" />
+            <Rect x="0" y="0" width="1920" height="1080" color="#000000" opacity={curve("0:0.20:linear, 3:0.36:ease_in_out")} />
+            <Rect x="0" y="0" width="960" height="1080" fill="url(#page_left_wash)" opacity={curve("0:0.32:linear, 3:0.50:ease_in_out")} />
+            <Rect x="960" y="0" width="960" height="1080" fill="url(#page_right_warmth)" opacity={curve("0:0.18:linear, 2.10:0.42:ease_out, 3:0.48:linear")} />
+
+            <!-- Paper grain and old map scratch marks. -->
+            <Repeat id="dust_field" count="54" x="42" y="38" xStep="34" yStep="19" opacity="0.40" opacityStep="-0.002">
+              <Circle x="random(-10, 10, floor($time.sec*3)+17)" y="random(-7, 7, floor($time.sec*3)+31)" radius="1.8" color="#24120A" opacity="0.20" />
+            </Repeat>
+            <Repeat id="fine_scratch_field" count="13" x="145" y="-40" xStep="142" opacity="0.22" opacityStep="-0.006">
+              <Rect x="random(-18, 18, floor($time.sec*2)+91)" y="0" width="2.2" height="1160" fill="url(#film_scratch)" opacity="0.32" />
+            </Repeat>
+            <Repeat id="map_ticks_left" count="9" x="48" y="98" yStep="96" opacity="0.64" opacityStep="-0.018">
+              <Path d="M 0 0 L 34 12 M 4 18 L 42 30 M 10 38 L 54 52" stroke="#160B07" strokeWidth="5" lineCap="round" fill="none" opacity="0.52" />
+            </Repeat>
+            <Repeat id="map_ticks_right" count="8" x="1804" y="52" yStep="118" opacity="0.58" opacityStep="-0.020">
+              <Path d="M 0 0 L 42 8 M -8 20 L 34 28 M -18 42 L 28 56" stroke="#160B07" strokeWidth="5" lineCap="round" fill="none" opacity="0.48" />
+            </Repeat>
+
+            <!-- Page fold / book spine. -->
+            <Rect x="904" y="0" width="88" height="1080" fill="url(#fold_light)" opacity="0.84" />
+            <Line x1="958" y1="0" x2="958" y2="1080" stroke="#090404" strokeWidth="5" opacity="0.64" />
+            <Line x1="988" y1="0" x2="988" y2="1080" stroke="#E8C988" strokeWidth="3" opacity="0.20" />
+
+            <!-- First-frame dirty smoke streaks, then settle into the final ink mass. -->
+            <Group id="early_smoke" opacity={curve("0:1:linear, 1.25:0.65:ease_in_out, 2.50:0.18:ease_in, 3:0.0:ease_in")}
+                   x={curve("0:0:linear, 3:-70:ease_in_out")} y="0">
+              <Circle x="425" y="240" radius={curve("0:290:ease_out, 3:360:ease_in_out")} fill="url(#ink_cloud)" opacity="0.76" />
+              <Circle x="700" y="188" radius={curve("0:180:ease_out, 3:220:ease_in_out")} fill="url(#ink_cloud)" opacity="0.62" />
+              <Circle x="1225" y="134" radius="220" fill="url(#ink_cloud)" opacity="0.42" />
+              <Circle x="1308" y="654" radius="250" fill="url(#ink_cloud)" opacity="0.50" />
+              <Circle x="890" y="596" radius="210" fill="url(#ink_cloud)" opacity="0.44" />
+            </Group>
+
+            <Group id="final_black_page" opacity={curve("0:0.18:linear, 1.10:0.34:ease_in_out, 2.20:0.88:ease_out, 3:0.94:linear")}>
+              <Circle x="750" y="534" radius={curve("0:250:ease_out, 2.30:560:ease_in_out, 3:610:ease_out")} fill="url(#burn_hole)" />
+              <Circle x="1095" y="482" radius={curve("0:120:ease_out, 2.30:440:ease_in_out, 3:485:ease_out")} fill="url(#burn_hole)" />
+              <Circle x="1040" y="812" radius={curve("0:120:ease_out, 2.45:330:ease_in_out, 3:380:ease_out")} fill="url(#ink_cloud)" opacity="0.88" />
+              <Rect x="280" y="210" width="1260" height="660" radius="120" color="#090404" opacity={curve("0:0.0:linear, 1.45:0.16:ease_in, 2.45:0.52:ease_out, 3:0.60:linear")} />
+            </Group>
+
+            <!-- Animated hand-drawn arrow from the first frame reference. -->
+            <Path id="pale_arrow"
+                  d="M 1460 -42 C 1440 90 1382 160 1298 226 M 1298 226 L 1332 138 M 1298 226 L 1388 212"
+                  stroke="#DAD4C7" strokeWidth="12" lineCap="round" lineJoin="round" fill="none"
+                  trimStart={curve("0:0:linear, 0.20:0:linear, 0.72:0.02:ease_in_out")}
+                  trimEnd={curve("0:0:linear, 0.20:1:ease_out, 1.20:1:linear")}
+                  opacity={curve("0:0.88:linear, 0.90:0.72:linear, 1.40:0:ease_in, 3:0:linear")} />
+
+            <!-- Decorative sketch frame, like an illustrated page edge. -->
+            <Group id="edge_art" opacity={curve("0:0.52:linear, 3:0.68:linear")}>
+              <Path d="M 42 44 L 240 44 M 44 44 L 44 260 M 1680 44 L 1874 44 M 1874 44 L 1874 260 M 42 1032 L 240 1032 M 44 830 L 44 1032 M 1680 1032 L 1874 1032 M 1874 830 L 1874 1032"
+                    stroke="#120807" strokeWidth="8" lineCap="round" fill="none" opacity="0.54" />
+              <Path d="M 80 862 C 120 802 184 786 246 824 C 196 842 164 884 154 946 C 126 914 102 884 80 862 Z"
+                    fill="#00000000" stroke="#120807" strokeWidth="7" opacity="0.46" />
+              <Path d="M 1680 138 C 1748 104 1814 130 1842 202 C 1766 172 1718 188 1680 246"
+                    fill="#00000000" stroke="#120807" strokeWidth="7" opacity="0.42" />
+            </Group>
+
+            <!-- Main title reveal: generic, original text. -->
+            <Group id="title_lockup"
+                   x={curve("0:-230:ease_out, 1.05:0:ease_out, 3:0:linear")}
+                   y={curve("0:28:ease_out, 1.40:0:ease_in_out, 3:0:linear")}
+                   scale={curve("0:1.08:ease_out, 2.50:1.0:ease_in_out, 3:1.0:linear")}
+                   opacity={curve("0:0.36:linear, 0.65:0.82:ease_out, 2.00:1:linear, 3:1:linear")}
+                   transformOriginX="960" transformOriginY="540">
+              <Text value="Mystic" x="110" y="530" fontFamily="Times New Roman" fontSize="232" renderScale="4x" color="#1A0B08" opacity="0.56" />
+              <Text value="Mystic" x="96" y="512" fontFamily="Times New Roman" fontSize="232" renderScale="4x" color="#C7A15B" opacity="0.94" />
+              <Text value="Mystic" x="96" y="506" fontFamily="Times New Roman" fontSize="232" renderScale="4x" color="#FFE7A3" opacity={curve("0:0.18:linear, 1.10:0.28:ease_out, 2.20:0.16:ease_in_out, 3:0.22:linear")} />
+
+              <Text value="Raven" x="820" y="530" fontFamily="Times New Roman" fontSize="232" renderScale="4x" color="#1A0B08" opacity="0.56" />
+              <Text value="Raven" x="804" y="512" fontFamily="Times New Roman" fontSize="232" renderScale="4x" color="#C7A15B" opacity="0.94" />
+              <Text value="Raven" x="804" y="506" fontFamily="Times New Roman" fontSize="232" renderScale="4x" color="#FFE7A3" opacity={curve("0:0.12:linear, 1.10:0.26:ease_out, 2.20:0.16:ease_in_out, 3:0.22:linear")} />
+
+              <!-- Faux sharp fantasy descenders and torn ink cuts. -->
+              <Path d="M 908 328 L 930 742 L 956 332 Z M 1124 372 L 1140 702 L 1162 370 Z"
+                    fill="#C29A55" stroke="#4B2E19" strokeWidth="4" opacity="0.86" />
+              <Rect x="690" y="600" width="170" height="24" fill="url(#ink_line)" opacity="0.60" />
+              <Rect x="1392" y="604" width="248" height="28" fill="url(#ink_line)" opacity="0.56" />
+              <Rect x={curve("0.35:-540:ease_out, 1.72:1580:ease_in_out, 3:2080:linear")}
+                    y="250"
+                    width="330"
+                    height="520"
+                    fill="url(#gold_sweep)"
+                    opacity={curve("0:0:linear, 0.45:0.0:linear, 0.82:0.50:ease_out, 1.86:0.14:ease_in, 3:0:linear")}
+                    rotation="-9"
+                    blend="screen" />
+            </Group>
+
+            <Group id="subtitle" opacity={curve("0:0.0:linear, 1.20:0.0:linear, 1.86:0.90:ease_out, 3:0.95:linear")}
+                   x={curve("0:0:linear, 2.15:0:ease_out, 3:0:linear")}
+                   y={curve("0:24:ease_out, 2.15:0:ease_out, 3:0:linear")}>
+              <Text value="AND THE" x="1110" y="608" fontFamily="Times New Roman" fontSize="58" renderScale="4x" color="#A47A43" opacity="0.88" />
+              <Text value="SHADOW" x="1094" y="688" fontFamily="Times New Roman" fontSize="92" renderScale="4x" color="#C7A15B" opacity="0.94" />
+              <Text value="CITADEL" x="1110" y="768" fontFamily="Times New Roman" fontSize="78" renderScale="4x" color="#C7A15B" opacity="0.88" />
+            </Group>
+
+            <!-- Closing vignette for final frame. -->
+            <Rect x="0" y="0" width="1920" height="1080" color="#F7D99B" opacity="0.025 + 0.018*(0.5 + 0.5*sin($time.sec*18.0))" blend="screen" />
+            <Rect x="0" y="0" width="1920" height="1080" color="#000000" opacity={curve("0:0.08:linear, 2.30:0.12:ease_in_out, 3:0.22:linear")} />
+            </Group>
+
+            <Group id="page_b_swap_in"
+                   x={curve("0:420:linear, 2.95:420:linear, 4.22:0:ease_in_out, 6.5:0:linear")}
+                   scale={curve("0:1.025:linear, 2.95:1.025:linear, 4.28:1.0:ease_in_out, 6.5:1.0:linear")}
+                   opacity={curve("0:0:linear, 3.12:0:linear, 4.18:1:ease_out, 6.5:1:linear")}
+                   transformOriginX="960" transformOriginY="540">
+              <Rect x="0" y="0" width="1920" height="1080" fill="url(#parchment_base)" />
+              <Rect x="0" y="0" width="1920" height="1080" color="#000000" opacity={curve("2.95:0.24:linear, 4.20:0.32:ease_in_out, 6.5:0.38:linear")} />
+              <Rect x="0" y="0" width="960" height="1080" fill="url(#page_left_wash)" opacity="0.44" />
+              <Rect x="960" y="0" width="960" height="1080" fill="url(#page_right_warmth)" opacity="0.52" />
+
+              <Repeat id="page_b_dust_field" count="48" x="64" y="52" xStep="38" yStep="21" opacity="0.32" opacityStep="-0.002">
+                <Circle x="random(-8, 8, floor($time.sec*3)+211)" y="random(-6, 6, floor($time.sec*3)+229)" radius="1.7" color="#24120A" opacity="0.18" />
+              </Repeat>
+              <Repeat id="page_b_fine_scratch_field" count="10" x="210" y="-38" xStep="156" opacity="0.18" opacityStep="-0.005">
+                <Rect x="random(-14, 14, floor($time.sec*2)+301)" y="0" width="2" height="1160" fill="url(#film_scratch)" opacity="0.25" />
+              </Repeat>
+
+              <Rect x="904" y="0" width="88" height="1080" fill="url(#fold_light)" opacity="0.76" />
+              <Line x1="958" y1="0" x2="958" y2="1080" stroke="#090404" strokeWidth="5" opacity="0.58" />
+              <Line x1="988" y1="0" x2="988" y2="1080" stroke="#E8C988" strokeWidth="3" opacity="0.17" />
+
+              <Group id="page_b_ink_mass" opacity={curve("3.15:0.35:linear, 4.50:0.82:ease_out, 6.5:0.90:linear")}>
+                <Circle x="1160" y="462" radius={curve("3.15:260:ease_out, 4.60:520:ease_in_out, 6.5:560:linear")} fill="url(#burn_hole)" />
+                <Circle x="760" y="570" radius={curve("3.15:140:ease_out, 4.60:420:ease_in_out, 6.5:460:linear")} fill="url(#ink_cloud)" opacity="0.82" />
+                <Circle x="1250" y="790" radius={curve("3.15:110:ease_out, 4.80:310:ease_in_out, 6.5:350:linear")} fill="url(#ink_cloud)" opacity="0.72" />
+                <Rect x="540" y="224" width="1120" height="640" radius="120" color="#090404" opacity={curve("3.10:0.04:linear, 4.45:0.38:ease_out, 6.5:0.54:linear")} />
+              </Group>
+
+              <Group id="page_b_edge_art" opacity={curve("3.2:0.0:linear, 4.1:0.52:ease_out, 6.5:0.64:linear")}>
+                <Path d="M 42 44 L 240 44 M 44 44 L 44 260 M 1680 44 L 1874 44 M 1874 44 L 1874 260 M 42 1032 L 240 1032 M 44 830 L 44 1032 M 1680 1032 L 1874 1032 M 1874 830 L 1874 1032"
+                      stroke="#120807" strokeWidth="8" lineCap="round" fill="none" opacity="0.46" />
+                <Path d="M 1458 154 C 1510 94 1602 104 1646 178 C 1576 158 1528 188 1494 250"
+                      fill="#00000000" stroke="#120807" strokeWidth="7" opacity="0.36" />
+                <Path d="M 118 880 C 168 820 236 818 286 862 C 222 868 186 906 176 966"
+                      fill="#00000000" stroke="#120807" strokeWidth="7" opacity="0.38" />
+              </Group>
+
+              <Group id="page_b_title_lockup"
+                     x={curve("3.05:260:ease_out, 4.10:0:ease_out, 6.5:0:linear")}
+                     y={curve("3.05:22:ease_out, 4.25:0:ease_in_out, 6.5:0:linear")}
+                     scale={curve("3.05:1.05:ease_out, 4.70:1.0:ease_in_out, 6.5:1.0:linear")}
+                     opacity={curve("3.05:0.0:linear, 3.85:0.82:ease_out, 4.60:1:linear, 6.5:1:linear")}
+                     transformOriginX="1240" transformOriginY="540">
+                <Text value="Ebon" x="720" y="512" fontFamily="Times New Roman" fontSize="222" renderScale="4x" color="#1A0B08" opacity="0.54" />
+                <Text value="Ebon" x="704" y="494" fontFamily="Times New Roman" fontSize="222" renderScale="4x" color="#C7A15B" opacity="0.94" />
+                <Text value="Ebon" x="704" y="488" fontFamily="Times New Roman" fontSize="222" renderScale="4x" color="#FFE7A3" opacity={curve("3.2:0.08:linear, 4.2:0.23:ease_out, 6.5:0.18:linear")} />
+
+                <Text value="Crown" x="1210" y="512" fontFamily="Times New Roman" fontSize="222" renderScale="4x" color="#1A0B08" opacity="0.54" />
+                <Text value="Crown" x="1194" y="494" fontFamily="Times New Roman" fontSize="222" renderScale="4x" color="#C7A15B" opacity="0.94" />
+                <Text value="Crown" x="1194" y="488" fontFamily="Times New Roman" fontSize="222" renderScale="4x" color="#FFE7A3" opacity={curve("3.2:0.08:linear, 4.2:0.22:ease_out, 6.5:0.18:linear")} />
+
+                <Path d="M 1114 316 L 1134 714 L 1158 320 Z M 1512 360 L 1526 672 L 1548 358 Z"
+                      fill="#C29A55" stroke="#4B2E19" strokeWidth="4" opacity="0.78" />
+                <Rect x="1026" y="584" width="144" height="22" fill="url(#ink_line)" opacity="0.46" />
+                <Rect x="1560" y="588" width="214" height="24" fill="url(#ink_line)" opacity="0.44" />
+              </Group>
+
+              <Group id="page_b_subtitle"
+                     opacity={curve("3.55:0.0:linear, 4.55:0.84:ease_out, 6.5:0.92:linear")}
+                     x={curve("3.25:72:ease_out, 4.35:0:ease_out, 6.5:0:linear")}>
+                <Text value="AND THE" x="1058" y="598" fontFamily="Times New Roman" fontSize="52" renderScale="4x" color="#A47A43" opacity="0.82" />
+                <Text value="SILENT" x="1038" y="674" fontFamily="Times New Roman" fontSize="84" renderScale="4x" color="#C7A15B" opacity="0.90" />
+                <Text value="KINGDOM" x="1054" y="748" fontFamily="Times New Roman" fontSize="74" renderScale="4x" color="#C7A15B" opacity="0.84" />
+              </Group>
+
+              <Rect x="0" y="0" width="1920" height="1080" color="#F7D99B" opacity="0.018 + 0.012*(0.5 + 0.5*sin($time.sec*13.0))" blend="screen" />
+              <Rect x="0" y="0" width="1920" height="1080" color="#000000" opacity={curve("3.0:0.08:linear, 4.4:0.14:ease_in_out, 6.5:0.22:linear")} />
+            </Group>
+
+            <Group id="page_turn_transition"
+                   opacity={curve("0:0:linear, 3.05:0:linear, 3.42:0.92:ease_out, 4.24:0.38:ease_in_out, 4.62:0:linear, 6.5:0:linear")}>
+              <Rect x={curve("3.05:1760:ease_out, 3.72:810:ease_in_out, 4.46:-220:ease_in_out")}
+                    y="-40"
+                    width="430"
+                    height="1160"
+                    fill="url(#turn_shadow)"
+                    opacity="0.82" />
+              <Rect x={curve("3.05:1880:ease_out, 3.72:940:ease_in_out, 4.46:-90:ease_in_out")}
+                    y="-40"
+                    width="150"
+                    height="1160"
+                    fill="url(#turn_highlight)"
+                    opacity="0.30"
+                    blend="screen" />
+              <Circle x={curve("3.05:1540:ease_out, 3.75:960:ease_in_out, 4.45:270:ease_in_out")}
+                      y="520"
+                      radius="360"
+                      fill="url(#ink_cloud)"
+                      opacity="0.24" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Process id="BloomAliasProcess">
+    <Tex id="src" fmt="rgba16f" from="scene:aged_magic_book_title_reveal_7s" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="post_bloom" kind="compute"
+          effect="bloom"
+          in={["src"]} out={["out"]}
+          params={{ threshold: "0.22", intensity: "4.45", sigma: "28.0" }} />
+  </Process>
+
+  <Present from="BloomAliasProcess" />
+</Graph>

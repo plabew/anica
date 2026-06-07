@@ -586,7 +586,7 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
         if starts_open_tag(line, "Text") {
             let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
             let node = parse_text_node(&tag, i + 1, None, Vec::new())?;
-            scene_nodes.push(SceneNode::Text(node.clone()));
+            scene_nodes.push(SceneNode::Text(Box::new(node.clone())));
             texts.push(node);
             i = end_ix + 1;
             continue;
@@ -1245,7 +1245,7 @@ fn last_resource_id_from_attr(raw: &str) -> Option<String> {
                 .trim_matches(|ch| matches!(ch, '"' | '\'' | ' '));
             (!token.is_empty()).then(|| token.to_string())
         })
-        .last()
+        .next_back()
 }
 
 pub(crate) fn collect_self_closing_block(
@@ -2726,6 +2726,51 @@ mod tests {
         assert!(is_graph_script(script));
         let graph = parse_graph_script(script).expect("leading XML comment should parse");
         assert_eq!(graph.scenes[0].id, "commented_scene");
+    }
+
+    #[test]
+    fn graph_parser_accepts_text_font_weight() {
+        let script = r##"
+<Graph fps={30} duration="1s" size={[256,256]}>
+  <Background color="#ffffff" />
+  <Text x="24" y="48" value="Bold" fontSize="24" fontFamily="Impact" fontWeight="900" color="#111111" />
+  <Present from="scene" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script).expect("fontWeight text should parse");
+        assert_eq!(graph.texts.len(), 1);
+        assert_eq!(graph.texts[0].font_weight.as_deref(), Some("900"));
+    }
+
+    #[test]
+    fn graph_parser_accepts_text_box_attrs() {
+        let script = r##"
+<Graph fps={30} duration="1s" size={[256,256]}>
+  <Background color="#ffffff" />
+  <Text x="24" y="48" value="Pill" fontSize="24" box="pill" boxColor="#D9251D" boxPadding="54 28" boxRadius="999" color="#ffffff" />
+  <Present from="scene" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script).expect("Text box attrs should parse");
+        assert_eq!(graph.texts.len(), 1);
+        assert_eq!(graph.texts[0].box_style.as_deref(), Some("pill"));
+        assert_eq!(graph.texts[0].box_color.as_deref(), Some("#D9251D"));
+        assert_eq!(graph.texts[0].box_padding.as_deref(), Some("54 28"));
+        assert_eq!(graph.texts[0].box_radius.as_deref(), Some("999"));
+    }
+
+    #[test]
+    fn graph_parser_accepts_text_gap_alias() {
+        let script = r##"
+<Graph fps={30} duration="1s" size={[256,256]}>
+  <Background color="#ffffff" />
+  <Text x="24" y="48" value="Tight" fontSize="24" textGap="-2" color="#ffffff" />
+  <Present from="scene" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script).expect("textGap should parse");
+        assert_eq!(graph.texts.len(), 1);
+        assert_eq!(graph.texts[0].tracking.as_deref(), Some("-2"));
     }
 
     #[test]

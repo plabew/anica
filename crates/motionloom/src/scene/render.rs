@@ -82,7 +82,7 @@ use crate::scene::timeline::{
     eval_repeat_count, scene_layer_source_time, scene_sequence_local_time,
 };
 use crate::world::{WorldFrameRenderer, parse_world_graph_script};
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 use image::{Rgba, RgbaImage, imageops::FilterType};
 
 mod depth;
@@ -336,6 +336,16 @@ struct SceneFrameRenderer {
     scene_masks: HashMap<String, MaskNode>,
     world_renderer: WorldFrameRenderer,
     gpu_compositor: Option<WgpuSceneCompositor>,
+}
+
+#[derive(Clone, Copy)]
+struct SceneLayerDrawParams {
+    source_size: (u32, u32),
+    base_transform: Affine2,
+    clip: Option<CameraRect>,
+    time_norm: f32,
+    time_sec: f32,
+    inherited_opacity: f32,
 }
 
 impl SceneFrameRenderer {
@@ -2462,13 +2472,15 @@ impl SceneFrameRenderer {
                         let clip = depth.active_camera.map(|camera| camera.viewport);
                         self.draw_scene_layer_with_transform(
                             canvas,
-                            source_size,
                             layer,
-                            depth_transform,
-                            clip,
-                            time_norm,
-                            time_sec,
-                            inherited_opacity,
+                            SceneLayerDrawParams {
+                                source_size,
+                                base_transform: depth_transform,
+                                clip,
+                                time_norm,
+                                time_sec,
+                                inherited_opacity,
+                            },
                         )?;
                     } else {
                         self.draw_scene_layer(
@@ -2912,28 +2924,26 @@ impl SceneFrameRenderer {
     ) -> Result<(), MotionLoomSceneRenderError> {
         self.draw_scene_layer_with_transform(
             canvas,
-            canvas.dimensions(),
             layer,
-            Affine2::identity(),
-            None,
-            time_norm,
-            time_sec,
-            inherited_opacity,
+            SceneLayerDrawParams {
+                source_size: canvas.dimensions(),
+                base_transform: Affine2::identity(),
+                clip: None,
+                time_norm,
+                time_sec,
+                inherited_opacity,
+            },
         )
     }
 
     fn draw_scene_layer_with_transform(
         &mut self,
         canvas: &mut RgbaImage,
-        source_size: (u32, u32),
         layer: &SceneLayerNode,
-        base_transform: Affine2,
-        clip: Option<CameraRect>,
-        time_norm: f32,
-        time_sec: f32,
-        inherited_opacity: f32,
+        params: SceneLayerDrawParams,
     ) -> Result<(), MotionLoomSceneRenderError> {
-        let opacity = (eval_scene_number(&layer.opacity, time_norm, time_sec)? * inherited_opacity)
+        let opacity = (eval_scene_number(&layer.opacity, params.time_norm, params.time_sec)?
+            * params.inherited_opacity)
             .clamp(0.0, 1.0);
         if opacity <= 0.0001 {
             return Ok(());
@@ -2941,10 +2951,10 @@ impl SceneFrameRenderer {
         let mut source = if let Some(source_id) = layer.source.as_deref() {
             let Some(source) = self.render_precompose_instance(
                 source_id,
-                source_size,
+                params.source_size,
                 layer,
-                time_norm,
-                time_sec,
+                params.time_norm,
+                params.time_sec,
             )?
             else {
                 return Ok(());
@@ -2954,21 +2964,32 @@ impl SceneFrameRenderer {
             if layer.children.is_empty() {
                 return Ok(());
             }
-            RgbaImage::from_pixel(source_size.0, source_size.1, Rgba([0, 0, 0, 0]))
+            RgbaImage::from_pixel(
+                params.source_size.0,
+                params.source_size.1,
+                Rgba([0, 0, 0, 0]),
+            )
         };
         if !layer.children.is_empty() {
-            self.draw_scene_nodes(&mut source, &layer.children, time_norm, time_sec, 1.0)?;
+            self.draw_scene_nodes(
+                &mut source,
+                &layer.children,
+                params.time_norm,
+                params.time_sec,
+                1.0,
+            )?;
         }
         if let Some(filter_id) = layer.effect.as_deref() {
-            source = self.apply_scene_filter(&source, filter_id, time_norm, time_sec)?;
+            source =
+                self.apply_scene_filter(&source, filter_id, params.time_norm, params.time_sec)?;
         }
         if let Some(mask_id) = layer.mask.as_deref()
             && let Some(mask_alpha) = self.scene_mask_alpha(
                 mask_id,
                 source.width(),
                 source.height(),
-                time_norm,
-                time_sec,
+                params.time_norm,
+                params.time_sec,
             )?
         {
             apply_alpha_mask_with_invert(
@@ -2983,8 +3004,8 @@ impl SceneFrameRenderer {
                 (source.width(), source.height()),
                 &layer.matte_mode,
                 Some(layer),
-                time_norm,
-                time_sec,
+                params.time_norm,
+                params.time_sec,
             )?
         {
             apply_alpha_mask_with_invert(
@@ -2994,10 +3015,20 @@ impl SceneFrameRenderer {
             );
         }
 
-        let transform =
-            base_transform.mul(scene_layer_local_transform(layer, time_norm, time_sec)?);
+        let transform = params.base_transform.mul(scene_layer_local_transform(
+            layer,
+            params.time_norm,
+            params.time_sec,
+        )?);
         let blend = parse_scene_blend(&layer.blend)?;
-        composite_layer_affine_blend_clipped(canvas, &source, transform, opacity, blend, clip);
+        composite_layer_affine_blend_clipped(
+            canvas,
+            &source,
+            transform,
+            opacity,
+            blend,
+            params.clip,
+        );
         Ok(())
     }
 
@@ -4478,7 +4509,19 @@ impl SceneFrameRenderer {
         };
         let metrics = Metrics::new(raster_font_size, raster_line_height);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
-        let mut attrs = Attrs::new().family(Family::SansSerif);
+        let mut attrs = Attrs::new()
+            .family(Family::SansSerif)
+            .weight(eval_text_font_weight(
+                text.font_weight.as_deref(),
+                time_norm,
+                time_sec,
+            )?)
+            .letter_spacing(eval_text_tracking_em(
+                text.tracking.as_deref(),
+                font_size,
+                time_norm,
+                time_sec,
+            )?);
         let font_family = text
             .font_family
             .as_deref()
@@ -4501,15 +4544,36 @@ impl SceneFrameRenderer {
         let text_w = raster_text_w / render_scale;
         let text_h = raster_text_h / render_scale;
         let layout_w = width.unwrap_or(text_w);
+        let box_style = eval_text_box_style(text, layout_w, text_h, time_norm, time_sec)?;
+        let box_pad_x = box_style.map(|style| style.padding_x).unwrap_or(0.0);
+        let box_pad_y = box_style.map(|style| style.padding_y).unwrap_or(0.0);
+        let box_w = (layout_w + box_pad_x * 2.0).max(1.0);
+        let box_h = (text_h + box_pad_y * 2.0).max(1.0);
         let x_base = resolve_axis(&text.x, canvas_size.0 as f32, layout_w, time_norm, time_sec)?;
         let y_base = resolve_axis(&text.y, canvas_size.1 as f32, text_h, time_norm, time_sec)?;
         let layer_effects =
             text_layer_effect_spec(text, time_norm, time_sec)?.scaled_for_raster(render_scale);
         let pad = (3.0_f32 * render_scale).ceil() as i32 + layer_effects.pad_px;
+        let text_offset_x = pad + (box_pad_x * render_scale).round() as i32;
+        let text_offset_y = pad + (box_pad_y * render_scale).round() as i32;
         let layer_w =
-            ((layout_w * render_scale).ceil().max(1.0) as u32).saturating_add((pad * 2) as u32);
-        let layer_h = (raster_text_h.ceil().max(1.0) as u32).saturating_add((pad * 2) as u32);
+            ((box_w * render_scale).ceil().max(1.0) as u32).saturating_add((pad * 2) as u32);
+        let layer_h =
+            ((box_h * render_scale).ceil().max(1.0) as u32).saturating_add((pad * 2) as u32);
         let mut layer = RgbaImage::from_pixel(layer_w, layer_h, Rgba([0, 0, 0, 0]));
+        if let Some(box_style) = box_style {
+            let mut box_color = box_style.color;
+            box_color[3] = ((box_color[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+            draw_rounded_rect(
+                &mut layer,
+                pad as f32,
+                pad as f32,
+                box_w * render_scale,
+                box_h * render_scale,
+                box_style.radius * render_scale,
+                box_color,
+            );
+        }
         let color = parse_color(&text.color)?;
         let combined_opacity = (color[3] as f32 / 255.0) * opacity;
         let text_color = Color::rgba(color[0], color[1], color[2], 255);
@@ -4530,7 +4594,8 @@ impl SceneFrameRenderer {
                     value: &visible_value,
                     base_color: color,
                     base_opacity: opacity,
-                    pad,
+                    offset_x: text_offset_x,
+                    offset_y: text_offset_y,
                     raster_scale: render_scale,
                     max_lines,
                     global_time_ms: (time_sec.max(0.0) * 1000.0).round() as i64,
@@ -4550,8 +4615,8 @@ impl SceneFrameRenderer {
                             return;
                         }
                     }
-                    let px = x + pad;
-                    let py = y + pad;
+                    let px = x + text_offset_x;
+                    let py = y + text_offset_y;
                     if px < 0 || py < 0 {
                         return;
                     }
@@ -4567,8 +4632,8 @@ impl SceneFrameRenderer {
         }
         let text_transform = transform
             .mul(Affine2::translate(
-                x_base - pad as f32 / render_scale,
-                y_base - pad as f32 / render_scale,
+                x_base - box_pad_x - pad as f32 / render_scale,
+                y_base - box_pad_y - pad as f32 / render_scale,
             ))
             .mul(scene_text_local_transform(text, time_norm, time_sec)?)
             .mul(Affine2::scale(1.0 / render_scale));
@@ -4789,6 +4854,180 @@ fn eval_text_render_scale(
         eval_scene_number(trimmed, time_norm, time_sec)?
     };
     Ok(scale.clamp(1.0, 8.0))
+}
+
+fn eval_text_font_weight(
+    expr: Option<&str>,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Weight, MotionLoomSceneRenderError> {
+    let Some(expr) = expr.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Weight::NORMAL);
+    };
+    let normalized = expr.to_ascii_lowercase().replace(['-', '_', ' '], "");
+    let weight = match normalized.as_str() {
+        "thin" | "hairline" => Weight::THIN,
+        "extralight" | "ultralight" => Weight::EXTRA_LIGHT,
+        "light" => Weight::LIGHT,
+        "normal" | "regular" | "book" => Weight::NORMAL,
+        "medium" => Weight::MEDIUM,
+        "semibold" | "demibold" => Weight::SEMIBOLD,
+        "bold" | "bolder" => Weight::BOLD,
+        "extrabold" | "ultrabold" => Weight::EXTRA_BOLD,
+        "black" | "heavy" => Weight::BLACK,
+        "lighter" => Weight::LIGHT,
+        _ => {
+            let value = eval_scene_number(expr, time_norm, time_sec).map_err(|err| {
+                MotionLoomSceneRenderError::InvalidExpression {
+                    expr: expr.to_string(),
+                    message: format!("invalid Text fontWeight value: {err}"),
+                }
+            })?;
+            Weight(value.round().clamp(1.0, 1000.0) as u16)
+        }
+    };
+    Ok(weight)
+}
+
+fn eval_text_tracking_em(
+    expr: Option<&str>,
+    font_size: f32,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<f32, MotionLoomSceneRenderError> {
+    let Some(expr) = expr.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(0.0);
+    };
+    let tracking_px = eval_scene_number(expr, time_norm, time_sec)?;
+    Ok((tracking_px / font_size.max(1.0)).clamp(-1.0, 4.0))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TextBoxStyle {
+    color: [u8; 4],
+    padding_x: f32,
+    padding_y: f32,
+    radius: f32,
+}
+
+fn eval_text_box_style(
+    text: &TextNode,
+    text_width: f32,
+    text_height: f32,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Option<TextBoxStyle>, MotionLoomSceneRenderError> {
+    let Some(kind) = text.box_style.as_deref().map(str::trim) else {
+        return Ok(None);
+    };
+    if kind.is_empty() {
+        return Ok(None);
+    }
+    let normalized = kind.to_ascii_lowercase().replace(['-', '_', ' '], "");
+    if matches!(normalized.as_str(), "none" | "false" | "off" | "0") {
+        return Ok(None);
+    }
+    if !matches!(normalized.as_str(), "pill" | "rect" | "rectangle") {
+        return Err(MotionLoomSceneRenderError::InvalidExpression {
+            expr: kind.to_string(),
+            message: "invalid Text box value. Expected pill, rect, or none.".to_string(),
+        });
+    }
+
+    let (default_pad_x, default_pad_y) = text
+        .box_padding
+        .as_deref()
+        .map(|expr| eval_text_box_padding(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or((0.0, 0.0));
+    let padding_x = text
+        .box_padding_x
+        .as_deref()
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec).map(|value| value.max(0.0)))
+        .transpose()?
+        .unwrap_or(default_pad_x);
+    let padding_y = text
+        .box_padding_y
+        .as_deref()
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec).map(|value| value.max(0.0)))
+        .transpose()?
+        .unwrap_or(default_pad_y);
+    let box_height = (text_height + padding_y * 2.0).max(1.0);
+    let radius = text
+        .box_radius
+        .as_deref()
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec).map(|value| value.max(0.0)))
+        .transpose()?
+        .unwrap_or_else(|| {
+            if normalized == "pill" {
+                box_height * 0.5
+            } else {
+                0.0
+            }
+        });
+    let color = parse_color(text.box_color.as_deref().unwrap_or("#000000"))?;
+
+    Ok(Some(TextBoxStyle {
+        color,
+        padding_x,
+        padding_y,
+        radius: radius
+            .min((text_width + padding_x * 2.0) * 0.5)
+            .min(box_height * 0.5),
+    }))
+}
+
+fn eval_text_box_padding(
+    expr: &str,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<(f32, f32), MotionLoomSceneRenderError> {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return Ok((0.0, 0.0));
+    }
+    let (x_expr, y_expr) = split_text_box_padding_pair(trimmed).unwrap_or((trimmed, trimmed));
+    let x = eval_scene_number(x_expr, time_norm, time_sec)?.max(0.0);
+    let y = eval_scene_number(y_expr, time_norm, time_sec)?.max(0.0);
+    Ok((x, y))
+}
+
+fn split_text_box_padding_pair(expr: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    let mut in_quote = false;
+    let mut quote_char = '\0';
+    for (ix, ch) in expr.char_indices() {
+        if in_quote {
+            if ch == quote_char {
+                in_quote = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => {
+                in_quote = true;
+                quote_char = ch;
+            }
+            '(' | '[' | '{' => depth = depth.saturating_add(1),
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                let left = expr[..ix].trim();
+                let right = expr[ix + ch.len_utf8()..].trim();
+                if !left.is_empty() && !right.is_empty() {
+                    return Some((left, right));
+                }
+            }
+            _ if depth == 0 && ch.is_whitespace() => {
+                let left = expr[..ix].trim();
+                let right = expr[ix + ch.len_utf8()..].trim();
+                if !left.is_empty() && !right.is_empty() {
+                    return Some((left, right));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5050,7 +5289,7 @@ fn collect_gpu_scene_commands_with_depth(
                     });
                 } else {
                     text_requests.push(GpuSceneTextRequest {
-                        node: text.clone(),
+                        node: text.as_ref().clone(),
                         transform,
                         opacity: inherited_opacity,
                     });
@@ -6780,10 +7019,14 @@ mod tests {
     use crate::scene::drawable::{GpuSceneTextureLayer, GpuSceneTextureSource};
     use crate::scene::spatial::Affine2;
     use crate::scene::text::TextNode;
+    use cosmic_text::Weight;
     use image::{Rgba, RgbaImage};
     use std::path::{Path, PathBuf};
 
-    use super::{MotionLoomSceneRenderError, SceneFrameRenderer, SceneRenderProfile};
+    use super::{
+        MotionLoomSceneRenderError, SceneFrameRenderer, SceneRenderProfile, eval_text_box_padding,
+        eval_text_font_weight, eval_text_tracking_em,
+    };
 
     fn max_rgb(image: &image::RgbaImage) -> u8 {
         image
@@ -6820,6 +7063,12 @@ mod tests {
             line_height: None,
             color: "#111111".to_string(),
             opacity: "1".to_string(),
+            box_style: None,
+            box_color: None,
+            box_padding: None,
+            box_padding_x: None,
+            box_padding_y: None,
+            box_radius: None,
             stroke: None,
             stroke_width: None,
             stroke_join: None,
@@ -6828,10 +7077,60 @@ mod tests {
             max_lines: None,
             font: None,
             font_family: None,
+            font_weight: None,
             font_path: None,
             layout: None,
             animators: Vec::new(),
         }
+    }
+
+    #[test]
+    fn text_font_weight_accepts_keywords_and_numeric_values() {
+        assert_eq!(
+            eval_text_font_weight(Some("bold"), 0.0, 0.0).expect("bold weight"),
+            Weight::BOLD
+        );
+        assert_eq!(
+            eval_text_font_weight(Some("semi-bold"), 0.0, 0.0).expect("semibold weight"),
+            Weight::SEMIBOLD
+        );
+        assert_eq!(
+            eval_text_font_weight(Some("900"), 0.0, 0.0).expect("numeric weight"),
+            Weight::BLACK
+        );
+        assert_eq!(
+            eval_text_font_weight(Some("400 + 300*$time.norm"), 1.0, 0.0)
+                .expect("expression weight"),
+            Weight::BOLD
+        );
+    }
+
+    #[test]
+    fn text_box_padding_accepts_single_and_pair_values() {
+        assert_eq!(
+            eval_text_box_padding("54", 0.0, 0.0).expect("single padding"),
+            (54.0, 54.0)
+        );
+        assert_eq!(
+            eval_text_box_padding("54 28", 0.0, 0.0).expect("space pair padding"),
+            (54.0, 28.0)
+        );
+        assert_eq!(
+            eval_text_box_padding("54,28", 0.0, 0.0).expect("comma pair padding"),
+            (54.0, 28.0)
+        );
+    }
+
+    #[test]
+    fn text_gap_tracking_converts_pixels_to_em() {
+        assert_eq!(
+            eval_text_tracking_em(Some("-2"), 40.0, 0.0, 0.0).expect("negative tracking"),
+            -0.05
+        );
+        assert_eq!(
+            eval_text_tracking_em(Some("4"), 40.0, 0.0, 0.0).expect("positive tracking"),
+            0.1
+        );
     }
 
     fn cpu_texture_size(layer: GpuSceneTextureLayer) -> (u32, u32) {
@@ -6872,6 +7171,35 @@ mod tests {
         assert!(
             high_w >= base_w * 3 && high_h >= base_h * 3,
             "expected renderScale=4x to allocate a much larger raster texture, base={base_w}x{base_h}, high={high_w}x{high_h}"
+        );
+    }
+
+    #[test]
+    fn scene_text_pill_box_expands_raster_texture_and_draws_background() {
+        let mut text = basic_text_node("1x");
+        text.value = "WE APPLY THEM".to_string();
+        text.font_weight = Some("900".to_string());
+        text.box_style = Some("pill".to_string());
+        text.box_color = Some("#D9251D".to_string());
+        text.box_padding = Some("54 28".to_string());
+        text.box_radius = Some("999".to_string());
+
+        let mut renderer = SceneFrameRenderer::new();
+        let layer = renderer
+            .rasterize_text_texture_layer(&text, Affine2::identity(), 1.0, 0.0, 0.0, (800, 450))
+            .expect("pill text raster")
+            .expect("pill text layer");
+        let GpuSceneTextureSource::Cpu(image) = layer.source else {
+            panic!("expected CPU text texture layer");
+        };
+
+        let red_pixels = image
+            .pixels()
+            .filter(|pixel| pixel[0] > 180 && pixel[1] < 80 && pixel[2] < 70 && pixel[3] > 180)
+            .count();
+        assert!(
+            red_pixels > 1000,
+            "expected pill box background to draw many red pixels, got {red_pixels}"
         );
     }
 

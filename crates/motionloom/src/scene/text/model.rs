@@ -44,6 +44,13 @@ pub struct TextNode {
     pub line_height: Option<String>,
     pub color: String,
     pub opacity: String,
+    #[serde(rename = "box")]
+    pub box_style: Option<String>,
+    pub box_color: Option<String>,
+    pub box_padding: Option<String>,
+    pub box_padding_x: Option<String>,
+    pub box_padding_y: Option<String>,
+    pub box_radius: Option<String>,
     pub stroke: Option<String>,
     pub stroke_width: Option<String>,
     pub stroke_join: Option<String>,
@@ -52,6 +59,7 @@ pub struct TextNode {
     pub max_lines: Option<String>,
     pub font: Option<String>,
     pub font_family: Option<String>,
+    pub font_weight: Option<String>,
     pub font_path: Option<String>,
     #[serde(default)]
     pub layout: Option<TextLayoutNode>,

@@ -1372,7 +1372,7 @@ fn parse_scene_nodes(
         }
         if starts_open_tag(line, "Text") {
             let (text, end_ix) = parse_text_any(lines, i)?;
-            nodes.push(SceneNode::Text(text));
+            nodes.push(SceneNode::Text(Box::new(text)));
             i = end_ix + 1;
             continue;
         }
@@ -1564,7 +1564,10 @@ pub(crate) fn parse_text_node(
             message: format!("Invalid Text align=\"{align}\". Expected left, center, or right."),
         });
     }
-    let tracking = attr_value(block, "tracking").map(|v| strip_wrappers(&v).to_string());
+    let tracking = attr_value(block, "textGap")
+        .or_else(|| attr_value(block, "text_gap"))
+        .or_else(|| attr_value(block, "tracking"))
+        .map(|v| strip_wrappers(&v).to_string());
     let font_size = attr_value(block, "fontSize")
         .or_else(|| attr_value(block, "font_size"))
         .or_else(|| attr_value(block, "size"))
@@ -1583,6 +1586,22 @@ pub(crate) fn parse_text_node(
     let opacity = attr_value(block, "opacity")
         .map(|v| strip_wrappers(&v).to_string())
         .unwrap_or_else(|| "1.0".to_string());
+    let box_style = attr_value(block, "box").map(|v| strip_wrappers(&v).to_string());
+    let box_color = attr_value(block, "boxColor")
+        .or_else(|| attr_value(block, "box_color"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let box_padding = attr_value(block, "boxPadding")
+        .or_else(|| attr_value(block, "box_padding"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let box_padding_x = attr_value(block, "boxPaddingX")
+        .or_else(|| attr_value(block, "box_padding_x"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let box_padding_y = attr_value(block, "boxPaddingY")
+        .or_else(|| attr_value(block, "box_padding_y"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let box_radius = attr_value(block, "boxRadius")
+        .or_else(|| attr_value(block, "box_radius"))
+        .map(|v| strip_wrappers(&v).to_string());
     let stroke = attr_value(block, "stroke").map(|v| strip_wrappers(&v).to_string());
     let stroke_width = attr_value(block, "strokeWidth")
         .or_else(|| attr_value(block, "stroke_width"))
@@ -1595,6 +1614,9 @@ pub(crate) fn parse_text_node(
         .map(|v| strip_wrappers(&v).to_string());
     let font_family = attr_value(block, "fontFamily")
         .or_else(|| attr_value(block, "font_family"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let font_weight = attr_value(block, "fontWeight")
+        .or_else(|| attr_value(block, "font_weight"))
         .map(|v| strip_wrappers(&v).to_string());
     let font = attr_value(block, "font").map(|v| strip_wrappers(&v).to_string());
     let font_path = attr_value(block, "fontPath")
@@ -1637,6 +1659,12 @@ pub(crate) fn parse_text_node(
         line_height,
         color,
         opacity,
+        box_style,
+        box_color,
+        box_padding,
+        box_padding_x,
+        box_padding_y,
+        box_radius,
         stroke,
         stroke_width,
         stroke_join,
@@ -1645,6 +1673,7 @@ pub(crate) fn parse_text_node(
         max_lines,
         font,
         font_family,
+        font_weight,
         font_path,
         layout,
         animators,

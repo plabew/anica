@@ -252,7 +252,7 @@ fn last_resource_id(raw: &str) -> Option<String> {
                 .trim_matches(|ch| matches!(ch, '"' | '\'' | ' '));
             (!token.is_empty()).then(|| token.to_string())
         })
-        .last()
+        .next_back()
 }
 
 fn find_open_tag(input: &str, tag_name: &str, start: usize) -> Option<usize> {

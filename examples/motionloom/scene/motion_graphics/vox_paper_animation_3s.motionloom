@@ -1,0 +1,100 @@
+<Graph fps={30} duration="3s" size={[1920,1080]} renderSize={[1920,1080]}>
+  <Background color="#F5EFE4" />
+
+  <Scene id="vox_paper_animation_3s">
+    <Defs>
+      <LinearGradient id="paper_warm" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#FFFDF7, 0.70:#F3E7D4, 1:#E3D0B4" />
+      <LinearGradient id="paper_blue" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#EAF6FF, 0.72:#A8D7F2, 1:#5CA9D6" />
+      <LinearGradient id="paper_red" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#FFE9E0, 0.66:#F47E65, 1:#C74134" />
+      <LinearGradient id="paper_yellow" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#FFF4B8, 0.70:#F0C445, 1:#D9981A" />
+      <RadialGradient id="soft_shadow" cx="0.50" cy="0.50" r="0.74"
+                      stops="0:#00000033, 0.48:#00000018, 1:#00000000" />
+      <LinearGradient id="ink_line" x1="0" y1="0" x2="1" y2="0"
+                      stops="0:#0F172A, 0.60:#334155, 1:#0F172A" />
+    </Defs>
+
+    <Timeline>
+      <Track id="paper_scene" space="world" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="1920" height="1080" color="#F5EFE4" />
+            <Repeat id="paper_grain" count="34" x="80" y="60" xStep="54" yStep="18" opacity="0.20" opacityStep="-0.002">
+              <Circle x="8*sin($time.sec*0.8)" y="4*sin($time.sec*1.1)" radius="1.8" color="#8B735A" opacity="0.18" />
+            </Repeat>
+
+            <Text value="VOX PAPER MOTION" x="96" y="105" fontFamily="Menlo" fontSize="28" renderScale="4x" color="#475569" opacity={curve("0:0:linear, 0.32:0.82:ease_out, 3:0.82:linear")} />
+            <Text value="Three-second explainer collage" x="96" y="150" fontFamily="Avenir Next Condensed" fontSize="72" renderScale="4x" color="#111827" opacity={curve("0:0:linear, 0.40:1:ease_out, 3:1:linear")} />
+
+            <Group id="map_paper" x={curve("0:-520:ease_out, 0.50:130:ease(0.16,1.05,0.24,1), 3:130:linear")}
+                   y={curve("0:120:ease_out, 0.55:178:ease_out, 3:178:linear")}
+                   rotation={curve("0:-14:ease_out, 0.55:-3:ease_out, 3:-3:linear")}
+                   opacity={curve("0:0:linear, 0.28:1:ease_out, 3:1:linear")}
+                   transformOriginX="360" transformOriginY="250">
+              <Circle x="360" y="250" radius="240" color="url(#soft_shadow)" opacity="0.34" />
+              <Rect x="0" y="0" width="720" height="500" radius="20" fill="url(#paper_blue)" stroke="#1E3A5F" strokeWidth="5" />
+              <Path d="M 84 310 C 160 220 260 246 330 170 C 408 88 560 112 626 58"
+                    stroke="#FFFFFF" strokeWidth="20" lineCap="round" fill="none" opacity="0.58" />
+              <Path d="M 80 320 C 164 222 260 260 350 174 C 440 92 570 120 642 70"
+                    stroke="#183A59" strokeWidth="8" lineCap="round" fill="none" opacity="0.72"
+                    trimStart={curve("0.35:0:linear, 0.80:0:linear, 1.30:0.08:ease_in_out")}
+                    trimEnd={curve("0.35:0:linear, 0.80:1:ease_out, 3:1:linear")} />
+              <Circle x="430" y="150" radius="30" color="#FFFFFF" stroke="#183A59" strokeWidth="6" />
+              <Text value="PLACE" x="464" y="160" fontFamily="Menlo" fontSize="25" renderScale="4x" color="#183A59" />
+            </Group>
+
+            <Group id="photo_paper" x={curve("0.25:2120:ease_out, 0.88:910:ease(0.16,1.1,0.24,1), 3:910:linear")}
+                   y={curve("0.25:80:ease_out, 0.88:250:ease_out, 3:250:linear")}
+                   rotation={curve("0.25:16:ease_out, 0.90:4:ease_out, 3:4:linear")}
+                   opacity={curve("0.25:0:linear, 0.55:1:ease_out, 3:1:linear")}
+                   transformOriginX="365" transformOriginY="270">
+              <Circle x="360" y="270" radius="250" color="url(#soft_shadow)" opacity="0.30" />
+              <Rect x="0" y="0" width="730" height="540" radius="18" fill="url(#paper_warm)" stroke="#5B4632" strokeWidth="5" />
+              <Rect x="48" y="48" width="634" height="342" radius="8" color="#111827" opacity="0.90" />
+              <Circle x="245" y="220" radius="92" fill="url(#paper_red)" />
+              <Path d="M 134 322 L 280 190 L 424 322 Z" fill="#F9D76C" opacity="0.90" />
+              <Path d="M 356 322 L 502 172 L 648 322 Z" fill="#78C6E7" opacity="0.88" />
+              <Text value="ARCHIVE" x="54" y="458" fontFamily="Menlo" fontSize="30" renderScale="4x" color="#4B3524" />
+              <Text value="No. 04" x="552" y="458" fontFamily="Menlo" fontSize="30" renderScale="4x" color="#4B3524" />
+            </Group>
+
+            <Group id="data_card" x={curve("0.80:560:ease_out, 1.20:610:ease_out, 3:610:linear")}
+                   y={curve("0.80:1120:ease_out, 1.20:660:ease(0.16,1.05,0.24,1), 3:660:linear")}
+                   rotation={curve("0.80:7:ease_out, 1.20:-2:ease_out, 3:-2:linear")}
+                   opacity={curve("0.70:0:linear, 1.00:1:ease_out, 3:1:linear")}>
+              <Circle x="365" y="135" radius="178" color="url(#soft_shadow)" opacity="0.26" />
+              <Rect x="0" y="0" width="730" height="270" radius="24" fill="url(#paper_yellow)" stroke="#6B4B12" strokeWidth="5" />
+              <Text value="THE PATTERN" x="48" y="78" fontFamily="Avenir Next Condensed" fontSize="58" renderScale="4x" color="#1F2937" />
+              <Repeat id="bars" count="7" x="58" y="212" xStep="84" opacity="1" opacityStep="0">
+                <Rect x="0" y="-80 - 52*(0.5 + 0.5*sin($time.sec*5.2))" width="46" height="80 + 52*(0.5 + 0.5*sin($time.sec*5.2))" radius="8" color="#111827" opacity="0.72" />
+              </Repeat>
+            </Group>
+
+            <Path id="red_arrow"
+                  d="M 742 586 C 870 502 992 504 1106 572 M 1106 572 L 1042 546 M 1106 572 L 1060 624"
+                  stroke="#CF3D31" strokeWidth="12" lineCap="round" lineJoin="round" fill="none"
+                  trimStart={curve("1.15:0:linear, 1.45:0:linear, 2.05:0.06:ease_in_out")}
+                  trimEnd={curve("1.15:0:linear, 1.45:1:ease_out, 3:1:linear")}
+                  opacity={curve("1.10:0:linear, 1.35:1:ease_out, 3:1:linear")} />
+
+            <Group id="final_stamp" x="960" y="540"
+                   scale={curve("1.80:0.60:ease_out, 2.24:1.0:ease(0.16,1.18,0.24,1), 3:1.0:linear")}
+                   rotation={curve("1.80:-9:ease_out, 2.24:-1:ease_out, 3:-1:linear")}
+                   opacity={curve("1.70:0:linear, 2.00:1:ease_out, 3:1:linear")}
+                   transformOriginX="0" transformOriginY="0">
+              <Circle x="0" y="0" radius="160" color="url(#soft_shadow)" opacity="0.22" />
+              <Rect x="-270" y="-92" width="540" height="184" radius="22" color="#FFFFFF" stroke="#111827" strokeWidth="7" />
+              <Text value="WHY IT MATTERS" x="center" y="18" fontFamily="Avenir Next Condensed" fontSize="68" renderScale="4x" color="#111827" />
+              <Line x1="-210" y1="48" x2="210" y2="48" stroke="url(#ink_line)" strokeWidth="5" opacity="0.74" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="vox_paper_animation_3s" />
+</Graph>

@@ -84,6 +84,22 @@ Suggest B-roll and apply it to a semantic layer.
 Suggest B-roll with <language> on-screen text.
 ```
 
+## Motion Graphics and VFX
+
+Anica includes MotionLoom, a GPU-powered motion graphics and VFX runtime for building animated visuals directly inside the editor.
+
+MotionLoom supports timeline-aware compositing, animated text, overlays, transitions, and procedural effects. It is designed to work with Anica's agent system, allowing AI agents to generate or modify motion graphics from natural language prompts.
+
+Example prompt:
+
+```text
+Create an 8-second cyber-style motion graphic using the MotionLoom DSL: black background, white text, typewriter-style reveal for the word "ANICA", with subtle floating movement and slow drifting motion in the air.
+```
+
+The prompt generates MotionLoom DSL code, which you can copy and paste on any compatible computer to reproduce the same motion graphics and VFX.
+
+MotionLoom provides the foundation for Anica's long-term goal of natural language to motion graphics and VFX.
+
 ---
 
 ## Platform Support

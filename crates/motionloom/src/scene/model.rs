@@ -73,7 +73,7 @@ pub enum SceneNode {
     Chain(SceneChainNode),
     Palette(PaletteNode),
     PixelGrid(PixelGridNode),
-    Text(TextNode),
+    Text(Box<TextNode>),
     Image(ImageNode),
     Svg(SvgNode),
     Rect(RectNode),
