@@ -1,9 +1,9 @@
+# Anica
 <p align="center">
-  <img src="./assets/logo/logo_official_bg_transparent.png" alt="Anica logo" width="1200">
+  <img src="./assets/logo/logo_official_1920X700.png" alt="Anica logo" width="1200">
 </p>
 
 
-# Anica
 
 **An agentic-first video editor where AI is your collaborator, not just a tool.**
 
