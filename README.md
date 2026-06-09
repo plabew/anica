@@ -118,8 +118,8 @@ MotionLoom provides the foundation for Anica's long-term goal of natural languag
 | Platform | Status |
 |---|---|
 | macOS (Apple Silicon / M-series) | Primary development target |
-| Linux | Untested / experimental |
-| Windows | Untested / experimental |
+| Windows | Supported — requires GStreamer + FFmpeg setup |
+| Linux | Supported — requires GStreamer + FFmpeg setup |
 
 ---
 
@@ -138,15 +138,70 @@ MotionLoom provides the foundation for Anica's long-term goal of natural languag
 
 ## Getting Started
 
+Anica requires **GStreamer** and **FFmpeg** before it can run. Choose your platform below.
+
+### macOS Initial Setup
+
 ```bash
+# 1. Install Xcode command-line tools
+xcode-select -p >/dev/null 2>&1 || xcode-select --install
+
+# 2. Install Homebrew
+command -v brew >/dev/null 2>&1 || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 3. Install GStreamer and Git
+brew install gstreamer git
+
+# 4. Clone and run
+# First run auto-bootstraps the local FFmpeg runtime.
 git clone https://github.com/LOVELYZOMBIEYHO/anica.git
 cd anica
 cargo run
 ```
 
-or
+### Windows Initial Setup
+
+```powershell
+# 1. Install GStreamer via winget (or download from https://gstreamer.freedesktop.org/download/)
+#    Requires MSVC 64-bit runtime + development installers.
+winget install --id GStreamer.GStreamer -e
+
+# 2. Install FFmpeg via winget
+winget install --id Gyan.FFmpeg -e
+
+# 3. Clone the repo
+git clone https://github.com/LOVELYZOMBIEYHO/anica.git
+cd anica
+
+# 4. Sync media runtimes to a local folder (recommended for reproducible builds)
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_media_tools.ps1 -Mode local-lgpl -InstallGStreamer -Yes -ToolsHome .\tools\runtime\current\windows
+
+# 5. Build and run
+cargo run
+```
+
+> If `winget` is not available, install GStreamer and FFmpeg manually and add both to your `PATH`.
+
+### Linux Initial Setup
 
 ```bash
+# Install GStreamer and FFmpeg
+sudo apt-get update
+sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-editing-services libges-1.0-dev ffmpeg
+
+# Clone and run
+git clone https://github.com/LOVELYZOMBIEYHO/anica.git
+cd anica
+cargo run
+```
+
+### Quick Reference
+
+```bash
+# Debug build
+cargo run
+
+# Release build
 cargo build --release --bins
 ```
 
@@ -156,59 +211,32 @@ cargo build --release --bins
 ### Build Requirements
 
 - Rust `1.90.0` (pinned in [`rust-toolchain.toml`](rust-toolchain.toml))
-- GStreamer runtime and development libraries
-- On macOS, first `cargo run` attempts to bootstrap the local FFmpeg runtime if missing
-- macOS FFmpeg bootstrap still requires Homebrew for build dependencies
-- macOS build host: Xcode command-line tools
+- **GStreamer** — video preview pipeline (required on all platforms)
+- **FFmpeg** — export and analysis (auto-bootstrapped on first run where possible)
+- macOS: Xcode command-line tools + Homebrew for build dependencies
+- Windows: Visual Studio Build Tools with "Desktop development with C++" workload
+- Linux: `build-essential`, `pkg-config`, `cmake`
 
-### Quick Media Setup
+### Media Runtime Setup
 
-On macOS, first `cargo run` attempts to invoke:
+On macOS/Linux, first `cargo run` attempts to invoke `./scripts/setup_media_tools.sh` to bootstrap FFmpeg locally.
 
-```bash
-./scripts/setup_media_tools.sh
+On Windows, run the PowerShell script manually:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_media_tools.ps1 -Mode local-lgpl -InstallGStreamer -Yes
 ```
 
-This bootstraps the local FFmpeg runtime when needed, but still depends on Homebrew for FFmpeg build dependencies.
-
-If you want to run the setup manually instead:
-
-```bash
-./scripts/setup_media_tools.sh
-```
+This syncs FFmpeg and GStreamer into a local runtime folder so `cargo run` can find them without relying on system-wide installs.
 
 If you want a repo-local media runtime layout, see [docs/MEDIA_RUNTIME_DROPIN.md](docs/MEDIA_RUNTIME_DROPIN.md).
 
-### macOS Initial Setup
-
-If this is your first time running Anica on macOS, install the required host tools first:
-
-```bash
-xcode-select -p >/dev/null 2>&1 || xcode-select --install
-command -v brew >/dev/null 2>&1 || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install git gstreamer
-git clone https://github.com/LOVELYZOMBIEYHO/anica.git
-cd anica
-cargo run
-```
-
-If `cargo` is not installed yet, install Rust first with `rustup` as described in [docs/INSTALL.md](docs/INSTALL.md).
-
-On macOS, `cargo run` attempts to bootstrap FFmpeg locally when needed.
-
-### Install GStreamer (macOS)
-
-```bash
-brew install gstreamer
-```
-
-Homebrew now bundles the common `gst-*` plugin sets inside the `gstreamer` formula on macOS, so separate `gst-plugins-base`, `gst-plugins-good`, and `gst-editing-services` installs are not required there.
-
 ### Runtime Notes
 
-- Current macOS builds expect host/Homebrew GStreamer.
-- On macOS, Anica attempts to bootstrap FFmpeg on first run if the runtime is missing.
-- The startup bootstrap can provision FFmpeg locally when required.
+- macOS: host/Homebrew GStreamer is preferred for development; vendored runtime is used in app bundles.
+- Windows: GStreamer must be installed first (via winget or manual download). The setup script can sync it into a local runtime folder.
+- Linux: system package manager is the recommended path.
+- FFmpeg is auto-bootstrapped on first run when the runtime is missing (macOS/Linux).
 
 ### Fonts
 
