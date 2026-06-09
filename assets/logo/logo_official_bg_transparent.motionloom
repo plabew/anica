@@ -1,0 +1,37 @@
+<Graph fps={30} duration="3s" size={[1024,1024]} renderSize={[1024,1024]}>
+  <Background color="#FFFFFF" />
+
+  <Scene id="BloomAliasSource">
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
+            <Text x="52" y="64" value="Process effect: bloom" fontSize="32" color="#111827" />
+            <Text x="52" y="98" value="Bright-pass + blur + additive composite" fontSize="20" color="#6B7280" />
+
+            <Group id="logo_group" x="520" y="500" scale="1.9" transformOriginX="0" transformOriginY="0">
+              <Rect x="-150" y="-71" width="300" height="142" radius="32" color="#101827" opacity="1" />
+              <Circle x="0" y="0" radius="42" color="#FFFFFF" opacity="1" />
+            </Group>
+
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Process id="BloomAliasProcess">
+    <Tex id="src" fmt="rgba16f" from="scene:BloomAliasSource" />
+    <Tex id="out" fmt="rgba16f" size={[1024,1024]} />
+    <Pass id="post_bloom" kind="compute"
+          effect="bloom"
+          in={["src"]} out={["out"]}
+          params={{ threshold: "0.72", intensity: "1.45", sigma: "18.0" }} />
+    <Pass id="key_color_to_alpha" kind="compute"
+          effect="color_to_alpha"
+          in={["out"]} out={["out"]}
+          params={{ color: "#FFFFFF", tolerance: "0.020", softness: "0.22", edge: "1.0", unspill: "0.0" }} />
+  </Process>
+
+  <Present from="BloomAliasProcess" />
+</Graph>

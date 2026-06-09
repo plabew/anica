@@ -253,7 +253,8 @@ pub fn resolve_acp_export_run_request(
         .preset
         .as_deref()
         .and_then(ExportPreset::from_id)
-        .unwrap_or(ExportPreset::H264Mp4);
+        .filter(|preset| preset.is_available_for_platform())
+        .unwrap_or_else(ExportPreset::default_for_platform);
 
     let mut export_settings = ExportSettings::default();
     if let Some(fps) = request.fps {

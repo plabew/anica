@@ -12,6 +12,7 @@ set -euo pipefail
 
 MODE="local-lgpl" # local-lgpl | system
 SKIP_FFMPEG=0
+FORCE_FFMPEG_REBUILD=0
 YES=0
 FFMPEG_VERSION="${FFMPEG_VERSION:-8.0.1}"
 
@@ -41,6 +42,7 @@ Usage: scripts/setup_media_tools.sh [options]
 Options:
   --mode <local-lgpl|system>       FFmpeg install mode (default: local-lgpl)
   --skip-ffmpeg                    Skip FFmpeg build/install
+  --force-ffmpeg-rebuild           Remove the existing local FFmpeg prefix before building
   --tools-home <path>              Override tools home (default: ~/.anica/tools)
   --ffmpeg-version <version>       FFmpeg version (default: 8.0.1)
   --yes                            Non-interactive package install
@@ -57,6 +59,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-ffmpeg)
       SKIP_FFMPEG=1
+      shift
+      ;;
+    --force-ffmpeg-rebuild)
+      FORCE_FFMPEG_REBUILD=1
       shift
       ;;
     --tools-home)
@@ -188,7 +194,7 @@ ensure_local_ffmpeg_build_deps_macos() {
     warn "Homebrew is required for local FFmpeg build on macOS."
     return 1
   fi
-  local pkgs=(pkg-config nasm)
+  local pkgs=(pkg-config nasm libvpx aom svt-av1 lame opus)
   local pkg
   for pkg in "${pkgs[@]}"; do
     if brew list --versions "$pkg" >/dev/null 2>&1; then
@@ -208,7 +214,8 @@ ensure_local_ffmpeg_build_deps_linux() {
     log "Installing FFmpeg build dependencies via apt..."
     sudo apt-get update
     sudo apt-get install "${apt_flags[@]}" \
-      build-essential pkg-config curl xz-utils nasm yasm
+      build-essential pkg-config curl xz-utils nasm yasm \
+      libvpx-dev libaom-dev libsvtav1-dev libmp3lame-dev libopus-dev
     return 0
   fi
   if have dnf; then
@@ -218,7 +225,8 @@ ensure_local_ffmpeg_build_deps_linux() {
     fi
     log "Installing FFmpeg build dependencies via dnf..."
     sudo dnf install "${dnf_flags[@]}" \
-      gcc gcc-c++ make pkgconfig curl xz nasm yasm
+      gcc gcc-c++ make pkgconfig curl xz nasm yasm \
+      libvpx-devel libaom-devel svt-av1-devel lame-devel opus-devel
     return 0
   fi
   if have pacman; then
@@ -228,7 +236,8 @@ ensure_local_ffmpeg_build_deps_linux() {
     fi
     log "Installing FFmpeg build dependencies via pacman..."
     sudo pacman -S "${pacman_flags[@]}" \
-      base-devel pkgconf curl xz nasm yasm
+      base-devel pkgconf curl xz nasm yasm \
+      libvpx aom svt-av1 lame opus
     return 0
   fi
   warn "Unsupported Linux package manager for auto build deps."
@@ -254,28 +263,104 @@ patch_macos_local_ffmpeg_runtime() {
     otool -L "${target}" 2>/dev/null | awk 'NR>1 {print $1}' || true
   }
 
+  rewrite_deps_to_runtime_lib() {
+    local target="$1"
+    local dep dep_base
+    while IFS= read -r dep; do
+      dep_base="$(basename "${dep}")"
+      if [[ -f "${ffmpeg_lib}/${dep_base}" && "${dep}" != "@rpath/${dep_base}" ]]; then
+        chmod u+w "${target}" 2>/dev/null || true
+        install_name_tool -change "${dep}" "@rpath/${dep_base}" "${target}" 2>/dev/null || true
+      fi
+    done < <(list_macho_deps "${target}")
+  }
+
+  sign_macho_ad_hoc() {
+    local target="$1"
+    chmod u+w "${target}" 2>/dev/null || true
+    codesign --force --sign - --timestamp=none "${target}" >/dev/null 2>&1 || true
+  }
+
   local lib_file
   while IFS= read -r lib_file; do
+    chmod u+w "${lib_file}" 2>/dev/null || true
     install_name_tool -id "@rpath/$(basename "${lib_file}")" "${lib_file}" 2>/dev/null || true
     install_name_tool -add_rpath "@loader_path" "${lib_file}" 2>/dev/null || true
+    rewrite_deps_to_runtime_lib "${lib_file}"
+    sign_macho_ad_hoc "${lib_file}"
   done < <(find "${ffmpeg_lib}" -maxdepth 1 -type f -name "*.dylib")
 
-  local bin_file dep dep_base
+  local bin_file
   for bin_file in "${ffmpeg_bin}/ffmpeg" "${ffmpeg_bin}/ffprobe"; do
     if [[ ! -x "${bin_file}" ]]; then
       continue
     fi
-    while IFS= read -r dep; do
-      dep_base="$(basename "${dep}")"
-      if [[ -f "${ffmpeg_lib}/${dep_base}" ]]; then
-        install_name_tool -change "${dep}" "@rpath/${dep_base}" "${bin_file}" 2>/dev/null || true
-      fi
-    done < <(list_macho_deps "${bin_file}")
+    rewrite_deps_to_runtime_lib "${bin_file}"
     install_name_tool -add_rpath "@executable_path/../lib" "${bin_file}" 2>/dev/null || true
+    sign_macho_ad_hoc "${bin_file}"
+  done
+}
+
+bundle_macos_ffmpeg_external_deps() {
+  local ffmpeg_prefix="$1"
+  local ffmpeg_lib="${ffmpeg_prefix}/lib"
+  local ffmpeg_bin="${ffmpeg_prefix}/bin"
+
+  if [[ ! -d "${ffmpeg_lib}" || ! -d "${ffmpeg_bin}" ]]; then
+    return 0
+  fi
+
+  list_macho_deps_for_bundle() {
+    local target="$1"
+    local kind
+    kind="$(file -b "${target}" 2>/dev/null || true)"
+    if [[ "${kind}" != *"Mach-O"* ]]; then
+      return 0
+    fi
+    otool -L "${target}" 2>/dev/null | awk 'NR>1 {print $1}' || true
+  }
+
+  is_bundle_candidate_dep() {
+    local dep="$1"
+    [[ "${dep}" == /* ]] || return 1
+    [[ "${dep}" != /usr/lib/* ]] || return 1
+    [[ "${dep}" != /System/* ]] || return 1
+    [[ -f "${dep}" ]] || return 1
+    return 0
+  }
+
+  # Copy external LGPL encoder dylibs and their closure into the FFmpeg runtime
+  # so the runtime can be moved or packaged without relying on Homebrew paths.
+  local changed=1
+  while [[ "${changed}" -eq 1 ]]; do
+    changed=0
+    local target dep dep_base
+    while IFS= read -r target; do
+      while IFS= read -r dep; do
+        is_bundle_candidate_dep "${dep}" || continue
+        dep_base="$(basename "${dep}")"
+        if [[ ! -f "${ffmpeg_lib}/${dep_base}" ]]; then
+          log "Bundling FFmpeg dependency: ${dep_base}"
+          cp -L "${dep}" "${ffmpeg_lib}/${dep_base}"
+          changed=1
+        fi
+      done < <(list_macho_deps_for_bundle "${target}")
+    done < <(
+      {
+        find "${ffmpeg_bin}" -maxdepth 1 -type f 2>/dev/null
+        find "${ffmpeg_lib}" -maxdepth 1 -type f -name "*.dylib*" 2>/dev/null
+      } | sort -u
+    )
   done
 }
 
 build_local_ffmpeg_lgpl() {
+  if [[ "${FORCE_FFMPEG_REBUILD}" -eq 1 && -d "${FFMPEG_PREFIX}" ]]; then
+    # Explicit opt-in reset for replacing an older runtime with a new encoder set.
+    log "Removing existing FFmpeg prefix for forced rebuild: ${FFMPEG_PREFIX}"
+    rm -rf "${FFMPEG_PREFIX}"
+  fi
+
   if [[ -x "$FFMPEG_BIN" && -x "$FFPROBE_BIN" ]]; then
     log "Local FFmpeg already exists at $FFMPEG_PREFIX"
   else
@@ -307,6 +392,14 @@ build_local_ffmpeg_lgpl() {
         return 1
       fi
 
+      if pkg-config --atleast-version=4.0.0 SvtAv1Enc 2>/dev/null; then
+        # FFmpeg 8.0.1 references a field removed from SVT-AV1 4.x.
+        # Removing this assignment keeps the LGPL runtime build compatible with
+        # current Homebrew SVT-AV1 while preserving FFmpeg's libsvtav1 encoder.
+        perl -0pi -e 's/\n\s*param->enable_adaptive_quantization = 0;//' \
+          "${src_dir}/libavcodec/libsvtav1.c"
+      fi
+
       mkdir -p "$FFMPEG_PREFIX"
       pushd "$src_dir" >/dev/null
       local cfg=(
@@ -322,6 +415,11 @@ build_local_ffmpeg_lgpl() {
         "--disable-ffplay"
         "--enable-pthreads"
         "--enable-version3"
+        "--enable-libvpx"
+        "--enable-libaom"
+        "--enable-libsvtav1"
+        "--enable-libmp3lame"
+        "--enable-libopus"
         "--enable-decoder=png"
         "--enable-decoder=apng"
         "--enable-demuxer=image2"
@@ -329,20 +427,29 @@ build_local_ffmpeg_lgpl() {
       )
       if [[ "$os" == "macos" ]]; then
         cfg+=("--enable-videotoolbox" "--enable-audiotoolbox")
+        local lame_prefix
+        lame_prefix="$(brew --prefix lame 2>/dev/null || true)"
+        if [[ -n "${lame_prefix}" && -d "${lame_prefix}" ]]; then
+          # Homebrew's lame formula does not ship libmp3lame.pc, so point
+          # FFmpeg configure at the headers and library explicitly.
+          cfg+=("--extra-cflags=-I${lame_prefix}/include")
+          cfg+=("--extra-ldflags=-L${lame_prefix}/lib")
+        fi
       fi
 
       log "Configuring FFmpeg (${MODE})..."
-      ./configure "${cfg[@]}"
+      ./configure "${cfg[@]}" || return $?
       log "Building FFmpeg..."
       if have nproc; then
-        make -j"$(nproc)"
+        make -j"$(nproc)" || return $?
       else
-        make -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+        make -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)" || return $?
       fi
-      make install
+      make install || return $?
       popd >/dev/null
 
       if [[ "${os}" == "macos" ]]; then
+        bundle_macos_ffmpeg_external_deps "${FFMPEG_PREFIX}"
         patch_macos_local_ffmpeg_runtime "${FFMPEG_PREFIX}"
       fi
 
@@ -352,6 +459,14 @@ build_local_ffmpeg_lgpl() {
 
     _ffmpeg_compile_and_install || warn "FFmpeg compilation had errors (status $?). Checking if binary was partially installed..."
     unset -f _ffmpeg_compile_and_install
+  fi
+
+  local installed_os
+  installed_os="$(os_name)"
+  if [[ "${installed_os}" == "macos" && -x "$FFMPEG_BIN" ]]; then
+    # Existing runtimes may need dependency bundling/signing after script changes.
+    bundle_macos_ffmpeg_external_deps "${FFMPEG_PREFIX}"
+    patch_macos_local_ffmpeg_runtime "${FFMPEG_PREFIX}"
   fi
 
   # Create symlinks even after partial build success.

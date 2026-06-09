@@ -894,8 +894,6 @@ fn fallback_codex_model_options() -> Vec<ProviderModelOption> {
         ("gpt-5.5", "GPT-5.5"),
         ("gpt-5.4", "gpt-5.4"),
         ("gpt-5.4-mini", "GPT-5.4-Mini"),
-        ("gpt-5.3-codex", "gpt-5.3-codex"),
-        ("gpt-5.2", "gpt-5.2"),
     ]
     .into_iter()
     .map(|(slug, label)| provider_model_option(slug, label))
@@ -921,14 +919,10 @@ fn fallback_gemini_model_options() -> Vec<ProviderModelOption> {
 }
 
 fn fallback_claude_model_options() -> Vec<ProviderModelOption> {
-    [
-        ("sonnet", "Sonnet"),
-        ("opus", "Opus"),
-        ("claude-sonnet-4-6", "claude-sonnet-4-6"),
-    ]
-    .into_iter()
-    .map(|(slug, label)| provider_model_option(slug, label))
-    .collect()
+    [("sonnet", "Sonnet"), ("opus", "Opus"), ("haiku", "Haiku")]
+        .into_iter()
+        .map(|(slug, label)| provider_model_option(slug, label))
+        .collect()
 }
 
 fn codex_config_dir() -> Option<PathBuf> {
@@ -968,6 +962,44 @@ fn read_codex_config_model() -> Option<String> {
     None
 }
 
+fn codex_model_options_from_catalog(json: &Value) -> Vec<ProviderModelOption> {
+    let mut options = Vec::<ProviderModelOption>::new();
+    let Some(models) = json.get("models").and_then(Value::as_array) else {
+        return options;
+    };
+
+    for item in models {
+        let Some(slug) = item.get("slug").and_then(Value::as_str).map(str::trim) else {
+            continue;
+        };
+        if slug.is_empty() || slug == "codex-auto-review" {
+            continue;
+        }
+        if item.get("visibility").and_then(Value::as_str) != Some("list") {
+            continue;
+        }
+        if item
+            .get("supported_in_api")
+            .and_then(Value::as_bool)
+            .is_some_and(|supported| !supported)
+        {
+            continue;
+        }
+        if options.iter().any(|option| option.slug == slug) {
+            continue;
+        }
+        let label = item
+            .get("display_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(slug);
+        options.push(provider_model_option(slug, label));
+    }
+
+    options
+}
+
 fn load_codex_model_options() -> (Vec<ProviderModelOption>, String) {
     let Some(path) = codex_models_cache_path() else {
         return (
@@ -988,36 +1020,7 @@ fn load_codex_model_options() -> (Vec<ProviderModelOption>, String) {
         );
     };
 
-    let mut options = Vec::<ProviderModelOption>::new();
-    if let Some(models) = json.get("models").and_then(Value::as_array) {
-        for item in models {
-            let Some(slug) = item.get("slug").and_then(Value::as_str) else {
-                continue;
-            };
-            if slug.trim().is_empty() || slug == "codex-auto-review" {
-                continue;
-            }
-            if item
-                .get("visibility")
-                .and_then(Value::as_str)
-                .is_some_and(|visibility| visibility != "list")
-            {
-                continue;
-            }
-            if options.iter().any(|option| option.slug == slug) {
-                continue;
-            }
-            let label = item
-                .get("display_name")
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(slug);
-            options.push(ProviderModelOption {
-                slug: slug.to_string(),
-                label: label.to_string(),
-            });
-        }
-    }
+    let options = codex_model_options_from_catalog(&json);
 
     if options.is_empty() {
         return (
@@ -1029,45 +1032,87 @@ fn load_codex_model_options() -> (Vec<ProviderModelOption>, String) {
     (options, format!("Codex cache: {}", path.display()))
 }
 
-fn choose_codex_model(options: &mut Vec<ProviderModelOption>, preferred: Option<&str>) -> String {
-    let selected = preferred
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .or_else(read_codex_config_model)
-        .or_else(|| options.first().map(|option| option.slug.clone()))
-        .unwrap_or_else(|| "gpt-5.5".to_string());
-
-    if !options.iter().any(|option| option.slug == selected) {
-        options.insert(
-            0,
-            ProviderModelOption {
-                slug: selected.clone(),
-                label: selected.clone(),
-            },
+fn refresh_codex_models_cache(codex_cli_bin: &str) -> Result<String, String> {
+    let Some(path) = resolve_cli_bin_for_ui(codex_cli_bin, "ANICA_CODEX_CLI_BIN", "codex") else {
+        return Err(
+            "Codex CLI not found. Save a Codex CLI Path override or install `codex`.".into(),
         );
+    };
+
+    let output = Command::new(&path)
+        .arg("debug")
+        .arg("models")
+        .output()
+        .map_err(|err| format!("failed to run `{}`: {err}", path.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = first_non_empty_line(&stderr).unwrap_or_else(|| output.status.to_string());
+        return Err(detail);
     }
 
-    selected
+    Ok(format!(
+        "Codex CLI catalog refreshed via {}",
+        path.display()
+    ))
+}
+
+fn choose_codex_model(options: &[ProviderModelOption], preferred: Option<&str>) -> String {
+    let preferred = preferred
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    choose_codex_model_from_candidates(
+        options,
+        preferred.into_iter().chain(read_codex_config_model()),
+    )
+}
+
+fn choose_codex_model_from_candidates(
+    options: &[ProviderModelOption],
+    candidates: impl IntoIterator<Item = String>,
+) -> String {
+    for candidate in candidates {
+        if options.iter().any(|option| option.slug == candidate) {
+            return candidate;
+        }
+    }
+
+    options
+        .first()
+        .map(|option| option.slug.clone())
+        .unwrap_or_else(|| "gpt-5.5".to_string())
 }
 
 fn choose_provider_model(
-    options: &mut Vec<ProviderModelOption>,
+    options: &[ProviderModelOption],
     preferred: Option<&str>,
     fallback: &str,
 ) -> String {
-    let selected = preferred
+    let preferred = preferred
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .or_else(|| options.first().map(|option| option.slug.clone()))
-        .unwrap_or_else(|| fallback.to_string());
+        .map(ToString::to_string);
 
-    if !options.iter().any(|option| option.slug == selected) {
-        options.insert(0, provider_model_option(selected.clone(), selected.clone()));
+    choose_provider_model_from_candidates(options, fallback, preferred)
+}
+
+fn choose_provider_model_from_candidates(
+    options: &[ProviderModelOption],
+    fallback: &str,
+    candidates: impl IntoIterator<Item = String>,
+) -> String {
+    for candidate in candidates {
+        if options.iter().any(|option| option.slug == candidate) {
+            return candidate;
+        }
     }
 
-    selected
+    options
+        .first()
+        .map(|option| option.slug.clone())
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn read_gemini_settings_model() -> Option<String> {
@@ -1195,25 +1240,107 @@ fn load_gemini_model_options(gemini_cli_bin: &str) -> (Vec<ProviderModelOption>,
     (options, format!("Gemini CLI constants: {}", path.display()))
 }
 
-fn read_claude_settings_model() -> Option<String> {
-    let path = env::var_os("HOME")
-        .map(PathBuf::from)?
-        .join(".claude")
-        .join("settings.json");
-    let raw = fs::read_to_string(path).ok()?;
+fn claude_settings_path() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".claude").join("settings.json"))
+}
+
+fn read_claude_settings_json() -> Option<(PathBuf, Value)> {
+    let path = claude_settings_path()?;
+    let raw = fs::read_to_string(&path).ok()?;
     let json = serde_json::from_str::<Value>(&raw).ok()?;
-    ["model", "modelName", "defaultModel"]
+    Some((path, json))
+}
+
+fn read_claude_settings_model() -> Option<String> {
+    env::var("ANTHROPIC_MODEL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let (_path, json) = read_claude_settings_json()?;
+            ["model", "modelName", "defaultModel"]
+                .iter()
+                .find_map(|key| json.get(*key).and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+}
+
+fn claude_model_label(slug: &str) -> String {
+    match slug {
+        "sonnet" => "Sonnet".to_string(),
+        "opus" => "Opus".to_string(),
+        "haiku" => "Haiku".to_string(),
+        _ => slug.to_string(),
+    }
+}
+
+fn provider_model_option_from_value(value: &Value) -> Option<ProviderModelOption> {
+    if let Some(slug) = value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(provider_model_option(slug, claude_model_label(slug)));
+    }
+
+    let object = value.as_object()?;
+    let slug = ["slug", "id", "model", "name"]
         .iter()
-        .find_map(|key| json.get(*key).and_then(Value::as_str))
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let label = ["label", "display_name", "displayName"]
+        .iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+        .unwrap_or_else(|| claude_model_label(slug));
+
+    Some(provider_model_option(slug, label))
+}
+
+fn claude_available_model_options_from_settings(json: &Value) -> Vec<ProviderModelOption> {
+    let mut options = Vec::<ProviderModelOption>::new();
+    let Some(models) = json
+        .get("availableModels")
+        .or_else(|| json.get("available_models"))
+        .and_then(Value::as_array)
+    else {
+        return options;
+    };
+
+    for item in models {
+        let Some(option) = provider_model_option_from_value(item) else {
+            continue;
+        };
+        if options.iter().any(|existing| existing.slug == option.slug) {
+            continue;
+        }
+        options.push(option);
+    }
+
+    options
 }
 
 fn load_claude_model_options(_claude_cli_bin: &str) -> (Vec<ProviderModelOption>, String) {
+    if let Some((path, json)) = read_claude_settings_json() {
+        let options = claude_available_model_options_from_settings(&json);
+        if !options.is_empty() {
+            return (
+                options,
+                format!("Claude settings availableModels: {}", path.display()),
+            );
+        }
+    }
+
     (
         fallback_claude_model_options(),
-        "Claude CLI aliases/full model names".to_string(),
+        "fallback list (Claude settings availableModels not configured)".to_string(),
     )
 }
 
@@ -1321,8 +1448,8 @@ impl AiAgentsPage {
         } else {
             None
         };
-        let (mut options, source) = load_codex_model_options();
-        let selected = choose_codex_model(&mut options, preferred);
+        let (options, source) = load_codex_model_options();
+        let selected = choose_codex_model(&options, preferred);
         self.codex_model = selected;
         self.codex_model_options = options;
         self.codex_models_source = source;
@@ -1341,8 +1468,8 @@ impl AiAgentsPage {
         } else {
             preferred_owned.as_deref()
         };
-        let (mut options, source) = load_gemini_model_options(&self.gemini_cli_bin);
-        let selected = choose_provider_model(&mut options, preferred, "auto");
+        let (options, source) = load_gemini_model_options(&self.gemini_cli_bin);
+        let selected = choose_provider_model(&options, preferred, "auto");
         self.gemini_model = selected;
         self.gemini_model_options = options;
         self.gemini_models_source = source;
@@ -1359,8 +1486,8 @@ impl AiAgentsPage {
         } else {
             preferred_owned.as_deref()
         };
-        let (mut options, source) = load_claude_model_options(&self.claude_cli_bin);
-        let selected = choose_provider_model(&mut options, preferred, "sonnet");
+        let (options, source) = load_claude_model_options(&self.claude_cli_bin);
+        let selected = choose_provider_model(&options, preferred, "sonnet");
         self.claude_model = selected;
         self.claude_model_options = options;
         self.claude_models_source = source;
@@ -1465,8 +1592,8 @@ impl AiAgentsPage {
             .as_deref()
             .and_then(CodexReasoningMode::from_setting_value)
             .unwrap_or(CodexReasoningMode::Medium);
-        let (mut codex_model_options, codex_models_source) = load_codex_model_options();
-        let codex_model = choose_codex_model(&mut codex_model_options, None);
+        let (codex_model_options, codex_models_source) = load_codex_model_options();
+        let codex_model = choose_codex_model(&codex_model_options, None);
         let auto_connect_enabled = loaded_settings.effective.acp_auto_connect;
         let auto_connect_scope = loaded_settings.auto_connect_source.preferred_scope();
         let gemini_api_key = env::var("GEMINI_API_KEY")
@@ -1491,18 +1618,18 @@ impl AiAgentsPage {
         let gemini_preferred_model = env::var("GEMINI_MODEL")
             .ok()
             .or_else(read_gemini_settings_model);
-        let (mut gemini_model_options, gemini_models_source) =
+        let (gemini_model_options, gemini_models_source) =
             load_gemini_model_options(&gemini_cli_bin);
         let gemini_model = choose_provider_model(
-            &mut gemini_model_options,
+            &gemini_model_options,
             gemini_preferred_model.as_deref(),
             "auto",
         );
         let claude_preferred_model = read_claude_settings_model();
-        let (mut claude_model_options, claude_models_source) =
+        let (claude_model_options, claude_models_source) =
             load_claude_model_options(&claude_cli_bin);
         let claude_model = choose_provider_model(
-            &mut claude_model_options,
+            &claude_model_options,
             claude_preferred_model.as_deref(),
             "sonnet",
         );
@@ -3383,6 +3510,48 @@ impl AiAgentsPage {
             );
         }
 
+        match self.agent_provider {
+            AcpAgentProvider::Codex => {
+                let previous_model = self.codex_model.clone();
+                self.reload_codex_model_options(true);
+                if self.codex_model != previous_model {
+                    self.push_system_message(
+                        format!(
+                            "Codex model `{previous_model}` is not in the current model catalog. Switched to `{}`.",
+                            self.codex_model
+                        ),
+                        cx,
+                    );
+                }
+            }
+            AcpAgentProvider::Gemini => {
+                let previous_model = self.gemini_model.clone();
+                self.reload_gemini_model_options(true);
+                if self.gemini_model != previous_model {
+                    self.push_system_message(
+                        format!(
+                            "Gemini model `{previous_model}` is not in the current model catalog. Switched to `{}`.",
+                            self.gemini_model
+                        ),
+                        cx,
+                    );
+                }
+            }
+            AcpAgentProvider::Claude => {
+                let previous_model = self.claude_model.clone();
+                self.reload_claude_model_options(true);
+                if self.claude_model != previous_model {
+                    self.push_system_message(
+                        format!(
+                            "Claude model `{previous_model}` is not in the current model catalog. Switched to `{}`.",
+                            self.claude_model
+                        ),
+                        cx,
+                    );
+                }
+            }
+        }
+
         let cmd = self.agent_command.trim().to_string();
         if cmd.is_empty() {
             self.push_system_message("Agent command is empty.", cx);
@@ -3948,10 +4117,19 @@ impl Render for AiAgentsPage {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
+                        let refresh_result = refresh_codex_models_cache(&this.codex_cli_bin);
                         this.reload_codex_model_options(true);
+                        let refresh_prefix = match refresh_result {
+                            Ok(message) => message,
+                            Err(err) => {
+                                format!(
+                                    "Codex CLI catalog refresh failed ({err}); reloaded local cache"
+                                )
+                            }
+                        };
                         this.push_system_message(
                             format!(
-                                "Codex models refreshed. Selected: {}. Source: {}",
+                                "{refresh_prefix}. Selected: {}. Source: {}",
                                 this.codex_model, this.codex_models_source
                             ),
                             cx,
@@ -4493,7 +4671,12 @@ impl Render for AiAgentsPage {
 
 #[cfg(test)]
 mod tests {
-    use super::{AI_CHAT_MAX_CONVERSATION_MESSAGES, AiAgentsPage, prune_ai_chat_history};
+    use super::{
+        AI_CHAT_MAX_CONVERSATION_MESSAGES, AiAgentsPage, choose_codex_model_from_candidates,
+        choose_provider_model_from_candidates, claude_available_model_options_from_settings,
+        codex_model_options_from_catalog, fallback_claude_model_options,
+        fallback_codex_model_options, prune_ai_chat_history,
+    };
     use crate::core::global_state::{AiChatMessage, AiChatRole};
     use motionloom::parse_graph_script;
 
@@ -4541,6 +4724,108 @@ mod tests {
             AI_CHAT_MAX_CONVERSATION_MESSAGES
         );
         assert_eq!(messages.first().map(|msg| msg.text.as_str()), Some("u1"));
+    }
+
+    #[test]
+    fn codex_catalog_filters_to_visible_models() {
+        let catalog = serde_json::json!({
+            "models": [
+                { "slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list", "supported_in_api": true },
+                { "slug": "gpt-5.3-codex", "display_name": "gpt-5.3-codex", "visibility": "hide", "supported_in_api": true },
+                { "slug": "codex-auto-review", "display_name": "Codex Auto Review", "visibility": "list", "supported_in_api": true },
+                { "slug": "local-only", "display_name": "Local Only", "visibility": "list", "supported_in_api": false }
+            ]
+        });
+
+        let options = codex_model_options_from_catalog(&catalog);
+
+        assert_eq!(
+            options
+                .iter()
+                .map(|option| option.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-5.5"]
+        );
+    }
+
+    #[test]
+    fn codex_model_selection_drops_stale_candidates() {
+        let options = vec![
+            super::provider_model_option("gpt-5.5", "GPT-5.5"),
+            super::provider_model_option("gpt-5.4", "GPT-5.4"),
+        ];
+
+        let selected = choose_codex_model_from_candidates(
+            &options,
+            ["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()],
+        );
+
+        assert_eq!(selected, "gpt-5.5");
+    }
+
+    #[test]
+    fn codex_fallback_excludes_retired_models() {
+        let options = fallback_codex_model_options();
+
+        assert!(!options.iter().any(|option| option.slug == "gpt-5.3-codex"));
+        assert!(!options.iter().any(|option| option.slug == "gpt-5.2"));
+    }
+
+    #[test]
+    fn provider_model_selection_drops_stale_candidates() {
+        let options = vec![
+            super::provider_model_option("auto", "Auto"),
+            super::provider_model_option("gemini-2.5-pro", "Gemini 2.5 Pro"),
+        ];
+
+        let selected = choose_provider_model_from_candidates(
+            &options,
+            "auto",
+            ["retired-provider-model".to_string()],
+        );
+
+        assert_eq!(selected, "auto");
+    }
+
+    #[test]
+    fn claude_available_models_reads_settings_catalog() {
+        let settings = serde_json::json!({
+            "availableModels": [
+                "sonnet",
+                { "model": "claude-opus-4-7", "displayName": "Opus 4.7" },
+                { "slug": "claude-haiku-4-5", "label": "Haiku 4.5" },
+                "",
+                { "slug": "sonnet", "label": "Duplicate Sonnet" }
+            ]
+        });
+
+        let options = claude_available_model_options_from_settings(&settings);
+
+        assert_eq!(
+            options
+                .iter()
+                .map(|option| (option.slug.as_str(), option.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("sonnet", "Sonnet"),
+                ("claude-opus-4-7", "Opus 4.7"),
+                ("claude-haiku-4-5", "Haiku 4.5")
+            ]
+        );
+    }
+
+    #[test]
+    fn claude_fallback_uses_aliases_only() {
+        let options = fallback_claude_model_options();
+
+        assert!(options.iter().any(|option| option.slug == "sonnet"));
+        assert!(options.iter().any(|option| option.slug == "opus"));
+        assert!(options.iter().any(|option| option.slug == "haiku"));
+        assert!(
+            !options
+                .iter()
+                .any(|option| option.slug.starts_with("claude-sonnet-4-"))
+        );
     }
 
     #[test]

@@ -1,6 +1,9 @@
+use std::collections::VecDeque;
+
 use image::{Rgba, RgbaImage};
 
 use crate::process::model::{EffectNode, LayerNode, PassNode};
+use crate::scene::drawable::parse_color;
 use crate::scene::model::FilterStepDef;
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 
@@ -57,6 +60,9 @@ pub(crate) fn apply_scene_post_pass(
         let blurred = apply_box_blur_pass(&blurred_h, params.sigma, false);
         return Ok(composite_scene_bloom(input, &blurred, params.intensity));
     }
+    if is_color_key_alpha_effect(&effect) {
+        return apply_color_key_alpha_pass(input, pass, time_norm, time_sec);
+    }
     if effect == "hsla" || effect == "hsla_overlay" || effect == "color.hsla" {
         return apply_hsla_pass(input, pass, time_norm, time_sec);
     }
@@ -81,6 +87,79 @@ pub(crate) fn apply_scene_post_pass(
         ));
     }
     Ok(input.clone())
+}
+
+pub(crate) fn is_color_key_alpha_effect(effect: &str) -> bool {
+    let normalized = effect
+        .trim()
+        .trim_matches('"')
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    matches!(
+        normalized.as_str(),
+        "color_to_alpha"
+            | "color2alpha"
+            | "alpha_from_color"
+            | "white_to_alpha"
+            | "white2alpha"
+            | "color_key_alpha"
+            | "key_color_alpha"
+            | "background_to_alpha"
+            | "key_to_alpha"
+            | "key.alpha"
+            | "alpha.key"
+    )
+}
+
+pub(crate) fn apply_color_key_alpha_pass(
+    input: &RgbaImage,
+    pass: &PassNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+    let key_color = pass_param_expr_any(pass, &["color", "key", "keyColor", "key_color"])
+        .map(|value| parse_color(value.trim().trim_matches('"').trim_matches('\'')))
+        .transpose()?
+        .unwrap_or([255, 255, 255, 255]);
+    let tolerance = pass_param_expr(pass, "tolerance")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.035)
+        .clamp(0.0, 1.0);
+    let softness = pass_param_expr(pass, "softness")
+        .or_else(|| pass_param_expr(pass, "feather"))
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.16)
+        .clamp(0.0001, 1.0);
+    let strength = pass_param_expr(pass, "strength")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    let unspill = pass_param_expr(pass, "unspill")
+        .or_else(|| pass_param_expr(pass, "despill"))
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let edge_connected = pass_param_expr(pass, "edge")
+        .or_else(|| pass_param_expr(pass, "edgeConnected"))
+        .or_else(|| pass_param_expr(pass, "edge_connected"))
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    Ok(apply_color_key_alpha(
+        input,
+        key_color,
+        tolerance,
+        softness,
+        strength,
+        unspill,
+        edge_connected > 0.5,
+    ))
 }
 
 pub(crate) fn apply_layer_effects(
@@ -439,6 +518,155 @@ pub(crate) fn apply_opacity_pass(input: &RgbaImage, opacity: f32) -> RgbaImage {
         pixel[3] = ((pixel[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
     }
     out
+}
+
+pub(crate) fn apply_color_key_alpha(
+    input: &RgbaImage,
+    key_color: [u8; 4],
+    tolerance: f32,
+    softness: f32,
+    strength: f32,
+    unspill: f32,
+    edge_connected: bool,
+) -> RgbaImage {
+    let mut out = input.clone();
+    let key = [
+        key_color[0] as f32 / 255.0,
+        key_color[1] as f32 / 255.0,
+        key_color[2] as f32 / 255.0,
+    ];
+    let edge0 = tolerance.clamp(0.0, 1.0);
+    let edge1 = (edge0 + softness.max(0.0001)).clamp(edge0 + 0.0001, 1.0);
+    let connected_key = edge_connected.then(|| connected_key_pixels(input, key, edge1));
+    for (index, pixel) in out.pixels_mut().enumerate() {
+        if let Some(mask) = connected_key.as_ref()
+            && !mask.get(index).copied().unwrap_or(false)
+        {
+            continue;
+        }
+        let input_alpha = pixel[3] as f32 / 255.0;
+        if input_alpha <= 0.0 {
+            continue;
+        }
+        let rgb = [
+            pixel[0] as f32 / 255.0,
+            pixel[1] as f32 / 255.0,
+            pixel[2] as f32 / 255.0,
+        ];
+        let distance = color_key_distance(rgb, key);
+        let keep = smoothstep(edge0, edge1, distance);
+        let alpha_factor = (1.0 - strength) + keep * strength;
+        let out_alpha = (input_alpha * alpha_factor).clamp(0.0, 1.0);
+
+        if unspill > 0.0 && out_alpha > 0.001 && alpha_factor < 0.999 {
+            for channel in 0..3 {
+                let recovered = ((rgb[channel] - key[channel] * (1.0 - alpha_factor))
+                    / alpha_factor.max(0.001))
+                .clamp(0.0, 1.0);
+                let mixed = rgb[channel] * (1.0 - unspill) + recovered * unspill;
+                pixel[channel] = (mixed * 255.0).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+        pixel[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+        if pixel[3] == 0 {
+            pixel[0] = 0;
+            pixel[1] = 0;
+            pixel[2] = 0;
+        }
+    }
+    out
+}
+
+fn connected_key_pixels(input: &RgbaImage, key: [f32; 3], threshold: f32) -> Vec<bool> {
+    let width = input.width() as usize;
+    let height = input.height() as usize;
+    let len = width.saturating_mul(height);
+    let mut visited = vec![false; len];
+    if width == 0 || height == 0 {
+        return visited;
+    }
+
+    let mut queue = VecDeque::<(usize, usize)>::new();
+    for x in 0..width {
+        push_key_seed(input, key, threshold, (x, 0), &mut visited, &mut queue);
+        if height > 1 {
+            push_key_seed(
+                input,
+                key,
+                threshold,
+                (x, height - 1),
+                &mut visited,
+                &mut queue,
+            );
+        }
+    }
+    for y in 1..height.saturating_sub(1) {
+        push_key_seed(input, key, threshold, (0, y), &mut visited, &mut queue);
+        if width > 1 {
+            push_key_seed(
+                input,
+                key,
+                threshold,
+                (width - 1, y),
+                &mut visited,
+                &mut queue,
+            );
+        }
+    }
+
+    while let Some((x, y)) = queue.pop_front() {
+        let neighbors = [
+            (x.wrapping_sub(1), y, x > 0),
+            (x + 1, y, x + 1 < width),
+            (x, y.wrapping_sub(1), y > 0),
+            (x, y + 1, y + 1 < height),
+        ];
+        for (nx, ny, valid) in neighbors {
+            if valid {
+                push_key_seed(input, key, threshold, (nx, ny), &mut visited, &mut queue);
+            }
+        }
+    }
+
+    visited
+}
+
+fn push_key_seed(
+    input: &RgbaImage,
+    key: [f32; 3],
+    threshold: f32,
+    point: (usize, usize),
+    visited: &mut [bool],
+    queue: &mut VecDeque<(usize, usize)>,
+) {
+    let (x, y) = point;
+    let width = input.width() as usize;
+    let index = y.saturating_mul(width).saturating_add(x);
+    if visited.get(index).copied().unwrap_or(true) {
+        return;
+    }
+    let pixel = input.get_pixel(x as u32, y as u32);
+    let rgb = [
+        pixel[0] as f32 / 255.0,
+        pixel[1] as f32 / 255.0,
+        pixel[2] as f32 / 255.0,
+    ];
+    if color_key_distance(rgb, key) <= threshold {
+        visited[index] = true;
+        queue.push_back((x, y));
+    }
+}
+
+fn color_key_distance(rgb: [f32; 3], key: [f32; 3]) -> f32 {
+    let dr = rgb[0] - key[0];
+    let dg = rgb[1] - key[1];
+    let db = rgb[2] - key[2];
+    ((dr * dr + dg * dg + db * db) / 3.0).sqrt().clamp(0.0, 1.0)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0).max(0.0001)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 pub(crate) fn apply_box_blur_pass(input: &RgbaImage, sigma: f32, horizontal: bool) -> RgbaImage {

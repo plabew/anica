@@ -31,22 +31,22 @@ use crate::api::timeline::{
 };
 use crate::core::global_state::MediaPoolItem;
 use crate::runtime_paths;
-use agent_client_protocol::{
-    Agent, AuthenticateRequest, CancelNotification, Client, ClientCapabilities,
-    ClientSideConnection, ContentBlock, ContentChunk, Error as AcpError, ExtRequest, ExtResponse,
-    FileSystemCapability, ImageContent, Implementation, InitializeRequest, NewSessionRequest,
-    PermissionOptionKind, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate,
+use agent_client_protocol::schema::{
+    AgentRequest, AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock,
+    ContentChunk, ExtRequest, ExtResponse, FileSystemCapabilities, ImageContent, Implementation,
+    InitializeRequest, NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, TextContent,
 };
-use async_trait::async_trait;
+use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Error as AcpError};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, ChildStderr, Command as TokioCommand};
-use tokio::task::LocalSet;
+use tokio::process::{ChildStderr, Command as TokioCommand};
+use tokio::sync::oneshot;
+use tokio::task::{JoinHandle, LocalSet};
 use tokio::time::timeout;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -666,11 +666,18 @@ impl Drop for AcpWorker {
     }
 }
 
+struct AcpConnectionReady {
+    conn: ConnectionTo<Agent>,
+    session_id: SessionId,
+    agent_label: String,
+}
+
 struct AcpSession {
     command: String,
-    conn: ClientSideConnection,
+    conn: ConnectionTo<Agent>,
     session_id: SessionId,
-    child: Child,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    io_task: JoinHandle<()>,
 }
 
 impl AcpSession {
@@ -722,86 +729,163 @@ impl AcpSession {
             .take()
             .ok_or(AcpInternalError::MissingAgentStderr)?;
 
-        let handler = AcpClientHandler {
-            evt_tx: evt_tx.clone(),
-            shared_state,
-        };
-
-        let (conn, io_task) =
-            ClientSideConnection::new(handler, stdin.compat_write(), stdout.compat(), |fut| {
-                tokio::task::spawn_local(fut);
-            });
-
+        let (ready_tx, ready_rx) =
+            oneshot::channel::<Result<AcpConnectionReady, AcpInternalError>>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let io_evt_tx = evt_tx.clone();
-        tokio::task::spawn_local(async move {
-            if let Err(err) = io_task.await {
-                let _ = io_evt_tx.send(AcpUiEvent::Error(format!("ACP I/O error: {err}")));
-            }
-        });
-
-        tokio::task::spawn_local(stream_stderr(stderr, evt_tx.clone()));
-
-        let init_req = InitializeRequest::new(ProtocolVersion::LATEST)
-            .client_capabilities(
-                ClientCapabilities::new()
-                    .fs(FileSystemCapability::new()
-                        .read_text_file(false)
-                        .write_text_file(false))
-                    .terminal(false),
-            )
-            .client_info(Implementation::new("anica", env!("CARGO_PKG_VERSION")).title("Anica"));
-
-        let init_rsp =
-            conn.initialize(init_req)
-                .await
-                .map_err(|err| AcpInternalError::Initialize {
-                    message: err.to_string(),
-                })?;
-
-        let agent_label = init_rsp
-            .agent_info
-            .as_ref()
-            .map(|info| {
-                let title = info.title.clone().unwrap_or_else(|| info.name.clone());
-                format!("{title} {}", info.version)
-            })
-            .unwrap_or_else(|| "Unknown Agent".to_string());
-
-        if let Some(auth_method) = init_rsp.auth_methods.first() {
-            let _ = evt_tx.send(AcpUiEvent::Status(format!(
-                "Authenticating via {}",
-                auth_method.name
-            )));
-
-            conn.authenticate(AuthenticateRequest::new(auth_method.id.clone()))
-                .await
-                .map_err(|err| AcpInternalError::Authenticate {
-                    message: err.to_string(),
-                })?;
-        }
-
+        let stream_evt_tx = evt_tx.clone();
         let working_dir =
             cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let session_rsp = conn
-            .new_session(NewSessionRequest::new(working_dir))
-            .await
-            .map_err(|err| AcpInternalError::NewSession {
-                message: err.to_string(),
-            })?;
+        let io_task = tokio::task::spawn_local(async move {
+            let mut child = child;
+            tokio::task::spawn_local(stream_stderr(stderr, stream_evt_tx));
 
-        let session_id = session_rsp.session_id.clone();
+            let handler = AcpClientHandler {
+                evt_tx: io_evt_tx.clone(),
+                shared_state,
+            };
+            let permission_handler = handler.clone();
+            let notification_handler = handler.clone();
+            let ext_handler = handler;
+            let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
+            let init_evt_tx = io_evt_tx.clone();
+
+            let result = Client
+                .builder()
+                .name("anica")
+                .on_receive_request(
+                    async move |args: RequestPermissionRequest, responder, _conn| {
+                        responder.respond(permission_handler.handle_request_permission(args).await?)
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |args: SessionNotification, _conn| {
+                        notification_handler.handle_session_notification(args).await
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                )
+                .on_receive_request(
+                    async move |args: AgentRequest, responder, _conn| match args {
+                        AgentRequest::ExtMethodRequest(ext_args) => {
+                            let response = ext_handler.handle_ext_method(ext_args).await?;
+                            let value = serde_json::to_value(response)
+                                .map_err(AcpError::into_internal_error)?;
+                            responder.respond(value)
+                        }
+                        _ => responder.respond_with_error(AcpError::method_not_found()),
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_with(transport, async move |conn| {
+                    let mut ready_tx = Some(ready_tx);
+                    let init_req = InitializeRequest::new(ProtocolVersion::LATEST)
+                        .client_capabilities(
+                            ClientCapabilities::new()
+                                .fs(FileSystemCapabilities::new()
+                                    .read_text_file(false)
+                                    .write_text_file(false))
+                                .terminal(false),
+                        )
+                        .client_info(
+                            Implementation::new("anica", env!("CARGO_PKG_VERSION")).title("Anica"),
+                        );
+
+                    let init_rsp = match conn.send_request(init_req).block_task().await {
+                        Ok(response) => response,
+                        Err(err) => {
+                            if let Some(tx) = ready_tx.take() {
+                                let _ = tx.send(Err(AcpInternalError::Initialize {
+                                    message: err.to_string(),
+                                }));
+                            }
+                            return Ok(());
+                        }
+                    };
+
+                    let agent_label = init_rsp
+                        .agent_info
+                        .as_ref()
+                        .map(|info| {
+                            let title = info.title.clone().unwrap_or_else(|| info.name.clone());
+                            format!("{title} {}", info.version)
+                        })
+                        .unwrap_or_else(|| "Unknown Agent".to_string());
+
+                    if let Some(auth_method) = init_rsp.auth_methods.first() {
+                        let _ = init_evt_tx.send(AcpUiEvent::Status(format!(
+                            "Authenticating via {}",
+                            auth_method.name()
+                        )));
+
+                        if let Err(err) = conn
+                            .send_request(AuthenticateRequest::new(auth_method.id().clone()))
+                            .block_task()
+                            .await
+                        {
+                            if let Some(tx) = ready_tx.take() {
+                                let _ = tx.send(Err(AcpInternalError::Authenticate {
+                                    message: err.to_string(),
+                                }));
+                            }
+                            return Ok(());
+                        }
+                    }
+
+                    let session_rsp = match conn
+                        .send_request(NewSessionRequest::new(working_dir))
+                        .block_task()
+                        .await
+                    {
+                        Ok(response) => response,
+                        Err(err) => {
+                            if let Some(tx) = ready_tx.take() {
+                                let _ = tx.send(Err(AcpInternalError::NewSession {
+                                    message: err.to_string(),
+                                }));
+                            }
+                            return Ok(());
+                        }
+                    };
+
+                    let session_id = session_rsp.session_id.clone();
+                    if let Some(tx) = ready_tx.take() {
+                        let _ = tx.send(Ok(AcpConnectionReady {
+                            conn: conn.clone(),
+                            session_id,
+                            agent_label,
+                        }));
+                    }
+
+                    let _ = shutdown_rx.await;
+                    Ok(())
+                })
+                .await;
+
+            if let Err(err) = result {
+                let _ = io_evt_tx.send(AcpUiEvent::Error(format!("ACP I/O error: {err}")));
+            }
+
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        });
+
+        let ready = ready_rx.await.map_err(|_| AcpInternalError::Initialize {
+            message: "ACP connection closed before initialization completed".to_string(),
+        })??;
 
         let _ = evt_tx.send(AcpUiEvent::Connected {
-            session_id: session_id.0.to_string(),
-            agent_label,
+            session_id: ready.session_id.0.to_string(),
+            agent_label: ready.agent_label.clone(),
         });
 
         Ok(Self {
             command,
-            conn,
-            session_id,
-            child,
+            conn: ready.conn,
+            session_id: ready.session_id,
+            shutdown_tx: Some(shutdown_tx),
+            io_task,
         })
     }
 
@@ -810,7 +894,7 @@ impl AcpSession {
         prompt: String,
         image_attachments: Vec<AcpPromptImageAttachment>,
     ) -> Result<String, AcpInternalError> {
-        let mut blocks = vec![ContentBlock::from(prompt)];
+        let mut blocks = vec![ContentBlock::Text(TextContent::new(prompt))];
         for image in image_attachments {
             if let Ok(bytes) = fs::read(&image.path) {
                 blocks.push(ContentBlock::Image(
@@ -823,7 +907,8 @@ impl AcpSession {
         let req = PromptRequest::new(self.session_id.clone(), blocks);
         let rsp = self
             .conn
-            .prompt(req)
+            .send_request(req)
+            .block_task()
             .await
             .map_err(|err| AcpInternalError::Prompt {
                 message: err.to_string(),
@@ -834,17 +919,17 @@ impl AcpSession {
     async fn cancel_prompt(&self) {
         let _ = self
             .conn
-            .cancel(CancelNotification::new(self.session_id.clone()))
-            .await;
+            .send_notification(CancelNotification::new(self.session_id.clone()));
     }
 
     async fn shutdown(&mut self) {
         let _ = self
             .conn
-            .cancel(CancelNotification::new(self.session_id.clone()))
-            .await;
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
+            .send_notification(CancelNotification::new(self.session_id.clone()));
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        self.io_task.abort();
     }
 }
 
@@ -859,6 +944,7 @@ async fn stream_stderr(stderr: ChildStderr, evt_tx: Sender<AcpUiEvent>) {
     }
 }
 
+#[derive(Clone)]
 struct AcpClientHandler {
     evt_tx: Sender<AcpUiEvent>,
     shared_state: Arc<Mutex<AcpSharedState>>,
@@ -897,9 +983,8 @@ where
     response.map_err(|err| AcpError::internal_error().data(err))
 }
 
-#[async_trait(?Send)]
-impl Client for AcpClientHandler {
-    async fn request_permission(
+impl AcpClientHandler {
+    async fn handle_request_permission(
         &self,
         args: RequestPermissionRequest,
     ) -> agent_client_protocol::Result<RequestPermissionResponse> {
@@ -931,7 +1016,7 @@ impl Client for AcpClientHandler {
         }
     }
 
-    async fn session_notification(
+    async fn handle_session_notification(
         &self,
         args: SessionNotification,
     ) -> agent_client_protocol::Result<()> {
@@ -961,7 +1046,10 @@ impl Client for AcpClientHandler {
         Ok(())
     }
 
-    async fn ext_method(&self, args: ExtRequest) -> agent_client_protocol::Result<ExtResponse> {
+    async fn handle_ext_method(
+        &self,
+        args: ExtRequest,
+    ) -> agent_client_protocol::Result<ExtResponse> {
         match args.method.as_ref() {
             "anica.media_pool/list_metadata" => {
                 let request =

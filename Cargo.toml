@@ -22,6 +22,7 @@ async-trait = "0.1.89"
 gpui-component = "0.5.0"
 smol = "2.0.2"
 regex = "1.12.2"
+rodio = "0.19"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.133"
 thiserror = "2.0.17"
@@ -32,7 +33,7 @@ cosmic-text = { version = "0.14.2", features = ["swash"] }
 ureq = "2.12.1"
 fontdb = { version = "0.16.2", features = ["fs"] }
 log = "0.4.29"
-agent-client-protocol = "0.9.4"
+agent-client-protocol = "0.14.0"
 base64 = "0.22.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -61,7 +62,7 @@ gpui = { git = "https://github.com/LOVELYZOMBIEYHO/zed.git", branch = "anica-edi
 [package.metadata.bundle]
 name = "Anica Editor"
 identifier = "com.lovelyzombieyho.anica"
-# icon = ["assets/icon.icns"]
+icon = ["assets/logo/icon.icns", "assets/logo/icon.ico"]
 version = "0.1.1"
 copyright = "Copyright © 2026 Anica contributors. All rights reserved."
 category = "public.app-category.video"

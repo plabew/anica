@@ -90,7 +90,9 @@ pub fn build_single_clip_opacity_videotoolbox_args(
         "-c:v".to_string(),
         "h264_videotoolbox".to_string(),
         "-allow_sw".to_string(),
-        "0".to_string(),
+        // VideoToolbox hardware encoder requires ~23.976+ fps.
+        // Allow software fallback at low fps so the encoder does not hang.
+        if fps < 24 { "1" } else { "0" }.to_string(),
         "-pix_fmt".to_string(),
         "yuv420p".to_string(),
         "-b:v".to_string(),

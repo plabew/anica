@@ -9,13 +9,19 @@
       "common": [
         "--disable-gpl",
         "--disable-nonfree",
+        "--disable-autodetect",
         "--enable-shared",
         "--disable-static",
         "--disable-debug",
         "--disable-doc",
         "--disable-ffplay",
         "--enable-pthreads",
-        "--enable-version3"
+        "--enable-version3",
+        "--enable-libvpx",
+        "--enable-libaom",
+        "--enable-libsvtav1",
+        "--enable-libmp3lame",
+        "--enable-libopus"
       ],
       "macos_extra": ["--enable-videotoolbox", "--enable-audiotoolbox"],
       "linux_extra": []

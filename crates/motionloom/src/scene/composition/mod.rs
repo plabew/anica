@@ -10,7 +10,8 @@ mod raster;
 pub(crate) use effects::{
     apply_box_blur_pass, apply_hsla_pass, apply_layer_effects, apply_over_pass,
     apply_scene_filter_step, apply_scene_post_pass, build_scene_bloom_prefilter,
-    composite_scene_bloom, pass_param_expr, scene_post_bloom_params, scene_post_blur_params,
+    composite_scene_bloom, is_color_key_alpha_effect, pass_param_expr, scene_post_bloom_params,
+    scene_post_blur_params,
 };
 pub(crate) use raster::{
     apply_alpha_mask, apply_alpha_mask_with_invert, apply_deform_grid, blend_pixel,

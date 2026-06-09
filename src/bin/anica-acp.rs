@@ -1,25 +1,23 @@
-use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::{
-    Agent, AgentSideConnection, AuthenticateRequest, AuthenticateResponse, CancelNotification,
-    Client, ContentBlock, ContentChunk, Error, ExtRequest, Implementation, InitializeRequest,
-    InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-    SessionId, SessionNotification, SessionUpdate, StopReason,
+use agent_client_protocol::schema::{
+    AgentCapabilities, AgentRequest, AuthenticateRequest, AuthenticateResponse, CancelNotification,
+    ContentBlock, ContentChunk, ExtRequest, Implementation, InitializeRequest, InitializeResponse,
+    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId,
+    SessionNotification, SessionUpdate, StopReason, TextContent,
 };
+use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio as AcpStdio};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 use tokio::process::Command as TokioCommand;
-use tokio::task::LocalSet;
 use tokio::time::sleep;
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[path = "../export_resolution.rs"]
 mod export_resolution;
@@ -38,15 +36,15 @@ struct SessionState {
 
 #[derive(Debug)]
 struct AgentState {
-    conn: RefCell<Option<Rc<AgentSideConnection>>>,
-    sessions: RefCell<HashMap<SessionId, SessionState>>,
-    next_id: Cell<u64>,
+    conn: Mutex<Option<ConnectionTo<Client>>>,
+    sessions: Mutex<HashMap<SessionId, SessionState>>,
+    next_id: AtomicU64,
     resources: ResourceBundle,
 }
 
 #[derive(Debug, Clone)]
 struct AnicaAcpAgent {
-    inner: Rc<AgentState>,
+    inner: Arc<AgentState>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -365,10 +363,10 @@ fn candidate_asset_roots() -> Vec<PathBuf> {
 impl Default for AnicaAcpAgent {
     fn default() -> Self {
         Self {
-            inner: Rc::new(AgentState {
-                conn: RefCell::new(None),
-                sessions: RefCell::new(HashMap::new()),
-                next_id: Cell::new(1),
+            inner: Arc::new(AgentState {
+                conn: Mutex::new(None),
+                sessions: Mutex::new(HashMap::new()),
+                next_id: AtomicU64::new(1),
                 resources: ResourceBundle::load(),
             }),
         }
@@ -1100,7 +1098,8 @@ impl AnicaAcpAgent {
     fn session_last_export_resolution_preference(&self, session_id: &SessionId) -> Option<String> {
         self.inner
             .sessions
-            .borrow()
+            .lock()
+            .ok()?
             .get(session_id)
             .and_then(|s| s.last_export_resolution_preference.clone())
     }
@@ -1110,7 +1109,10 @@ impl AnicaAcpAgent {
         session_id: &SessionId,
         resolution: Option<String>,
     ) {
-        if let Some(s) = self.inner.sessions.borrow_mut().get_mut(session_id) {
+        let Ok(mut sessions) = self.inner.sessions.lock() else {
+            return;
+        };
+        if let Some(s) = sessions.get_mut(session_id) {
             s.last_export_resolution_preference = resolution;
         }
     }
@@ -2580,13 +2582,17 @@ impl AnicaAcpAgent {
     fn session_last_audio_silence_args(&self, session_id: &SessionId) -> Option<Value> {
         self.inner
             .sessions
-            .borrow()
+            .lock()
+            .ok()?
             .get(session_id)
             .and_then(|s| s.last_audio_silence_args.clone())
     }
 
     fn set_session_last_audio_silence_args(&self, session_id: &SessionId, args: Option<Value>) {
-        if let Some(s) = self.inner.sessions.borrow_mut().get_mut(session_id) {
+        let Ok(mut sessions) = self.inner.sessions.lock() else {
+            return;
+        };
+        if let Some(s) = sessions.get_mut(session_id) {
             s.last_audio_silence_args = args;
         }
     }
@@ -2594,13 +2600,17 @@ impl AnicaAcpAgent {
     fn session_last_validated_operations(&self, session_id: &SessionId) -> Option<Value> {
         self.inner
             .sessions
-            .borrow()
+            .lock()
+            .ok()?
             .get(session_id)
             .and_then(|s| s.last_validated_operations.clone())
     }
 
     fn set_session_last_validated_operations(&self, session_id: &SessionId, ops: Option<Value>) {
-        if let Some(s) = self.inner.sessions.borrow_mut().get_mut(session_id) {
+        let Ok(mut sessions) = self.inner.sessions.lock() else {
+            return;
+        };
+        if let Some(s) = sessions.get_mut(session_id) {
             s.last_validated_operations = ops;
         }
     }
@@ -2682,27 +2692,32 @@ impl AnicaAcpAgent {
         Value::Object(Map::new())
     }
 
-    fn bind_connection(&self, conn: Rc<AgentSideConnection>) {
-        self.inner.conn.replace(Some(conn));
+    fn bind_connection(&self, conn: ConnectionTo<Client>) {
+        if let Ok(mut stored) = self.inner.conn.lock() {
+            *stored = Some(conn);
+        }
     }
 
-    fn connection(&self) -> agent_client_protocol::Result<Rc<AgentSideConnection>> {
+    fn connection(&self) -> agent_client_protocol::Result<ConnectionTo<Client>> {
         self.inner
             .conn
-            .borrow()
+            .lock()
+            .map_err(|_| Error::internal_error().data("ACP connection lock poisoned"))?
             .as_ref()
             .cloned()
-            .ok_or_else(Error::internal_error)
+            .ok_or_else(|| Error::internal_error().data("ACP connection not initialized"))
     }
 
     fn alloc_session_id(&self) -> SessionId {
-        let id = self.inner.next_id.get();
-        self.inner.next_id.set(id.saturating_add(1));
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         SessionId::new(format!("anica-session-{id}"))
     }
 
     fn set_cancelled(&self, session_id: &SessionId, cancelled: bool) -> bool {
-        if let Some(s) = self.inner.sessions.borrow_mut().get_mut(session_id) {
+        let Ok(mut sessions) = self.inner.sessions.lock() else {
+            return false;
+        };
+        if let Some(s) = sessions.get_mut(session_id) {
             s.cancelled = cancelled;
             true
         } else {
@@ -2713,26 +2728,38 @@ impl AnicaAcpAgent {
     fn is_cancelled(&self, session_id: &SessionId) -> bool {
         self.inner
             .sessions
-            .borrow()
-            .get(session_id)
-            .map(|s| s.cancelled)
+            .lock()
+            .map(|sessions| {
+                sessions
+                    .get(session_id)
+                    .map(|s| s.cancelled)
+                    .unwrap_or(false)
+            })
             .unwrap_or(false)
     }
 
     fn session_exists(&self, session_id: &SessionId) -> bool {
-        self.inner.sessions.borrow().contains_key(session_id)
+        self.inner
+            .sessions
+            .lock()
+            .map(|sessions| sessions.contains_key(session_id))
+            .unwrap_or(false)
     }
 
     fn session_cwd(&self, session_id: &SessionId) -> Option<PathBuf> {
         self.inner
             .sessions
-            .borrow()
+            .lock()
+            .ok()?
             .get(session_id)
             .map(|s| s.cwd.clone())
     }
 
     fn set_running_pid(&self, session_id: &SessionId, pid: Option<u32>) {
-        if let Some(s) = self.inner.sessions.borrow_mut().get_mut(session_id) {
+        let Ok(mut sessions) = self.inner.sessions.lock() else {
+            return;
+        };
+        if let Some(s) = sessions.get_mut(session_id) {
             s.running_pid = pid;
         }
     }
@@ -2740,7 +2767,8 @@ impl AnicaAcpAgent {
     fn running_pid(&self, session_id: &SessionId) -> Option<u32> {
         self.inner
             .sessions
-            .borrow()
+            .lock()
+            .ok()?
             .get(session_id)
             .and_then(|s| s.running_pid)
     }
@@ -2752,11 +2780,12 @@ impl AnicaAcpAgent {
     ) -> agent_client_protocol::Result<()> {
         eprintln!("[ACP AGENT] {text}");
         let conn = self.connection()?;
-        conn.session_notification(SessionNotification::new(
+        conn.send_notification(SessionNotification::new(
             session_id.clone(),
-            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(text))),
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                TextContent::new(text),
+            ))),
         ))
-        .await
     }
 
     async fn run_codex_prompt(
@@ -3015,12 +3044,21 @@ impl AnicaAcpAgent {
             .map_err(|err| anyhow::anyhow!("failed to encode tool params: {err}"))?;
         let params_arc: Arc<RawValue> = params_raw.into();
 
+        let wire_method = if method.starts_with('_') {
+            method.to_string()
+        } else {
+            format!("_{method}")
+        };
         let response = conn
-            .ext_method(ExtRequest::new(method, params_arc))
+            .send_request(AgentRequest::ExtMethodRequest(ExtRequest::new(
+                wire_method,
+                params_arc,
+            )))
+            .block_task()
             .await
             .map_err(|err| anyhow::anyhow!("tool ext_method failed: {err}"))?;
 
-        Ok(response.0.get().to_string())
+        Ok(response.to_string())
     }
 
     fn router_max_turns() -> usize {
@@ -4031,44 +4069,52 @@ fn resolve_model_env(env_var: &str) -> anyhow::Result<Option<String>> {
     Ok(Some(model.to_string()))
 }
 
-#[async_trait::async_trait(?Send)]
-impl Agent for AnicaAcpAgent {
-    async fn initialize(
+impl AnicaAcpAgent {
+    async fn handle_initialize(
         &self,
         args: InitializeRequest,
     ) -> agent_client_protocol::Result<InitializeResponse> {
-        Ok(InitializeResponse::new(args.protocol_version).agent_info(
-            Implementation::new("anica-acp", env!("CARGO_PKG_VERSION")).title("Anica ACP"),
-        ))
+        Ok(InitializeResponse::new(args.protocol_version)
+            .agent_capabilities(AgentCapabilities::new())
+            .agent_info(
+                Implementation::new("anica-acp", env!("CARGO_PKG_VERSION")).title("Anica ACP"),
+            ))
     }
 
-    async fn authenticate(
+    async fn handle_authenticate(
         &self,
         _args: AuthenticateRequest,
     ) -> agent_client_protocol::Result<AuthenticateResponse> {
         Ok(AuthenticateResponse::default())
     }
 
-    async fn new_session(
+    async fn handle_new_session(
         &self,
         args: NewSessionRequest,
     ) -> agent_client_protocol::Result<NewSessionResponse> {
         let session_id = self.alloc_session_id();
-        self.inner.sessions.borrow_mut().insert(
-            session_id.clone(),
-            SessionState {
-                cwd: args.cwd,
-                cancelled: false,
-                running_pid: None,
-                last_audio_silence_args: None,
-                last_validated_operations: None,
-                last_export_resolution_preference: None,
-            },
-        );
+        self.inner
+            .sessions
+            .lock()
+            .map_err(|_| Error::internal_error().data("ACP session lock poisoned"))?
+            .insert(
+                session_id.clone(),
+                SessionState {
+                    cwd: args.cwd,
+                    cancelled: false,
+                    running_pid: None,
+                    last_audio_silence_args: None,
+                    last_validated_operations: None,
+                    last_export_resolution_preference: None,
+                },
+            );
         Ok(NewSessionResponse::new(session_id))
     }
 
-    async fn prompt(&self, args: PromptRequest) -> agent_client_protocol::Result<PromptResponse> {
+    async fn handle_prompt(
+        &self,
+        args: PromptRequest,
+    ) -> agent_client_protocol::Result<PromptResponse> {
         if !self.session_exists(&args.session_id) {
             return Err(
                 Error::invalid_params().data(format!("unknown session id: {}", args.session_id.0))
@@ -4110,7 +4156,7 @@ impl Agent for AnicaAcpAgent {
         Ok(PromptResponse::new(StopReason::EndTurn))
     }
 
-    async fn cancel(&self, args: CancelNotification) -> agent_client_protocol::Result<()> {
+    async fn handle_cancel(&self, args: CancelNotification) -> agent_client_protocol::Result<()> {
         let _ = self.set_cancelled(&args.session_id, true);
         if let Some(pid) = self.running_pid(&args.session_id) {
             #[cfg(unix)]
@@ -4127,18 +4173,59 @@ impl Agent for AnicaAcpAgent {
 
 async fn async_main() -> anyhow::Result<()> {
     let agent = AnicaAcpAgent::default();
-    let (conn, io_task) = AgentSideConnection::new(
-        agent.clone(),
-        tokio::io::stdout().compat_write(),
-        tokio::io::stdin().compat(),
-        |fut| {
-            tokio::task::spawn_local(fut);
-        },
-    );
 
-    agent.bind_connection(Rc::new(conn));
+    let initialize_agent = agent.clone();
+    let authenticate_agent = agent.clone();
+    let new_session_agent = agent.clone();
+    let prompt_agent = agent.clone();
+    let cancel_agent = agent.clone();
 
-    io_task
+    Agent
+        .builder()
+        .name("anica-acp")
+        .on_receive_request(
+            async move |args: InitializeRequest, responder, conn| {
+                initialize_agent.bind_connection(conn);
+                responder.respond(initialize_agent.handle_initialize(args).await?)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |args: AuthenticateRequest, responder, conn| {
+                authenticate_agent.bind_connection(conn);
+                responder.respond(authenticate_agent.handle_authenticate(args).await?)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |args: NewSessionRequest, responder, conn| {
+                new_session_agent.bind_connection(conn);
+                responder.respond(new_session_agent.handle_new_session(args).await?)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |args: PromptRequest, responder, conn| {
+                prompt_agent.bind_connection(conn.clone());
+                conn.spawn({
+                    let prompt_agent = prompt_agent.clone();
+                    async move {
+                        let result = prompt_agent.handle_prompt(args).await;
+                        responder.respond_with_result(result)
+                    }
+                })?;
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |args: CancelNotification, conn| {
+                cancel_agent.bind_connection(conn);
+                cancel_agent.handle_cancel(args).await
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_to(AcpStdio::new())
         .await
         .map_err(|err| anyhow::anyhow!("anica-acp io task failed: {err}"))?;
     Ok(())
@@ -4151,8 +4238,7 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()
         .map_err(|err| anyhow::anyhow!("failed to build runtime: {err}"))?;
-    let local = LocalSet::new();
-    runtime.block_on(local.run_until(async_main()))
+    runtime.block_on(async_main())
 }
 
 #[cfg(test)]

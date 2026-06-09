@@ -17,6 +17,7 @@ See `docs/MEDIA_RUNTIME_DROPIN.md` for full structure and environment wiring.
 If you distribute runtime binaries from this folder:
 
 - FFmpeg should be built as `LGPL-only` (for example: `--disable-gpl --disable-nonfree`).
+- The LGPL runtime may still enable `libvpx`, `libaom`, `libsvtav1`, `libmp3lame`, and `libopus`; do not enable GPL/nonfree codecs such as `libx264`.
 - GStreamer runtime distribution must keep its original license notices.
 - Include third-party notices and source-obtain information for both FFmpeg and GStreamer.
 
@@ -24,8 +25,8 @@ This folder is only a drop zone. Compliance obligations apply when binaries are 
 
 ## Bootstrap Coverage
 
-- macOS/Linux: `scripts/setup_media_tools.sh` supports `local-lgpl` bootstrap into runtime folders.
-- Windows: `scripts/setup_media_tools.ps1` supports `local-lgpl` bootstrap and runtime sync, with a strict FFmpeg GPL/nonfree rejection check.
+- macOS/Linux: `scripts/setup_media_tools.sh` supports `local-lgpl` bootstrap into runtime folders with Anica's extended LGPL FFmpeg encoder set.
+- Windows: `scripts/setup_media_tools.ps1` supports `local-lgpl` runtime sync, with strict FFmpeg GPL/nonfree and required-encoder checks.
 
 ## Runtime Form
 

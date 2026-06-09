@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="./assets/logo/logo_official_bg_transparent.png" alt="Anica logo" width="1200">
+</p>
+
+
 # Anica
 
 **An agentic-first video editor where AI is your collaborator, not just a tool.**
@@ -97,6 +102,13 @@ Create an 8-second cyber-style motion graphic using the MotionLoom DSL: black ba
 ```
 
 The prompt generates MotionLoom DSL code, which you can copy and paste on any compatible computer to reproduce the same motion graphics and VFX.
+
+<table align="center">
+  <tr>
+    <td width="50%" align="center"><img src="./assets/README/motionloom_showcase1.gif" alt="MotionLoom showcase 1" width="100%"></td>
+    <td width="50%" align="center"><img src="./assets/README/motionloom_showcase2.gif" alt="MotionLoom showcase 2" width="100%"></td>
+  </tr>
+</table>
 
 MotionLoom provides the foundation for Anica's long-term goal of natural language to motion graphics and VFX.
 

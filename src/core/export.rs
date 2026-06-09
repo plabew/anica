@@ -202,13 +202,33 @@ impl ExportMode {
     }
 }
 
+// macOS and Windows VideoToolbox/hardware encoders do not reliably support
+// frame rates below ~23.976 fps.  Low fps exports (5, 10, 15) cause the
+// encoder to hang indefinitely because it cannot initialise a hardware
+// encoding session at those rates.  Only expose these low fps options for GIF
+// exports, which use a completely different (software) pipeline.
 pub const UI_EXPORT_FPS_CHOICES: [u32; 11] = [24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 144];
+pub const UI_EXPORT_FPS_CHOICES_GIF: [u32; 14] =
+    [5, 10, 15, 24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 144];
 
 const EXPORT_SHARPEN_YUV420P_COMP_PCT_ENV: &str = "ANICA_EXPORT_SHARPEN_YUV420P_COMP_PCT";
 const EXPORT_SHARPEN_YUV420P_COMP_PCT_DEFAULT: f64 = 0.0;
 const EXPORT_SHARPEN_YUV420P_COMP_PCT_MIN: f64 = 0.0;
 const EXPORT_SHARPEN_YUV420P_COMP_PCT_MAX: f64 = 30.0;
 
+/// Returns the fps choices visible in the export UI for the given preset.
+/// GIF exports show 5/10/15 fps; all video exports hide them because
+/// macOS/Windows hardware encoders do not support them reliably.
+pub fn export_fps_choices_for_preset(preset: ExportPreset) -> &'static [u32] {
+    if preset == ExportPreset::Gif {
+        &UI_EXPORT_FPS_CHOICES_GIF
+    } else {
+        &UI_EXPORT_FPS_CHOICES
+    }
+}
+
+/// Backward-compatible alias returning the video-only fps list (no 5/10/15).
+#[allow(dead_code)]
 pub const fn export_fps_choices_for_ui() -> &'static [u32] {
     &UI_EXPORT_FPS_CHOICES
 }
@@ -265,6 +285,49 @@ impl ExportPreset {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub const fn all_for_ui() -> &'static [ExportPreset] {
+        // The bundled macOS FFmpeg build enables the LGPL-compatible external
+        // encoders used by these export presets.
+        &[
+            ExportPreset::H264Mp4,
+            ExportPreset::H264VideotoolboxMp4,
+            ExportPreset::HevcMp4,
+            ExportPreset::Gif,
+            ExportPreset::Vp9Webm,
+            ExportPreset::Vp8Webm,
+            ExportPreset::Av1LibaomMkv,
+            ExportPreset::Av1SvtMkv,
+            ExportPreset::DnxhrHqMov,
+            ExportPreset::ProRes422Mov,
+            ExportPreset::ProRes422HqMov,
+            ExportPreset::ProRes444Mov,
+            ExportPreset::ProRes4444Mov,
+            ExportPreset::AacM4a,
+            ExportPreset::Mp3,
+            ExportPreset::Opus,
+            ExportPreset::Flac,
+            ExportPreset::WavPcm,
+        ]
+    }
+
+    pub const fn default_for_platform() -> ExportPreset {
+        #[cfg(target_os = "macos")]
+        {
+            ExportPreset::H264VideotoolboxMp4
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            ExportPreset::H264Mp4
+        }
+    }
+
+    pub fn is_available_for_platform(self) -> bool {
+        // Keep non-UI export entry points aligned with the presets shown in the UI.
+        Self::all_for_ui().contains(&self)
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub const fn all_for_ui() -> &'static [ExportPreset] {
         &[
             ExportPreset::H264Mp4,
@@ -467,7 +530,7 @@ impl ExportPreset {
         )
     }
 
-    fn push_output_args(self, args: &mut Vec<String>, settings: &ExportSettings) {
+    fn push_output_args(self, args: &mut Vec<String>, settings: &ExportSettings, fps: u32) {
         match self {
             ExportPreset::H264Mp4 => {
                 Self::push_non_x264_h264_args(args, settings);
@@ -476,7 +539,9 @@ impl ExportPreset {
                 args.push("-c:v".into());
                 args.push("h264_videotoolbox".into());
                 args.push("-allow_sw".into());
-                args.push("0".into());
+                // VideoToolbox hardware encoder requires ~23.976+ fps.
+                // Allow software fallback at low fps so the encoder does not hang.
+                args.push(if fps < 24 { "1" } else { "0" }.into());
                 args.push("-pix_fmt".into());
                 args.push("yuv420p".into());
                 args.push("-b:v".into());
@@ -1061,8 +1126,14 @@ impl FfmpegExporter {
             return false;
         }
 
+        // GIF requires palettegen/paletteuse which buffers all frames before output.
+        // The unified GPU path writes frames through a stdin pipe, which blocks
+        // when the internal buffer fills up because palettegen cannot start emitting
+        // the palette until every frame has been consumed.  This creates a deadlock
+        // where write_all blocks and the cancel path becomes unreachable.
+        // Use the standard FFmpeg path instead, which reads from files directly.
         if preset == ExportPreset::Gif {
-            return true;
+            return false;
         }
         if subtitle_tracks.iter().any(|t| !t.clips.is_empty()) {
             return true;
@@ -1329,7 +1400,7 @@ impl FfmpegExporter {
         fps: u32,
     ) -> Vec<String> {
         let decode_filter = format!(
-            "fps={fps},setsar=1,scale=w={w}:h={h}:force_original_aspect_ratio=decrease:eval=frame,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black@0,format=rgba",
+            "fps={fps},setsar=1,scale=w={w}:h={h}:force_original_aspect_ratio=decrease:eval=frame,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,format=rgba",
             fps = fps,
             w = width,
             h = height
@@ -1624,7 +1695,7 @@ impl FfmpegExporter {
             encode_args.push("-map".to_string());
             encode_args.push(audio_tag.clone());
         }
-        export_preset.push_output_args(&mut encode_args, export_settings);
+        export_preset.push_output_args(&mut encode_args, export_settings, fps);
         if mapped_audio_tag.is_some() {
             encode_args.push("-shortest".to_string());
         }
@@ -1692,19 +1763,16 @@ impl FfmpegExporter {
             speed: None,
         });
 
+        // Track loop error so we can clean up all spawned processes before returning.
+        let mut loop_err: Option<ExportError> = None;
+
         for frame_idx in 0..total_frames {
+            if loop_err.is_some() {
+                break;
+            }
             if cancel_requested.load(Ordering::Relaxed) {
-                for state in &mut layer_states {
-                    if let Some(mut d) = state.decoder.take() {
-                        let _ = d.child.kill();
-                        let _ = d.child.wait();
-                        let _ = d.stderr_join.join();
-                    }
-                }
-                let _ = encode_child.kill();
-                let _ = encode_child.wait();
-                let _ = encode_stderr_handle.join();
-                return Err(ExportError::Cancelled);
+                loop_err = Some(ExportError::Cancelled);
+                break;
             }
 
             let t = export_start + Duration::from_secs_f64(frame_idx as f64 / f64::from(fps));
@@ -1717,6 +1785,9 @@ impl FfmpegExporter {
             composed_rgba.fill(0);
 
             for state in &mut layer_states {
+                if loop_err.is_some() {
+                    break;
+                }
                 if t < state.spec.active_start || t >= state.spec.active_end {
                     if t >= state.spec.active_end && !state.ended {
                         if let Some(mut d) = state.decoder.take() {
@@ -1745,23 +1816,43 @@ impl FfmpegExporter {
                         "[Export][Unified GPU] Decode ffmpeg: {} {:?}",
                         ffmpeg_bin, decode_args
                     );
-                    let mut child = Command::new(ffmpeg_bin)
+                    let spawn_result = Command::new(ffmpeg_bin)
                         .args(&decode_args)
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
-                        .spawn()
-                        .map_err(|source| ExportError::ExecuteStageFfmpeg {
-                            stage: "decode",
-                            source,
-                        })?;
-                    let stdout = child.stdout.take().ok_or(ExportError::MissingFfmpegPipe {
-                        stage: "decode",
-                        pipe: "stdout",
-                    })?;
-                    let stderr = child.stderr.take().ok_or(ExportError::MissingFfmpegPipe {
-                        stage: "decode",
-                        pipe: "stderr",
-                    })?;
+                        .spawn();
+                    let mut child = match spawn_result {
+                        Ok(c) => c,
+                        Err(source) => {
+                            loop_err = Some(ExportError::ExecuteStageFfmpeg {
+                                stage: "decode",
+                                source,
+                            });
+                            break;
+                        }
+                    };
+                    let stdout = match child.stdout.take() {
+                        Some(s) => s,
+                        None => {
+                            let _ = child.kill();
+                            loop_err = Some(ExportError::MissingFfmpegPipe {
+                                stage: "decode",
+                                pipe: "stdout",
+                            });
+                            break;
+                        }
+                    };
+                    let stderr = match child.stderr.take() {
+                        Some(s) => s,
+                        None => {
+                            let _ = child.kill();
+                            loop_err = Some(ExportError::MissingFfmpegPipe {
+                                stage: "decode",
+                                pipe: "stderr",
+                            });
+                            break;
+                        }
+                    };
                     let stderr_join = std::thread::spawn(move || {
                         let mut msg = String::new();
                         let mut reader = BufReader::new(stderr);
@@ -1777,17 +1868,18 @@ impl FfmpegExporter {
                 }
 
                 let Some(decoder) = state.decoder.as_mut() else {
-                    return Err(ExportError::MissingInternalState {
+                    loop_err = Some(ExportError::MissingInternalState {
                         state: "unified gpu decode state",
                     });
+                    break;
                 };
-                decoder
-                    .stdout
-                    .read_exact(&mut frame_rgba)
-                    .map_err(|source| ExportError::ReadFfmpegFrame {
+                if let Err(source) = decoder.stdout.read_exact(&mut frame_rgba) {
+                    loop_err = Some(ExportError::ReadFfmpegFrame {
                         stage: "decode",
                         source,
-                    })?;
+                    });
+                    break;
+                }
 
                 let local_t = t.saturating_sub(state.spec.clip.start);
                 let (clip_tint_h, clip_tint_s, clip_tint_l, clip_tint_a) =
@@ -1847,12 +1939,17 @@ impl FfmpegExporter {
                     params,
                     &state.local_mask_layers,
                 ) {
-                    return Err(ExportError::ProcessGpuOpacityFrame {
+                    loop_err = Some(ExportError::ProcessGpuOpacityFrame {
                         message: "unified WGPU BGRA effect processing failed".to_string(),
                     });
+                    break;
                 }
                 Self::rgba_bgra_swap_in_place(&mut frame_rgba);
                 Self::alpha_over_rgba(&mut composed_rgba, &frame_rgba);
+            }
+
+            if loop_err.is_some() {
+                break;
             }
 
             let t_sec = t.as_secs_f64();
@@ -1862,12 +1959,13 @@ impl FfmpegExporter {
                 }
             }
 
-            encode_stdin.write_all(&composed_rgba).map_err(|source| {
-                ExportError::WriteFfmpegFrame {
+            if let Err(source) = encode_stdin.write_all(&composed_rgba) {
+                loop_err = Some(ExportError::WriteFfmpegFrame {
                     stage: "encode",
                     source,
-                }
-            })?;
+                });
+                break;
+            }
 
             if frame_idx % 8 == 0 {
                 let rendered =
@@ -1879,6 +1977,24 @@ impl FfmpegExporter {
                     speed: None,
                 });
             }
+        }
+
+        // Error-path cleanup: kill all spawned ffmpeg processes so no orphans remain.
+        // On success, the post-loop section below waits for processes normally instead.
+        if let Some(err) = loop_err {
+            for state in &mut layer_states {
+                if let Some(mut d) = state.decoder.take() {
+                    let _ = d.child.kill();
+                    let _ = d.child.wait();
+                    let _ = d.stderr_join.join();
+                }
+            }
+            // Close stdin pipe first so blocked write_all() can fail and unblock
+            drop(encode_stdin);
+            let _ = encode_child.kill();
+            let _ = encode_child.wait();
+            let _ = encode_stderr_handle.join();
+            return Err(err);
         }
 
         for state in &mut layer_states {
@@ -2048,7 +2164,9 @@ impl FfmpegExporter {
             "-c:v".to_string(),
             "h264_videotoolbox".to_string(),
             "-allow_sw".to_string(),
-            "0".to_string(),
+            // VideoToolbox hardware encoder requires ~23.976+ fps.
+            // Allow software fallback at low fps so the encoder does not hang.
+            if fps < 24 { "1" } else { "0" }.to_string(),
             "-pix_fmt".to_string(),
             "yuv420p".to_string(),
             "-b:v".to_string(),
@@ -2127,25 +2245,25 @@ impl FfmpegExporter {
             speed: None,
         });
 
+        // Track loop error so we can clean up all spawned processes before returning.
+        let mut loop_err: Option<ExportError> = None;
+
         for frame_idx in 0..total_frames {
+            if loop_err.is_some() {
+                break;
+            }
             if cancel_requested.load(Ordering::Relaxed) {
-                for state in &mut layer_states {
-                    if let Some(mut d) = state.decoder.take() {
-                        let _ = d.child.kill();
-                        let _ = d.child.wait();
-                        let _ = d.stderr_join.join();
-                    }
-                }
-                let _ = encode_child.kill();
-                let _ = encode_child.wait();
-                let _ = encode_stderr_handle.join();
-                return Err(ExportError::Cancelled);
+                loop_err = Some(ExportError::Cancelled);
+                break;
             }
 
             let t = export_start + Duration::from_secs_f64(frame_idx as f64 / f64::from(fps));
             composed_rgba.fill(0);
 
             for state in &mut layer_states {
+                if loop_err.is_some() {
+                    break;
+                }
                 if t < state.spec.active_start || t >= state.spec.active_end {
                     if t >= state.spec.active_end && !state.ended {
                         if let Some(mut d) = state.decoder.take() {
@@ -2174,23 +2292,43 @@ impl FfmpegExporter {
                         "[Export][GPU Effect] Decode ffmpeg (phase2): {} {:?}",
                         ffmpeg_bin, decode_args
                     );
-                    let mut child = Command::new(ffmpeg_bin)
+                    let spawn_result = Command::new(ffmpeg_bin)
                         .args(&decode_args)
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
-                        .spawn()
-                        .map_err(|source| ExportError::ExecuteStageFfmpeg {
-                            stage: "decode",
-                            source,
-                        })?;
-                    let stdout = child.stdout.take().ok_or(ExportError::MissingFfmpegPipe {
-                        stage: "decode",
-                        pipe: "stdout",
-                    })?;
-                    let stderr = child.stderr.take().ok_or(ExportError::MissingFfmpegPipe {
-                        stage: "decode",
-                        pipe: "stderr",
-                    })?;
+                        .spawn();
+                    let mut child = match spawn_result {
+                        Ok(c) => c,
+                        Err(source) => {
+                            loop_err = Some(ExportError::ExecuteStageFfmpeg {
+                                stage: "decode",
+                                source,
+                            });
+                            break;
+                        }
+                    };
+                    let stdout = match child.stdout.take() {
+                        Some(s) => s,
+                        None => {
+                            let _ = child.kill();
+                            loop_err = Some(ExportError::MissingFfmpegPipe {
+                                stage: "decode",
+                                pipe: "stdout",
+                            });
+                            break;
+                        }
+                    };
+                    let stderr = match child.stderr.take() {
+                        Some(s) => s,
+                        None => {
+                            let _ = child.kill();
+                            loop_err = Some(ExportError::MissingFfmpegPipe {
+                                stage: "decode",
+                                pipe: "stderr",
+                            });
+                            break;
+                        }
+                    };
                     let stderr_join = std::thread::spawn(move || {
                         let mut msg = String::new();
                         let mut reader = BufReader::new(stderr);
@@ -2206,34 +2344,45 @@ impl FfmpegExporter {
                 }
 
                 let Some(decoder) = state.decoder.as_mut() else {
-                    return Err(ExportError::MissingInternalState {
+                    loop_err = Some(ExportError::MissingInternalState {
                         state: "phase2 decode state",
                     });
+                    break;
                 };
-                decoder
-                    .stdout
-                    .read_exact(&mut frame_rgba)
-                    .map_err(|source| ExportError::ReadFfmpegFrame {
+                if let Err(source) = decoder.stdout.read_exact(&mut frame_rgba) {
+                    loop_err = Some(ExportError::ReadFfmpegFrame {
                         stage: "decode",
                         source,
-                    })?;
+                    });
+                    break;
+                }
 
                 let local_t = t.saturating_sub(state.spec.clip.start);
                 let opacity = state.spec.clip.sample_opacity(local_t).clamp(0.0, 1.0);
-                let layer_frame = opacity_processor
-                    .process_rgba_frame(&frame_rgba, opacity)
-                    .map_err(|err| ExportError::ProcessGpuOpacityFrame {
-                        message: err.to_string(),
-                    })?;
-                Self::alpha_over_rgba(&mut composed_rgba, &layer_frame);
+                match opacity_processor.process_rgba_frame(&frame_rgba, opacity) {
+                    Ok(layer_frame) => {
+                        Self::alpha_over_rgba(&mut composed_rgba, &layer_frame);
+                    }
+                    Err(err) => {
+                        loop_err = Some(ExportError::ProcessGpuOpacityFrame {
+                            message: err.to_string(),
+                        });
+                        break;
+                    }
+                }
             }
 
-            encode_stdin.write_all(&composed_rgba).map_err(|source| {
-                ExportError::WriteFfmpegFrame {
+            if loop_err.is_some() {
+                break;
+            }
+
+            if let Err(source) = encode_stdin.write_all(&composed_rgba) {
+                loop_err = Some(ExportError::WriteFfmpegFrame {
                     stage: "encode",
                     source,
-                }
-            })?;
+                });
+                break;
+            }
 
             if frame_idx % 8 == 0 {
                 let rendered =
@@ -2245,6 +2394,23 @@ impl FfmpegExporter {
                     speed: None,
                 });
             }
+        }
+
+        // Error-path cleanup: kill all spawned ffmpeg processes so no orphans remain.
+        // On success, the post-loop section below waits for processes normally instead.
+        if let Some(err) = loop_err {
+            for state in &mut layer_states {
+                if let Some(mut d) = state.decoder.take() {
+                    let _ = d.child.kill();
+                    let _ = d.child.wait();
+                    let _ = d.stderr_join.join();
+                }
+            }
+            drop(encode_stdin);
+            let _ = encode_child.kill();
+            let _ = encode_child.wait();
+            let _ = encode_stderr_handle.join();
+            return Err(err);
         }
 
         for state in &mut layer_states {
@@ -2398,7 +2564,9 @@ impl FfmpegExporter {
             "-c:v".to_string(),
             "h264_videotoolbox".to_string(),
             "-allow_sw".to_string(),
-            "0".to_string(),
+            // VideoToolbox hardware encoder requires ~23.976+ fps.
+            // Allow software fallback at low fps so the encoder does not hang.
+            if fps < 24 { "1" } else { "0" }.to_string(),
             "-pix_fmt".to_string(),
             "yuv420p".to_string(),
             "-b:v".to_string(),
@@ -2493,6 +2661,8 @@ impl FfmpegExporter {
             Ok(processor) => processor,
             Err(err) => {
                 let _ = decode_child.kill();
+                // Close stdin pipe first so blocked write can fail and unblock
+                drop(encode_stdin);
                 let _ = encode_child.kill();
                 let _ = decode_child.wait();
                 let _ = encode_child.wait();
@@ -2515,6 +2685,8 @@ impl FfmpegExporter {
         loop {
             if cancel_requested.load(Ordering::Relaxed) {
                 let _ = decode_child.kill();
+                // Close stdin pipe first so blocked write can fail and unblock
+                drop(encode_stdin);
                 let _ = encode_child.kill();
                 let _ = decode_child.wait();
                 let _ = encode_child.wait();
@@ -2532,6 +2704,8 @@ impl FfmpegExporter {
                         Ok(processed) => processed,
                         Err(err) => {
                             let _ = decode_child.kill();
+                            // Close stdin pipe first so blocked write can fail and unblock
+                            drop(encode_stdin);
                             let _ = encode_child.kill();
                             let _ = decode_child.wait();
                             let _ = encode_child.wait();
@@ -2544,6 +2718,8 @@ impl FfmpegExporter {
                     };
                     if let Err(err) = encode_stdin.write_all(&processed) {
                         let _ = decode_child.kill();
+                        // Close stdin pipe first so blocked write can fail and unblock
+                        drop(encode_stdin);
                         let _ = encode_child.kill();
                         let _ = decode_child.wait();
                         let _ = encode_child.wait();
@@ -2572,6 +2748,8 @@ impl FfmpegExporter {
                 }
                 Err(err) => {
                     let _ = decode_child.kill();
+                    // Close stdin pipe first so blocked write can fail and unblock
+                    drop(encode_stdin);
                     let _ = encode_child.kill();
                     let _ = decode_child.wait();
                     let _ = encode_child.wait();
@@ -3900,7 +4078,7 @@ impl FfmpegExporter {
                 if c.start > cursor {
                     let gap = (c.start - cursor).as_secs_f64();
                     filter_parts.push(format!(
-                        "color=c=black@0:s={}x{}:r={}:d={},format=bgra[{}_gap_{}]",
+                        "color=c=black:s={}x{}:r={}:d={},format=bgra[{}_gap_{}]",
                         canvas_w_i, canvas_h_i, fps, gap, label, local_i
                     ));
                     concat_str.push_str(&format!("[{}_gap_{}]", label, local_i));
@@ -3937,7 +4115,7 @@ impl FfmpegExporter {
             if cursor < timeline_max {
                 let gap = (timeline_max - cursor).as_secs_f64();
                 filter_parts.push(format!(
-                    "color=c=black@0:s={}x{}:r={}:d={},format=bgra[{}_gap_end]",
+                    "color=c=black:s={}x{}:r={}:d={},format=bgra[{}_gap_end]",
                     canvas_w_i, canvas_h_i, fps, gap, label
                 ));
                 concat_str.push_str(&format!("[{}_gap_end]", label));
@@ -4242,7 +4420,7 @@ impl FfmpegExporter {
         }
 
         // Output encoding preset
-        export_preset.push_output_args(&mut args, export_settings);
+        export_preset.push_output_args(&mut args, export_settings, fps);
 
         args.push(out_path.to_string());
 
@@ -4358,7 +4536,7 @@ impl FfmpegExporter {
             String::new()
         } else {
             format!(
-                ",rotate='({})*PI/180':ow='rotw(iw)':oh='roth(ih)':c=black@0",
+                ",rotate='({})*PI/180':ow='rotw(iw)':oh='roth(ih)':c=black",
                 rotation_expr
             )
         };
@@ -4373,7 +4551,7 @@ impl FfmpegExporter {
         let canvas_w_i = canvas_w.round().max(1.0) as u32;
         let canvas_h_i = canvas_h.round().max(1.0) as u32;
         filter_parts.push(format!(
-            "color=c=black@0:s={}x{}:r={}:d={},format=bgra{}",
+            "color=c=black:s={}x{}:r={}:d={},format=bgra{}",
             canvas_w_i,
             canvas_h_i,
             output_fps,

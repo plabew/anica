@@ -2,8 +2,13 @@
 // =========================================
 // src/ui/video_preview.rs
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::hash::{Hash, Hasher};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,6 +38,7 @@ use image::{
     ImageBuffer, Rgba,
     imageops::{self, FilterType},
 };
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use smallvec::SmallVec;
 use url::Url;
 
@@ -83,6 +89,16 @@ fn is_image_ext(path: &str) -> bool {
         || p.ends_with(".png")
         || p.ends_with(".webp")
         || p.ends_with(".bmp")
+}
+
+fn is_audio_preview_cache_ext(path: &str) -> bool {
+    let p = path.to_lowercase();
+    p.ends_with(".mp3")
+        || p.ends_with(".m4a")
+        || p.ends_with(".aac")
+        || p.ends_with(".opus")
+        || p.ends_with(".flac")
+        || p.ends_with(".ogg")
 }
 
 fn is_motionloom_scene_generated_path(path: &str) -> bool {
@@ -573,11 +589,20 @@ impl IntoElement for SurfaceImageElement {
     }
 }
 
+struct RodioAudioPlayer {
+    sink: Sink,
+    gain: f32,
+    paused: bool,
+}
+
 pub struct VideoPreview {
     /// The main visual players responsible for visual output.
     visual_players: HashMap<u64, Video>,
     visual_order: Vec<u64>,
     audio_players: HashMap<u64, Video>,
+    rodio_audio_players: HashMap<u64, RodioAudioPlayer>,
+    rodio_output_stream: Option<OutputStream>,
+    rodio_output_handle: Option<OutputStreamHandle>,
     last_seek_requests: HashMap<u64, Duration>,
     pub global: Entity<GlobalState>,
     focus_handle: Option<FocusHandle>,
@@ -594,6 +619,9 @@ pub struct VideoPreview {
     image_last_used: HashMap<u64, u64>,
     visual_paused_state: HashMap<u64, bool>,
     audio_paused_state: HashMap<u64, bool>,
+    audio_preview_cache_paths: HashMap<String, String>,
+    audio_preview_in_flight: HashSet<String>,
+    audio_preview_failed: HashSet<String>,
     last_active_visual_ids: HashSet<u64>,
     last_active_audio_ids: HashSet<u64>,
     image_decode_in_flight: HashSet<u64>,
@@ -658,6 +686,177 @@ impl VideoPreview {
         name.contains("prores4444") || name.contains("prores_4444")
     }
 
+    fn audio_preview_cache_path(cache_root: &Path, source_path: &Path) -> PathBuf {
+        let mut hasher = DefaultHasher::new();
+        source_path.to_string_lossy().hash(&mut hasher);
+        if let Ok(meta) = source_path.metadata() {
+            meta.len().hash(&mut hasher);
+            if let Ok(modified) = meta.modified() {
+                modified.hash(&mut hasher);
+            }
+        }
+        cache_root
+            .join(".audio_preview")
+            .join(format!("audio_preview_{:016x}.wav", hasher.finish()))
+    }
+
+    fn build_audio_preview_wav(ffmpeg_path: &str, source_path: &Path, output_path: &Path) -> bool {
+        let Some(parent) = output_path.parent() else {
+            return false;
+        };
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+        let tmp_path = output_path.with_extension(format!("wav.tmp.{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp_path);
+
+        // Decode through FFmpeg into a simple PCM WAV so preview playback does not depend
+        // on optional GStreamer audio decoder plugins such as MP3/mpg123.
+        let output_result = Command::new(ffmpeg_path)
+            .arg("-y")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-i")
+            .arg(source_path)
+            .arg("-vn")
+            .arg("-ac")
+            .arg("2")
+            .arg("-ar")
+            .arg("48000")
+            .arg("-c:a")
+            .arg("pcm_s16le")
+            .arg("-f")
+            .arg("wav")
+            .arg(&tmp_path)
+            .output();
+
+        match output_result {
+            Ok(output) if output.status.success() => {
+                if let Err(err) = std::fs::rename(&tmp_path, output_path) {
+                    log::error!(
+                        "[AudioPreview] failed to finalize wav cache output={} err={}",
+                        output_path.to_string_lossy(),
+                        err
+                    );
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return false;
+                }
+                true
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                log::error!(
+                    "[AudioPreview] ffmpeg wav cache failed status={} source={} stderr={}",
+                    output.status,
+                    source_path.to_string_lossy(),
+                    stderr.trim()
+                );
+                let _ = std::fs::remove_file(&tmp_path);
+                false
+            }
+            Err(err) => {
+                log::error!(
+                    "[AudioPreview] failed to execute ffmpeg={} source={} err={}",
+                    ffmpeg_path,
+                    source_path.to_string_lossy(),
+                    err
+                );
+                let _ = std::fs::remove_file(&tmp_path);
+                false
+            }
+        }
+    }
+
+    fn resolve_audio_preview_path(
+        &mut self,
+        original_path: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        if !is_audio_preview_cache_ext(original_path) {
+            return Some(original_path.to_string());
+        }
+        if let Some(cached) = self.audio_preview_cache_paths.get(original_path) {
+            if Path::new(cached).is_file() {
+                return Some(cached.clone());
+            }
+        }
+        if self.audio_preview_failed.contains(original_path) {
+            return None;
+        }
+        if self.audio_preview_in_flight.contains(original_path) {
+            return None;
+        }
+
+        let source = PathBuf::from(original_path);
+        let cache_root = self.global.read(cx).cache_root_dir();
+        let output = Self::audio_preview_cache_path(&cache_root, &source);
+        if output.is_file() {
+            let cached = output.to_string_lossy().to_string();
+            self.audio_preview_cache_paths
+                .insert(original_path.to_string(), cached.clone());
+            return Some(cached);
+        }
+
+        let ffmpeg_path = self.global.read(cx).ffmpeg_path.clone();
+        let key = original_path.to_string();
+        self.audio_preview_in_flight.insert(key.clone());
+        log::info!(
+            "[AudioPreview] queue wav cache source={} output={}",
+            original_path,
+            output.to_string_lossy()
+        );
+        cx.spawn(async move |view, cx| {
+            let result = cx
+                .background_spawn({
+                    let ffmpeg_path = ffmpeg_path.clone();
+                    let source = source.clone();
+                    let output = output.clone();
+                    async move {
+                        if Self::build_audio_preview_wav(&ffmpeg_path, &source, &output) {
+                            Some(output.to_string_lossy().to_string())
+                        } else {
+                            None
+                        }
+                    }
+                })
+                .await;
+
+            let _ = view.update(cx, |this, cx| {
+                this.audio_preview_in_flight.remove(&key);
+                if let Some(cached) = result {
+                    this.audio_preview_failed.remove(&key);
+                    log::info!(
+                        "[AudioPreview] wav cache ready source={} output={}",
+                        key,
+                        cached
+                    );
+                    this.audio_preview_cache_paths.insert(key.clone(), cached);
+                    let stale_audio_ids = this
+                        .global
+                        .read(cx)
+                        .audio_tracks
+                        .iter()
+                        .flat_map(|track| track.clips.iter())
+                        .filter(|clip| clip.file_path == key)
+                        .map(|clip| clip.id)
+                        .collect::<Vec<_>>();
+                    for clip_id in stale_audio_ids {
+                        // Cache completion changes the effective URI from source audio to WAV;
+                        // drop any older player so the next sync uses the decoded preview file.
+                        this.remove_audio_cache_entry(clip_id);
+                    }
+                } else {
+                    this.audio_preview_failed.insert(key.clone());
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+
+        None
+    }
+
     pub fn new(global: Entity<GlobalState>, cx: &mut Context<Self>) -> Self {
         cx.subscribe(&global, |_, global, evt: &PlaybackUiEvent, cx| {
             if matches!(evt, PlaybackUiEvent::Tick)
@@ -674,6 +873,9 @@ impl VideoPreview {
             visual_players: HashMap::new(),
             visual_order: Vec::new(),
             audio_players: HashMap::new(),
+            rodio_audio_players: HashMap::new(),
+            rodio_output_stream: None,
+            rodio_output_handle: None,
             last_seek_requests: HashMap::new(),
             global,
             focus_handle: Some(cx.focus_handle()),
@@ -690,6 +892,9 @@ impl VideoPreview {
             image_last_used: HashMap::new(),
             visual_paused_state: HashMap::new(),
             audio_paused_state: HashMap::new(),
+            audio_preview_cache_paths: HashMap::new(),
+            audio_preview_in_flight: HashSet::new(),
+            audio_preview_failed: HashSet::new(),
             last_active_visual_ids: HashSet::new(),
             last_active_audio_ids: HashSet::new(),
             image_decode_in_flight: HashSet::new(),
@@ -1132,33 +1337,47 @@ impl VideoPreview {
     /// Keep only a bounded number of inactive audio players to avoid create/drop churn during scrub.
     fn trim_audio_player_cache(&mut self, active_audio_ids: &HashSet<u64>) {
         let audio_cache_limit = self.memory_tuning.audio_cache_limit;
-        if self.audio_players.len() <= audio_cache_limit {
+        let audio_player_count = self
+            .audio_players
+            .len()
+            .saturating_add(self.rodio_audio_players.len());
+        if audio_player_count <= audio_cache_limit {
             return;
         }
 
         let mut removable: Vec<(u64, u64)> = self
             .audio_players
             .keys()
+            .chain(self.rodio_audio_players.keys())
             .filter(|id| !active_audio_ids.contains(id))
             .map(|id| (*id, *self.audio_last_used.get(id).unwrap_or(&0)))
             .collect();
         removable.sort_by_key(|(_, used)| *used);
 
         for (clip_id, _) in removable {
-            if self.audio_players.len() <= audio_cache_limit {
+            let audio_player_count = self
+                .audio_players
+                .len()
+                .saturating_add(self.rodio_audio_players.len());
+            if audio_player_count <= audio_cache_limit {
                 break;
             }
             log::debug!("[Preview][Cache] evict audio clip={}", clip_id);
             self.audio_players.remove(&clip_id);
+            self.remove_rodio_audio_player(clip_id);
             self.audio_last_used.remove(&clip_id);
             self.audio_paused_state.remove(&clip_id);
             self.last_seek_requests.remove(&clip_id);
         }
 
-        if self.audio_players.len() > audio_cache_limit {
+        let audio_player_count = self
+            .audio_players
+            .len()
+            .saturating_add(self.rodio_audio_players.len());
+        if audio_player_count > audio_cache_limit {
             log::warn!(
                 "[Preview][Cache] audio cache remains above limit: size={} limit={} active_audio={}",
-                self.audio_players.len(),
+                audio_player_count,
                 audio_cache_limit,
                 active_audio_ids.len()
             );
@@ -1246,6 +1465,7 @@ impl VideoPreview {
         let audio_bytes = self
             .audio_players
             .len()
+            .saturating_add(self.rodio_audio_players.len())
             .saturating_mul(self.memory_tuning.estimated_audio_player_bytes);
         image_bytes
             .saturating_add(visual_bytes)
@@ -1318,6 +1538,7 @@ impl VideoPreview {
         let mut audio_candidates: Vec<(u64, u64)> = self
             .audio_players
             .keys()
+            .chain(self.rodio_audio_players.keys())
             .filter(|id| !active_audio_ids.contains(id))
             .map(|id| (*id, *self.audio_last_used.get(id).unwrap_or(&0)))
             .collect();
@@ -1327,6 +1548,7 @@ impl VideoPreview {
                 break;
             }
             self.audio_players.remove(&clip_id);
+            self.remove_rodio_audio_player(clip_id);
             self.audio_last_used.remove(&clip_id);
             self.audio_paused_state.remove(&clip_id);
             self.last_seek_requests.remove(&clip_id);
@@ -1401,6 +1623,7 @@ impl VideoPreview {
 
     fn remove_audio_cache_entry(&mut self, clip_id: u64) -> bool {
         let mut removed = self.audio_players.remove(&clip_id).is_some();
+        removed |= self.remove_rodio_audio_player(clip_id);
         removed |= self.audio_last_used.remove(&clip_id).is_some();
         removed |= self.audio_paused_state.remove(&clip_id).is_some();
         removed |= self.last_seek_requests.remove(&clip_id).is_some();
@@ -1446,6 +1669,7 @@ impl VideoPreview {
         let stale_audio_ids: Vec<u64> = self
             .audio_players
             .keys()
+            .chain(self.rodio_audio_players.keys())
             .filter(|clip_id| !timeline_audio_ids.contains(clip_id))
             .copied()
             .collect();
@@ -1462,7 +1686,10 @@ impl VideoPreview {
     /// Emit cache growth milestones so RAM buildup can be correlated with cache-map sizes.
     fn log_cache_growth_if_needed(&mut self) {
         let visual_len = self.visual_players.len();
-        let audio_len = self.audio_players.len();
+        let audio_len = self
+            .audio_players
+            .len()
+            .saturating_add(self.rodio_audio_players.len());
         let image_len = self.image_cache.len();
         let seek_len = self.last_seek_requests.len();
 
@@ -1902,6 +2129,194 @@ impl VideoPreview {
                 player.set_muted(false);
             }
         }
+
+        for (clip_id, player) in &mut self.rodio_audio_players {
+            let should_pause = !active_audio_ids.contains(clip_id);
+            if player.paused != should_pause {
+                if should_pause {
+                    player.sink.pause();
+                } else {
+                    player.sink.play();
+                }
+                player.paused = should_pause;
+            }
+        }
+    }
+
+    fn ensure_rodio_output(&mut self) -> Result<OutputStreamHandle, String> {
+        if let Some(handle) = &self.rodio_output_handle {
+            return Ok(handle.clone());
+        }
+
+        let (stream, handle) = OutputStream::try_default()
+            .map_err(|err| format!("failed to open default audio output: {err}"))?;
+        self.rodio_output_stream = Some(stream);
+        self.rodio_output_handle = Some(handle.clone());
+        Ok(handle)
+    }
+
+    fn remove_rodio_audio_player(&mut self, clip_id: u64) -> bool {
+        if let Some(player) = self.rodio_audio_players.remove(&clip_id) {
+            player.sink.stop();
+            return true;
+        }
+        false
+    }
+
+    fn create_rodio_audio_player(
+        &mut self,
+        id: u64,
+        playback_path: &str,
+        src: Duration,
+        gain_linear: f64,
+    ) -> Result<RodioAudioPlayer, String> {
+        let handle = self.ensure_rodio_output()?;
+        let file = File::open(playback_path)
+            .map_err(|err| format!("failed to open audio preview cache: {err}"))?;
+        let source = Decoder::new(BufReader::new(file))
+            .map_err(|err| format!("failed to decode audio preview cache: {err}"))?;
+        let sink = Sink::try_new(&handle).map_err(|err| format!("failed to create sink: {err}"))?;
+
+        // Rodio is used only for audio-preview cache playback so audio-only imports do not depend
+        // on the host GStreamer audio sink, which can fail state changes on macOS.
+        sink.append(source.skip_duration(src));
+        sink.pause();
+        sink.set_volume(gain_linear.clamp(0.0, 4.0) as f32);
+
+        log::warn!(
+            "[Audio][Rodio] clip={} CREATE player gain={:.4} src={:.3}s path={}",
+            id,
+            gain_linear,
+            src.as_secs_f64(),
+            playback_path
+        );
+
+        Ok(RodioAudioPlayer {
+            sink,
+            gain: gain_linear.clamp(0.0, 4.0) as f32,
+            paused: true,
+        })
+    }
+
+    fn restart_rodio_audio_player(
+        &mut self,
+        id: u64,
+        path: &str,
+        src: Duration,
+        gain_linear: f64,
+        should_play: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(playback_path) = self.resolve_audio_preview_path(path, cx) else {
+            return;
+        };
+        self.remove_rodio_audio_player(id);
+        match self.create_rodio_audio_player(id, &playback_path, src, gain_linear) {
+            Ok(mut player) => {
+                if should_play {
+                    player.sink.play();
+                    player.paused = false;
+                }
+                self.last_seek_requests.insert(id, src);
+                self.audio_paused_state.insert(id, !should_play);
+                self.rodio_audio_players.insert(id, player);
+            }
+            Err(err) => {
+                log::error!(
+                    "[Audio][Rodio] clip={} failed CREATE player path={} err={}",
+                    id,
+                    playback_path,
+                    err
+                );
+            }
+        }
+    }
+
+    fn ensure_audio_player(
+        &mut self,
+        id: u64,
+        path: &str,
+        src: Duration,
+        gain_linear: f64,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(playback_path) = self.resolve_audio_preview_path(path, cx) else {
+            return;
+        };
+        if is_audio_preview_cache_ext(path) {
+            if let Some(existing) = self.rodio_audio_players.get_mut(&id) {
+                let gain = gain_linear.clamp(0.0, 4.0) as f32;
+                if (existing.gain - gain).abs() > 0.001 {
+                    existing.sink.set_volume(gain);
+                    existing.gain = gain;
+                }
+                return;
+            }
+            match self.create_rodio_audio_player(id, &playback_path, src, gain_linear) {
+                Ok(player) => {
+                    self.last_seek_requests.insert(id, src);
+                    self.audio_paused_state.insert(id, true);
+                    self.rodio_audio_players.insert(id, player);
+                }
+                Err(err) => {
+                    log::error!(
+                        "[Audio][Rodio] clip={} failed CREATE player path={} err={}",
+                        id,
+                        playback_path,
+                        err
+                    );
+                }
+            }
+            return;
+        }
+        if let Some(existing) = self.audio_players.get(&id) {
+            let cur = existing.volume();
+            if (cur - gain_linear).abs() > 0.001 {
+                log::warn!(
+                    "[Audio] clip={} set_volume old={:.4} new={:.4}",
+                    id,
+                    cur,
+                    gain_linear
+                );
+                existing.set_volume(gain_linear);
+            }
+            return;
+        }
+        log::warn!(
+            "[Audio] clip={} CREATE player gain={:.4} path={}",
+            id,
+            gain_linear,
+            playback_path
+        );
+        if let Ok(url) = Url::from_file_path(PathBuf::from(&playback_path)) {
+            let opts = VideoOptions {
+                is_audio_only: true,
+                frame_buffer_capacity: Some(0),
+                appsink_max_buffers: Some(1),
+                ..Default::default()
+            };
+            match Video::new_with_options(&url, opts) {
+                Ok(p) => {
+                    // Always boot cached audio players in paused state first. This keeps transport
+                    // deterministic and avoids play-edge races where first unpause can be skipped.
+                    p.set_paused(true);
+                    p.set_muted(false);
+                    p.set_volume(gain_linear);
+                    let _ = p.seek(Position::Time(src), false);
+                    self.last_seek_requests.insert(id, src);
+                    self.audio_paused_state.insert(id, true);
+                    self.audio_players.insert(id, p);
+                }
+                Err(err) => {
+                    log::error!(
+                        "[Audio] clip={} failed CREATE player path={} err={:?}",
+                        id,
+                        playback_path,
+                        err
+                    );
+                }
+            }
+        }
     }
 
     /// Print active clip transitions so boundary behavior can be correlated with freeze reports.
@@ -1963,7 +2378,9 @@ impl VideoPreview {
             active_visual_count,
             self.visual_players.len(),
             active_audio_count,
-            self.audio_players.len(),
+            self.audio_players
+                .len()
+                .saturating_add(self.rodio_audio_players.len()),
             self.image_cache.len(),
             image_bytes as f64 / (1024.0 * 1024.0),
             estimated_cache_bytes as f64 / (1024.0 * 1024.0),
@@ -3079,47 +3496,6 @@ impl VideoPreview {
                     .collect::<Vec<_>>()
             );
         }
-        let mut ensure_audio_player = |id: u64, path: &str, src: Duration, gain_linear: f64| {
-            if let Some(existing) = self.audio_players.get(&id) {
-                let cur = existing.volume();
-                if (cur - gain_linear).abs() > 0.001 {
-                    log::warn!(
-                        "[Audio] clip={} set_volume old={:.4} new={:.4}",
-                        id,
-                        cur,
-                        gain_linear
-                    );
-                    existing.set_volume(gain_linear);
-                }
-                return;
-            }
-            log::warn!(
-                "[Audio] clip={} CREATE player gain={:.4} path={}",
-                id,
-                gain_linear,
-                path
-            );
-            if let Ok(url) = Url::from_file_path(PathBuf::from(path)) {
-                let opts = VideoOptions {
-                    is_audio_only: true,
-                    frame_buffer_capacity: Some(0),
-                    appsink_max_buffers: Some(1),
-                    ..Default::default()
-                };
-                if let Ok(p) = Video::new_with_options(&url, opts) {
-                    // Always boot cached audio players in paused state first. This keeps transport
-                    // deterministic and avoids play-edge races where first unpause can be skipped.
-                    p.set_paused(true);
-                    p.set_muted(false);
-                    p.set_volume(gain_linear);
-                    let _ = p.seek(Position::Time(src), false);
-                    self.last_seek_requests.insert(id, src);
-                    self.audio_paused_state.insert(id, true);
-                    self.audio_players.insert(id, p);
-                }
-            }
-        };
-
         let mut active_audio_ids = HashSet::new();
         for (id, path, src, gain_linear) in &audio_clips {
             let id = *id;
@@ -3128,7 +3504,7 @@ impl VideoPreview {
             }
             active_audio_ids.insert(id);
             Self::touch_cache(&mut self.audio_last_used, &mut self.cache_touch_counter, id);
-            ensure_audio_player(id, path, *src, *gain_linear);
+            self.ensure_audio_player(id, path, *src, *gain_linear, cx);
         }
 
         // Prewarm near-future audio clips so boundary playback doesn't miss the first seconds.
@@ -3140,16 +3516,22 @@ impl VideoPreview {
             {
                 continue;
             }
-            ensure_audio_player(id, path, *src, 1.0);
+            self.ensure_audio_player(id, path, *src, 1.0, cx);
         }
         self.trim_audio_player_cache(&active_audio_ids);
         self.last_seek_requests.retain(|k, _| {
-            self.visual_players.contains_key(k) || self.audio_players.contains_key(k)
+            self.visual_players.contains_key(k)
+                || self.audio_players.contains_key(k)
+                || self.rodio_audio_players.contains_key(k)
         });
-        self.audio_paused_state
-            .retain(|clip_id, _| self.audio_players.contains_key(clip_id));
-        self.audio_last_used
-            .retain(|clip_id, _| self.audio_players.contains_key(clip_id));
+        self.audio_paused_state.retain(|clip_id, _| {
+            self.audio_players.contains_key(clip_id)
+                || self.rodio_audio_players.contains_key(clip_id)
+        });
+        self.audio_last_used.retain(|clip_id, _| {
+            self.audio_players.contains_key(clip_id)
+                || self.rodio_audio_players.contains_key(clip_id)
+        });
         self.enforce_memory_budget(&active_video_ids, &active_audio_ids, &active_image_ids);
         self.log_cache_growth_if_needed();
 
@@ -3162,7 +3544,9 @@ impl VideoPreview {
                 playhead.as_secs_f64(),
                 active_visual_ids.len(),
                 self.visual_players.len(),
-                self.audio_players.len(),
+                self.audio_players
+                    .len()
+                    .saturating_add(self.rodio_audio_players.len()),
                 self.image_cache.len()
             );
         }
@@ -3383,7 +3767,14 @@ impl VideoPreview {
                 player.set_muted(true);
             }
         }
+        for player in self.rodio_audio_players.values_mut() {
+            player.sink.pause();
+            player.paused = true;
+        }
         for clip_id in self.audio_players.keys() {
+            self.audio_paused_state.insert(*clip_id, true);
+        }
+        for clip_id in self.rodio_audio_players.keys() {
             self.audio_paused_state.insert(*clip_id, true);
         }
     }
@@ -3495,7 +3886,7 @@ impl VideoPreview {
                     }
                 }
             }
-            for (id, _, src_time, _) in &active_audio {
+            for (id, path, src_time, gain_linear) in &active_audio {
                 let should_force = external_playhead_jump || newly_active_audio_ids.contains(id);
                 if !should_force {
                     continue;
@@ -3507,6 +3898,20 @@ impl VideoPreview {
                     if should_seek {
                         let _ = p.seek(Position::Time(*src_time), false);
                         this.last_seek_requests.insert(*id, *src_time);
+                    }
+                } else if this.rodio_audio_players.contains_key(id) {
+                    let should_seek = this.last_seek_requests.get(id).is_none_or(|last| {
+                        (last.as_secs_f64() - src_time.as_secs_f64()).abs() > seek_epsilon
+                    });
+                    if should_seek {
+                        this.restart_rodio_audio_player(
+                            *id,
+                            path,
+                            *src_time,
+                            *gain_linear,
+                            true,
+                            cx,
+                        );
                     }
                 }
             }
@@ -3592,7 +3997,8 @@ impl VideoPreview {
                 gs.playhead.as_secs_f64()
             );
         }
-        for (id, _, st, gain_linear) in active {
+        let playhead_at_start = gs.playhead;
+        for (id, path, st, gain_linear) in active {
             if let Some(p) = self.audio_players.get(&id) {
                 // Force a fresh paused->playing transition on play start.
                 p.set_paused(true);
@@ -3600,12 +4006,14 @@ impl VideoPreview {
                 p.set_muted(false);
                 self.audio_paused_state.insert(id, true);
                 let _ = p.seek(Position::Time(st), false);
+            } else if self.rodio_audio_players.contains_key(&id) {
+                self.restart_rodio_audio_player(id, &path, st, gain_linear, true, cx);
             }
         }
-        self.log_active_set_transition(gs.playhead, &active_visual_ids, &active_audio_ids);
+        self.log_active_set_transition(playhead_at_start, &active_visual_ids, &active_audio_ids);
         self.update_visual_player_transport(&active_visual_ids);
         self.update_audio_player_transport(&active_audio_ids);
-        self.last_pump_playhead = Some(gs.playhead);
+        self.last_pump_playhead = Some(playhead_at_start);
         self.schedule_pump_frame(token, window, cx);
     }
 

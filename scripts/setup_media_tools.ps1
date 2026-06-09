@@ -143,6 +143,25 @@ function Test-FfmpegIsLgplOnly([string]$FfmpegExe) {
     return $true
 }
 
+function Get-FfmpegMissingExtendedEncoders([string]$FfmpegExe) {
+    $encoders = & $FfmpegExe -hide_banner -encoders 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return @("libvpx", "libvpx-vp9", "libaom-av1", "libsvtav1", "libmp3lame", "libopus")
+    }
+
+    # The Windows script syncs a vetted FFmpeg runtime instead of compiling one,
+    # so verify the LGPL encoder set required by Anica export presets.
+    $joined = ($encoders -join "`n").ToLowerInvariant()
+    $required = @("libvpx", "libvpx-vp9", "libaom-av1", "libsvtav1", "libmp3lame", "libopus")
+    $missing = @()
+    foreach ($encoder in $required) {
+        if (-not $joined.Contains($encoder.ToLowerInvariant())) {
+            $missing += $encoder
+        }
+    }
+    return $missing
+}
+
 function Remove-IfExists([string]$Path) {
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Force -Recurse
@@ -257,6 +276,13 @@ Ensure-GStreamer
 
 if ($Mode -eq "system") {
     Ensure-SystemFfmpeg
+    $ffmpegExe = Resolve-CommandExecutable "ffmpeg"
+    if (-not [string]::IsNullOrWhiteSpace($ffmpegExe)) {
+        $missing = @(Get-FfmpegMissingExtendedEncoders $ffmpegExe)
+        if ($missing.Count -gt 0) {
+            Warn "System FFmpeg is missing Anica extended export encoders: $($missing -join ', '). Runtime sync will continue, but those presets may fail."
+        }
+    }
     Sync-FfmpegRuntime
     Sync-GStreamerRuntime
 } else {
@@ -270,6 +296,10 @@ if ($Mode -eq "system") {
     }
     if (-not (Test-FfmpegIsLgplOnly $ffmpegExe)) {
         throw "Detected ffmpeg build is not verified LGPL-only (or config not readable). Provide a vetted LGPL-only ffmpeg build and retry."
+    }
+    $missing = @(Get-FfmpegMissingExtendedEncoders $ffmpegExe)
+    if ($missing.Count -gt 0) {
+        throw "Detected LGPL FFmpeg build is missing required Anica export encoders: $($missing -join ', '). Provide a vetted build with libvpx, libaom, SVT-AV1, LAME, and libopus enabled."
     }
 
     Sync-FfmpegRuntime

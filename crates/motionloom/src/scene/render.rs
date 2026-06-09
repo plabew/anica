@@ -27,8 +27,8 @@ use crate::scene::composition::{
     apply_scene_post_pass, blend_pixel, build_scene_bloom_prefilter, composite_layer,
     composite_layer_affine, composite_layer_affine_blend, composite_layer_affine_blend_clipped,
     composite_layer_affine_clipped, composite_scene_bloom, composite_transformed_layer,
-    composite_transformed_layer_anchored, draw_rgba_image, pass_param_expr,
-    scene_post_bloom_params, scene_post_blur_params,
+    composite_transformed_layer_anchored, draw_rgba_image, is_color_key_alpha_effect,
+    pass_param_expr, scene_post_bloom_params, scene_post_blur_params,
 };
 use crate::scene::domain::apply_action_graph_at_time;
 use crate::scene::drawable::{
@@ -532,6 +532,7 @@ impl SceneFrameRenderer {
                     logical_size,
                     time_norm,
                     time_sec,
+                    [0, 0, 0, 0],
                 )?
             };
             resources.insert("scene".to_string(), canvas);
@@ -544,13 +545,14 @@ impl SceneFrameRenderer {
             } else {
                 (output_size, logical_size, root_transform)
             };
-            let maybe_gpu_image = self.try_render_gpu_scene_nodes(
+            let maybe_gpu_image = self.try_render_gpu_scene_nodes_with_background(
                 &scene.children,
                 scene_output_size,
                 scene_logical_size,
                 scene_transform,
                 time_norm,
                 time_sec,
+                Some(background),
             )?;
             let scene_canvas = if let Some(image) = maybe_gpu_image {
                 image
@@ -568,6 +570,7 @@ impl SceneFrameRenderer {
                     scene_logical_size,
                     time_norm,
                     time_sec,
+                    background,
                 )?
             };
             resources.insert(scene.id.clone(), scene_canvas.clone());
@@ -747,9 +750,6 @@ impl SceneFrameRenderer {
         }
 
         let mut primitives = Vec::<GpuScenePrimitive>::new();
-        if let Some(color) = background {
-            primitives.push(gpu_solid_primitive(color));
-        }
         let mut scene_overlays = Vec::<CpuSceneOverlay>::new();
         let mut text_requests = Vec::<GpuSceneTextRequest>::new();
         collect_gpu_scene_commands(
@@ -797,7 +797,12 @@ impl SceneFrameRenderer {
                 .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
                     message: "GPU compositor was not initialized".to_string(),
                 })?;
-        let canvas = compositor.render_scene_content(&primitives, &texture_layers)?;
+        let texture = compositor.render_scene_content_to_texture(
+            &primitives,
+            &texture_layers,
+            background.unwrap_or([0, 0, 0, 0]),
+        )?;
+        let canvas = compositor.readback_texture_rgba(&texture.texture)?;
         Ok(Some(canvas))
     }
 
@@ -842,9 +847,6 @@ impl SceneFrameRenderer {
         self.ensure_gpu_compositor_size(output_size.0.max(1), output_size.1.max(1))?;
         let mut assets = GpuSceneNativeAssets::default();
         let mut primitives = Vec::<GpuScenePrimitive>::new();
-        if let Some(color) = background {
-            primitives.push(gpu_solid_primitive(color));
-        }
         let mut texture_layers = Vec::<GpuSceneTextureLayer>::new();
         let mut text_requests = Vec::<GpuSceneTextRequest>::new();
         let mut unsupported = false;
@@ -887,7 +889,7 @@ impl SceneFrameRenderer {
         let texture = compositor.render_scene_content_to_texture(
             &primitives,
             &texture_layers,
-            [0, 0, 0, 0],
+            background.unwrap_or([0, 0, 0, 0]),
         )?;
         compositor.readback_texture_rgba(&texture.texture).map(Some)
     }
@@ -2035,11 +2037,12 @@ impl SceneFrameRenderer {
         logical_size: (u32, u32),
         time_norm: f32,
         time_sec: f32,
+        background: [u8; 4],
     ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
         let mut logical_canvas = RgbaImage::from_pixel(
             logical_size.0.max(1),
             logical_size.1.max(1),
-            Rgba([0, 0, 0, 0]),
+            Rgba(background),
         );
         self.draw_scene_nodes(&mut logical_canvas, nodes, time_norm, time_sec, 1.0)?;
         Ok(fit_logical_canvas_to_output(&logical_canvas, output_size))
@@ -2124,6 +2127,9 @@ impl SceneFrameRenderer {
                 })?;
                 return compositor.apply_gpu_opacity_pass(input, opacity);
             }
+        }
+        if is_color_key_alpha_effect(&effect) {
+            return apply_scene_post_pass(input, pass, time_norm, time_sec);
         }
         if self.profile.uses_gpu_compositor() {
             return Err(MotionLoomSceneRenderError::GpuRender {
@@ -9239,6 +9245,51 @@ mod tests {
         assert!(
             (120..=136).contains(&pixel[3]),
             "expected opacity pass to halve alpha, got {pixel:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_color_to_alpha_keys_background_after_process_pass() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,48]}>
+  <Background color="#FFFFFF" />
+  <Scene id="scene0">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Rect x="20" y="14" width="24" height="20" radius="4" color="#101827" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Process id="keyed">
+    <Tex id="src" fmt="rgba16f" from="scene:scene0" />
+    <Tex id="out" fmt="rgba16f" size={[64,48]} />
+    <Pass id="key_color" kind="compute"
+          effect="color_to_alpha"
+          in={["src"]} out={["out"]}
+          params={{ color: "#FFFFFF", tolerance: "0.02", softness: "0.12" }} />
+  </Process>
+  <Present from="keyed" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = SceneFrameRenderer::new();
+        let rendered = renderer.render_frame(&graph, 0).expect("frame 0");
+        let bg = rendered.get_pixel(4, 4);
+        let center = rendered.get_pixel(32, 24);
+
+        assert!(
+            bg[3] < 8,
+            "expected white background to key out, got {bg:?}"
+        );
+        assert!(
+            center[3] > 240 && center[0] < 40 && center[1] < 50 && center[2] < 70,
+            "expected non-white center to remain opaque, got {center:?}"
         );
     }
 

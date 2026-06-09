@@ -22,7 +22,7 @@ use gpui_component::{
 
 use crate::core::export::{
     ExportMode, ExportPreset, ExportProgress, ExportRange, ExportSettings, FfmpegExporter,
-    export_fps_choices_for_ui, export_resolution_choices_for_ui, is_cancelled_export_error,
+    export_fps_choices_for_preset, export_resolution_choices_for_ui, is_cancelled_export_error,
 };
 
 use super::timeline_panel::TimelinePanel;
@@ -98,14 +98,7 @@ pub struct ExportModalState {
 
 impl ExportModalState {
     const fn default_preset_for_platform() -> ExportPreset {
-        #[cfg(target_os = "macos")]
-        {
-            ExportPreset::H264VideotoolboxMp4
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            ExportPreset::H264Mp4
-        }
+        ExportPreset::default_for_platform()
     }
 
     pub fn new() -> Self {
@@ -277,9 +270,9 @@ impl ExportModalState {
         )
     }
 
-    fn fps_choice_items() -> SearchableVec<ExportChoiceOption> {
+    fn fps_choice_items(preset: ExportPreset) -> SearchableVec<ExportChoiceOption> {
         SearchableVec::new(
-            export_fps_choices_for_ui()
+            export_fps_choices_for_preset(preset)
                 .iter()
                 .copied()
                 .map(|fps| ExportChoiceOption::new(fps.to_string(), format!("{fps} fps")))
@@ -363,6 +356,13 @@ impl ExportModalState {
             let state = cx.new(|cx| {
                 SelectState::new(Self::preset_choice_items(), None, window, cx).searchable(true)
             });
+            // If the current preset is no longer available on this platform,
+            // reset to the platform default before selecting it in the dropdown.
+            let available_presets = ExportPreset::all_for_ui();
+            if !available_presets.contains(&self.preset) {
+                self.preset = Self::default_preset_for_platform();
+                self.overwrite_path = None;
+            }
             let selected_id = self.preset.id().to_string();
             state.update(cx, |this, cx| {
                 this.set_selected_value(&selected_id, window, cx);
@@ -379,6 +379,15 @@ impl ExportModalState {
                     };
                     this.export_modal.preset = preset;
                     this.export_modal.overwrite_path = None;
+                    // Reset fps if the current selection is no longer valid for the new preset.
+                    // macOS/Windows hardware encoders do not reliably support <24 fps for
+                    // video exports; only GIF allows 5/10/15 fps.
+                    if preset != ExportPreset::Gif && this.export_modal.settings.fps < 24 {
+                        this.export_modal.settings.fps = 30;
+                    }
+                    // Force the fps select to be rebuilt next render so the available
+                    // choices match the new preset.
+                    this.export_modal.fps_select = None;
                     cx.notify();
                 },
             );
@@ -414,7 +423,8 @@ impl ExportModalState {
 
         if self.fps_select.is_none() {
             let state = cx.new(|cx| {
-                SelectState::new(Self::fps_choice_items(), None, window, cx).searchable(false)
+                SelectState::new(Self::fps_choice_items(self.preset), None, window, cx)
+                    .searchable(false)
             });
             let selected_id = self.settings.fps.to_string();
             state.update(cx, |this, cx| {

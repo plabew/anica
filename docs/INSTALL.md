@@ -91,7 +91,7 @@ Optional runtime bootstrap (sync into `tools/runtime/current/windows`):
 powershell -ExecutionPolicy Bypass -File .\scripts\setup_media_tools.ps1 -Mode local-lgpl -InstallGStreamer -Yes -ToolsHome .\tools\runtime\current\windows
 ```
 
-`local-lgpl` mode rejects FFmpeg builds that expose `--enable-gpl` or `--enable-nonfree` in `ffmpeg -version`.
+`local-lgpl` mode rejects FFmpeg builds that expose `--enable-gpl` or `--enable-nonfree` in `ffmpeg -version`, and requires `libvpx`, `libaom-av1`, `libsvtav1`, `libmp3lame`, and `libopus` encoders.
 
 ---
 
