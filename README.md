@@ -1,6 +1,6 @@
 # Anica
 <p align="center">
-  <img src="./assets/logo/logo_official_1920X700.png" alt="Anica logo" width="1200">
+  <img src="./assets/logo/logo_official_bg_transparent_1920X400.png" alt="Anica logo" width="1200">
 </p>
 
 
@@ -10,7 +10,6 @@
 Built with Rust, WGPU, GPUI, GStreamer, and FFmpeg for native GPU-accelerated workflows. Talk to your AI agent in natural language - it can inspect your timeline, suggest edits, and run ACP-powered (Agent Client Protocol) workflows from inside the editor.
 
 > **Status:** Alpha - usable for early adopters. APIs, workflows, and project formats may change.
-> **Distribution:** Source-only alpha. No prebuilt binaries are published at this stage.
 
 <p align="center">
   <img src="./assets/README/readme_showcase1.png" alt="Anica editor screenshot" width="1200">
