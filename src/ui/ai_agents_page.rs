@@ -328,8 +328,8 @@ fn has_gemini_api_key(gemini_api_key: &str) -> bool {
 }
 
 fn detect_gemini_cli_auth_from_files() -> Option<AgentLoginStatus> {
-    let home = env::var_os("HOME")?;
-    let gemini_dir = PathBuf::from(home).join(".gemini");
+    let home = crate::runtime_paths::home_dir()?;
+    let gemini_dir = home.join(".gemini");
     let settings_path = gemini_dir.join("settings.json");
     let oauth_path = gemini_dir.join("oauth_creds.json");
 
@@ -440,8 +440,8 @@ fn detect_gemini_cli_auth_from_files() -> Option<AgentLoginStatus> {
 }
 
 fn detect_from_auth_file() -> Option<AgentLoginStatus> {
-    let home = env::var_os("HOME")?;
-    let auth_path = PathBuf::from(home).join(".codex").join("auth.json");
+    let home = crate::runtime_paths::home_dir()?;
+    let auth_path = home.join(".codex").join("auth.json");
 
     if !auth_path.exists() {
         return Some(AgentLoginStatus::LoggedOut {
@@ -926,8 +926,7 @@ fn fallback_claude_model_options() -> Vec<ProviderModelOption> {
 }
 
 fn codex_config_dir() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
+    crate::runtime_paths::home_dir()
         .map(|home| home.join(".codex"))
 }
 
@@ -1116,8 +1115,7 @@ fn choose_provider_model_from_candidates(
 }
 
 fn read_gemini_settings_model() -> Option<String> {
-    let path = env::var_os("HOME")
-        .map(PathBuf::from)?
+    let path = crate::runtime_paths::home_dir()?
         .join(".gemini")
         .join("settings.json");
     let raw = fs::read_to_string(path).ok()?;
@@ -1241,8 +1239,7 @@ fn load_gemini_model_options(gemini_cli_bin: &str) -> (Vec<ProviderModelOption>,
 }
 
 fn claude_settings_path() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
+    crate::runtime_paths::home_dir()
         .map(|home| home.join(".claude").join("settings.json"))
 }
 

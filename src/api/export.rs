@@ -106,14 +106,18 @@ struct ResolvedTargetResolution {
 }
 
 fn default_export_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        let movies_dir = PathBuf::from(&home).join("Movies");
+    if let Some(home) = crate::runtime_paths::home_dir() {
+        let movies_dir = home.join("Movies");
         if movies_dir.exists() {
             return movies_dir;
         }
-        let desktop_dir = PathBuf::from(home).join("Desktop");
+        let desktop_dir = home.join("Desktop");
         if desktop_dir.exists() {
             return desktop_dir;
+        }
+        let videos_dir = home.join("Videos");
+        if videos_dir.exists() {
+            return videos_dir;
         }
     }
     PathBuf::from(".")

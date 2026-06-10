@@ -10,10 +10,15 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
     paths.push(path);
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        })
 }
 
 fn search_path(bin: &str) -> Option<PathBuf> {
