@@ -7445,7 +7445,8 @@ mod tests {
         // so the peak intensity is lower than the raw glow color.
         assert!(
             max_green(&rendered) > 40,
-            "expected green glow generated from text alpha, got {}", max_green(&rendered)
+            "expected green glow generated from text alpha, got {}",
+            max_green(&rendered)
         );
     }
 

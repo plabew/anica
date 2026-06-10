@@ -926,8 +926,7 @@ fn fallback_claude_model_options() -> Vec<ProviderModelOption> {
 }
 
 fn codex_config_dir() -> Option<PathBuf> {
-    crate::runtime_paths::home_dir()
-        .map(|home| home.join(".codex"))
+    crate::runtime_paths::home_dir().map(|home| home.join(".codex"))
 }
 
 fn codex_models_cache_path() -> Option<PathBuf> {
@@ -1239,8 +1238,7 @@ fn load_gemini_model_options(gemini_cli_bin: &str) -> (Vec<ProviderModelOption>,
 }
 
 fn claude_settings_path() -> Option<PathBuf> {
-    crate::runtime_paths::home_dir()
-        .map(|home| home.join(".claude").join("settings.json"))
+    crate::runtime_paths::home_dir().map(|home| home.join(".claude").join("settings.json"))
 }
 
 fn read_claude_settings_json() -> Option<(PathBuf, Value)> {
