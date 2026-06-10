@@ -4,11 +4,9 @@ set -euo pipefail
 # Bootstrap media runtime for local Anica development.
 # Downloads a pre-built LGPL-only runtime from GitHub Releases if not present.
 #
-# Usage examples:
+# Usage:
 #   ./scripts/setup_media_tools.sh
-#   ./scripts/setup_media_tools.sh --yes
-
-YES=0
+#   ./scripts/setup_media_tools.sh --force
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -40,7 +38,7 @@ os_name() {
 manifest_version() {
   local tool="$1"
   if ! have jq; then
-    warn "jq not found; cannot read manifest. Install via 'brew install jq' or 'apt install jq'."
+    warn "jq not found; cannot read manifest."
     return 1
   fi
   jq -r ".common.${tool}.version" "${MANIFEST_PATH}"
@@ -52,81 +50,138 @@ manifest_download_url() {
   if ! have jq; then
     return 1
   fi
-  jq -r ".platforms.${os}.download_url" "${MANIFEST_PATH}"
-}
-
-# Resolve {release_base_url} placeholder in the manifest URL.
-resolve_release_url() {
-  local url="$1"
-  local base_url
-  base_url="$(jq -r '.release_base_url' "${MANIFEST_PATH}" 2>/dev/null || true)"
-  if [[ -n "${base_url}" && "${base_url}" != "null" ]]; then
+  local url base_url
+  url="$(jq -r ".platforms.${os}.download_url" "${MANIFEST_PATH}")"
+  base_url="$(jq -r '.release_base_url' "${MANIFEST_PATH}")"
+  if [[ "${url}" != "null" && "${base_url}" != "null" ]]; then
     printf "%s" "${url}" | sed "s|{release_base_url}|${base_url}|g"
   else
     printf "%s" "${url}"
   fi
 }
 
-# Download and extract the runtime archive for the current platform.
-download_runtime() {
-  local os
-  os="$(os_name)"
-
-  if [[ "${os}" != "macos" && "${os}" != "windows" && "${os}" != "linux" ]]; then
-    warn "Unsupported OS: ${os}. Cannot auto-download runtime."
-    return 1
-  fi
-
-  local url
-  url="$(manifest_download_url "${os}")"
-  if [[ -z "${url}" || "${url}" == "null" ]]; then
-    warn "No download URL found in manifest for ${os}."
-    return 1
-  fi
-  url="$(resolve_release_url "${url}")"
-
-  local ext="tar.gz"
-
-  local dest_dir="${RUNTIME_DIR}/${os}"
-  local archive_name="anica-runtime-${os}.${ext}"
-  local archive_path="${RUNTIME_DIR}/${archive_name}"
-
-  if [[ -d "${dest_dir}/ffmpeg" && -d "${dest_dir}/gstreamer" ]]; then
-    log "Runtime already present: ${dest_dir}"
+# Find the runtime root inside the extracted directory.
+# The tar.gz may have an extra top-level folder (e.g. anica_runtime_macos_20260610).
+find_runtime_root_in_staging() {
+  local staging="$1"
+  # If the staging root already contains ffmpeg/gstreamer, use it directly.
+  if [[ -d "${staging}/ffmpeg" && -d "${staging}/gstreamer" ]]; then
+    printf "%s" "${staging}"
     return 0
   fi
-
-  log "Downloading Anica runtime for ${os}..."
-  log "URL: ${url}"
-
-  mkdir -p "${RUNTIME_DIR}"
-
-  if ! have curl; then
-    warn "curl not found. Cannot download runtime."
-    return 1
+  # Otherwise look one level deeper for the actual runtime folder.
+  local subdir
+  subdir="$(find "${staging}" -maxdepth 2 -type d \( -name "ffmpeg" -o -name "gstreamer" \) | head -1 | xargs dirname 2>/dev/null || true)"
+  if [[ -n "${subdir}" && -d "${subdir}" ]]; then
+    printf "%s" "${subdir}"
+    return 0
   fi
-
-  curl -fL --progress-bar "${url}" -o "${archive_path}" || {
-    warn "Download failed: ${url}"
-    return 1
-  }
-
-  log "Extracting runtime to ${dest_dir}..."
-  mkdir -p "${dest_dir}"
-
-  tar -xzf "${archive_path}" -C "${dest_dir}"
-
-  rm -f "${archive_path}"
-  log "Runtime ready: ${dest_dir}"
+  return 1
 }
 
+# Copy a directory tree from src to dst.
+copy_runtime_tree() {
+  local src="$1" dst="$2"
+  mkdir -p "$(dirname "${dst}")"
+  rm -rf "${dst}"
+  if have rsync; then
+    rsync -a "${src}/" "${dst}/"
+  else
+    cp -R "${src}/." "${dst}/"
+  fi
+}
+
+# Download and extract the runtime archive for the current platform.
 main() {
+  local os
+  os="$(os_name)"
+  if [[ "${os}" != "macos" && "${os}" != "windows" && "${os}" != "linux" ]]; then
+    warn "Unsupported OS: ${os}."
+    exit 1
+  fi
+
   log "Anica runtime bootstrap"
   log "Manifest: ${MANIFEST_PATH}"
 
-  download_runtime
+  local ffmpeg_version gst_version
+  ffmpeg_version="$(manifest_version "ffmpeg")"
+  gst_version="$(manifest_version "gstreamer")"
+  if [[ -z "${ffmpeg_version}" || "${ffmpeg_version}" == "null" ]]; then
+    warn "No FFmpeg version in manifest."
+    exit 1
+  fi
+  if [[ -z "${gst_version}" || "${gst_version}" == "null" ]]; then
+    warn "No GStreamer version in manifest."
+    exit 1
+  fi
 
-  log "Done."
+  local platform_dir="${RUNTIME_DIR}/${os}"
+  local current_dir="${RUNTIME_DIR}/current/${os}"
+
+  # Already present?
+  if [[ -f "${current_dir}/ffmpeg/bin/ffmpeg" && -f "${current_dir}/gstreamer/bin/gst-launch-1.0" ]]; then
+    log "Runtime already present at ${current_dir}"
+    exit 0
+  fi
+
+  # If versioned folders exist, just sync to current.
+  if [[ -d "${platform_dir}/ffmpeg/${ffmpeg_version}" && -d "${platform_dir}/gstreamer/${gst_version}" ]]; then
+    log "Syncing versioned runtime to current..."
+    copy_runtime_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${current_dir}/ffmpeg"
+    copy_runtime_tree "${platform_dir}/gstreamer/${gst_version}" "${current_dir}/gstreamer"
+    log "Runtime ready: ${current_dir}"
+    exit 0
+  fi
+
+  # Download from manifest.
+  local url
+  url="$(manifest_download_url "${os}")"
+  if [[ -z "${url}" || "${url}" == "null" ]]; then
+    warn "No download URL for ${os}."
+    exit 1
+  fi
+
+  local archive_path="${RUNTIME_DIR}/anica-runtime-${os}.tar.gz"
+
+  log "Downloading Anica runtime..."
+  log "URL: ${url}"
+  mkdir -p "${RUNTIME_DIR}"
+  curl -fL --progress-bar "${url}" -o "${archive_path}" || {
+    warn "Download failed."
+    exit 1
+  }
+
+  # Extract to a temp directory.
+  local staging_dir
+  staging_dir="$(mktemp -d "${RUNTIME_DIR}/.extract-${os}.XXXXXX")"
+  log "Extracting to ${staging_dir}..."
+  tar -xzf "${archive_path}" -C "${staging_dir}"
+
+  # Find the actual runtime root (may be nested inside a top-level folder).
+  local runtime_root
+  runtime_root="$(find_runtime_root_in_staging "${staging_dir}")" || {
+    warn "Could not find ffmpeg/gstreamer inside extracted archive."
+    rm -rf "${staging_dir}" "${archive_path}"
+    exit 1
+  }
+
+  log "Found runtime root: ${runtime_root}"
+
+  # Copy versioned runtime to platform dir.
+  mkdir -p "${platform_dir}" "${current_dir}"
+  copy_runtime_tree "${runtime_root}/ffmpeg" "${platform_dir}/ffmpeg/${ffmpeg_version}"
+  copy_runtime_tree "${runtime_root}/gstreamer" "${platform_dir}/gstreamer/${gst_version}"
+
+  # Sync to current (unversioned) for app consumption.
+  copy_runtime_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${current_dir}/ffmpeg"
+  copy_runtime_tree "${platform_dir}/gstreamer/${gst_version}" "${current_dir}/gstreamer"
+
+  # Clean up.
+  rm -f "${archive_path}"
+  rm -rf "${staging_dir}"
+
+  log "Runtime ready: ${current_dir}"
+  log "Versioned: ${platform_dir}/ffmpeg/${ffmpeg_version}, ${platform_dir}/gstreamer/${gst_version}"
 }
 
 main "$@"
