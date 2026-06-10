@@ -846,7 +846,7 @@ impl AppRoot {
                 gs.gstreamer_path.clone(),
             )
         };
-        if !show_modal || (status.all_available() && gstreamer_available) {
+        if !show_modal || status.all_available() {
             return div();
         }
 
@@ -1087,23 +1087,25 @@ impl AppRoot {
                                                     next_status.clone(),
                                                     true,
                                                 );
-                                                if next_status.all_available()
-                                                    && next_gstreamer.is_some()
-                                                {
+                                                if next_status.all_available() {
                                                     gs.hide_media_dependency_modal();
-                                                    gs.ui_notice = Some(
-                                                        "FFmpeg/FFprobe/GStreamer detected. Media features unlocked."
-                                                            .to_string(),
-                                                    );
+                                                    if next_gstreamer.is_some() {
+                                                        gs.ui_notice = Some(
+                                                            "FFmpeg/FFprobe/GStreamer detected. Media features unlocked."
+                                                                .to_string(),
+                                                        );
+                                                    } else {
+                                                        gs.ui_notice = Some(
+                                                            "FFmpeg/FFprobe detected. GStreamer optional for preview playback."
+                                                                .to_string(),
+                                                        );
+                                                    }
                                                 } else {
-                                                    let mut missing = next_status
+                                                    let missing = next_status
                                                         .missing_tools()
                                                         .into_iter()
                                                         .map(ToString::to_string)
                                                         .collect::<Vec<_>>();
-                                                    if next_gstreamer.is_none() {
-                                                        missing.push("gstreamer".to_string());
-                                                    }
                                                     gs.show_media_dependency_modal();
                                                     gs.ui_notice = Some(format!(
                                                         "Missing tools: {}",

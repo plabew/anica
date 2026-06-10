@@ -37,6 +37,15 @@ GSTREAMER_PLUGIN_EXCLUDES=(
   libgstlibav.dylib
 )
 
+# Read a runtime version from the media_tools_manifest.json.
+manifest_version() {
+  local tool="$1"
+  local manifest_path="${REPO_ROOT}/tools/media_tools_manifest.json"
+  if command -v jq >/dev/null 2>&1 && [[ -f "${manifest_path}" ]]; then
+    jq -r ".common.${tool}.version" "${manifest_path}" 2>/dev/null || true
+  fi
+}
+
 usage() {
   cat <<'USAGE'
 Usage: scripts/package_macos_app.sh [options]
@@ -411,11 +420,16 @@ resolve_cargo_package_version() {
 
 resolve_ffmpeg_runtime_root() {
   local root="$1"
+  # Read the stable FFmpeg version from the manifest so scripts point directly to it.
+  local ffmpeg_version
+  ffmpeg_version="$(manifest_version "ffmpeg")"
+  if [[ -z "${ffmpeg_version}" || "${ffmpeg_version}" == "null" ]]; then
+    ffmpeg_version="8.0.1"
+  fi
   local candidates=(
-    "${root}/current"
+    "${root}/ffmpeg/${ffmpeg_version}"
     "${root}"
     "${root}/ffmpeg"
-    "${root}/ffmpeg/current"
   )
   local candidate
   for candidate in "${candidates[@]}"; do
@@ -433,13 +447,22 @@ APP_VERSION="$(resolve_cargo_package_version "${CARGO_TOML}")"
 log "Using app version from Cargo.toml: ${APP_VERSION}"
 
 if [[ -z "${GSTREAMER_PREFIX}" ]]; then
-  GSTREAMER_PREFIX="$(brew --prefix gstreamer)"
+  local gst_version
+  gst_version="$(manifest_version "gstreamer")"
+  if [[ -z "${gst_version}" || "${gst_version}" == "null" ]]; then
+    gst_version="1.28.1"
+  fi
+  if [[ -d "${REPO_ROOT}/tools/runtime/macos/gstreamer/${gst_version}" ]]; then
+    GSTREAMER_PREFIX="${REPO_ROOT}/tools/runtime/macos/gstreamer/${gst_version}"
+  else
+    GSTREAMER_PREFIX="$(brew --prefix gstreamer)"
+  fi
 fi
 [[ -d "${GSTREAMER_PREFIX}" ]] || die "GStreamer prefix not found: ${GSTREAMER_PREFIX}"
 
 if [[ -z "${FFMPEG_RUNTIME}" ]]; then
-  if [[ -d "${REPO_ROOT}/tools/runtime/current/macos/ffmpeg" ]]; then
-    FFMPEG_RUNTIME="${REPO_ROOT}/tools/runtime/current/macos/ffmpeg"
+  if [[ -d "${REPO_ROOT}/tools/runtime/macos/ffmpeg" ]]; then
+    FFMPEG_RUNTIME="${REPO_ROOT}/tools/runtime/macos/ffmpeg"
   else
     die "FFmpeg runtime not found. Use --ffmpeg-runtime <path>."
   fi

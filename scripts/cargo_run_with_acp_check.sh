@@ -220,23 +220,21 @@ setup_repo_media_runtime() {
 
   platform="${os}-${arch}"
   runtime_root=""
-  local candidates=(
-    "${repo_root}/tools/runtime/${platform}"
-    "${repo_root}/tools/runtime/${os}"
-    "${repo_root}/tools/runtime/current/${platform}"
-    "${repo_root}/tools/runtime/current/${os}"
-    "${repo_root}/tools/runtime/current"
-  )
-  local candidate
-  for candidate in "${candidates[@]}"; do
-    if [[ ! -d "${candidate}" ]]; then
-      continue
-    fi
-    if [[ -x "${candidate}/ffmpeg/bin/ffmpeg" || -d "${candidate}/gstreamer/bin" || -d "${candidate}/gstreamer/lib" ]]; then
-      runtime_root="${candidate}"
-      break
-    fi
-  done
+  # Read the stable runtime versions from the manifest so scripts point directly to them.
+  local manifest_path="${repo_root}/tools/media_tools_manifest.json"
+  local ffmpeg_version="8.0.1"
+  local gst_version="1.28.1"
+  if command -v jq >/dev/null 2>&1 && [[ -f "${manifest_path}" ]]; then
+    ffmpeg_version="$(jq -r ".common.ffmpeg.version" "${manifest_path}" 2>/dev/null || echo "8.0.1")"
+    gst_version="$(jq -r ".common.gstreamer.version" "${manifest_path}" 2>/dev/null || echo "1.28.1")"
+  fi
+  local runtime_root="${repo_root}/tools/runtime/${os}"
+  if [[ ! -d "${runtime_root}" ]]; then
+    return 0
+  fi
+  if [[ ! -x "${runtime_root}/ffmpeg/${ffmpeg_version}/bin/ffmpeg" && ! -d "${runtime_root}/gstreamer/${gst_version}/bin" ]]; then
+    return 0
+  fi
   if [[ -z "${runtime_root}" ]]; then
     return 0
   fi
@@ -251,24 +249,24 @@ setup_repo_media_runtime() {
 
   local ffmpeg_bin ffprobe_bin ffmpeg_lib gst_bin gst_lib gst_plugins gst_typelib gst_launch_bin
   local host_gst_launch host_linked_gstreamer
-  ffmpeg_bin="${runtime_root}/ffmpeg/bin/ffmpeg"
-  ffprobe_bin="${runtime_root}/ffmpeg/bin/ffprobe"
-  ffmpeg_lib="${runtime_root}/ffmpeg/lib"
-  gst_bin="${runtime_root}/gstreamer/bin"
-  gst_lib="${runtime_root}/gstreamer/lib"
+  ffmpeg_bin="${runtime_root}/ffmpeg/${ffmpeg_version}/bin/ffmpeg"
+  ffprobe_bin="${runtime_root}/ffmpeg/${ffmpeg_version}/bin/ffprobe"
+  ffmpeg_lib="${runtime_root}/ffmpeg/${ffmpeg_version}/lib"
+  gst_bin="${runtime_root}/gstreamer/${gst_version}/bin"
+  gst_lib="${runtime_root}/gstreamer/${gst_version}/lib"
   gst_plugins="${gst_lib}/gstreamer-1.0"
   gst_typelib="${gst_lib}/girepository-1.0"
   gst_launch_bin="${gst_bin}/gst-launch-1.0"
   if [[ "${os}" == "windows" && -x "${gst_bin}/gst-launch-1.0.exe" ]]; then
     gst_launch_bin="${gst_bin}/gst-launch-1.0.exe"
   fi
-  gst_scanner="${runtime_root}/gstreamer/libexec/gstreamer-1.0/gst-plugin-scanner"
+  gst_scanner="${runtime_root}/gstreamer/${gst_version}/libexec/gstreamer-1.0/gst-plugin-scanner"
   host_gst_launch="$(command -v gst-launch-1.0 2>/dev/null || true)"
   host_linked_gstreamer=0
 
-  # Prefer host/Brew GStreamer by default for local debugging. Set
-  # ANICA_FORCE_VENDORED_GSTREAMER=1 to force vendored runtime selection.
-  if [[ -n "${host_gst_launch}" && "${ANICA_FORCE_VENDORED_GSTREAMER:-0}" != "1" ]]; then
+  # Prefer vendored GStreamer when available. Set
+  # ANICA_FORCE_HOST_GSTREAMER=1 to use host/Brew GStreamer instead.
+  if [[ -n "${host_gst_launch}" && "${ANICA_FORCE_HOST_GSTREAMER:-0}" == "1" ]]; then
     host_linked_gstreamer=1
   fi
 
@@ -276,9 +274,9 @@ setup_repo_media_runtime() {
     # setup_media_tools already patches the runtime tree. Re-running the full patch
     # on every launch is expensive and can crash older macOS bash builds.
     if [[ "${ANICA_FORCE_GSTREAMER_RUNTIME_RPATH_PATCH:-0}" == "1" ]]; then
-      patch_macos_gstreamer_runtime_tree_once "${runtime_root}/gstreamer"
+      patch_macos_gstreamer_runtime_tree_once "${runtime_root}/gstreamer/${gst_version}"
     else
-      touch "${runtime_root}/gstreamer/.rpath_patch_v2.done" 2>/dev/null || true
+      touch "${runtime_root}/gstreamer/${gst_version}/.rpath_patch_v2.done" 2>/dev/null || true
     fi
     # Preemptively rewrite Mach-O links to runtime libs to avoid host/runtime mixing.
     # Do not rewrite the main app binary by default on macOS; mutating target/debug/anica can
@@ -452,7 +450,7 @@ run_main_binary_with_lc_rpath_autorepair() {
     MINGW*|MSYS*|CYGWIN*) os_name="windows" ;;
     *) os_name="other" ;;
   esac
-  fallback_tools_home="${repo_root}/tools/runtime/current/${os_name}"
+  fallback_tools_home="${repo_root}/tools/runtime/${os_name}"
   tools_home="${ANICA_RESOLVED_RUNTIME_ROOT:-${fallback_tools_home}}"
   stderr_log="$(mktemp "${TMPDIR:-/tmp}/anica-runner-stderr.XXXXXX")"
   stderr_pipe_dir="$(mktemp -d "${TMPDIR:-/tmp}/anica-runner-stderr-pipe.XXXXXX")"

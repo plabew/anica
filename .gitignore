@@ -60,3 +60,8 @@ crates/ai-subtitle-engine/src/model/onnx/
 
 # Auto-downloaded pinned runtime cache
 tools/runtime/current/
+
+# Local vendored media runtimes (very large binary assets, not committed)
+tools/runtime/macos/
+tools/runtime/windows/
+tools/runtime/linux/

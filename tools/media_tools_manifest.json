@@ -11,15 +11,14 @@
         "libvpx",
         "libaom",
         "libsvtav1",
-        "libmp3lame",
         "libopus"
       ],
       "dependencies": [
         { "name": "libvpx", "license": "BSD-3-Clause" },
         { "name": "libaom", "license": "BSD-2-Clause" },
         { "name": "libsvtav1", "license": "BSD-2-Clause" },
-        { "name": "libmp3lame", "license": "LGPL-2.1-or-later" },
-        { "name": "libopus", "license": "BSD-3-Clause" }
+        { "name": "libopus", "license": "BSD-3-Clause" },
+        { "name": "libvmaf", "license": "BSD-2-Clause" }
       ]
     },
     "gstreamer": {
@@ -65,15 +64,10 @@
       "download_url": "{release_base_url}/anica-runtime-20260610/anica_runtime_macos_20260610.tar.gz"
     },
     "windows": {
-      "download_url": "{release_base_url}/anica-runtime-20260610/anica_runtime_windows_20260610.zip"
+      "download_url": "{release_base_url}/anica-runtime-20260610/anica_runtime_windows_20260610.tar.gz"
     },
     "linux": {
-      "ffmpeg": {
-        "source": "system-package"
-      },
-      "gstreamer": {
-        "source": "system-package"
-      }
+      "download_url": "{release_base_url}/anica-runtime-20260610/anica_runtime_linux_20260610.tar.gz"
     }
   }
 }

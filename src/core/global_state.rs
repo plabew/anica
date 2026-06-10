@@ -2670,9 +2670,7 @@ impl GlobalState {
         self.ffmpeg_path = status.ffmpeg_command.clone();
         self.ffprobe_path = status.ffprobe_command.clone();
         self.media_dependency = status;
-        if open_modal_if_missing
-            && (!self.media_dependency.all_available() || !self.gstreamer_available)
-        {
+        if open_modal_if_missing && !self.media_dependency.all_available() {
             self.show_media_dependency_modal = true;
         }
     }

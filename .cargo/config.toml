@@ -4,6 +4,9 @@ runner = "scripts/cargo_run_macos_with_acp_check.sh"
 [target.'cfg(target_os = "linux")']
 runner = "scripts/cargo_run_with_acp_check.sh"
 
-[env]
+[target.'cfg(target_os = "windows")']
+runner = "scripts/cargo_run_with_acp_check.sh"
+
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.env]
 CFLAGS = { value = "-Wno-deprecated-declarations", force = false }
 CXXFLAGS = { value = "-Wno-deprecated-declarations", force = false }
