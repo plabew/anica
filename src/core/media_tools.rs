@@ -172,10 +172,8 @@ fn gst_launch_binary_name() -> &'static str {
 fn common_host_gstreamer_candidates() -> &'static [&'static str] {
     #[cfg(target_os = "macos")]
     {
-        &[
-            "/opt/homebrew/bin/gst-launch-1.0",
-            "/usr/local/bin/gst-launch-1.0",
-        ]
+        // Homebrew paths removed per user preference: always use vendored runtime.
+        &[]
     }
     #[cfg(target_os = "linux")]
     {
@@ -223,6 +221,18 @@ fn local_ffmpeg_tool_candidate(root: &PathBuf) -> Option<String> {
     if current.is_file() {
         return Some(current.to_string_lossy().to_string());
     }
+    // Check versioned paths (e.g., ffmpeg/8.0.1/bin/)
+    let ffmpeg_dir = root.join("ffmpeg");
+    if ffmpeg_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&ffmpeg_dir) {
+            for entry in entries.flatten() {
+                let versioned_bin = entry.path().join("bin").join(ffmpeg_binary_name());
+                if versioned_bin.is_file() {
+                    return Some(versioned_bin.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
     None
 }
 
@@ -242,6 +252,18 @@ fn local_gstreamer_tool_candidate(root: &PathBuf) -> Option<String> {
     if current.is_file() {
         return Some(current.to_string_lossy().to_string());
     }
+    // Check versioned paths (e.g., gstreamer/1.28.1/bin/)
+    let gst_dir = root.join("gstreamer");
+    if gst_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&gst_dir) {
+            for entry in entries.flatten() {
+                let versioned_bin = entry.path().join("bin").join(gst_launch_binary_name());
+                if versioned_bin.is_file() {
+                    return Some(versioned_bin.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
     None
 }
 
@@ -253,16 +275,29 @@ fn workspace_ffmpeg_tool_candidate() -> Option<String> {
         .join("tools")
         .join("runtime");
     let roots = [
-        runtime_root.join(&platform),
-        runtime_root.join(os),
         runtime_root.join("current").join(&platform),
         runtime_root.join("current").join(os),
         runtime_root.join("current"),
+        runtime_root.join(&platform),
+        runtime_root.join(os),
     ];
     for root in roots {
+        // Check unversioned path first
         let direct = root.join("ffmpeg").join("bin").join(ffmpeg_binary_name());
         if direct.is_file() {
             return Some(direct.to_string_lossy().to_string());
+        }
+        // Check versioned paths (e.g., ffmpeg/8.0.1/bin/)
+        let ffmpeg_dir = root.join("ffmpeg");
+        if ffmpeg_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&ffmpeg_dir) {
+                for entry in entries.flatten() {
+                    let versioned_bin = entry.path().join("bin").join(ffmpeg_binary_name());
+                    if versioned_bin.is_file() {
+                        return Some(versioned_bin.to_string_lossy().to_string());
+                    }
+                }
+            }
         }
     }
     None
@@ -276,19 +311,32 @@ fn workspace_gstreamer_tool_candidate() -> Option<String> {
         .join("tools")
         .join("runtime");
     let roots = [
-        runtime_root.join(&platform),
-        runtime_root.join(os),
         runtime_root.join("current").join(&platform),
         runtime_root.join("current").join(os),
         runtime_root.join("current"),
+        runtime_root.join(&platform),
+        runtime_root.join(os),
     ];
     for root in roots {
+        // Check unversioned path first
         let direct = root
             .join("gstreamer")
             .join("bin")
             .join(gst_launch_binary_name());
         if direct.is_file() {
             return Some(direct.to_string_lossy().to_string());
+        }
+        // Check versioned paths (e.g., gstreamer/1.28.1/bin/)
+        let gst_dir = root.join("gstreamer");
+        if gst_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&gst_dir) {
+                for entry in entries.flatten() {
+                    let versioned_bin = entry.path().join("bin").join(gst_launch_binary_name());
+                    if versioned_bin.is_file() {
+                        return Some(versioned_bin.to_string_lossy().to_string());
+                    }
+                }
+            }
         }
     }
     None
@@ -611,6 +659,21 @@ fn run_posix_lgpl_bootstrap_script(
     run_bootstrap_command(cmd)
 }
 
+fn run_posix_lgpl_sync_script(
+    _host: HostPlatform,
+    tools_home: &PathBuf,
+) -> Result<(), MediaBootstrapError> {
+    let script = setup_media_tools_script_path();
+    if !script.is_file() {
+        return Err(MediaBootstrapError::BootstrapScriptNotFound { path: script });
+    }
+    let mut cmd = Command::new("bash");
+    cmd.arg(script.as_os_str())
+        .arg("--sync-only")
+        .env("ANICA_TOOLS_HOME", tools_home.as_os_str());
+    run_bootstrap_command(cmd)
+}
+
 fn run_windows_lgpl_bootstrap_script(tools_home: &PathBuf) -> Result<(), MediaBootstrapError> {
     let script = setup_media_tools_windows_script_path();
     if !script.is_file() {
@@ -833,7 +896,19 @@ pub fn detect_or_bootstrap_media_dependencies(
             eprintln!("[System Check] Bootstrap error detail: {err}");
             return refreshed;
         }
+        // Try sync-only if versioned runtime exists but current/ is missing
         eprintln!("[System Check] Runtime bootstrap failed: {err}");
+        eprintln!("[System Check] Attempting sync-only fallback...");
+        if let Ok(()) = run_posix_lgpl_sync_script(status.host, &tools_home) {
+            let refreshed = detect_media_dependencies(preferred_ffmpeg);
+            if refreshed.all_available() {
+                eprintln!(
+                    "[System Check] Sync-only completed. ffmpeg: {}",
+                    refreshed.ffmpeg_command
+                );
+                return refreshed;
+            }
+        }
         return status;
     }
 

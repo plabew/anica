@@ -7,12 +7,7 @@
       "version": "8.0.1",
       "license": "LGPL-2.1-or-later",
       "build_flags": "LGPL-only, shared, no-GPL, no-nonfree",
-      "enabled_encoders": [
-        "libvpx",
-        "libaom",
-        "libsvtav1",
-        "libopus"
-      ],
+      "enabled_encoders": ["libvpx", "libaom", "libsvtav1", "libopus"],
       "dependencies": [
         { "name": "libvpx", "license": "BSD-3-Clause" },
         { "name": "libaom", "license": "BSD-2-Clause" },

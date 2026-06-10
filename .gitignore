@@ -62,6 +62,6 @@ crates/ai-subtitle-engine/src/model/onnx/
 tools/runtime/current/
 
 # Local vendored media runtimes (very large binary assets, not committed)
-tools/runtime/macos/
-tools/runtime/windows/
-tools/runtime/linux/
+# All folders under tools/runtime are ignored; only README.md is kept
+tools/runtime/*
+!tools/runtime/README.md

@@ -118,6 +118,21 @@ main() {
   local platform_dir="${RUNTIME_DIR}/${os}"
   local current_dir="${RUNTIME_DIR}/current/${os}"
 
+  # Check if called with --sync-only (just sync versioned to current, no download)
+  if [[ "${1:-}" == "--sync-only" ]]; then
+    if [[ -d "${platform_dir}/ffmpeg/${ffmpeg_version}" && -d "${platform_dir}/gstreamer/${gst_version}" ]]; then
+      log "Syncing versioned runtime to current (sync-only)..."
+      mkdir -p "${current_dir}"
+      copy_runtime_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${current_dir}/ffmpeg"
+      copy_runtime_tree "${platform_dir}/gstreamer/${gst_version}" "${current_dir}/gstreamer"
+      log "Runtime ready: ${current_dir}"
+      exit 0
+    else
+      warn "Versioned runtime not found for sync-only."
+      exit 1
+    fi
+  fi
+
   # Already present?
   if [[ -f "${current_dir}/ffmpeg/bin/ffmpeg" && -f "${current_dir}/gstreamer/bin/gst-launch-1.0" ]]; then
     log "Runtime already present at ${current_dir}"
@@ -127,6 +142,7 @@ main() {
   # If versioned folders exist, just sync to current.
   if [[ -d "${platform_dir}/ffmpeg/${ffmpeg_version}" && -d "${platform_dir}/gstreamer/${gst_version}" ]]; then
     log "Syncing versioned runtime to current..."
+    mkdir -p "${current_dir}"
     copy_runtime_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${current_dir}/ffmpeg"
     copy_runtime_tree "${platform_dir}/gstreamer/${gst_version}" "${current_dir}/gstreamer"
     log "Runtime ready: ${current_dir}"
@@ -167,12 +183,22 @@ main() {
 
   log "Found runtime root: ${runtime_root}"
 
-  # Copy versioned runtime to platform dir.
+  # Check if the runtime root already contains versioned subfolders (e.g. ffmpeg/8.0.1).
+  # If so, copy the entire runtime root directly to the platform dir.
+  # If not, copy the individual tool folders into versioned paths.
   mkdir -p "${platform_dir}" "${current_dir}"
-  copy_runtime_tree "${runtime_root}/ffmpeg" "${platform_dir}/ffmpeg/${ffmpeg_version}"
-  copy_runtime_tree "${runtime_root}/gstreamer" "${platform_dir}/gstreamer/${gst_version}"
+  if [[ -d "${runtime_root}/ffmpeg/${ffmpeg_version}" && -d "${runtime_root}/gstreamer/${gst_version}" ]]; then
+    log "Runtime already versioned. Copying directly to ${platform_dir}..."
+    copy_runtime_tree "${runtime_root}" "${platform_dir}"
+  else
+    log "Copying ffmpeg to versioned path..."
+    copy_runtime_tree "${runtime_root}/ffmpeg" "${platform_dir}/ffmpeg/${ffmpeg_version}"
+    log "Copying gstreamer to versioned path..."
+    copy_runtime_tree "${runtime_root}/gstreamer" "${platform_dir}/gstreamer/${gst_version}"
+  fi
 
   # Sync to current (unversioned) for app consumption.
+  log "Syncing to current/..."
   copy_runtime_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${current_dir}/ffmpeg"
   copy_runtime_tree "${platform_dir}/gstreamer/${gst_version}" "${current_dir}/gstreamer"
 

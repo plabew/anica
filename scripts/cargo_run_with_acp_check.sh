@@ -228,7 +228,8 @@ setup_repo_media_runtime() {
     ffmpeg_version="$(jq -r ".common.ffmpeg.version" "${manifest_path}" 2>/dev/null || echo "8.0.1")"
     gst_version="$(jq -r ".common.gstreamer.version" "${manifest_path}" 2>/dev/null || echo "1.24.8")"
   fi
-  local runtime_root="${repo_root}/tools/runtime/${os}"
+  # Use current/<os>/ as the canonical active runtime path.
+  local runtime_root="${repo_root}/tools/runtime/current/${os}"
   if [[ ! -d "${runtime_root}" ]]; then
     return 0
   fi
@@ -290,14 +291,9 @@ setup_repo_media_runtime() {
     rewrite_macos_macho_links_to_runtime "${gst_scanner}" "${gst_lib}" || true
   fi
 
-  # If the built `anica` binary still links to Homebrew media dylibs, forcing
-  # vendored runtime env causes mixed-library crashes on macOS.
-  if [[ "${os}" == "macos" ]] && command -v otool >/dev/null 2>&1 && [[ -f "${exe_path}" ]]; then
-    if macos_binary_has_homebrew_media_deps "${exe_path}"; then
-      host_linked_gstreamer=1
-      echo "[anica-runner] WARNING: ${exe_path} still links to Homebrew media dylibs; falling back to host GStreamer for this run." >&2
-    fi
-  fi
+  # REMOVED: The built anica binary may link to Homebrew, but the vendored
+  # GStreamer runtime is now patched and isolated. Always use vendored.
+  # Previous mixed-library crash protection disabled per user preference.
 
   if [[ -x "${ffmpeg_bin}" ]]; then
     export ANICA_FFMPEG_PATH="${ffmpeg_bin}"
@@ -450,7 +446,7 @@ run_main_binary_with_lc_rpath_autorepair() {
     MINGW*|MSYS*|CYGWIN*) os_name="windows" ;;
     *) os_name="other" ;;
   esac
-  fallback_tools_home="${repo_root}/tools/runtime/${os_name}"
+  fallback_tools_home="${repo_root}/tools/runtime/current/${os_name}"
   tools_home="${ANICA_RESOLVED_RUNTIME_ROOT:-${fallback_tools_home}}"
   stderr_log="$(mktemp "${TMPDIR:-/tmp}/anica-runner-stderr.XXXXXX")"
   stderr_pipe_dir="$(mktemp -d "${TMPDIR:-/tmp}/anica-runner-stderr-pipe.XXXXXX")"
