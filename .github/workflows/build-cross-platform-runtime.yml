@@ -31,8 +31,8 @@ jobs:
 
       - name: Download FFmpeg LGPL-only build
         run: |
-          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-lgpl-shared.zip"
-          Write-Host "Downloading FFmpeg LGPL-only from $ffmpegUrl"
+          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          Write-Host "Downloading FFmpeg LGPL-only (essentials) from $ffmpegUrl"
           curl.exe -fL --progress-bar $ffmpegUrl -o ffmpeg.zip
           if ($LASTEXITCODE -ne 0) {
             throw "FFmpeg download failed"
@@ -111,17 +111,14 @@ jobs:
           New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
           
           # Move FFmpeg to versioned structure
-          $ffmpegDir = Get-ChildItem -Path . -Filter "ffmpeg-*-lgpl-shared" | Select-Object -First 1
+          $ffmpegDir = Get-ChildItem -Path . -Filter "ffmpeg-*-essentials" | Select-Object -First 1
           if ($ffmpegDir) {
             $ffmpegDst = Join-Path $runtimeDir "ffmpeg\${{ github.event.inputs.ffmpeg_version }}"
             New-Item -ItemType Directory -Path $ffmpegDst -Force | Out-Null
             
-            # Copy bin and lib
+            # Copy bin (essentials build is static, no lib/ needed)
             if (Test-Path "$($ffmpegDir.FullName)\bin") {
               Copy-Item -Path "$($ffmpegDir.FullName)\bin" -Destination $ffmpegDst -Recurse -Force
-            }
-            if (Test-Path "$($ffmpegDir.FullName)\lib") {
-              Copy-Item -Path "$($ffmpegDir.FullName)\lib" -Destination $ffmpegDst -Recurse -Force
             }
             
             Remove-Item -Recurse -Force $ffmpegDir.FullName
@@ -191,7 +188,6 @@ jobs:
             libaom-dev \
             libsvtav1-dev \
             libopus-dev \
-            libvmaf-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base \
@@ -218,7 +214,6 @@ jobs:
             --enable-libaom \
             --enable-libsvtav1 \
             --enable-libopus \
-            --enable-libvmaf \
             --disable-nonfree \
             --disable-stripping
           

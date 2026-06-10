@@ -17,8 +17,7 @@
         { "name": "libvpx", "license": "BSD-3-Clause" },
         { "name": "libaom", "license": "BSD-2-Clause" },
         { "name": "libsvtav1", "license": "BSD-2-Clause" },
-        { "name": "libopus", "license": "BSD-3-Clause" },
-        { "name": "libvmaf", "license": "BSD-2-Clause" }
+        { "name": "libopus", "license": "BSD-3-Clause" }
       ]
     },
     "gstreamer": {
