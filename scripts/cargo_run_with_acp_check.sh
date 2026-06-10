@@ -223,10 +223,10 @@ setup_repo_media_runtime() {
   # Read the stable runtime versions from the manifest so scripts point directly to them.
   local manifest_path="${repo_root}/tools/media_tools_manifest.json"
   local ffmpeg_version="8.0.1"
-  local gst_version="1.24.8"
+  local gst_version="1.28.1"
   if command -v jq >/dev/null 2>&1 && [[ -f "${manifest_path}" ]]; then
     ffmpeg_version="$(jq -r ".common.ffmpeg.version" "${manifest_path}" 2>/dev/null || echo "8.0.1")"
-    gst_version="$(jq -r ".common.gstreamer.version" "${manifest_path}" 2>/dev/null || echo "1.24.8")"
+    gst_version="$(jq -r ".common.gstreamer.version" "${manifest_path}" 2>/dev/null || echo "1.28.1")"
   fi
   # Use current/<os>/ as the canonical active runtime path.
   local runtime_root="${repo_root}/tools/runtime/current/${os}"
