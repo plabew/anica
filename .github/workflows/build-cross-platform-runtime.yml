@@ -14,7 +14,7 @@ on:
       gstreamer_version:
         description: 'GStreamer version'
         required: true
-        default: '1.28.1'
+        default: '1.24.8'
 
 permissions:
   contents: write
@@ -172,7 +172,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --fix-missing --fix-broken \
             build-essential \
             yasm \
             cmake \

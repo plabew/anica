@@ -10,10 +10,10 @@ if [[ "$(uname -m)" != "arm64" ]]; then
 fi
 
 # Read the stable GStreamer version from the manifest.
-gst_version="1.28.1"
+gst_version="1.24.8"
 manifest_path="${repo_root}/tools/media_tools_manifest.json"
 if command -v jq >/dev/null 2>&1 && [[ -f "${manifest_path}" ]]; then
-  gst_version="$(jq -r ".common.gstreamer.version" "${manifest_path}" 2>/dev/null || echo "1.28.1")"
+  gst_version="$(jq -r ".common.gstreamer.version" "${manifest_path}" 2>/dev/null || echo "1.24.8")"
 fi
 export ANICA_HOST_GSTREAMER_PLUGIN_DIR="${repo_root}/tools/runtime/macos/gstreamer/${gst_version}/lib/gstreamer-1.0"
 export ANICA_HOST_GSTREAMER_REGISTRY="${repo_root}/target/.anica-host-gstreamer-registry.bin"

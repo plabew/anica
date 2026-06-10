@@ -450,7 +450,7 @@ if [[ -z "${GSTREAMER_PREFIX}" ]]; then
   local gst_version
   gst_version="$(manifest_version "gstreamer")"
   if [[ -z "${gst_version}" || "${gst_version}" == "null" ]]; then
-    gst_version="1.28.1"
+    gst_version="1.24.8"
   fi
   if [[ -d "${REPO_ROOT}/tools/runtime/macos/gstreamer/${gst_version}" ]]; then
     GSTREAMER_PREFIX="${REPO_ROOT}/tools/runtime/macos/gstreamer/${gst_version}"
