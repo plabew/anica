@@ -90,7 +90,7 @@ macos_binary_has_homebrew_media_deps() {
   fi
   otool -L "${target_bin}" 2>/dev/null \
     | awk 'NR>1 {print $1}' \
-    | rg -q '^/opt/homebrew/(opt/(gstreamer|glib|gettext)|Cellar/(gstreamer|glib|gettext))/'
+    | grep -Eq '^/opt/homebrew/(opt/(gstreamer|glib|gettext)|Cellar/(gstreamer|glib|gettext))/'
 }
 
 patch_macos_gstreamer_runtime_tree_once() {
@@ -463,7 +463,7 @@ run_main_binary_with_lc_rpath_autorepair() {
   rm -f "${stderr_pipe}" 2>/dev/null || true
   rmdir "${stderr_pipe_dir}" 2>/dev/null || true
 
-  if [[ "${first_status}" -ne 0 ]] && rg -q "Reason: no LC_RPATH's found" "${stderr_log}"; then
+  if [[ "${first_status}" -ne 0 ]] && grep -q "Reason: no LC_RPATH's found" "${stderr_log}"; then
     echo "[anica-runner] Detected missing LC_RPATH runtime link; running ./scripts/setup_media_tools.sh (FFmpeg-only) and retrying once..." >&2
     if ANICA_TOOLS_HOME="${tools_home}" "${repo_root}/scripts/setup_media_tools.sh" --mode local-lgpl --yes; then
       ANICA_PATCH_MAIN_BINARY_LINKS=1 setup_repo_media_runtime

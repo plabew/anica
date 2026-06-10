@@ -7445,7 +7445,7 @@ mod tests {
         // so the peak intensity is lower than the raw glow color.
         assert!(
             max_green(&rendered) > 40,
-            "expected green glow generated from text alpha"
+            "expected green glow generated from text alpha, got {}", max_green(&rendered)
         );
     }
 
@@ -7529,7 +7529,7 @@ mod tests {
         // is half-red (128) with full alpha (255).
         assert!(
             pixel[0] > 100 && pixel[0] < 160 && pixel[3] > 240,
-            "expected precompose source to evaluate at sequence-local 0.5s, got {pixel:?}"
+            "expected precompose source to evaluate at sequence-local 0.5s (should be ~127), got {pixel:?}"
         );
     }
 
