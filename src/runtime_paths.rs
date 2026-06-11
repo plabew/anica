@@ -33,11 +33,9 @@ fn search_path(bin: &str) -> Option<PathBuf> {
 
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(bin);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-
+        // On Windows, prefer executable extensions first because npm installs
+        // a Unix shell script alongside .cmd wrappers (e.g. gemini + gemini.cmd).
+        // Windows CreateProcess cannot execute the extensionless shell script.
         if cfg!(windows) {
             for ext in [".exe", ".bat", ".cmd"] {
                 let with_ext = dir.join(format!("{bin}{ext}"));
@@ -45,6 +43,11 @@ fn search_path(bin: &str) -> Option<PathBuf> {
                     return Some(with_ext);
                 }
             }
+        }
+
+        let candidate = dir.join(bin);
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
 
