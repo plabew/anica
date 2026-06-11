@@ -139,7 +139,7 @@ Anica's AI chat feature (ACP) uses external CLI tools to communicate with LLM pr
 
 ### Prerequisites: Node.js and npm
 
-All three CLIs are installed via npm. If you don't have npm:
+Codex, Gemini, and Claude npm paths require Node.js. OpenCode can use its install script or npm.
 
 **macOS:**
 ```bash
@@ -231,13 +231,34 @@ claude auth status
 
 ---
 
+### Option D: OpenCode CLI
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+```
+
+Alternative npm path:
+```bash
+npm install -g opencode-ai
+```
+
+Login and verify:
+```bash
+opencode auth login
+opencode --version
+```
+
+---
+
 ## 6. Connect ACP in Anica
 
 1. Open Anica and navigate to the **AI Agents** page (sidebar icon).
-2. Select a provider (Codex / Gemini / Claude).
-3. The ACP Agent Command field should auto-fill. If not, point it to `target/debug/anica-acp`.
-4. Click **Connect**.
-5. Once the status shows green "Connected", use the AI Chat widget to interact.
+2. Select a provider (Codex / Gemini / Claude / OpenCode).
+3. For Codex/Gemini/Claude, the ACP Agent Command field should auto-fill with `anica-acp`. If not, point it to `target/debug/anica-acp`.
+4. For OpenCode, keep the ACP Agent Command as `anica-acp`; the sidecar starts `opencode acp` internally.
+5. Click **Connect**.
+6. For OpenCode, Anica loads model choices from upstream ACP `session/new` `configOptions` and applies model changes with `session/set_config_option`.
+7. Once the status shows green "Connected", use the AI Chat widget to interact.
 
 ---
 
@@ -248,6 +269,6 @@ claude auth status
 | `cargo build` fails with missing `gstreamer` | Ensure GStreamer dev packages are installed (see step 2) |
 | `cargo build` fails with linker errors on macOS | Run `xcode-select --install` |
 | FFmpeg not found at runtime | Add `ffmpeg` to your `PATH` |
-| Codex/Gemini/Claude CLI not found | Run the `npm install -g` command again and check `PATH` |
-| ACP shows "Disconnected" immediately | Check the ACP Agent Command path points to a valid `anica-acp` binary |
+| Codex/Gemini/Claude/OpenCode CLI not found | Run the install command again and check `PATH` |
+| ACP shows "Disconnected" immediately | Check the ACP Agent Command path points to `anica-acp`; for OpenCode also verify `opencode --version` |
 | `rust-toolchain.toml` triggers download | This is normal — `rustup` is installing the pinned Rust version |

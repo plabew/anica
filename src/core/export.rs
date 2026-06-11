@@ -841,6 +841,11 @@ pub enum ExportError {
         path: PathBuf,
         source: image::ImageError,
     },
+    #[error("Failed to load still frame ({path}): {source}")]
+    LoadStillFrame {
+        path: PathBuf,
+        source: image::ImageError,
+    },
     #[error("Internal export state missing: {state}")]
     MissingInternalState { state: &'static str },
     #[error("__ANICA_EXPORT_CANCELLED__")]
@@ -1391,6 +1396,41 @@ impl FfmpegExporter {
         Ok(out)
     }
 
+    fn load_unified_still_frame_rgba(
+        path: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, ExportError> {
+        // Decode still images once so export does not pipe identical frames through FFmpeg.
+        let image_path = PathBuf::from(path);
+        let image = image::open(&image_path)
+            .map_err(|source| ExportError::LoadStillFrame {
+                path: image_path,
+                source,
+            })?
+            .into_rgba8();
+        let src_w = image.width().max(1);
+        let src_h = image.height().max(1);
+        let scale = (width as f32 / src_w as f32).min(height as f32 / src_h as f32);
+        let scaled_w = ((src_w as f32 * scale).round() as u32).clamp(1, width.max(1));
+        let scaled_h = ((src_h as f32 * scale).round() as u32).clamp(1, height.max(1));
+        let resized = if scaled_w == src_w && scaled_h == src_h {
+            image
+        } else {
+            image::imageops::resize(
+                &image,
+                scaled_w,
+                scaled_h,
+                image::imageops::FilterType::Lanczos3,
+            )
+        };
+        let mut canvas = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+        let x = ((width.saturating_sub(scaled_w)) / 2) as i64;
+        let y = ((height.saturating_sub(scaled_h)) / 2) as i64;
+        image::imageops::overlay(&mut canvas, &resized, x, y);
+        Ok(canvas.into_raw())
+    }
+
     fn build_clip_decode_rgba_args(
         clip: &Clip,
         source_start: Duration,
@@ -1476,6 +1516,7 @@ impl FfmpegExporter {
         struct LayerState<'a> {
             spec: TrackClipSpec<'a>,
             decoder: Option<DecoderProc>,
+            still_frame_rgba: Option<Vec<u8>>,
             started: bool,
             ended: bool,
             local_mask_layers: Vec<VideoLocalMaskLayer>,
@@ -1744,6 +1785,7 @@ impl FfmpegExporter {
                 local_mask_layers: Self::local_mask_layers_for_gpu(spec.clip),
                 spec,
                 decoder: None,
+                still_frame_rgba: None,
                 started: false,
                 ended: false,
             })
@@ -1800,85 +1842,103 @@ impl FfmpegExporter {
                 }
 
                 if !state.started {
-                    let decode_duration = state
-                        .spec
-                        .active_end
-                        .saturating_sub(state.spec.active_start);
-                    let decode_args = Self::build_clip_decode_rgba_args(
-                        state.spec.clip,
-                        state.spec.source_start,
-                        decode_duration,
-                        width,
-                        height,
-                        fps,
-                    );
-                    println!(
-                        "[Export][Unified GPU] Decode ffmpeg: {} {:?}",
-                        ffmpeg_bin, decode_args
-                    );
-                    let spawn_result = Command::new(ffmpeg_bin)
-                        .args(&decode_args)
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn();
-                    let mut child = match spawn_result {
-                        Ok(c) => c,
-                        Err(source) => {
-                            loop_err = Some(ExportError::ExecuteStageFfmpeg {
-                                stage: "decode",
-                                source,
-                            });
-                            break;
+                    if is_image_ext(&state.spec.clip.file_path) {
+                        match Self::load_unified_still_frame_rgba(
+                            &state.spec.clip.file_path,
+                            width,
+                            height,
+                        ) {
+                            Ok(frame) => state.still_frame_rgba = Some(frame),
+                            Err(err) => {
+                                loop_err = Some(err);
+                                break;
+                            }
                         }
-                    };
-                    let stdout = match child.stdout.take() {
-                        Some(s) => s,
-                        None => {
-                            let _ = child.kill();
-                            loop_err = Some(ExportError::MissingFfmpegPipe {
-                                stage: "decode",
-                                pipe: "stdout",
-                            });
-                            break;
-                        }
-                    };
-                    let stderr = match child.stderr.take() {
-                        Some(s) => s,
-                        None => {
-                            let _ = child.kill();
-                            loop_err = Some(ExportError::MissingFfmpegPipe {
-                                stage: "decode",
-                                pipe: "stderr",
-                            });
-                            break;
-                        }
-                    };
-                    let stderr_join = std::thread::spawn(move || {
-                        let mut msg = String::new();
-                        let mut reader = BufReader::new(stderr);
-                        let _ = reader.read_to_string(&mut msg);
-                        msg
-                    });
-                    state.decoder = Some(DecoderProc {
-                        child,
-                        stdout,
-                        stderr_join,
-                    });
+                    } else {
+                        let decode_duration = state
+                            .spec
+                            .active_end
+                            .saturating_sub(state.spec.active_start);
+                        let decode_args = Self::build_clip_decode_rgba_args(
+                            state.spec.clip,
+                            state.spec.source_start,
+                            decode_duration,
+                            width,
+                            height,
+                            fps,
+                        );
+                        println!(
+                            "[Export][Unified GPU] Decode ffmpeg: {} {:?}",
+                            ffmpeg_bin, decode_args
+                        );
+                        let spawn_result = Command::new(ffmpeg_bin)
+                            .args(&decode_args)
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn();
+                        let mut child = match spawn_result {
+                            Ok(c) => c,
+                            Err(source) => {
+                                loop_err = Some(ExportError::ExecuteStageFfmpeg {
+                                    stage: "decode",
+                                    source,
+                                });
+                                break;
+                            }
+                        };
+                        let stdout = match child.stdout.take() {
+                            Some(s) => s,
+                            None => {
+                                let _ = child.kill();
+                                loop_err = Some(ExportError::MissingFfmpegPipe {
+                                    stage: "decode",
+                                    pipe: "stdout",
+                                });
+                                break;
+                            }
+                        };
+                        let stderr = match child.stderr.take() {
+                            Some(s) => s,
+                            None => {
+                                let _ = child.kill();
+                                loop_err = Some(ExportError::MissingFfmpegPipe {
+                                    stage: "decode",
+                                    pipe: "stderr",
+                                });
+                                break;
+                            }
+                        };
+                        let stderr_join = std::thread::spawn(move || {
+                            let mut msg = String::new();
+                            let mut reader = BufReader::new(stderr);
+                            let _ = reader.read_to_string(&mut msg);
+                            msg
+                        });
+                        state.decoder = Some(DecoderProc {
+                            child,
+                            stdout,
+                            stderr_join,
+                        });
+                    }
                     state.started = true;
                 }
 
-                let Some(decoder) = state.decoder.as_mut() else {
-                    loop_err = Some(ExportError::MissingInternalState {
-                        state: "unified gpu decode state",
-                    });
-                    break;
-                };
-                if let Err(source) = decoder.stdout.read_exact(&mut frame_rgba) {
-                    loop_err = Some(ExportError::ReadFfmpegFrame {
-                        stage: "decode",
-                        source,
-                    });
-                    break;
+                if let Some(still_frame) = state.still_frame_rgba.as_ref() {
+                    frame_rgba.copy_from_slice(still_frame);
+                } else {
+                    let Some(decoder) = state.decoder.as_mut() else {
+                        loop_err = Some(ExportError::MissingInternalState {
+                            state: "unified gpu decode state",
+                        });
+                        break;
+                    };
+                    if let Err(source) = decoder.stdout.read_exact(&mut frame_rgba) {
+                        loop_err = Some(ExportError::ReadFfmpegFrame {
+                            stage: "decode",
+                            source,
+                        });
+                        break;
+                    }
                 }
 
                 let local_t = t.saturating_sub(state.spec.clip.start);

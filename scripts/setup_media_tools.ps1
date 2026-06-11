@@ -72,6 +72,33 @@ function Runtime-Complete([string]$Root) {
     return (Test-Path $ffmpeg) -and (Test-Path $gst)
 }
 
+function Resolve-ToolTree([string]$Root, [string]$Binary, [string]$Version) {
+    $direct = Join-Path $Root "bin\$Binary"
+    if (Test-Path $direct) {
+        return $Root
+    }
+
+    if ($Version) {
+        $versionedRoot = Join-Path $Root $Version
+        $versionedBin = Join-Path $versionedRoot "bin\$Binary"
+        if (Test-Path $versionedBin) {
+            return $versionedRoot
+        }
+    }
+
+    if (Test-Path $Root) {
+        $child = Get-ChildItem -Path $Root -Directory |
+            Sort-Object Name |
+            Where-Object { Test-Path (Join-Path $_.FullName "bin\$Binary") } |
+            Select-Object -First 1
+        if ($child) {
+            return $child.FullName
+        }
+    }
+
+    throw "Could not resolve runtime tool tree at ${Root} for ${Binary}."
+}
+
 # Find the runtime root inside the extracted directory.
 # The tar.gz may have an extra top-level folder (e.g. anica_runtime_windows_20260610).
 function Find-RuntimeRootInStaging([string]$Staging) {
@@ -112,8 +139,8 @@ function Download-Runtime {
         $gstSrc = Join-Path $platformDir "gstreamer\$gstVersion"
         if ((Test-Path $ffmpegSrc) -and (Test-Path $gstSrc)) {
             Log "Syncing versioned runtime to current (sync-only)..."
-            Copy-RuntimeTree $ffmpegSrc (Join-Path $currentDir "ffmpeg")
-            Copy-RuntimeTree $gstSrc (Join-Path $currentDir "gstreamer")
+            Copy-RuntimeTree (Resolve-ToolTree $ffmpegSrc "ffmpeg.exe" $ffmpegVersion) (Join-Path $currentDir "ffmpeg")
+            Copy-RuntimeTree (Resolve-ToolTree $gstSrc "gst-launch-1.0.exe" $gstVersion) (Join-Path $currentDir "gstreamer")
             Log "Runtime ready: ${currentDir}"
             return
         } else {
@@ -133,8 +160,8 @@ function Download-Runtime {
     $gstVersioned = Join-Path $platformDir "gstreamer\$gstVersion"
     if ((Test-Path $ffmpegVersioned) -and (Test-Path $gstVersioned)) {
         Log "Syncing versioned runtime to current..."
-        Copy-RuntimeTree $ffmpegVersioned (Join-Path $currentDir "ffmpeg")
-        Copy-RuntimeTree $gstVersioned (Join-Path $currentDir "gstreamer")
+        Copy-RuntimeTree (Resolve-ToolTree $ffmpegVersioned "ffmpeg.exe" $ffmpegVersion) (Join-Path $currentDir "ffmpeg")
+        Copy-RuntimeTree (Resolve-ToolTree $gstVersioned "gst-launch-1.0.exe" $gstVersion) (Join-Path $currentDir "gstreamer")
         Log "Runtime ready: ${currentDir}"
         return
     }
@@ -197,15 +224,15 @@ function Download-Runtime {
         Copy-RuntimeTree $runtimeRoot $platformDir
     } else {
         Log "Copying ffmpeg to versioned path..."
-        Copy-RuntimeTree (Join-Path $runtimeRoot "ffmpeg") $ffmpegVersioned
+        Copy-RuntimeTree (Resolve-ToolTree (Join-Path $runtimeRoot "ffmpeg") "ffmpeg.exe" $ffmpegVersion) $ffmpegVersioned
         Log "Copying gstreamer to versioned path..."
-        Copy-RuntimeTree (Join-Path $runtimeRoot "gstreamer") $gstVersioned
+        Copy-RuntimeTree (Resolve-ToolTree (Join-Path $runtimeRoot "gstreamer") "gst-launch-1.0.exe" $gstVersion) $gstVersioned
     }
 
     # Sync to current (unversioned) for app consumption.
     Log "Syncing to current/..."
-    Copy-RuntimeTree $ffmpegVersioned (Join-Path $currentDir "ffmpeg")
-    Copy-RuntimeTree $gstVersioned (Join-Path $currentDir "gstreamer")
+    Copy-RuntimeTree (Resolve-ToolTree $ffmpegVersioned "ffmpeg.exe" $ffmpegVersion) (Join-Path $currentDir "ffmpeg")
+    Copy-RuntimeTree (Resolve-ToolTree $gstVersioned "gst-launch-1.0.exe" $gstVersion) (Join-Path $currentDir "gstreamer")
 
     # Clean up.
     Remove-Item -Path $archivePath -Force

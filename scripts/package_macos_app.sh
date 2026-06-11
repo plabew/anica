@@ -278,7 +278,7 @@ copy_missing_homebrew_deps() {
         case "${dep}" in
           /opt/homebrew/*|/usr/local/*)
             base="$(basename "${dep}")"
-            if [[ ! -f "${runtime_lib}/${base}" ]]; then
+            if [[ ! -f "${runtime_lib}/${base}" ]] || ! cmp -s "${dep}" "${runtime_lib}/${base}"; then
               copy_file_follow_links "${dep}" "${runtime_lib}/${base}"
               changed=1
             fi
@@ -418,26 +418,35 @@ resolve_cargo_package_version() {
   ' "${cargo_toml}"
 }
 
-resolve_ffmpeg_runtime_root() {
+resolve_runtime_tool_root() {
   local root="$1"
-  # Read the stable FFmpeg version from the manifest so scripts point directly to it.
-  local ffmpeg_version
-  ffmpeg_version="$(manifest_version "ffmpeg")"
-  if [[ -z "${ffmpeg_version}" || "${ffmpeg_version}" == "null" ]]; then
-    ffmpeg_version="8.0.1"
-  fi
-  local candidates=(
-    "${root}/ffmpeg/${ffmpeg_version}"
-    "${root}"
-    "${root}/ffmpeg"
-  )
+  local tool="$2"
+  local binary="$3"
+  local version="${4:-}"
   local candidate
+  local candidates=(
+    "${root}/current/macos/${tool}"
+    "${root}/${tool}"
+    "${root}"
+  )
+  if [[ -n "${version}" ]]; then
+    candidates+=(
+      "${root}/macos/${tool}/${version}"
+      "${root}/${tool}/${version}"
+    )
+  fi
   for candidate in "${candidates[@]}"; do
-    if [[ -x "${candidate}/bin/ffmpeg" ]]; then
+    if [[ -x "${candidate}/bin/${binary}" ]]; then
       printf "%s\n" "${candidate}"
       return 0
     fi
   done
+  while IFS= read -r candidate; do
+    if [[ -x "${candidate}/bin/${binary}" ]]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done < <(find "${root}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
   return 1
 }
 
@@ -447,27 +456,27 @@ APP_VERSION="$(resolve_cargo_package_version "${CARGO_TOML}")"
 log "Using app version from Cargo.toml: ${APP_VERSION}"
 
 if [[ -z "${GSTREAMER_PREFIX}" ]]; then
-  local gst_version
+  gst_version=""
   gst_version="$(manifest_version "gstreamer")"
-  if [[ -z "${gst_version}" || "${gst_version}" == "null" ]]; then
-    gst_version="1.28.1"
-  fi
-  if [[ -d "${REPO_ROOT}/tools/runtime/macos/gstreamer/${gst_version}" ]]; then
-    GSTREAMER_PREFIX="${REPO_ROOT}/tools/runtime/macos/gstreamer/${gst_version}"
-  else
+  [[ "${gst_version}" == "null" ]] && gst_version=""
+  GSTREAMER_PREFIX="$(resolve_runtime_tool_root "${REPO_ROOT}/tools/runtime" "gstreamer" "gst-launch-1.0" "${gst_version}" || true)"
+  if [[ -z "${GSTREAMER_PREFIX}" ]]; then
     GSTREAMER_PREFIX="$(brew --prefix gstreamer)"
   fi
 fi
 [[ -d "${GSTREAMER_PREFIX}" ]] || die "GStreamer prefix not found: ${GSTREAMER_PREFIX}"
 
 if [[ -z "${FFMPEG_RUNTIME}" ]]; then
-  if [[ -d "${REPO_ROOT}/tools/runtime/macos/ffmpeg" ]]; then
-    FFMPEG_RUNTIME="${REPO_ROOT}/tools/runtime/macos/ffmpeg"
-  else
+  ffmpeg_version=""
+  ffmpeg_version="$(manifest_version "ffmpeg")"
+  [[ "${ffmpeg_version}" == "null" ]] && ffmpeg_version=""
+  FFMPEG_RUNTIME="$(resolve_runtime_tool_root "${REPO_ROOT}/tools/runtime" "ffmpeg" "ffmpeg" "${ffmpeg_version}" || true)"
+  if [[ -z "${FFMPEG_RUNTIME}" ]]; then
     die "FFmpeg runtime not found. Use --ffmpeg-runtime <path>."
   fi
 fi
-FFMPEG_RUNTIME="$(resolve_ffmpeg_runtime_root "${FFMPEG_RUNTIME}")" || die "Invalid FFmpeg runtime root: ${FFMPEG_RUNTIME}"
+FFMPEG_RUNTIME="$(resolve_runtime_tool_root "${FFMPEG_RUNTIME}" "ffmpeg" "ffmpeg" "" || true)"
+[[ -n "${FFMPEG_RUNTIME}" ]] || die "Invalid FFmpeg runtime root: ${FFMPEG_RUNTIME}"
 
 if [[ "${SKIP_BUILD}" != "1" ]]; then
   log "Building cargo binaries (${PROFILE})..."

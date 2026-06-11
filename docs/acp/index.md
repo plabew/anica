@@ -36,7 +36,7 @@ All subfolders should use `catalog.md` (not `index.md`) to avoid naming confusio
 | Recovery | User asks autosave, recovery draft behavior, unsaved changes, or crash-recovery policy. | `anica/docs/acp/recovery/catalog.md` |
 | Export | User asks export mode, preset, codec, or ffmpeg-related export guidance. | `anica/docs/acp/export/catalog.md` |
 | Tools | User asks what ACP tools exist, how to call them, params, or failure cases. | `anica/docs/acp/tools/catalog.md` |
-| User Guide | User asks CLI setup/install/login steps for external command tools (for example Codex CLI, Gemini CLI, or Claude CLI). | `anica/docs/acp/userguide/catalog.md` |
+| User Guide | User asks CLI setup/install/login steps for external command tools (for example Codex CLI, Gemini CLI, Claude CLI, or OpenCode CLI). | `anica/docs/acp/userguide/catalog.md` |
 | Intent Phrases | User asks intent routing phrase dictionaries (multi-language trigger words). | `anica/docs/acp/intent-phrases/catalog.md` |
 | MotionLoom | User asks MotionLoom DSL syntax, process categories, kernel selection, or effect authoring workflow. | `anica/docs/acp/motionloom/catalog.md` |
 

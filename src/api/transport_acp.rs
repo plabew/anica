@@ -1,3 +1,6 @@
+// =========================================
+// =========================================
+// src/api/transport_acp.rs
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -36,7 +39,9 @@ use agent_client_protocol::schema::{
     ContentChunk, ExtRequest, ExtResponse, FileSystemCapabilities, ImageContent, Implementation,
     InitializeRequest, NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, TextContent,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionNotification,
+    SessionUpdate, SetSessionConfigOptionRequest, TextContent,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Error as AcpError};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -61,6 +66,10 @@ enum AcpWorkerCommand {
         prompt: String,
         image_attachments: Vec<AcpPromptImageAttachment>,
     },
+    SetSessionConfigOption {
+        config_id: String,
+        value: String,
+    },
     UpdateMediaPoolSnapshot {
         items: Vec<MediaPoolItem>,
         ffmpeg_available: bool,
@@ -75,6 +84,13 @@ enum AcpWorkerCommand {
 pub struct AcpPromptImageAttachment {
     pub path: PathBuf,
     pub mime_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcpSessionModelOption {
+    pub slug: String,
+    pub label: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug)]
@@ -168,6 +184,12 @@ pub enum AcpUiEvent {
         stop_reason: String,
     },
     Error(String),
+    SessionModelOptions {
+        config_id: String,
+        current_value: String,
+        options: Vec<AcpSessionModelOption>,
+        source: String,
+    },
     ToolBridgeRequest(AcpToolBridgeRequest),
 }
 
@@ -264,6 +286,8 @@ enum AcpInternalError {
     Authenticate { message: String },
     #[error("ACP session/new failed: {message}")]
     NewSession { message: String },
+    #[error("ACP session/set_config_option failed: {message}")]
+    SetSessionConfigOption { message: String },
     #[error("ACP session/prompt failed: {message}")]
     Prompt { message: String },
 }
@@ -636,6 +660,12 @@ impl AcpWorker {
         });
     }
 
+    pub fn set_session_config_option(&self, config_id: String, value: String) {
+        let _ = self
+            .cmd_tx
+            .send(AcpWorkerCommand::SetSessionConfigOption { config_id, value });
+    }
+
     pub fn disconnect(&self) {
         let _ = self.cmd_tx.send(AcpWorkerCommand::Disconnect);
     }
@@ -670,12 +700,14 @@ struct AcpConnectionReady {
     conn: ConnectionTo<Agent>,
     session_id: SessionId,
     agent_label: String,
+    config_options: Option<Vec<SessionConfigOption>>,
 }
 
 struct AcpSession {
     command: String,
     conn: ConnectionTo<Agent>,
     session_id: SessionId,
+    evt_tx: Sender<AcpUiEvent>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     io_task: JoinHandle<()>,
 }
@@ -855,6 +887,7 @@ impl AcpSession {
                             conn: conn.clone(),
                             session_id,
                             agent_label,
+                            config_options: session_rsp.config_options.clone(),
                         }));
                     }
 
@@ -879,11 +912,15 @@ impl AcpSession {
             session_id: ready.session_id.0.to_string(),
             agent_label: ready.agent_label.clone(),
         });
+        if let Some(config_options) = ready.config_options.as_ref() {
+            publish_session_model_options(&evt_tx, config_options, "ACP session/new configOptions");
+        }
 
         Ok(Self {
             command,
             conn: ready.conn,
             session_id: ready.session_id,
+            evt_tx,
             shutdown_tx: Some(shutdown_tx),
             io_task,
         })
@@ -916,6 +953,33 @@ impl AcpSession {
         Ok(format!("{:?}", rsp.stop_reason))
     }
 
+    async fn set_session_config_option(
+        &self,
+        config_id: String,
+        value: String,
+    ) -> Result<(), AcpInternalError> {
+        // Use the typed ACP request for model/mode selectors instead of vendor-specific RPC.
+        let req =
+            SetSessionConfigOptionRequest::new(self.session_id.clone(), config_id.clone(), value);
+        let rsp = self
+            .conn
+            .send_request(req)
+            .block_task()
+            .await
+            .map_err(|err| AcpInternalError::SetSessionConfigOption {
+                message: err.to_string(),
+            })?;
+        publish_session_model_options(
+            &self.evt_tx,
+            &rsp.config_options,
+            "ACP session/set_config_option response",
+        );
+        let _ = self.evt_tx.send(AcpUiEvent::Status(format!(
+            "ACP session config `{config_id}` updated"
+        )));
+        Ok(())
+    }
+
     async fn cancel_prompt(&self) {
         let _ = self
             .conn
@@ -931,6 +995,89 @@ impl AcpSession {
         }
         self.io_task.abort();
     }
+}
+
+fn publish_session_model_options(
+    evt_tx: &Sender<AcpUiEvent>,
+    config_options: &[SessionConfigOption],
+    source: &str,
+) -> bool {
+    if let Some(event) = session_model_options_event(config_options, source) {
+        let _ = evt_tx.send(event);
+        true
+    } else {
+        false
+    }
+}
+
+fn session_model_options_event(
+    config_options: &[SessionConfigOption],
+    source: &str,
+) -> Option<AcpUiEvent> {
+    for config_option in config_options {
+        if !is_model_config_option(config_option) {
+            continue;
+        }
+        let SessionConfigKind::Select(select) = &config_option.kind else {
+            continue;
+        };
+        let mut options = Vec::new();
+        collect_session_select_options(&select.options, &mut options);
+        if options.is_empty() {
+            continue;
+        }
+        let config_id = config_option.id.to_string();
+        return Some(AcpUiEvent::SessionModelOptions {
+            config_id: config_id.clone(),
+            current_value: select.current_value.to_string(),
+            options,
+            source: format!("{source}: `{config_id}`"),
+        });
+    }
+    None
+}
+
+fn is_model_config_option(config_option: &SessionConfigOption) -> bool {
+    // Prefer the ACP semantic category; fall back to the conventional `model` config ID.
+    match config_option.category.as_ref() {
+        Some(SessionConfigOptionCategory::Model) => true,
+        Some(SessionConfigOptionCategory::Other(category)) => {
+            category.eq_ignore_ascii_case("model") || category.eq_ignore_ascii_case("_model")
+        }
+        _ => config_option.id.to_string().eq_ignore_ascii_case("model"),
+    }
+}
+
+fn collect_session_select_options(
+    select_options: &SessionConfigSelectOptions,
+    out: &mut Vec<AcpSessionModelOption>,
+) {
+    match select_options {
+        SessionConfigSelectOptions::Ungrouped(options) => {
+            for option in options {
+                push_session_select_option(option, out);
+            }
+        }
+        SessionConfigSelectOptions::Grouped(groups) => {
+            for group in groups {
+                for option in &group.options {
+                    push_session_select_option(option, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_session_select_option(
+    option: &SessionConfigSelectOption,
+    out: &mut Vec<AcpSessionModelOption>,
+) {
+    out.push(AcpSessionModelOption {
+        slug: option.value.to_string(),
+        label: option.name.clone(),
+        description: option.description.clone(),
+    });
 }
 
 async fn stream_stderr(stderr: ChildStderr, evt_tx: Sender<AcpUiEvent>) {
@@ -1040,6 +1187,13 @@ impl AcpClientHandler {
                 let _ = self
                     .evt_tx
                     .send(AcpUiEvent::Status("Plan update received".to_string()));
+            }
+            SessionUpdate::ConfigOptionUpdate(update) => {
+                publish_session_model_options(
+                    &self.evt_tx,
+                    &update.config_options,
+                    "ACP config_option_update",
+                );
             }
             _ => {}
         }
@@ -1520,6 +1674,28 @@ fn worker_loop(cmd_rx: Receiver<AcpWorkerCommand>, evt_tx: Sender<AcpUiEvent>) {
                         let _ = evt_tx.send(AcpUiEvent::PromptFinished {
                             stop_reason: "Timeout".to_string(),
                         });
+                    }
+                }
+            }
+            AcpWorkerCommand::SetSessionConfigOption { config_id, value } => {
+                let Some(current) = session.as_ref() else {
+                    let _ = evt_tx.send(AcpUiEvent::Error(
+                        "ACP agent is not connected. Connect first.".to_string(),
+                    ));
+                    continue;
+                };
+
+                match local.block_on(
+                    &runtime,
+                    current.set_session_config_option(config_id.clone(), value.clone()),
+                ) {
+                    Ok(()) => {
+                        let _ = evt_tx.send(AcpUiEvent::Status(format!(
+                            "ACP config `{config_id}` set to `{value}`"
+                        )));
+                    }
+                    Err(err) => {
+                        let _ = evt_tx.send(AcpUiEvent::Error(err.to_string()));
                     }
                 }
             }

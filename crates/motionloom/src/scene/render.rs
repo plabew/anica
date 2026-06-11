@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+// =========================================
+// crates/motionloom/src/scene/render.rs
+
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -315,7 +318,130 @@ fn validate_scene_graph(graph: &GraphScript) -> Result<(), MotionLoomSceneRender
     if !graph.has_scene_nodes() {
         return Err(MotionLoomSceneRenderError::EmptyScene);
     }
+    validate_scene_gradient_refs(graph)?;
     Ok(())
+}
+
+fn validate_scene_gradient_refs(graph: &GraphScript) -> Result<(), MotionLoomSceneRenderError> {
+    let mut gradient_defs = HashMap::new();
+    collect_graph_gradient_defs(graph, &mut gradient_defs);
+
+    let mut refs = Vec::new();
+    collect_scene_gradient_refs(&graph.scene_nodes, &mut refs);
+    for scene in &graph.scenes {
+        collect_scene_gradient_refs(&scene.children, &mut refs);
+    }
+
+    let mut seen = HashSet::new();
+    for (paint, id) in refs {
+        if !seen.insert((paint.clone(), id.clone())) {
+            continue;
+        }
+        if !gradient_defs.contains_key(&id) {
+            return Err(MotionLoomSceneRenderError::InvalidPaint {
+                value: paint,
+                message: format!("gradient reference not found: {id}"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn collect_scene_gradient_refs(nodes: &[SceneNode], out: &mut Vec<(String, String)>) {
+    for node in nodes {
+        match node {
+            SceneNode::Defs(defs) => collect_defs_gradient_refs(defs, out),
+            SceneNode::Timeline(timeline) => collect_scene_gradient_refs(&timeline.children, out),
+            SceneNode::Track(track) => collect_scene_gradient_refs(&track.children, out),
+            SceneNode::Sequence(sequence) => collect_scene_gradient_refs(&sequence.children, out),
+            SceneNode::Chain(chain) => collect_scene_gradient_refs(&chain.children, out),
+            SceneNode::Text(text) => collect_text_gradient_refs(text, out),
+            SceneNode::Rect(rect) => {
+                collect_paint_gradient_ref(&rect.color, out);
+                collect_optional_paint_gradient_ref(rect.stroke.as_deref(), out);
+            }
+            SceneNode::Circle(circle) => {
+                collect_paint_gradient_ref(&circle.color, out);
+                collect_optional_paint_gradient_ref(circle.stroke.as_deref(), out);
+            }
+            SceneNode::Line(line) => collect_paint_gradient_ref(&line.color, out),
+            SceneNode::Polyline(polyline) => collect_paint_gradient_ref(&polyline.stroke, out),
+            SceneNode::Path(path) => {
+                collect_paint_gradient_ref(&path.stroke, out);
+                collect_optional_paint_gradient_ref(path.fill.as_deref(), out);
+            }
+            SceneNode::FaceJaw(face_jaw) => {
+                collect_paint_gradient_ref(&face_jaw.stroke, out);
+                collect_optional_paint_gradient_ref(face_jaw.fill.as_deref(), out);
+            }
+            SceneNode::Shadow(shadow) => collect_paint_gradient_ref(&shadow.color, out),
+            SceneNode::Group(group) => collect_scene_gradient_refs(&group.children, out),
+            SceneNode::Part(part) => collect_scene_gradient_refs(&part.children, out),
+            SceneNode::Repeat(repeat) => collect_scene_gradient_refs(&repeat.children, out),
+            SceneNode::Mask(mask) => collect_scene_gradient_refs(&mask.children, out),
+            SceneNode::Precompose(precompose) => {
+                collect_scene_gradient_refs(&precompose.children, out)
+            }
+            SceneNode::Layer(layer) => collect_scene_gradient_refs(&layer.children, out),
+            SceneNode::Camera(camera) => collect_scene_gradient_refs(&camera.children, out),
+            SceneNode::Character(character) => {
+                collect_scene_gradient_refs(&character.children, out)
+            }
+            SceneNode::Palette(_)
+            | SceneNode::PixelGrid(_)
+            | SceneNode::Image(_)
+            | SceneNode::Svg(_)
+            | SceneNode::Use(_) => {}
+        }
+    }
+}
+
+fn collect_defs_gradient_refs(defs: &DefsNode, out: &mut Vec<(String, String)>) {
+    for brush in &defs.brushes {
+        collect_optional_paint_gradient_ref(brush.stroke.as_deref(), out);
+        collect_optional_paint_gradient_ref(brush.fill.as_deref(), out);
+    }
+    for mask in &defs.masks {
+        collect_scene_gradient_refs(&mask.children, out);
+    }
+    for precompose in &defs.precomposes {
+        collect_scene_gradient_refs(&precompose.children, out);
+    }
+    for component in &defs.components {
+        collect_scene_gradient_refs(&component.children, out);
+    }
+}
+
+fn collect_text_gradient_refs(text: &TextNode, out: &mut Vec<(String, String)>) {
+    collect_paint_gradient_ref(&text.color, out);
+    collect_optional_paint_gradient_ref(text.box_color.as_deref(), out);
+    collect_optional_paint_gradient_ref(text.stroke.as_deref(), out);
+    for animator in &text.animators {
+        if let Some(style) = animator.style.as_ref() {
+            collect_optional_paint_gradient_ref(style.color.as_deref(), out);
+            collect_optional_paint_gradient_ref(style.stroke.as_deref(), out);
+            collect_optional_paint_gradient_ref(style.shadow_color.as_deref(), out);
+        }
+        for effect in &animator.effects {
+            match effect {
+                crate::scene::text::TextEffectNode::Glow(glow) => {
+                    collect_optional_paint_gradient_ref(glow.color.as_deref(), out);
+                }
+            }
+        }
+    }
+}
+
+fn collect_optional_paint_gradient_ref(value: Option<&str>, out: &mut Vec<(String, String)>) {
+    if let Some(value) = value {
+        collect_paint_gradient_ref(value, out);
+    }
+}
+
+fn collect_paint_gradient_ref(value: &str, out: &mut Vec<(String, String)>) {
+    if let Some(id) = gradient_ref_id(value) {
+        out.push((value.to_string(), id.to_string()));
+    }
 }
 
 struct SceneFrameRenderer {
@@ -7031,7 +7157,7 @@ mod tests {
 
     use super::{
         MotionLoomSceneRenderError, SceneFrameRenderer, SceneRenderProfile, eval_text_box_padding,
-        eval_text_font_weight, eval_text_tracking_em,
+        eval_text_font_weight, eval_text_tracking_em, validate_scene_graph,
     };
 
     fn max_rgb(image: &image::RgbaImage) -> u8 {
@@ -7088,6 +7214,27 @@ mod tests {
             layout: None,
             animators: Vec::new(),
         }
+    }
+
+    #[test]
+    fn scene_validation_rejects_missing_gradient_refs_before_render() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={60} duration="1s" size={[64,48]}>
+  <Background color="#000000" />
+  <Rect x="0" y="0" width="64" height="48" fill="url(#bg_glow)" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let err = validate_scene_graph(&graph).expect_err("missing gradient ref should fail");
+        assert!(
+            err.to_string()
+                .contains("gradient reference not found: bg_glow"),
+            "unexpected validation error: {err}"
+        );
     }
 
     #[test]

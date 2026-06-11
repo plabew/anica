@@ -83,6 +83,7 @@ pub struct EffectiveSettings {
     pub acp_codex_cli_bin: Option<String>,
     pub acp_gemini_cli_bin: Option<String>,
     pub acp_claude_cli_bin: Option<String>,
+    pub acp_opencode_cli_bin: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +114,8 @@ struct AcpLayer {
     gemini_cli_bin: Option<String>,
     #[serde(default)]
     claude_cli_bin: Option<String>,
+    #[serde(default)]
+    opencode_cli_bin: Option<String>,
 }
 
 pub fn resolve_workspace_root(project_file_path: Option<&Path>) -> PathBuf {
@@ -227,6 +230,7 @@ pub fn save_acp_cli_paths(
     codex_cli_bin: Option<&str>,
     gemini_cli_bin: Option<&str>,
     claude_cli_bin: Option<&str>,
+    opencode_cli_bin: Option<&str>,
 ) -> Result<PathBuf, UserSettingsError> {
     let path = match scope {
         SettingsScope::User => user_settings_path(),
@@ -236,6 +240,7 @@ pub fn save_acp_cli_paths(
     let codex_cli_bin = normalize_non_empty(codex_cli_bin);
     let gemini_cli_bin = normalize_non_empty(gemini_cli_bin);
     let claude_cli_bin = normalize_non_empty(claude_cli_bin);
+    let opencode_cli_bin = normalize_non_empty(opencode_cli_bin);
 
     update_settings_file(&path, |root| {
         root.insert(
@@ -271,6 +276,15 @@ pub fn save_acp_cli_paths(
                 acp.remove("claude_cli_bin");
             }
         }
+
+        match &opencode_cli_bin {
+            Some(value) => {
+                acp.insert("opencode_cli_bin".to_string(), Value::String(value.clone()));
+            }
+            None => {
+                acp.remove("opencode_cli_bin");
+            }
+        }
     })?;
 
     Ok(path)
@@ -304,6 +318,9 @@ fn apply_layer(loaded: &mut LoadedSettings, layer: &SettingsLayer, source: Setti
     }
     if let Some(path) = normalize_non_empty(acp.claude_cli_bin.as_deref()) {
         loaded.effective.acp_claude_cli_bin = Some(path);
+    }
+    if let Some(path) = normalize_non_empty(acp.opencode_cli_bin.as_deref()) {
+        loaded.effective.acp_opencode_cli_bin = Some(path);
     }
 }
 

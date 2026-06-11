@@ -137,6 +137,7 @@ pub fn apply_common_agent_cli_env_overrides() {
         ("ANICA_CODEX_CLI_BIN", "codex"),
         ("ANICA_GEMINI_CLI_BIN", "gemini"),
         ("ANICA_CLAUDE_CLI_BIN", "claude"),
+        ("ANICA_OPENCODE_CLI_BIN", "opencode"),
     ] {
         if std::env::var_os(env_var).is_some() {
             continue;

@@ -91,6 +91,29 @@ copy_runtime_tree() {
   fi
 }
 
+resolve_tool_tree() {
+  local root="$1"
+  local binary="$2"
+  local version="${3:-}"
+  local candidate
+
+  if [[ -x "${root}/bin/${binary}" ]]; then
+    printf "%s" "${root}"
+    return 0
+  fi
+  if [[ -n "${version}" && -x "${root}/${version}/bin/${binary}" ]]; then
+    printf "%s" "${root}/${version}"
+    return 0
+  fi
+  while IFS= read -r candidate; do
+    if [[ -x "${candidate}/bin/${binary}" ]]; then
+      printf "%s" "${candidate}"
+      return 0
+    fi
+  done < <(find "${root}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  return 1
+}
+
 # Download and extract the runtime archive for the current platform.
 main() {
   local os
@@ -117,14 +140,23 @@ main() {
 
   local platform_dir="${RUNTIME_DIR}/${os}"
   local current_dir="${RUNTIME_DIR}/current/${os}"
+  local ffmpeg_binary="ffmpeg"
+  local gst_binary="gst-launch-1.0"
+  if [[ "${os}" == "windows" ]]; then
+    ffmpeg_binary="ffmpeg.exe"
+    gst_binary="gst-launch-1.0.exe"
+  fi
 
   # Check if called with --sync-only (just sync versioned to current, no download)
   if [[ "${1:-}" == "--sync-only" ]]; then
     if [[ -d "${platform_dir}/ffmpeg/${ffmpeg_version}" && -d "${platform_dir}/gstreamer/${gst_version}" ]]; then
       log "Syncing versioned runtime to current (sync-only)..."
       mkdir -p "${current_dir}"
-      copy_runtime_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${current_dir}/ffmpeg"
-      copy_runtime_tree "${platform_dir}/gstreamer/${gst_version}" "${current_dir}/gstreamer"
+      local ffmpeg_src gst_src
+      ffmpeg_src="$(resolve_tool_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${ffmpeg_binary}" "${ffmpeg_version}")"
+      gst_src="$(resolve_tool_tree "${platform_dir}/gstreamer/${gst_version}" "${gst_binary}" "${gst_version}")"
+      copy_runtime_tree "${ffmpeg_src}" "${current_dir}/ffmpeg"
+      copy_runtime_tree "${gst_src}" "${current_dir}/gstreamer"
       log "Runtime ready: ${current_dir}"
       exit 0
     else
@@ -143,8 +175,11 @@ main() {
   if [[ -d "${platform_dir}/ffmpeg/${ffmpeg_version}" && -d "${platform_dir}/gstreamer/${gst_version}" ]]; then
     log "Syncing versioned runtime to current..."
     mkdir -p "${current_dir}"
-    copy_runtime_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${current_dir}/ffmpeg"
-    copy_runtime_tree "${platform_dir}/gstreamer/${gst_version}" "${current_dir}/gstreamer"
+    local ffmpeg_src gst_src
+    ffmpeg_src="$(resolve_tool_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${ffmpeg_binary}" "${ffmpeg_version}")"
+    gst_src="$(resolve_tool_tree "${platform_dir}/gstreamer/${gst_version}" "${gst_binary}" "${gst_version}")"
+    copy_runtime_tree "${ffmpeg_src}" "${current_dir}/ffmpeg"
+    copy_runtime_tree "${gst_src}" "${current_dir}/gstreamer"
     log "Runtime ready: ${current_dir}"
     exit 0
   fi
@@ -192,15 +227,15 @@ main() {
     copy_runtime_tree "${runtime_root}" "${platform_dir}"
   else
     log "Copying ffmpeg to versioned path..."
-    copy_runtime_tree "${runtime_root}/ffmpeg" "${platform_dir}/ffmpeg/${ffmpeg_version}"
+    copy_runtime_tree "$(resolve_tool_tree "${runtime_root}/ffmpeg" "${ffmpeg_binary}" "${ffmpeg_version}")" "${platform_dir}/ffmpeg/${ffmpeg_version}"
     log "Copying gstreamer to versioned path..."
-    copy_runtime_tree "${runtime_root}/gstreamer" "${platform_dir}/gstreamer/${gst_version}"
+    copy_runtime_tree "$(resolve_tool_tree "${runtime_root}/gstreamer" "${gst_binary}" "${gst_version}")" "${platform_dir}/gstreamer/${gst_version}"
   fi
 
   # Sync to current (unversioned) for app consumption.
   log "Syncing to current/..."
-  copy_runtime_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${current_dir}/ffmpeg"
-  copy_runtime_tree "${platform_dir}/gstreamer/${gst_version}" "${current_dir}/gstreamer"
+  copy_runtime_tree "$(resolve_tool_tree "${platform_dir}/ffmpeg/${ffmpeg_version}" "${ffmpeg_binary}" "${ffmpeg_version}")" "${current_dir}/ffmpeg"
+  copy_runtime_tree "$(resolve_tool_tree "${platform_dir}/gstreamer/${gst_version}" "${gst_binary}" "${gst_version}")" "${current_dir}/gstreamer"
 
   # Clean up.
   rm -f "${archive_path}"

@@ -199,6 +199,35 @@ patch_macos_gstreamer_runtime_tree_once() {
   touch "${stamp}" 2>/dev/null || true
 }
 
+resolve_runtime_tool_root() {
+  local tool_dir="$1"
+  local binary_name="$2"
+  local preferred_version="${3:-}"
+  local candidate
+
+  # Current runtime layout is canonical: current/<os>/<tool>/bin.
+  if [[ -x "${tool_dir}/bin/${binary_name}" ]]; then
+    printf "%s" "${tool_dir}"
+    return 0
+  fi
+
+  # Backward-compatible fallback for older local trees that still contain
+  # current/<os>/<tool>/<version>/bin.
+  if [[ -n "${preferred_version}" && -x "${tool_dir}/${preferred_version}/bin/${binary_name}" ]]; then
+    printf "%s" "${tool_dir}/${preferred_version}"
+    return 0
+  fi
+
+  while IFS= read -r candidate; do
+    if [[ -x "${candidate}/bin/${binary_name}" ]]; then
+      printf "%s" "${candidate}"
+      return 0
+    fi
+  done < <(find "${tool_dir}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+
+  return 1
+}
+
 setup_repo_media_runtime() {
   local script_dir repo_root os arch platform runtime_root
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -220,20 +249,33 @@ setup_repo_media_runtime() {
 
   platform="${os}-${arch}"
   runtime_root=""
-  # Read the stable runtime versions from the manifest so scripts point directly to them.
+  # Manifest versions are fallback hints only; current/<os>/<tool> is canonical.
   local manifest_path="${repo_root}/tools/media_tools_manifest.json"
-  local ffmpeg_version="8.0.1"
-  local gst_version="1.28.1"
+  local ffmpeg_version=""
+  local gst_version=""
   if command -v jq >/dev/null 2>&1 && [[ -f "${manifest_path}" ]]; then
-    ffmpeg_version="$(jq -r ".common.ffmpeg.version" "${manifest_path}" 2>/dev/null || echo "8.0.1")"
-    gst_version="$(jq -r ".common.gstreamer.version" "${manifest_path}" 2>/dev/null || echo "1.28.1")"
+    ffmpeg_version="$(jq -r ".common.ffmpeg.version // empty" "${manifest_path}" 2>/dev/null || true)"
+    gst_version="$(jq -r ".common.gstreamer.version // empty" "${manifest_path}" 2>/dev/null || true)"
   fi
   # Use current/<os>/ as the canonical active runtime path.
   local runtime_root="${repo_root}/tools/runtime/current/${os}"
   if [[ ! -d "${runtime_root}" ]]; then
     return 0
   fi
-  if [[ ! -x "${runtime_root}/ffmpeg/${ffmpeg_version}/bin/ffmpeg" && ! -d "${runtime_root}/gstreamer/${gst_version}/bin" ]]; then
+
+  local ffmpeg_exe="ffmpeg"
+  local ffprobe_exe="ffprobe"
+  local gst_launch_exe="gst-launch-1.0"
+  if [[ "${os}" == "windows" ]]; then
+    ffmpeg_exe="ffmpeg.exe"
+    ffprobe_exe="ffprobe.exe"
+    gst_launch_exe="gst-launch-1.0.exe"
+  fi
+
+  local ffmpeg_root gst_root
+  ffmpeg_root="$(resolve_runtime_tool_root "${runtime_root}/ffmpeg" "${ffmpeg_exe}" "${ffmpeg_version}" || true)"
+  gst_root="$(resolve_runtime_tool_root "${runtime_root}/gstreamer" "${gst_launch_exe}" "${gst_version}" || true)"
+  if [[ -z "${ffmpeg_root}" && -z "${gst_root}" ]]; then
     return 0
   fi
   if [[ -z "${runtime_root}" ]]; then
@@ -250,18 +292,28 @@ setup_repo_media_runtime() {
 
   local ffmpeg_bin ffprobe_bin ffmpeg_lib gst_bin gst_lib gst_plugins gst_typelib gst_launch_bin
   local host_gst_launch host_linked_gstreamer
-  ffmpeg_bin="${runtime_root}/ffmpeg/${ffmpeg_version}/bin/ffmpeg"
-  ffprobe_bin="${runtime_root}/ffmpeg/${ffmpeg_version}/bin/ffprobe"
-  ffmpeg_lib="${runtime_root}/ffmpeg/${ffmpeg_version}/lib"
-  gst_bin="${runtime_root}/gstreamer/${gst_version}/bin"
-  gst_lib="${runtime_root}/gstreamer/${gst_version}/lib"
-  gst_plugins="${gst_lib}/gstreamer-1.0"
-  gst_typelib="${gst_lib}/girepository-1.0"
-  gst_launch_bin="${gst_bin}/gst-launch-1.0"
-  if [[ "${os}" == "windows" && -x "${gst_bin}/gst-launch-1.0.exe" ]]; then
-    gst_launch_bin="${gst_bin}/gst-launch-1.0.exe"
+  ffmpeg_bin=""
+  ffprobe_bin=""
+  ffmpeg_lib=""
+  if [[ -n "${ffmpeg_root}" ]]; then
+    ffmpeg_bin="${ffmpeg_root}/bin/${ffmpeg_exe}"
+    ffprobe_bin="${ffmpeg_root}/bin/${ffprobe_exe}"
+    ffmpeg_lib="${ffmpeg_root}/lib"
   fi
-  gst_scanner="${runtime_root}/gstreamer/${gst_version}/libexec/gstreamer-1.0/gst-plugin-scanner"
+  gst_bin=""
+  gst_lib=""
+  gst_plugins=""
+  gst_typelib=""
+  gst_launch_bin=""
+  gst_scanner=""
+  if [[ -n "${gst_root}" ]]; then
+    gst_bin="${gst_root}/bin"
+    gst_lib="${gst_root}/lib"
+    gst_plugins="${gst_lib}/gstreamer-1.0"
+    gst_typelib="${gst_lib}/girepository-1.0"
+    gst_launch_bin="${gst_bin}/${gst_launch_exe}"
+    gst_scanner="${gst_root}/libexec/gstreamer-1.0/gst-plugin-scanner"
+  fi
   host_gst_launch="$(command -v gst-launch-1.0 2>/dev/null || true)"
   host_linked_gstreamer=0
 
@@ -274,10 +326,10 @@ setup_repo_media_runtime() {
   if [[ "${os}" == "macos" ]]; then
     # setup_media_tools already patches the runtime tree. Re-running the full patch
     # on every launch is expensive and can crash older macOS bash builds.
-    if [[ "${ANICA_FORCE_GSTREAMER_RUNTIME_RPATH_PATCH:-0}" == "1" ]]; then
-      patch_macos_gstreamer_runtime_tree_once "${runtime_root}/gstreamer/${gst_version}"
-    else
-      touch "${runtime_root}/gstreamer/${gst_version}/.rpath_patch_v2.done" 2>/dev/null || true
+    if [[ -n "${gst_root}" && "${ANICA_FORCE_GSTREAMER_RUNTIME_RPATH_PATCH:-0}" == "1" ]]; then
+      patch_macos_gstreamer_runtime_tree_once "${gst_root}"
+    elif [[ -n "${gst_root}" ]]; then
+      touch "${gst_root}/.rpath_patch_v2.done" 2>/dev/null || true
     fi
     # Preemptively rewrite Mach-O links to runtime libs to avoid host/runtime mixing.
     # Do not rewrite the main app binary by default on macOS; mutating target/debug/anica can
@@ -285,10 +337,14 @@ setup_repo_media_runtime() {
     if [[ "${ANICA_PATCH_MAIN_BINARY_LINKS:-0}" == "1" ]]; then
       rewrite_macos_macho_links_to_runtime "${exe_path}" "${gst_lib}" || true
     fi
-    rewrite_macos_macho_links_to_runtime "${gst_bin}/gst-launch-1.0" "${gst_lib}" || true
-    rewrite_macos_macho_links_to_runtime "${gst_bin}/gst-inspect-1.0" "${gst_lib}" || true
-    rewrite_macos_macho_links_to_runtime "${gst_bin}/gst-typefind-1.0" "${gst_lib}" || true
-    rewrite_macos_macho_links_to_runtime "${gst_scanner}" "${gst_lib}" || true
+    if [[ -n "${gst_root}" && "${ANICA_PATCH_VENDORED_GSTREAMER_LINKS:-0}" == "1" ]]; then
+      # Development escape hatch only: mutating Mach-O runtime files on every
+      # launch can invalidate macOS code signatures and make the scanner die.
+      rewrite_macos_macho_links_to_runtime "${gst_bin}/gst-launch-1.0" "${gst_lib}" || true
+      rewrite_macos_macho_links_to_runtime "${gst_bin}/gst-inspect-1.0" "${gst_lib}" || true
+      rewrite_macos_macho_links_to_runtime "${gst_bin}/gst-typefind-1.0" "${gst_lib}" || true
+      rewrite_macos_macho_links_to_runtime "${gst_scanner}" "${gst_lib}" || true
+    fi
   fi
 
   # REMOVED: The built anica binary may link to Homebrew, but the vendored

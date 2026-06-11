@@ -1,3 +1,6 @@
+// =========================================
+// =========================================
+// src/bin/anica-acp.rs
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,16 +11,23 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::{
     AgentCapabilities, AgentRequest, AuthenticateRequest, AuthenticateResponse, CancelNotification,
-    ContentBlock, ContentChunk, ExtRequest, Implementation, InitializeRequest, InitializeResponse,
-    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId,
-    SessionNotification, SessionUpdate, StopReason, TextContent,
+    ClientCapabilities, ContentBlock, ContentChunk, ExtRequest, FileSystemCapabilities,
+    Implementation, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
+    PermissionOptionKind, PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, StopReason, TextContent,
 };
-use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Stdio as AcpStdio};
+use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Error, Stdio as AcpStdio};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[path = "../export_resolution.rs"]
 mod export_resolution;
@@ -34,17 +44,38 @@ struct SessionState {
     last_export_resolution_preference: Option<String>,
 }
 
-#[derive(Debug)]
 struct AgentState {
     conn: Mutex<Option<ConnectionTo<Client>>>,
     sessions: Mutex<HashMap<SessionId, SessionState>>,
+    opencode_sessions: Mutex<HashMap<SessionId, OpenCodeProxySession>>,
     next_id: AtomicU64,
     resources: ResourceBundle,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct AnicaAcpAgent {
     inner: Arc<AgentState>,
+}
+
+struct OpenCodeProxySession {
+    conn: ConnectionTo<Agent>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    io_task: JoinHandle<()>,
+}
+
+struct OpenCodeProxyReady {
+    conn: ConnectionTo<Agent>,
+    session_response: NewSessionResponse,
+}
+
+impl Drop for OpenCodeProxySession {
+    fn drop(&mut self) {
+        // Stop the upstream native ACP process when the Anica sidecar drops its session state.
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        self.io_task.abort();
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -366,6 +397,7 @@ impl Default for AnicaAcpAgent {
             inner: Arc::new(AgentState {
                 conn: Mutex::new(None),
                 sessions: Mutex::new(HashMap::new()),
+                opencode_sessions: Mutex::new(HashMap::new()),
                 next_id: AtomicU64::new(1),
                 resources: ResourceBundle::load(),
             }),
@@ -2708,9 +2740,45 @@ impl AnicaAcpAgent {
             .ok_or_else(|| Error::internal_error().data("ACP connection not initialized"))
     }
 
+    fn provider() -> String {
+        std::env::var("ANICA_ACP_PROVIDER")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "codex".to_string())
+    }
+
+    fn is_opencode_provider() -> bool {
+        Self::provider() == "opencode"
+    }
+
     fn alloc_session_id(&self) -> SessionId {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         SessionId::new(format!("anica-session-{id}"))
+    }
+
+    fn opencode_proxy_connection(
+        &self,
+        session_id: &SessionId,
+    ) -> agent_client_protocol::Result<Option<ConnectionTo<Agent>>> {
+        let sessions =
+            self.inner.opencode_sessions.lock().map_err(|_| {
+                Error::internal_error().data("OpenCode proxy session lock poisoned")
+            })?;
+        Ok(sessions.get(session_id).map(|session| session.conn.clone()))
+    }
+
+    fn insert_opencode_proxy_session(
+        &self,
+        session_id: SessionId,
+        proxy_session: OpenCodeProxySession,
+    ) -> agent_client_protocol::Result<()> {
+        self.inner
+            .opencode_sessions
+            .lock()
+            .map_err(|_| Error::internal_error().data("OpenCode proxy session lock poisoned"))?
+            .insert(session_id, proxy_session);
+        Ok(())
     }
 
     fn set_cancelled(&self, session_id: &SessionId, cancelled: bool) -> bool {
@@ -2788,6 +2856,170 @@ impl AnicaAcpAgent {
         ))
     }
 
+    async fn connect_opencode_proxy_session(
+        &self,
+        request: NewSessionRequest,
+    ) -> agent_client_protocol::Result<(NewSessionResponse, OpenCodeProxySession)> {
+        let opencode_bin = runtime_paths::resolve_cli_bin("ANICA_OPENCODE_CLI_BIN", "opencode")
+            .unwrap_or_else(|| PathBuf::from("opencode"))
+            .to_string_lossy()
+            .to_string();
+        if !command_exists(&opencode_bin) {
+            return Err(Error::internal_error().data(format!(
+                "OpenCode CLI not found: `{opencode_bin}`. Install OpenCode or set ANICA_OPENCODE_CLI_BIN to a valid path."
+            )));
+        }
+
+        let downstream_conn = self.connection()?;
+        let mut cmd = agent_cli_command(&opencode_bin);
+        cmd.arg("acp")
+            .current_dir(&request.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = cmd.spawn().map_err(|err| {
+            Error::internal_error().data(format!(
+                "Failed to spawn OpenCode ACP `{opencode_bin}`: {err}"
+            ))
+        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::internal_error().data("OpenCode ACP stdin unavailable"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::internal_error().data("OpenCode ACP stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::internal_error().data("OpenCode ACP stderr unavailable"))?;
+
+        let (ready_tx, ready_rx) =
+            oneshot::channel::<agent_client_protocol::Result<OpenCodeProxyReady>>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let io_task = tokio::spawn(async move {
+            tokio::spawn(stream_child_stderr("OpenCode ACP", stderr));
+
+            let permission_downstream = downstream_conn.clone();
+            let notification_downstream = downstream_conn.clone();
+            let request_downstream = downstream_conn.clone();
+            let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
+
+            let result = Client
+                .builder()
+                .name("anica-acp-opencode-proxy")
+                .on_receive_request(
+                    async move |args: RequestPermissionRequest, responder, _conn| {
+                        let response =
+                            forward_permission_request(permission_downstream.clone(), args).await?;
+                        responder.respond(response)
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |args: SessionNotification, _conn| {
+                        notification_downstream.send_notification(args)
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                )
+                .on_receive_request(
+                    async move |args: AgentRequest, responder, _conn| {
+                        let response = request_downstream
+                            .send_request(args)
+                            .block_task()
+                            .await
+                            .map_err(|err| {
+                                Error::internal_error()
+                                    .data(format!("forward ACP agent request failed: {err}"))
+                            })?;
+                        responder.respond(response)
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_with(transport, async move |conn| {
+                    let mut ready_tx = Some(ready_tx);
+                    let init_req = InitializeRequest::new(ProtocolVersion::LATEST)
+                        .client_capabilities(
+                            ClientCapabilities::new()
+                                .fs(FileSystemCapabilities::new()
+                                    .read_text_file(false)
+                                    .write_text_file(false))
+                                .terminal(false),
+                        )
+                        .client_info(
+                            Implementation::new("anica-acp", env!("CARGO_PKG_VERSION"))
+                                .title("Anica ACP OpenCode Proxy"),
+                        );
+
+                    let init_rsp = match conn.send_request(init_req).block_task().await {
+                        Ok(response) => response,
+                        Err(err) => {
+                            if let Some(tx) = ready_tx.take() {
+                                let _ = tx.send(Err(Error::internal_error()
+                                    .data(format!("OpenCode ACP initialize failed: {err}"))));
+                            }
+                            return Ok(());
+                        }
+                    };
+
+                    if let Some(auth_method) = init_rsp.auth_methods.first()
+                        && let Err(err) = conn
+                            .send_request(AuthenticateRequest::new(auth_method.id().clone()))
+                            .block_task()
+                            .await
+                    {
+                        if let Some(tx) = ready_tx.take() {
+                            let _ = tx.send(Err(Error::internal_error()
+                                .data(format!("OpenCode ACP authenticate failed: {err}"))));
+                        }
+                        return Ok(());
+                    }
+
+                    let session_response = match conn.send_request(request).block_task().await {
+                        Ok(response) => response,
+                        Err(err) => {
+                            if let Some(tx) = ready_tx.take() {
+                                let _ = tx.send(Err(Error::internal_error()
+                                    .data(format!("OpenCode ACP session/new failed: {err}"))));
+                            }
+                            return Ok(());
+                        }
+                    };
+
+                    if let Some(tx) = ready_tx.take() {
+                        let _ = tx.send(Ok(OpenCodeProxyReady {
+                            conn: conn.clone(),
+                            session_response,
+                        }));
+                    }
+
+                    let _ = shutdown_rx.await;
+                    Ok(())
+                })
+                .await;
+
+            if let Err(err) = result {
+                eprintln!("[OpenCode ACP] proxy I/O error: {err}");
+            }
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        });
+
+        let ready = ready_rx.await.map_err(|_| {
+            Error::internal_error().data("OpenCode ACP closed before session/new completed")
+        })??;
+        let proxy_session = OpenCodeProxySession {
+            conn: ready.conn,
+            shutdown_tx: Some(shutdown_tx),
+            io_task,
+        };
+        Ok((ready.session_response, proxy_session))
+    }
+
     async fn run_codex_prompt(
         &self,
         session_id: &SessionId,
@@ -2811,7 +3043,7 @@ impl AnicaAcpAgent {
                 );
             }
 
-            let mut cmd = TokioCommand::new(&gemini_bin);
+            let mut cmd = agent_cli_command(&gemini_bin);
             if let Some(model) = resolve_model_env("ANICA_GEMINI_MODEL")? {
                 cmd.arg("--model").arg(model);
             }
@@ -2870,7 +3102,7 @@ impl AnicaAcpAgent {
                 );
             }
 
-            let mut cmd = TokioCommand::new(&claude_bin);
+            let mut cmd = agent_cli_command(&claude_bin);
             if let Some(model) = resolve_model_env("ANICA_CLAUDE_MODEL")? {
                 cmd.arg("--model").arg(model);
             }
@@ -2909,7 +3141,7 @@ impl AnicaAcpAgent {
                     || stdout_lc.contains("unknown option: --output-format")
                     || stdout_lc.contains("unrecognized option '--output-format'");
                 if unknown_output_format {
-                    let mut fallback_cmd = TokioCommand::new(&claude_bin);
+                    let mut fallback_cmd = agent_cli_command(&claude_bin);
                     if let Some(model) = resolve_model_env("ANICA_CLAUDE_MODEL")? {
                         fallback_cmd.arg("--model").arg(model);
                     }
@@ -2958,6 +3190,65 @@ impl AnicaAcpAgent {
             return Ok(stdout);
         }
 
+        if provider == "opencode" {
+            let opencode_bin = runtime_paths::resolve_cli_bin("ANICA_OPENCODE_CLI_BIN", "opencode")
+                .unwrap_or_else(|| PathBuf::from("opencode"))
+                .to_string_lossy()
+                .to_string();
+            if !command_exists(&opencode_bin) {
+                anyhow::bail!(
+                    "OpenCode CLI not found: `{}`. Install OpenCode or set ANICA_OPENCODE_CLI_BIN to a valid path.",
+                    opencode_bin
+                );
+            }
+
+            let mut cmd = agent_cli_command(&opencode_bin);
+            cmd.arg("run")
+                .arg(prompt)
+                .current_dir(cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+
+            let child = cmd.spawn().map_err(|err| {
+                anyhow::anyhow!(
+                    "Failed to spawn `{}`. Is it installed? ({err})",
+                    opencode_bin
+                )
+            })?;
+            self.set_running_pid(session_id, child.id());
+
+            let output = child
+                .wait_with_output()
+                .await
+                .map_err(|err| anyhow::anyhow!("Failed waiting for opencode process: {err}"))?;
+            self.set_running_pid(session_id, None);
+
+            if self.is_cancelled(session_id) {
+                anyhow::bail!("cancelled");
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if !output.status.success() {
+                let detail = if !stderr.is_empty() {
+                    stderr
+                } else if !stdout.is_empty() {
+                    stdout
+                } else {
+                    format!("exit status: {}", output.status)
+                };
+                anyhow::bail!("OpenCode CLI failed: {detail}");
+            }
+
+            if stdout.is_empty() {
+                anyhow::bail!("OpenCode CLI returned empty output.");
+            }
+
+            return Ok(stdout);
+        }
+
         let codex_bin = runtime_paths::resolve_cli_bin("ANICA_CODEX_CLI_BIN", "codex")
             .unwrap_or_else(|| PathBuf::from("codex"))
             .to_string_lossy()
@@ -2970,7 +3261,7 @@ impl AnicaAcpAgent {
             );
         }
 
-        let mut cmd = TokioCommand::new(&codex_bin);
+        let mut cmd = agent_cli_command(&codex_bin);
         cmd.arg("exec");
         if let Some(model) = resolve_model_env("ANICA_CODEX_MODEL")? {
             cmd.arg("--model").arg(model);
@@ -4009,6 +4300,129 @@ fn chunk_text(input: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
+fn agent_cli_command(cli_bin: &str) -> TokioCommand {
+    #[cfg(windows)]
+    {
+        if let Some(command) = windows_npm_shim_command(Path::new(cli_bin)) {
+            return command;
+        }
+    }
+
+    TokioCommand::new(cli_bin)
+}
+
+async fn stream_child_stderr(label: &'static str, stderr: tokio::process::ChildStderr) {
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            eprintln!("[{label} STDERR] {trimmed}");
+        }
+    }
+}
+
+async fn forward_permission_request(
+    downstream: ConnectionTo<Client>,
+    args: RequestPermissionRequest,
+) -> agent_client_protocol::Result<RequestPermissionResponse> {
+    match downstream.send_request(args.clone()).block_task().await {
+        Ok(response) => Ok(response),
+        Err(err) => {
+            eprintln!("[OpenCode ACP] permission forwarding failed; using fallback: {err}");
+            Ok(default_permission_response(&args))
+        }
+    }
+}
+
+fn default_permission_response(args: &RequestPermissionRequest) -> RequestPermissionResponse {
+    let selected = args
+        .options
+        .iter()
+        .find(|opt| {
+            matches!(
+                opt.kind,
+                PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+            )
+        })
+        .or_else(|| args.options.first());
+
+    if let Some(option) = selected {
+        RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+            SelectedPermissionOutcome::new(option.option_id.clone()),
+        ))
+    } else {
+        RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
+    }
+}
+
+#[cfg(windows)]
+fn windows_npm_shim_command(cli_bin: &Path) -> Option<TokioCommand> {
+    let ext = cli_bin
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(|v| v.to_ascii_lowercase())?;
+    if !matches!(ext.as_str(), "cmd" | "bat") {
+        return None;
+    }
+
+    let shim_dir = cli_bin.parent()?;
+    let shim_text = fs::read_to_string(cli_bin).ok()?;
+    let script_relative = npm_shim_node_script_relative_path(&shim_text)?;
+    let script_path = shim_dir.join(script_relative);
+    if !script_path.is_file() {
+        return None;
+    }
+
+    let local_node = shim_dir.join("node.exe");
+    let mut command = if local_node.is_file() {
+        TokioCommand::new(local_node)
+    } else {
+        TokioCommand::new("node")
+    };
+    // Windows npm shims are batch files; launching Node directly keeps multiline
+    // prompts out of cmd.exe argument parsing.
+    command.arg(script_path);
+    Some(command)
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn npm_shim_node_script_relative_path(contents: &str) -> Option<PathBuf> {
+    const DRIVE_MARKERS: [&str; 2] = ["%dp0%", "%~dp0"];
+    const SCRIPT_EXTENSIONS: [&str; 3] = [".js", ".mjs", ".cjs"];
+
+    for line in contents.lines() {
+        for marker in DRIVE_MARKERS {
+            let Some(marker_pos) = line.find(marker) else {
+                continue;
+            };
+            let after_marker = line[marker_pos + marker.len()..].trim_start_matches(['\\', '/']);
+            let after_marker_lower = after_marker.to_ascii_lowercase();
+            let Some(script_end) = SCRIPT_EXTENSIONS
+                .iter()
+                .filter_map(|ext| after_marker_lower.find(ext).map(|pos| pos + ext.len()))
+                .min()
+            else {
+                continue;
+            };
+            let script = after_marker[..script_end].trim();
+            if script.is_empty() || script.contains('%') {
+                continue;
+            }
+
+            let mut path = PathBuf::new();
+            for part in script.split(['\\', '/']).filter(|part| !part.is_empty()) {
+                path.push(part);
+            }
+            if path.as_os_str().is_empty() {
+                continue;
+            }
+            return Some(path);
+        }
+    }
+
+    None
+}
+
 fn command_exists(bin: &str) -> bool {
     if bin.is_empty() {
         return false;
@@ -4092,6 +4506,30 @@ impl AnicaAcpAgent {
         &self,
         args: NewSessionRequest,
     ) -> agent_client_protocol::Result<NewSessionResponse> {
+        if Self::is_opencode_provider() {
+            let cwd = args.cwd.clone();
+            let (session_response, proxy_session) =
+                self.connect_opencode_proxy_session(args).await?;
+            let session_id = session_response.session_id.clone();
+            self.inner
+                .sessions
+                .lock()
+                .map_err(|_| Error::internal_error().data("ACP session lock poisoned"))?
+                .insert(
+                    session_id.clone(),
+                    SessionState {
+                        cwd,
+                        cancelled: false,
+                        running_pid: None,
+                        last_audio_silence_args: None,
+                        last_validated_operations: None,
+                        last_export_resolution_preference: None,
+                    },
+                );
+            self.insert_opencode_proxy_session(session_id, proxy_session)?;
+            return Ok(session_response);
+        }
+
         let session_id = self.alloc_session_id();
         self.inner
             .sessions
@@ -4121,6 +4559,20 @@ impl AnicaAcpAgent {
             );
         }
         let _ = self.set_cancelled(&args.session_id, false);
+
+        if Self::is_opencode_provider() {
+            let conn = self
+                .opencode_proxy_connection(&args.session_id)?
+                .ok_or_else(|| {
+                    Error::invalid_params().data(format!(
+                        "OpenCode proxy session not found: {}",
+                        args.session_id.0
+                    ))
+                })?;
+            return conn.send_request(args).block_task().await.map_err(|err| {
+                Error::internal_error().data(format!("OpenCode ACP session/prompt failed: {err}"))
+            });
+        }
 
         let user_text = collect_prompt_text(&args.prompt);
         let reply = if user_text.trim().is_empty() {
@@ -4158,6 +4610,11 @@ impl AnicaAcpAgent {
 
     async fn handle_cancel(&self, args: CancelNotification) -> agent_client_protocol::Result<()> {
         let _ = self.set_cancelled(&args.session_id, true);
+        if Self::is_opencode_provider()
+            && let Some(conn) = self.opencode_proxy_connection(&args.session_id)?
+        {
+            return conn.send_notification(args);
+        }
         if let Some(pid) = self.running_pid(&args.session_id) {
             #[cfg(unix)]
             {
@@ -4169,6 +4626,25 @@ impl AnicaAcpAgent {
         }
         Ok(())
     }
+
+    async fn handle_set_session_config_option(
+        &self,
+        args: SetSessionConfigOptionRequest,
+    ) -> agent_client_protocol::Result<SetSessionConfigOptionResponse> {
+        let conn = self
+            .opencode_proxy_connection(&args.session_id)?
+            .ok_or_else(|| {
+                Error::invalid_params().data(format!(
+                    "session config options are not available for session {}",
+                    args.session_id.0
+                ))
+            })?;
+        conn.send_request(args).block_task().await.map_err(|err| {
+            Error::internal_error().data(format!(
+                "OpenCode ACP session/set_config_option failed: {err}"
+            ))
+        })
+    }
 }
 
 async fn async_main() -> anyhow::Result<()> {
@@ -4177,6 +4653,7 @@ async fn async_main() -> anyhow::Result<()> {
     let initialize_agent = agent.clone();
     let authenticate_agent = agent.clone();
     let new_session_agent = agent.clone();
+    let set_config_agent = agent.clone();
     let prompt_agent = agent.clone();
     let cancel_agent = agent.clone();
 
@@ -4201,6 +4678,17 @@ async fn async_main() -> anyhow::Result<()> {
             async move |args: NewSessionRequest, responder, conn| {
                 new_session_agent.bind_connection(conn);
                 responder.respond(new_session_agent.handle_new_session(args).await?)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |args: SetSessionConfigOptionRequest, responder, conn| {
+                set_config_agent.bind_connection(conn);
+                responder.respond(
+                    set_config_agent
+                        .handle_set_session_config_option(args)
+                        .await?,
+                )
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -4243,8 +4731,9 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::AnicaAcpAgent;
+    use super::{AnicaAcpAgent, npm_shim_node_script_relative_path};
     use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn normalize_export_tool_args_maps_single_orientation_prompt() {
@@ -4317,6 +4806,39 @@ mod tests {
                 .and_then(|v| v.as_str())
                 .unwrap_or(""),
             "2160x3840"
+        );
+    }
+
+    #[test]
+    fn npm_shim_parser_extracts_node_script_from_standard_cmd_file() {
+        let shim = r#"@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\node.exe" (
+  SET "_prog=%dp0%\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_modules\@google\gemini-cli\dist\index.js" %*
+"#;
+
+        assert_eq!(
+            npm_shim_node_script_relative_path(shim),
+            Some(
+                PathBuf::from("node_modules")
+                    .join("@google")
+                    .join("gemini-cli")
+                    .join("dist")
+                    .join("index.js")
+            )
         );
     }
 }

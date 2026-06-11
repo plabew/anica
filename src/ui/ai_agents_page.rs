@@ -1,3 +1,6 @@
+// =========================================
+// =========================================
+// src/ui/ai_agents_page.rs
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -38,7 +41,7 @@ use crate::api::timeline::{
     get_transcript_low_confidence_map, validate_edit_plan,
 };
 use crate::api::transport_acp::{
-    AcpPromptImageAttachment, AcpToolBridgeRequest, AcpUiEvent, AcpWorker,
+    AcpPromptImageAttachment, AcpSessionModelOption, AcpToolBridgeRequest, AcpUiEvent, AcpWorker,
 };
 use crate::core::export::{FfmpegExporter, is_cancelled_export_error};
 use crate::core::global_state::{
@@ -59,6 +62,7 @@ enum AcpAgentProvider {
     Codex,
     Gemini,
     Claude,
+    OpenCode,
 }
 
 impl AcpAgentProvider {
@@ -67,6 +71,7 @@ impl AcpAgentProvider {
             AcpAgentProvider::Codex => "Codex",
             AcpAgentProvider::Gemini => "Gemini",
             AcpAgentProvider::Claude => "Claude",
+            AcpAgentProvider::OpenCode => "OpenCode",
         }
     }
 
@@ -75,12 +80,15 @@ impl AcpAgentProvider {
             AcpAgentProvider::Codex => resolve_default_agent_command(),
             AcpAgentProvider::Gemini => resolve_default_agent_command(),
             AcpAgentProvider::Claude => resolve_default_agent_command(),
+            AcpAgentProvider::OpenCode => resolve_default_opencode_agent_command(),
         }
     }
 
     fn infer_from_command(command: &str) -> Self {
         let lower = command.trim().to_ascii_lowercase();
-        if lower.starts_with("claude ")
+        if lower.starts_with("opencode ") || lower == "opencode" || lower.contains("/opencode ") {
+            AcpAgentProvider::OpenCode
+        } else if lower.starts_with("claude ")
             || lower == "claude"
             || lower.contains("/claude ")
             || lower.contains("claude-agent-acp")
@@ -265,6 +273,18 @@ impl AgentLoginStatus {
                     "Check Claude CLI install path and auth state (`claude auth status`)."
                 }
             },
+            AcpAgentProvider::OpenCode => match self {
+                AgentLoginStatus::LoggedIn { .. } => {
+                    "Ready for ACP chat through anica-acp. OpenCode provider auth is handled by OpenCode."
+                }
+                AgentLoginStatus::LoggedOut { .. } => {
+                    "Run `opencode auth login`, or configure OpenCode provider credentials."
+                }
+                AgentLoginStatus::CliMissing { .. } => {
+                    "Install OpenCode, then verify with `opencode --version`."
+                }
+                AgentLoginStatus::Error(_) => "Check OpenCode CLI install path and provider auth.",
+            },
         }
     }
 }
@@ -309,6 +329,11 @@ fn gemini_install_hint() -> String {
 
 fn claude_install_hint() -> String {
     "Claude CLI not found.\nInstall Claude Code CLI, then login:\n1) curl -fsSL https://claude.ai/install.sh | bash\n2) claude auth login\n3) claude auth status\nAlternative npm path (legacy): npm install -g @anthropic-ai/claude-code"
+        .to_string()
+}
+
+fn opencode_install_hint() -> String {
+    "OpenCode CLI not found.\nInstall OpenCode, then configure provider auth:\n1) curl -fsSL https://opencode.ai/install | bash\n2) opencode auth login\n3) opencode --version\nAlternative npm path: npm install -g opencode-ai"
         .to_string()
 }
 
@@ -689,6 +714,37 @@ fn detect_claude_login_status_with_override(claude_cli_bin_override: &str) -> Ag
     }
 }
 
+fn detect_opencode_login_status_with_override(opencode_cli_bin_override: &str) -> AgentLoginStatus {
+    let Some(opencode_bin) = resolve_cli_bin_for_ui(
+        opencode_cli_bin_override,
+        "ANICA_OPENCODE_CLI_BIN",
+        "opencode",
+    ) else {
+        return AgentLoginStatus::CliMissing {
+            detail: "Cannot find `opencode`. Install OpenCode, or set an OpenCode CLI path in AI Agents settings.".to_string(),
+        };
+    };
+
+    // OpenCode supports many providers; CLI availability is the reliable
+    // preflight here, while provider credentials remain OpenCode-owned config.
+    match Command::new(&opencode_bin).arg("--version").output() {
+        Ok(out) if out.status.success() => AgentLoginStatus::LoggedIn {
+            detail: first_non_empty_line(&String::from_utf8_lossy(&out.stdout))
+                .or_else(|| first_non_empty_line(&String::from_utf8_lossy(&out.stderr)))
+                .unwrap_or_else(|| "OpenCode CLI found".to_string()),
+            source: "opencode --version",
+        },
+        Ok(out) => AgentLoginStatus::Error(format!(
+            "`opencode --version` failed with code {:?}",
+            out.status.code()
+        )),
+        Err(err) if err.kind() == ErrorKind::NotFound => AgentLoginStatus::CliMissing {
+            detail: "Cannot find `opencode` in PATH. Install OpenCode or launch app from a shell where `opencode` is available.".to_string(),
+        },
+        Err(err) => AgentLoginStatus::Error(format!("Failed to execute `opencode --version`: {err}")),
+    }
+}
+
 fn bundled_acp_command() -> Option<String> {
     if let Ok(exe) = env::current_exe()
         && let Some(exe_dir) = exe.parent()
@@ -861,6 +917,19 @@ fn resolve_default_agent_command() -> String {
     "anica-acp".to_string()
 }
 
+fn resolve_default_opencode_agent_command() -> String {
+    if let Some(cmd) = agent_command_env_override() {
+        return cmd;
+    }
+
+    resolve_default_agent_command()
+}
+
+fn is_default_opencode_agent_command(command: &str) -> bool {
+    let normalized = command.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized.eq_ignore_ascii_case("opencode acp")
+}
+
 fn normalize_agent_command_for_ui(command: String) -> String {
     let trimmed = command.trim();
     if trimmed.is_empty() {
@@ -887,6 +956,12 @@ fn provider_model_option(slug: impl Into<String>, label: impl Into<String>) -> P
         slug: slug.into(),
         label: label.into(),
     }
+}
+
+fn provider_model_option_from_acp(option: &AcpSessionModelOption) -> ProviderModelOption {
+    // ACP option descriptions are kept by transport for future UX, while current chips need labels.
+    let _description = option.description.as_deref();
+    provider_model_option(option.slug.clone(), option.label.clone())
 }
 
 fn fallback_codex_model_options() -> Vec<ProviderModelOption> {
@@ -1398,6 +1473,10 @@ pub struct AiAgentsPage {
     claude_model: String,
     claude_model_options: Vec<ProviderModelOption>,
     claude_models_source: String,
+    opencode_model: String,
+    opencode_model_options: Vec<ProviderModelOption>,
+    opencode_models_source: String,
+    opencode_model_config_id: String,
     codex_reasoning_mode: CodexReasoningMode,
     auto_connect_enabled: bool,
     auto_connect_scope: SettingsScope,
@@ -1406,6 +1485,7 @@ pub struct AiAgentsPage {
     codex_cli_bin: String,
     gemini_cli_bin: String,
     claude_cli_bin: String,
+    opencode_cli_bin: String,
     prompt_text: String,
     last_status: String,
 
@@ -1417,6 +1497,8 @@ pub struct AiAgentsPage {
     gemini_cli_input_sub: Option<Subscription>,
     claude_cli_input: Option<Entity<InputState>>,
     claude_cli_input_sub: Option<Subscription>,
+    opencode_cli_input: Option<Entity<InputState>>,
+    opencode_cli_input_sub: Option<Subscription>,
 
     gemini_api_key: String,
     gemini_key_input: Option<Entity<InputState>>,
@@ -1488,6 +1570,65 @@ impl AiAgentsPage {
         self.claude_models_source = source;
     }
 
+    fn update_opencode_model_options_from_acp(
+        &mut self,
+        config_id: String,
+        current_value: String,
+        acp_options: Vec<AcpSessionModelOption>,
+        source: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.agent_provider != AcpAgentProvider::OpenCode
+            && self.connected_provider != Some(AcpAgentProvider::OpenCode)
+        {
+            return;
+        }
+
+        let previous_selection = self.opencode_model.trim().to_string();
+        let options = acp_options
+            .iter()
+            .map(provider_model_option_from_acp)
+            .collect::<Vec<_>>();
+        let selected_from_agent = choose_provider_model(
+            &options,
+            Some(current_value.as_str()),
+            current_value.as_str(),
+        );
+        let should_apply_previous = !previous_selection.is_empty()
+            && previous_selection != selected_from_agent
+            && options
+                .iter()
+                .any(|option| option.slug == previous_selection);
+
+        self.opencode_model_config_id = config_id.clone();
+        self.opencode_model_options = options;
+        self.opencode_models_source = source;
+        self.opencode_model = if should_apply_previous {
+            previous_selection.clone()
+        } else {
+            selected_from_agent.clone()
+        };
+
+        if should_apply_previous && self.connected_provider == Some(AcpAgentProvider::OpenCode) {
+            self.worker
+                .set_session_config_option(config_id, previous_selection.clone());
+            self.push_system_message(
+                format!(
+                    "OpenCode models loaded; applying previous selection `{previous_selection}` via ACP session/set_config_option."
+                ),
+                cx,
+            );
+        } else {
+            self.push_system_message(
+                format!(
+                    "OpenCode models loaded from ACP. Selected: {}. Source: {}",
+                    self.opencode_model, self.opencode_models_source
+                ),
+                cx,
+            );
+        }
+    }
+
     fn refresh_agent_status(&mut self) {
         self.agent_status = match self.agent_provider {
             AcpAgentProvider::Codex => detect_codex_login_status_with_override(&self.codex_cli_bin),
@@ -1496,6 +1637,9 @@ impl AiAgentsPage {
             }
             AcpAgentProvider::Claude => {
                 detect_claude_login_status_with_override(&self.claude_cli_bin)
+            }
+            AcpAgentProvider::OpenCode => {
+                detect_opencode_login_status_with_override(&self.opencode_cli_bin)
             }
         };
     }
@@ -1553,6 +1697,7 @@ impl AiAgentsPage {
             AcpAgentProvider::Codex => self.reload_codex_model_options(true),
             AcpAgentProvider::Gemini => self.reload_gemini_model_options(true),
             AcpAgentProvider::Claude => self.reload_claude_model_options(true),
+            AcpAgentProvider::OpenCode => {}
         }
         self.pending_input_resync = true;
         self.refresh_agent_status();
@@ -1610,6 +1755,11 @@ impl AiAgentsPage {
             .acp_claude_cli_bin
             .clone()
             .unwrap_or_default();
+        let opencode_cli_bin = loaded_settings
+            .effective
+            .acp_opencode_cli_bin
+            .clone()
+            .unwrap_or_default();
         let gemini_preferred_model = env::var("GEMINI_MODEL")
             .ok()
             .or_else(read_gemini_settings_model);
@@ -1628,6 +1778,11 @@ impl AiAgentsPage {
             claude_preferred_model.as_deref(),
             "sonnet",
         );
+        let opencode_model = String::new();
+        let opencode_model_options = Vec::new();
+        let opencode_models_source =
+            "Connect OpenCode ACP to load models from session configOptions.".to_string();
+        let opencode_model_config_id = String::new();
 
         cx.observe(&global, |this, _global, cx| {
             this.sync_worker_media_pool_snapshot(cx);
@@ -1660,6 +1815,10 @@ impl AiAgentsPage {
             claude_model,
             claude_model_options,
             claude_models_source,
+            opencode_model,
+            opencode_model_options,
+            opencode_models_source,
+            opencode_model_config_id,
             codex_reasoning_mode: reasoning_mode,
             auto_connect_enabled,
             auto_connect_scope,
@@ -1668,6 +1827,7 @@ impl AiAgentsPage {
             codex_cli_bin,
             gemini_cli_bin,
             claude_cli_bin,
+            opencode_cli_bin,
             prompt_text: String::new(),
             last_status: "Idle".to_string(),
 
@@ -1679,6 +1839,8 @@ impl AiAgentsPage {
             gemini_cli_input_sub: None,
             claude_cli_input: None,
             claude_cli_input_sub: None,
+            opencode_cli_input: None,
+            opencode_cli_input_sub: None,
 
             gemini_api_key,
             gemini_key_input: None,
@@ -1713,6 +1875,7 @@ impl AiAgentsPage {
                 AcpAgentProvider::Codex => this.push_system_message(codex_install_hint(), cx),
                 AcpAgentProvider::Gemini => this.push_system_message(gemini_install_hint(), cx),
                 AcpAgentProvider::Claude => this.push_system_message(claude_install_hint(), cx),
+                AcpAgentProvider::OpenCode => this.push_system_message(opencode_install_hint(), cx),
             }
         }
         this.ensure_worker_poller(cx);
@@ -2187,6 +2350,7 @@ impl AiAgentsPage {
             AcpAgentProvider::Codex => normalize_cli_override(&self.codex_cli_bin),
             AcpAgentProvider::Gemini => normalize_cli_override(&self.gemini_cli_bin),
             AcpAgentProvider::Claude => normalize_cli_override(&self.claude_cli_bin),
+            AcpAgentProvider::OpenCode => normalize_cli_override(&self.opencode_cli_bin),
         };
         match save_acp_cli_paths(
             SettingsScope::User,
@@ -2194,6 +2358,7 @@ impl AiAgentsPage {
             Some(&self.codex_cli_bin),
             Some(&self.gemini_cli_bin),
             Some(&self.claude_cli_bin),
+            Some(&self.opencode_cli_bin),
         ) {
             Ok(path) => {
                 let action_summary = if active_override.is_some() {
@@ -2717,6 +2882,31 @@ impl AiAgentsPage {
             self.claude_cli_input_sub = Some(sub);
         }
 
+        if self.opencode_cli_input.is_none() {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Optional absolute path to opencode executable")
+            });
+            let current = self.opencode_cli_bin.clone();
+            input.update(cx, |this, cx| {
+                this.set_value(current.clone(), window, cx);
+            });
+
+            let sub = cx.subscribe(&input, |this, input, ev, cx| {
+                if !matches!(ev, InputEvent::Change) {
+                    return;
+                }
+                this.opencode_cli_bin = input.read(cx).value().to_string();
+                if this.agent_provider == AcpAgentProvider::OpenCode {
+                    this.refresh_agent_status();
+                    cx.notify();
+                }
+            });
+
+            self.opencode_cli_input = Some(input);
+            self.opencode_cli_input_sub = Some(sub);
+        }
+
         if self.gemini_key_input.is_none() {
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
@@ -2809,6 +2999,11 @@ impl AiAgentsPage {
             AcpAgentProvider::Claude => {
                 if let Some(input) = self.claude_cli_input.as_ref() {
                     Self::sync_input_entity_value(input, &self.claude_cli_bin, force, window, cx);
+                }
+            }
+            AcpAgentProvider::OpenCode => {
+                if let Some(input) = self.opencode_cli_input.as_ref() {
+                    Self::sync_input_entity_value(input, &self.opencode_cli_bin, force, window, cx);
                 }
             }
         }
@@ -3147,6 +3342,25 @@ impl AiAgentsPage {
                     {
                         self.push_system_message(claude_install_hint(), cx);
                     }
+                    if err.to_lowercase().contains("opencode")
+                        && self.agent_provider == AcpAgentProvider::OpenCode
+                    {
+                        self.push_system_message(opencode_install_hint(), cx);
+                    }
+                }
+                AcpUiEvent::SessionModelOptions {
+                    config_id,
+                    current_value,
+                    options,
+                    source,
+                } => {
+                    self.update_opencode_model_options_from_acp(
+                        config_id,
+                        current_value,
+                        options,
+                        source,
+                        cx,
+                    );
                 }
                 AcpUiEvent::ToolBridgeRequest(request) => match request {
                     AcpToolBridgeRequest::LlmDecisionMakingSrtSimilarSerach {
@@ -3545,9 +3759,15 @@ impl AiAgentsPage {
                     );
                 }
             }
+            AcpAgentProvider::OpenCode => {}
         }
 
-        let cmd = self.agent_command.trim().to_string();
+        let mut cmd = self.agent_command.trim().to_string();
+        if self.agent_provider == AcpAgentProvider::OpenCode
+            && is_default_opencode_agent_command(&cmd)
+        {
+            cmd = resolve_default_agent_command();
+        }
         if cmd.is_empty() {
             self.push_system_message("Agent command is empty.", cx);
             cx.notify();
@@ -3581,6 +3801,7 @@ impl AiAgentsPage {
                 AcpAgentProvider::Codex => "codex",
                 AcpAgentProvider::Gemini => "gemini",
                 AcpAgentProvider::Claude => "claude",
+                AcpAgentProvider::OpenCode => "opencode",
             }
             .to_string(),
         )];
@@ -3608,6 +3829,9 @@ impl AiAgentsPage {
         if let Some(path) = normalize_cli_override(&self.claude_cli_bin) {
             acp_env.push(("ANICA_CLAUDE_CLI_BIN".to_string(), path));
         }
+        if let Some(path) = normalize_cli_override(&self.opencode_cli_bin) {
+            acp_env.push(("ANICA_OPENCODE_CLI_BIN".to_string(), path));
+        }
         if self.agent_provider == AcpAgentProvider::Gemini && !self.gemini_api_key.trim().is_empty()
         {
             acp_env.push(("GEMINI_API_KEY".to_string(), self.gemini_api_key.clone()));
@@ -3631,6 +3855,13 @@ impl AiAgentsPage {
             ),
             AcpAgentProvider::Gemini => format!(" (model: {})", self.gemini_model),
             AcpAgentProvider::Claude => format!(" (model: {})", self.claude_model),
+            AcpAgentProvider::OpenCode if !self.opencode_model.trim().is_empty() => {
+                format!(
+                    " (anica-acp → opencode acp, model: {})",
+                    self.opencode_model
+                )
+            }
+            AcpAgentProvider::OpenCode => " (anica-acp → opencode acp)".to_string(),
         };
         self.push_system_message(
             format!(
@@ -3797,6 +4028,17 @@ impl Render for AiAgentsPage {
         };
 
         let claude_cli_input_elem = if let Some(input) = self.claude_cli_input.as_ref() {
+            Input::new(input).h(px(32.0)).w_full().into_any_element()
+        } else {
+            div()
+                .h(px(32.0))
+                .w_full()
+                .rounded_sm()
+                .bg(white().opacity(0.05))
+                .into_any_element()
+        };
+
+        let opencode_cli_input_elem = if let Some(input) = self.opencode_cli_input.as_ref() {
             Input::new(input).h(px(32.0)).w_full().into_any_element()
         } else {
             div()
@@ -4027,6 +4269,18 @@ impl Render for AiAgentsPage {
                             AcpAgentProvider::Codex => this.codex_model = slug.clone(),
                             AcpAgentProvider::Gemini => this.gemini_model = slug.clone(),
                             AcpAgentProvider::Claude => this.claude_model = slug.clone(),
+                            AcpAgentProvider::OpenCode => {
+                                this.opencode_model = slug.clone();
+                                if this.connected_provider == Some(AcpAgentProvider::OpenCode)
+                                    && !this.opencode_model_config_id.trim().is_empty()
+                                {
+                                    // OpenCode exposes model selection through ACP session config.
+                                    this.worker.set_session_config_option(
+                                        this.opencode_model_config_id.clone(),
+                                        slug.clone(),
+                                    );
+                                }
+                            }
                         }
                         this.push_system_message(
                             format!(
@@ -4286,7 +4540,7 @@ impl Render for AiAgentsPage {
                             "Gemini uses the same bundled anica-acp tool bridge as Codex. Use CLI login (`gemini`, then `/auth`) or provide an API key, which is forwarded on connect.",
                         ),
                 );
-        } else {
+        } else if self.agent_provider == AcpAgentProvider::Claude {
             let mut claude_model_buttons = div().flex().flex_wrap().gap_2();
             for option in self.claude_model_options.iter().cloned() {
                 let active = self.claude_model == option.slug;
@@ -4358,6 +4612,67 @@ impl Render for AiAgentsPage {
                             "Claude mode uses the same bundled anica-acp tool bridge as Codex/Gemini. Login in terminal: `claude auth login`, then verify with `claude auth status`.",
                         ),
                   );
+        } else {
+            let mut opencode_model_buttons = div().flex().flex_wrap().gap_2();
+            for option in self.opencode_model_options.iter().cloned() {
+                let active = self.opencode_model == option.slug;
+                opencode_model_buttons = opencode_model_buttons.child(model_button(
+                    AcpAgentProvider::OpenCode,
+                    option,
+                    active,
+                ));
+            }
+            let opencode_models_body = if self.opencode_model_options.is_empty() {
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.5))
+                    .whitespace_normal()
+                    .child(
+                        "Connect OpenCode first. Anica talks to anica-acp, which proxies opencode acp and forwards ACP session/new configOptions.",
+                    )
+            } else {
+                opencode_model_buttons
+            };
+            provider_specific_help = provider_specific_help
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(white().opacity(0.55))
+                                .child("OpenCode Model"),
+                        )
+                        .child(opencode_models_body)
+                        .child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_xs()
+                                .text_color(white().opacity(0.45))
+                                .child(self.opencode_models_source.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(white().opacity(0.5))
+                        .whitespace_normal()
+                        .child(
+                            "OpenCode runs through bundled anica-acp; anica-acp spawns `opencode acp` behind the scenes. Configure provider credentials with `opencode auth login` or OpenCode config/env.",
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(white().opacity(0.5))
+                        .whitespace_normal()
+                        .child(
+                            "OpenCode model choices come from native ACP configOptions, so Anica does not maintain a hard-coded OpenCode model JSON list.",
+                        ),
+                );
         }
         let (active_cli_label, active_cli_input_elem, active_cli_save_label) =
             match self.agent_provider {
@@ -4375,6 +4690,11 @@ impl Render for AiAgentsPage {
                     "Claude CLI Path",
                     claude_cli_input_elem,
                     "Save Claude CLI Path",
+                ),
+                AcpAgentProvider::OpenCode => (
+                    "OpenCode CLI Path",
+                    opencode_cli_input_elem,
+                    "Save OpenCode CLI Path",
                 ),
             };
         let cli_paths_section = div()
@@ -4556,6 +4876,11 @@ impl Render for AiAgentsPage {
                                 "Claude",
                                 AcpAgentProvider::Claude,
                                 self.agent_provider == AcpAgentProvider::Claude,
+                            ))
+                            .child(provider_button(
+                                "OpenCode",
+                                AcpAgentProvider::OpenCode,
+                                self.agent_provider == AcpAgentProvider::OpenCode,
                             )),
                     )
                     .child(
@@ -4636,7 +4961,7 @@ impl Render for AiAgentsPage {
                         div()
                             .text_xs()
                             .text_color(white().opacity(0.45))
-                            .child("Tip: Codex, Gemini, and Claude default to bundled anica-acp (same tool-bridge pipeline). You can still override ACP Agent Command manually."),
+                            .child("Tip: all providers default to bundled anica-acp. OpenCode model choices are proxied from native `opencode acp` behind anica-acp."),
                     )
             )
             .child(

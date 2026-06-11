@@ -9,13 +9,26 @@ if [[ "$(uname -m)" != "arm64" ]]; then
   exit 1
 fi
 
-# Read the stable GStreamer version from the manifest.
-gst_version="1.28.1"
-manifest_path="${repo_root}/tools/media_tools_manifest.json"
-if command -v jq >/dev/null 2>&1 && [[ -f "${manifest_path}" ]]; then
-  gst_version="$(jq -r ".common.gstreamer.version" "${manifest_path}" 2>/dev/null || echo "1.28.1")"
+resolve_current_gstreamer_plugin_dir() {
+  local gst_root="${repo_root}/tools/runtime/current/macos/gstreamer"
+  local candidate
+
+  if [[ -d "${gst_root}/lib/gstreamer-1.0" ]]; then
+    printf "%s" "${gst_root}/lib/gstreamer-1.0"
+    return 0
+  fi
+  while IFS= read -r candidate; do
+    if [[ -d "${candidate}/lib/gstreamer-1.0" ]]; then
+      printf "%s" "${candidate}/lib/gstreamer-1.0"
+      return 0
+    fi
+  done < <(find "${gst_root}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  return 1
+}
+
+if plugin_dir="$(resolve_current_gstreamer_plugin_dir)"; then
+  export ANICA_HOST_GSTREAMER_PLUGIN_DIR="${plugin_dir}"
 fi
-export ANICA_HOST_GSTREAMER_PLUGIN_DIR="${repo_root}/tools/runtime/current/macos/gstreamer/${gst_version}/lib/gstreamer-1.0"
 export ANICA_HOST_GSTREAMER_REGISTRY="${repo_root}/target/.anica-host-gstreamer-registry.bin"
 
 exec "${script_dir}/cargo_run_with_acp_check.sh" "$@"
