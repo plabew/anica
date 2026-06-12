@@ -74,7 +74,7 @@ main() {
   local os ffmpeg_version platform_dir current_dir ffmpeg_binary
   os="$(os_name)"
   [[ "${os}" == "macos" || "${os}" == "windows" || "${os}" == "linux" ]] || { warn "Unsupported OS: ${os}."; exit 1; }
-  ffmpeg_version="$(manifest_value '.common.ffmpeg.version // empty' || true)"
+  ffmpeg_version="$(manifest_value ".platforms.${os}.ffmpeg_version // .common.ffmpeg.version // empty" || true)"
   [[ -n "${ffmpeg_version}" && "${ffmpeg_version}" != "null" ]] || { warn "No FFmpeg version in manifest."; exit 1; }
 
   platform_dir="${RUNTIME_DIR}/${os}"

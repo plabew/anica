@@ -2,8 +2,10 @@
 // =========================================
 // src/core/media_tools.rs
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+use std::{io::Read, thread};
 use thiserror::Error;
 
 use crate::runtime_paths;
@@ -101,6 +103,8 @@ pub enum MediaBootstrapError {
     BootstrapScriptNotFound { path: PathBuf },
     #[error("Windows bootstrap failed via pwsh/powershell. {details}")]
     WindowsBootstrapFailed { details: String },
+    #[error("Bootstrap timed out after {seconds}s.")]
+    BootstrapTimedOut { seconds: u64 },
     #[error("Unsupported host platform for runtime bootstrap.")]
     UnsupportedHostPlatform,
 }
@@ -229,13 +233,10 @@ fn workspace_ffmpeg_tool_candidate() -> Option<String> {
     None
 }
 
-fn workspace_runtime_current_home() -> PathBuf {
-    let os = std::env::consts::OS;
+fn workspace_runtime_home() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tools")
         .join("runtime")
-        .join("current")
-        .join(os)
 }
 
 fn prepend_env_path_var(name: &str, path: PathBuf) {
@@ -439,16 +440,58 @@ fn extract_bootstrap_error_reason(stderr: &str, stdout: &str) -> String {
     }
 }
 
+fn read_pipe_async<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut data = Vec::new();
+        let _ = reader.read_to_end(&mut data);
+        data
+    })
+}
+
 fn run_bootstrap_command(mut cmd: Command) -> Result<(), MediaBootstrapError> {
-    let output = cmd
-        .output()
+    const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(40);
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
         .map_err(|source| MediaBootstrapError::LaunchBootstrapScript { source })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let stdout_reader = child.stdout.take().map(read_pipe_async);
+    let stderr_reader = child.stderr.take().map(read_pipe_async);
+    let started_at = Instant::now();
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|source| MediaBootstrapError::LaunchBootstrapScript { source })?
+        {
+            break status;
+        }
+        if started_at.elapsed() >= BOOTSTRAP_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(MediaBootstrapError::BootstrapTimedOut {
+                seconds: BOOTSTRAP_TIMEOUT.as_secs(),
+            });
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+
+    let stdout = stdout_reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
+        let stdout = String::from_utf8_lossy(&stdout);
         let reason = extract_bootstrap_error_reason(&stderr, &stdout);
         return Err(MediaBootstrapError::BootstrapScriptFailed {
-            status: output.status.to_string(),
+            status: status.to_string(),
             reason,
         });
     }
@@ -635,7 +678,7 @@ pub fn detect_or_bootstrap_media_dependencies(
     if AUTO_BOOTSTRAP_ATTEMPTED.swap(true, Ordering::SeqCst) {
         return status;
     }
-    let tools_home = configured_tools_home().unwrap_or_else(workspace_runtime_current_home);
+    let tools_home = configured_tools_home().unwrap_or_else(workspace_runtime_home);
 
     let skip_ffmpeg = false;
     eprintln!(

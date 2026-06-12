@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 1,
   "description": "Anica runtime manifest \u2014 shared versions and licenses, platform-specific overrides for download URLs.",
   "release_base_url": "https://github.com/LOVELYZOMBIEYHO/anica/releases/download",
   "common": {
@@ -7,12 +7,7 @@
       "version": "8.0.1",
       "license": "LGPL-2.1-or-later",
       "build_flags": "LGPL-only, shared, no-GPL, no-nonfree",
-      "enabled_encoders": [
-        "libvpx",
-        "libaom",
-        "libsvtav1",
-        "libopus"
-      ],
+      "enabled_encoders": ["libvpx", "libaom", "libsvtav1", "libopus"],
       "dependencies": [
         {
           "name": "libvpx",
@@ -38,9 +33,11 @@
       "download_url": "{release_base_url}/anica-runtime-20260610/anica_runtime_macos_20260610.tar.gz"
     },
     "windows": {
+      "ffmpeg_version": "8.1",
       "download_url": "{release_base_url}/anica-runtime-20260610/anica_runtime_windows_20260610.tar.gz"
     },
     "linux": {
+      "ffmpeg_version": "8.1",
       "download_url": "{release_base_url}/anica-runtime-20260610/anica_runtime_linux_20260610.tar.gz"
     }
   }

@@ -27,6 +27,12 @@ function Read-ManifestValue([string]$Path) {
     return $node
 }
 
+function Read-PlatformManifestValue([string]$Platform, [string]$Name, [string]$FallbackPath) {
+    $platformValue = Read-ManifestValue "platforms.$Platform.$Name"
+    if ($platformValue) { return $platformValue }
+    return Read-ManifestValue $FallbackPath
+}
+
 function Copy-RuntimeTree([string]$Source, [string]$Destination) {
     $parent = Split-Path -Parent $Destination
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
@@ -56,11 +62,20 @@ function Find-RuntimeRootInStaging([string]$Staging) {
     return $null
 }
 
+function Expand-RuntimeArchive([string]$Archive, [string]$Destination) {
+    if ($Archive.EndsWith(".tar.gz") -or $Archive.EndsWith(".tgz")) {
+        tar -xzf $Archive -C $Destination
+        if ($LASTEXITCODE -ne 0) { throw "Failed to extract tar.gz runtime archive." }
+        return
+    }
+    Expand-Archive -Path $Archive -DestinationPath $Destination -Force
+}
+
 function Download-Runtime {
     $os = "windows"
     $platformDir = Join-Path $runtimeDir $os
     $currentDir = Join-Path (Join-Path $runtimeDir "current") $os
-    $ffmpegVersion = Read-ManifestValue "common.ffmpeg.version"
+    $ffmpegVersion = Read-PlatformManifestValue $os "ffmpeg_version" "common.ffmpeg.version"
     if (-not $ffmpegVersion) { Warn "No FFmpeg version in manifest."; return }
 
     if ($SyncOnly) {
@@ -87,12 +102,12 @@ function Download-Runtime {
     if (-not $url) { throw "No download URL for windows." }
     $url = $url -replace "\{release_base_url\}", $baseUrl
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("anica-runtime-" + [guid]::NewGuid())
-    $archive = Join-Path $tmp "runtime.zip"
+    $archive = Join-Path $tmp "runtime.tar.gz"
     $staging = Join-Path $tmp "staging"
     New-Item -ItemType Directory -Force -Path $staging | Out-Null
     Log "Downloading $url"
     Invoke-WebRequest -Uri $url -OutFile $archive
-    Expand-Archive -Path $archive -DestinationPath $staging -Force
+    Expand-RuntimeArchive $archive $staging
     $runtimeRoot = Find-RuntimeRootInStaging $staging
     if (-not $runtimeRoot) { throw "Could not find FFmpeg inside extracted archive." }
     New-Item -ItemType Directory -Force -Path (Join-Path $platformDir "ffmpeg") | Out-Null
