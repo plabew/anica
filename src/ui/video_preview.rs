@@ -101,6 +101,35 @@ fn is_audio_preview_cache_ext(path: &str) -> bool {
         || p.ends_with(".ogg")
 }
 
+fn gstreamer_preview_opt_in_enabled() -> bool {
+    let env_truthy = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|raw| {
+                let value = raw.trim();
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+                    || value.eq_ignore_ascii_case("on")
+            })
+            .unwrap_or(false)
+    };
+
+    env_truthy("ANICA_ENABLE_GSTREAMER")
+        || std::env::var("ANICA_VIDEO_BACKEND")
+            .ok()
+            .map(|raw| {
+                let value = raw.trim();
+                value.eq_ignore_ascii_case("gstreamer") || value.eq_ignore_ascii_case("gst")
+            })
+            .unwrap_or(false)
+}
+
+fn should_use_audio_preview_cache(path: &str) -> bool {
+    // Default audio preview avoids GStreamer entirely by extracting WAV with FFmpeg and playing via Rodio.
+    is_audio_preview_cache_ext(path) || !gstreamer_preview_opt_in_enabled()
+}
+
 fn is_motionloom_scene_generated_path(path: &str) -> bool {
     let p = path.replace('\\', "/").to_lowercase();
     p.contains("/motionloom_generated/motionloom_scene_")
@@ -677,6 +706,11 @@ impl VideoPreview {
         total.saturating_sub(playhead) <= Duration::from_millis(80)
     }
 
+    fn media_background_jobs_throttled(&self, cx: &mut Context<Self>) -> bool {
+        // Playing preview has priority over import-time helper jobs that also spawn FFmpeg.
+        self.global.read(cx).is_playing
+    }
+
     #[cfg(target_os = "macos")]
     fn path_needs_alpha_preserving_decode(path: &str) -> bool {
         let Some(name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
@@ -773,7 +807,7 @@ impl VideoPreview {
         original_path: &str,
         cx: &mut Context<Self>,
     ) -> Option<String> {
-        if !is_audio_preview_cache_ext(original_path) {
+        if !should_use_audio_preview_cache(original_path) {
             return Some(original_path.to_string());
         }
         if let Some(cached) = self.audio_preview_cache_paths.get(original_path) {
@@ -796,6 +830,14 @@ impl VideoPreview {
             self.audio_preview_cache_paths
                 .insert(original_path.to_string(), cached.clone());
             return Some(cached);
+        }
+
+        if self.media_background_jobs_throttled(cx) {
+            log::debug!(
+                "[AudioPreview] defer wav cache while playing source={}",
+                original_path
+            );
+            return None;
         }
 
         let ffmpeg_path = self.global.read(cx).ffmpeg_path.clone();
@@ -2243,7 +2285,7 @@ impl VideoPreview {
         let Some(playback_path) = self.resolve_audio_preview_path(path, cx) else {
             return;
         };
-        if is_audio_preview_cache_ext(path) {
+        if should_use_audio_preview_cache(path) {
             if let Some(existing) = self.rodio_audio_players.get_mut(&id) {
                 let gain = gain_linear.clamp(0.0, 4.0) as f32;
                 if (existing.gain - gain).abs() > 0.001 {
@@ -3565,6 +3607,9 @@ impl VideoPreview {
     }
 
     fn start_proxy_job_if_needed(&mut self, cx: &mut Context<Self>) {
+        if self.media_background_jobs_throttled(cx) {
+            return;
+        }
         let media_tools_ready = self.global.read(cx).media_tools_ready_for_preview_gen();
         let job = self.global.update(cx, |gs, _| gs.take_next_proxy_job());
         let Some(job) = job else {
@@ -3614,6 +3659,9 @@ impl VideoPreview {
     }
 
     fn start_waveform_job_if_needed(&mut self, cx: &mut Context<Self>) {
+        if self.media_background_jobs_throttled(cx) {
+            return;
+        }
         let media_tools_ready = self.global.read(cx).media_tools_ready_for_preview_gen();
         let job = self.global.update(cx, |gs, _| gs.take_next_waveform_job());
         let Some(job) = job else {
@@ -3975,12 +4023,19 @@ impl VideoPreview {
         let gs = self.global.read(cx);
         let visible = Self::resolve_visible_clips(gs, gs.playhead);
         let active_visual_ids: HashSet<u64> = visible.iter().map(|(id, ..)| *id).collect();
+        let seek_epsilon = 0.004_f64;
         for (id, path, src, ..) in visible {
             if let Some(v) = self.visual_players.get(&id) {
-                let _ = v.seek(
-                    Position::Time(src),
-                    is_motionloom_scene_generated_path(&path),
-                );
+                let should_seek = self.last_seek_requests.get(&id).is_none_or(|last| {
+                    (last.as_secs_f64() - src.as_secs_f64()).abs() > seek_epsilon
+                });
+                if should_seek {
+                    let _ = v.seek(
+                        Position::Time(src),
+                        is_motionloom_scene_generated_path(&path),
+                    );
+                    self.last_seek_requests.insert(id, src);
+                }
             }
         }
         let (active, _) = Self::collect_indexed_audio_clips(

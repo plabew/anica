@@ -56,8 +56,8 @@ members = [
 # Public/reproducible default: use forked gpui anica-edition from git.
 # Local development override should be done in ~/.cargo/config.toml (do not commit path patches).
 [patch.crates-io]
-# gpui = { path = "../zed-anica-fork/crates/gpui" }
-gpui = { git = "https://github.com/LOVELYZOMBIEYHO/zed.git", branch = "anica-edition" }
+gpui = { path = "../zed-anica-fork/crates/gpui" }
+# gpui = { git = "https://github.com/LOVELYZOMBIEYHO/zed.git", branch = "anica-edition" }
 
 [package.metadata.bundle]
 name = "Anica Editor"

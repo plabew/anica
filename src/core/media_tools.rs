@@ -47,21 +47,6 @@ impl HostPlatform {
             HostPlatform::Other => &[],
         }
     }
-
-    pub fn gstreamer_install_commands(self) -> &'static [(&'static str, &'static str)] {
-        match self {
-            HostPlatform::MacOS => &[(
-                "Latest version",
-                "brew install gstreamer gst-plugins-base gst-plugins-good gst-editing-services",
-            )],
-            HostPlatform::Windows => &[("winget", "winget install --id GStreamer.GStreamer -e")],
-            HostPlatform::Linux => &[(
-                "Debian/Ubuntu",
-                "sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-editing-services libges-1.0-dev",
-            )],
-            HostPlatform::Other => &[],
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +89,30 @@ impl MediaDependencyStatus {
         }
         missing
     }
+}
+
+pub fn gstreamer_runtime_opt_in_enabled() -> bool {
+    let env_truthy = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|raw| {
+                let value = raw.trim();
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+                    || value.eq_ignore_ascii_case("on")
+            })
+            .unwrap_or(false)
+    };
+
+    env_truthy("ANICA_ENABLE_GSTREAMER")
+        || std::env::var("ANICA_VIDEO_BACKEND")
+            .ok()
+            .map(|raw| {
+                let value = raw.trim();
+                value.eq_ignore_ascii_case("gstreamer") || value.eq_ignore_ascii_case("gst")
+            })
+            .unwrap_or(false)
 }
 
 #[derive(Debug, Error)]
@@ -399,6 +408,7 @@ pub fn configure_bundled_media_runtime_environment() {
             "ffprobe"
         });
     let ffmpeg_lib = ffmpeg_root.join("lib");
+    let gstreamer_enabled = gstreamer_runtime_opt_in_enabled();
     let gst_bin = runtime_root.join("gstreamer").join("bin");
     let gst_lib = runtime_root.join("gstreamer").join("lib");
     let gst_plugins = gst_lib.join("gstreamer-1.0");
@@ -437,56 +447,59 @@ pub fn configure_bundled_media_runtime_environment() {
         }
     }
 
-    if gst_bin.is_dir() {
-        prepend_env_path_var("PATH", gst_bin.clone());
-    }
-    let gst_launch = gst_bin.join(gst_launch_binary_name());
-    if gst_launch.is_file() {
-        // SAFETY: Startup-only env mutation before media initialization.
-        unsafe {
-            std::env::set_var("ANICA_GSTREAMER_PATH", &gst_launch);
+    if gstreamer_enabled {
+        // GStreamer remains available as an explicit fallback, but default startup avoids touching it.
+        if gst_bin.is_dir() {
+            prepend_env_path_var("PATH", gst_bin.clone());
         }
-    }
-
-    if gst_plugins.is_dir() {
-        let plugin_path = gst_plugins.to_string_lossy().to_string();
-        for name in [
-            "GST_PLUGIN_PATH",
-            "GST_PLUGIN_PATH_1_0",
-            "GST_PLUGIN_SYSTEM_PATH_1_0",
-            "GST_PLUGIN_SYSTEM_PATH",
-        ] {
+        let gst_launch = gst_bin.join(gst_launch_binary_name());
+        if gst_launch.is_file() {
             // SAFETY: Startup-only env mutation before media initialization.
             unsafe {
-                std::env::set_var(name, &plugin_path);
+                std::env::set_var("ANICA_GSTREAMER_PATH", &gst_launch);
             }
         }
-    }
 
-    if gst_scanner.is_file() {
-        // SAFETY: Startup-only env mutation before media initialization.
-        unsafe {
-            std::env::set_var("GST_PLUGIN_SCANNER", &gst_scanner);
-            std::env::set_var("GST_PLUGIN_SCANNER_1_0", &gst_scanner);
+        if gst_plugins.is_dir() {
+            let plugin_path = gst_plugins.to_string_lossy().to_string();
+            for name in [
+                "GST_PLUGIN_PATH",
+                "GST_PLUGIN_PATH_1_0",
+                "GST_PLUGIN_SYSTEM_PATH_1_0",
+                "GST_PLUGIN_SYSTEM_PATH",
+            ] {
+                // SAFETY: Startup-only env mutation before media initialization.
+                unsafe {
+                    std::env::set_var(name, &plugin_path);
+                }
+            }
         }
-    }
 
-    if gst_typelib.is_dir() {
-        prepend_env_path_var("GI_TYPELIB_PATH", gst_typelib);
-    }
+        if gst_scanner.is_file() {
+            // SAFETY: Startup-only env mutation before media initialization.
+            unsafe {
+                std::env::set_var("GST_PLUGIN_SCANNER", &gst_scanner);
+                std::env::set_var("GST_PLUGIN_SCANNER_1_0", &gst_scanner);
+            }
+        }
 
-    if runtime_root.join("gstreamer").is_dir() {
-        let cache_dir = runtime_root.join("gstreamer").join("cache");
-        let _ = std::fs::create_dir_all(&cache_dir);
-        // SAFETY: Startup-only env mutation before media initialization.
-        unsafe {
-            std::env::set_var("GST_REGISTRY_1_0", cache_dir.join("registry.bin"));
+        if gst_typelib.is_dir() {
+            prepend_env_path_var("GI_TYPELIB_PATH", gst_typelib);
+        }
+
+        if runtime_root.join("gstreamer").is_dir() {
+            let cache_dir = runtime_root.join("gstreamer").join("cache");
+            let _ = std::fs::create_dir_all(&cache_dir);
+            // SAFETY: Startup-only env mutation before media initialization.
+            unsafe {
+                std::env::set_var("GST_REGISTRY_1_0", cache_dir.join("registry.bin"));
+            }
         }
     }
 
     if cfg!(target_os = "macos") {
         let mut dyld_values = Vec::new();
-        if gst_lib.is_dir() {
+        if gstreamer_enabled && gst_lib.is_dir() {
             dyld_values.push(gst_lib.to_string_lossy().to_string());
         }
         if ffmpeg_lib.is_dir() {
@@ -863,13 +876,7 @@ pub fn detect_or_bootstrap_media_dependencies(
     preferred_ffmpeg: Option<&str>,
 ) -> MediaDependencyStatus {
     let status = detect_media_dependencies(preferred_ffmpeg);
-    let gst_available = detect_gstreamer_cli(None).is_some();
     if status.all_available() {
-        if !gst_available {
-            eprintln!(
-                "[System Check] GStreamer runtime bootstrap is disabled. Using host GStreamer only."
-            );
-        }
         return status;
     }
     if !auto_bootstrap_enabled() {
@@ -913,22 +920,11 @@ pub fn detect_or_bootstrap_media_dependencies(
     }
 
     let refreshed = detect_media_dependencies(preferred_ffmpeg);
-    let refreshed_gst = detect_gstreamer_cli(None);
     if refreshed.all_available() {
         eprintln!(
             "[System Check] Runtime bootstrap completed. ffmpeg: {}",
             refreshed.ffmpeg_command
         );
-        if let Some(gst_cli) = refreshed_gst {
-            eprintln!(
-                "[System Check] GStreamer detected from host/system: {}",
-                gst_cli
-            );
-        } else {
-            eprintln!(
-                "[System Check] GStreamer not detected after bootstrap (expected: host/system-managed)."
-            );
-        }
     } else {
         eprintln!(
             "[System Check] Runtime bootstrap finished but ffmpeg/ffprobe are still missing."

@@ -10,7 +10,7 @@ use gpui::{
 use crate::core::global_state::{
     AiChatImageAttachment, AiChatMessage, AiChatRole, AppPage, GlobalState, MediaPoolUiEvent,
 };
-use crate::core::media_tools::{detect_gstreamer_cli, detect_or_bootstrap_media_dependencies};
+use crate::core::media_tools::detect_or_bootstrap_media_dependencies;
 use crate::ui::ai_agents_page::AiAgentsPage;
 use crate::ui::ai_srt_page::AiSrtPage;
 use crate::ui::character_design_page::CharacterDesignPage;
@@ -850,21 +850,15 @@ impl AppRoot {
             return div();
         }
 
-        let mut missing = status
+        let missing = status
             .missing_tools()
             .into_iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        if !gstreamer_available {
-            missing.push("gstreamer".to_string());
-        }
         let missing_tools = missing.join(", ");
-        let install_rows = status
-            .host
-            .install_commands()
-            .iter()
-            .chain(status.host.gstreamer_install_commands().iter())
-            .fold(div().flex().flex_col().gap_2(), |rows, (label, command)| {
+        let install_rows = status.host.install_commands().iter().fold(
+            div().flex().flex_col().gap_2(),
+            |rows, (label, command)| {
                 let command_text = (*command).to_string();
                 rows.child(
                     div()
@@ -925,7 +919,8 @@ impl AppRoot {
                                 ),
                         ),
                 )
-            });
+            },
+        );
         let ffmpeg_line = if status.ffmpeg_available {
             status
                 .ffmpeg_version
@@ -943,9 +938,9 @@ impl AppRoot {
             format!("ffprobe missing (using `{}`)", status.ffprobe_command)
         };
         let gstreamer_line = if gstreamer_available {
-            format!("gstreamer detected (using `{}`)", gstreamer_path)
+            format!("optional gstreamer detected (using `{}`)", gstreamer_path)
         } else {
-            format!("gstreamer missing (using `{}`)", gstreamer_path)
+            format!("optional gstreamer missing (using `{}`)", gstreamer_path)
         };
 
         let global_for_close = self.global.clone();
@@ -993,7 +988,7 @@ impl AppRoot {
                             .text_xs()
                             .text_color(white().opacity(0.6))
                             .child(
-                                "Basic import remains available. Preview playback depends on GStreamer. Export and ACP deep media analysis depend on FFmpeg/FFprobe.",
+                                "Preview playback, export, proxies, thumbnails, and ACP deep media analysis now depend on FFmpeg/FFprobe. GStreamer is optional.",
                             ),
                     )
                     .child(
@@ -1030,11 +1025,7 @@ impl AppRoot {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(if gstreamer_available {
-                                        rgba(0x22c55eeb)
-                                    } else {
-                                        rgba(0xf87171eb)
-                                    })
+                                    .text_color(white().opacity(0.62))
                                     .child(gstreamer_line),
                             ),
                     )
@@ -1078,28 +1069,17 @@ impl AppRoot {
                                                 detect_or_bootstrap_media_dependencies(Some(
                                                     &preferred,
                                                 ));
-                                            let next_gstreamer = detect_gstreamer_cli(None);
                                             global_for_recheck.update(cx, |gs, cx| {
-                                                gs.apply_gstreamer_dependency_status(
-                                                    next_gstreamer.clone(),
-                                                );
                                                 gs.apply_media_dependency_status(
                                                     next_status.clone(),
                                                     true,
                                                 );
                                                 if next_status.all_available() {
                                                     gs.hide_media_dependency_modal();
-                                                    if next_gstreamer.is_some() {
-                                                        gs.ui_notice = Some(
-                                                            "FFmpeg/FFprobe/GStreamer detected. Media features unlocked."
-                                                                .to_string(),
-                                                        );
-                                                    } else {
-                                                        gs.ui_notice = Some(
-                                                            "FFmpeg/FFprobe detected. GStreamer optional for preview playback."
-                                                                .to_string(),
-                                                        );
-                                                    }
+                                                    gs.ui_notice = Some(
+                                                        "FFmpeg/FFprobe detected. GStreamer remains optional."
+                                                            .to_string(),
+                                                    );
                                                 } else {
                                                     let missing = next_status
                                                         .missing_tools()

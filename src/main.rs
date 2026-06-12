@@ -16,7 +16,7 @@ mod ui;
 
 use crate::core::media_tools::{
     configure_bundled_media_runtime_environment, detect_gstreamer_cli,
-    detect_or_bootstrap_media_dependencies,
+    detect_or_bootstrap_media_dependencies, gstreamer_runtime_opt_in_enabled,
 };
 
 /// Install a panic hook so unexpected crashes always print stack traces to terminal logs.
@@ -29,6 +29,13 @@ fn install_panic_logging() {
 
 /// Check GStreamer CLI tool (As an indicator of library presence)
 fn check_gstreamer() -> Option<String> {
+    if !gstreamer_runtime_opt_in_enabled() {
+        println!(
+            "[System Check] GStreamer detection skipped. Set ANICA_ENABLE_GSTREAMER=1 to opt in."
+        );
+        return None;
+    }
+
     if let Some(candidate) = detect_gstreamer_cli(None) {
         println!("[System Check] ✅ Found GStreamer CLI: {candidate}");
         return Some(candidate);
@@ -50,7 +57,7 @@ fn main() {
 
     // Run environment checks
     let media_tools = detect_or_bootstrap_media_dependencies(None);
-    let gst_cli = check_gstreamer(); // Warning only, does not block startup
+    let gst_cli = check_gstreamer(); // Optional fallback; skipped unless explicitly enabled.
 
     if media_tools.ffmpeg_available {
         println!(

@@ -205,6 +205,7 @@ impl ImportedClipKind {
 #[derive(Clone)]
 struct LoadedPreview {
     image: Arc<RenderImage>,
+    bgra: Option<Arc<Vec<u8>>>,
     width: u32,
     height: u32,
 }
@@ -324,6 +325,7 @@ enum MotionLoomPageError {
 // centered inside the available bounds with aspect-ratio preservation.
 struct FitPreviewImageElement {
     image: Arc<RenderImage>,
+    bgra: Option<Arc<Vec<u8>>>,
     width: u32,
     height: u32,
 }
@@ -332,8 +334,18 @@ impl FitPreviewImageElement {
     fn new(image: Arc<RenderImage>, width: u32, height: u32) -> Self {
         Self {
             image,
+            bgra: None,
             width,
             height,
+        }
+    }
+
+    fn from_preview(preview: LoadedPreview) -> Self {
+        Self {
+            image: preview.image,
+            bgra: preview.bgra,
+            width: preview.width,
+            height: preview.height,
         }
     }
 
@@ -415,6 +427,22 @@ impl Element for FitPreviewImageElement {
         _cx: &mut gpui::App,
     ) {
         let dest_bounds = self.fitted_bounds(bounds);
+        #[cfg(target_os = "macos")]
+        if let Some(bgra) = self.bgra.as_ref()
+            && let Some(surface) = video_engine::Video::build_surface_bgra_copy_from_data(
+                self.width,
+                self.height,
+                bgra,
+            )
+        {
+            window.paint_bgra_frame_anica(
+                dest_bounds,
+                gpui::BgraFrameSurface::CvPixelBuffer(surface),
+                gpui::SurfaceExParams_anica::default(),
+            );
+            return;
+        }
+
         let _ = window.paint_image(
             dest_bounds,
             gpui::Corners::default(),
@@ -449,8 +477,8 @@ pub struct MotionLoomPage {
     motionloom_render_revision: u64,
     graph_runtime: Option<RuntimeProgram>,
     scene_live_preview_cache_key: Option<SceneLivePreviewCacheKey>,
-    scene_live_preview_cache_image: Option<(Arc<RenderImage>, u32, u32)>,
-    scene_live_preview_frame_cache: HashMap<SceneLivePreviewCacheKey, (Arc<RenderImage>, u32, u32)>,
+    scene_live_preview_cache_image: Option<LoadedPreview>,
+    scene_live_preview_frame_cache: HashMap<SceneLivePreviewCacheKey, LoadedPreview>,
     scene_live_preview_quality: SceneLivePreviewQuality,
     scene_live_render_defer_until: Option<Instant>,
     scene_live_render_defer_token: u64,
@@ -620,13 +648,30 @@ impl MotionLoomPage {
             px[0] = b;
             px[2] = r;
         }
-        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, bgra)
+        let bgra = Arc::new(bgra);
+        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, bgra.as_ref().clone())
             .ok_or(MotionLoomPageError::BuildPreviewImageBuffer)?;
         let frames = SmallVec::from_elem(image::Frame::new(image_buffer), 1);
         Ok(LoadedPreview {
             image: Arc::new(RenderImage::new(frames)),
+            bgra: Some(bgra),
             width: w,
             height: h,
+        })
+    }
+
+    fn loaded_preview_from_bgra(
+        width: u32,
+        height: u32,
+        bgra: Vec<u8>,
+    ) -> Result<LoadedPreview, MotionLoomPageError> {
+        let bgra = Arc::new(bgra);
+        let image = Self::render_image_from_bgra(width, height, bgra.as_ref().clone())?;
+        Ok(LoadedPreview {
+            image,
+            bgra: Some(bgra),
+            width,
+            height,
         })
     }
 
@@ -818,7 +863,7 @@ impl MotionLoomPage {
         &mut self,
         frame: u32,
         cx: &mut Context<Self>,
-    ) -> Result<Option<(Arc<RenderImage>, u32, u32)>, String> {
+    ) -> Result<Option<LoadedPreview>, String> {
         let raw = self.script_text.clone();
         if raw.trim().is_empty() {
             if self.has_scene_live_preview_state() {
@@ -837,8 +882,8 @@ impl MotionLoomPage {
         if let Some(until) = self.scene_live_render_defer_until
             && Instant::now() < until
         {
-            if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
-                return Ok(Some((image.clone(), *w, *h)));
+            if let Some(preview) = self.scene_live_preview_cache_image.as_ref() {
+                return Ok(Some(preview.clone()));
             }
             return Ok(None);
         }
@@ -869,21 +914,19 @@ impl MotionLoomPage {
             preview_size.1,
         );
         if self.scene_live_preview_cache_key == Some(key)
-            && let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref()
+            && let Some(preview) = self.scene_live_preview_cache_image.as_ref()
         {
-            return Ok(Some((image.clone(), *w, *h)));
+            return Ok(Some(preview.clone()));
         }
-        if let Some((image, w, h)) = self.scene_live_preview_frame_cache.get(&key) {
-            let image = image.clone();
-            let w = *w;
-            let h = *h;
+        if let Some(preview) = self.scene_live_preview_frame_cache.get(&key) {
+            let preview = preview.clone();
             self.scene_live_preview_cache_key = Some(key);
-            self.scene_live_preview_cache_image = Some((image.clone(), w, h));
-            return Ok(Some((image, w, h)));
+            self.scene_live_preview_cache_image = Some(preview.clone());
+            return Ok(Some(preview));
         }
         if self.preview_playing && self.scene_live_prerendering {
-            if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
-                return Ok(Some((image.clone(), *w, *h)));
+            if let Some(preview) = self.scene_live_preview_cache_image.as_ref() {
+                return Ok(Some(preview.clone()));
             }
             return Ok(None);
         }
@@ -915,12 +958,10 @@ impl MotionLoomPage {
                         match rx.try_recv() {
                             Ok(Ok((w, h, bgra, warning))) => {
                                 this.scene_live_async_render_key = None;
-                                if let Ok(image) = Self::render_image_from_bgra(w, h, bgra) {
+                                if let Ok(preview) = Self::loaded_preview_from_bgra(w, h, bgra) {
                                     this.scene_live_preview_cache_key = Some(key);
-                                    this.scene_live_preview_cache_image =
-                                        Some((image.clone(), w, h));
-                                    this.scene_live_preview_frame_cache
-                                        .insert(key, (image, w, h));
+                                    this.scene_live_preview_cache_image = Some(preview.clone());
+                                    this.scene_live_preview_frame_cache.insert(key, preview);
                                 }
                                 if let Some(warning) = warning {
                                     this.push_scene_render_log(warning);
@@ -954,8 +995,8 @@ impl MotionLoomPage {
             })
             .detach();
         }
-        if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
-            return Ok(Some((image.clone(), *w, *h)));
+        if let Some(preview) = self.scene_live_preview_cache_image.as_ref() {
+            return Ok(Some(preview.clone()));
         }
         Ok(None)
     }
@@ -965,7 +1006,7 @@ impl MotionLoomPage {
         raw: &str,
         frame: u32,
         cx: &mut Context<Self>,
-    ) -> Result<Option<(Arc<RenderImage>, u32, u32)>, String> {
+    ) -> Result<Option<LoadedPreview>, String> {
         let graph = parse_world_graph_script(raw).map_err(|err| {
             format!(
                 "World live parse error at line {}: {}",
@@ -985,21 +1026,19 @@ impl MotionLoomPage {
             preview_size.1,
         );
         if self.scene_live_preview_cache_key == Some(key)
-            && let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref()
+            && let Some(preview) = self.scene_live_preview_cache_image.as_ref()
         {
-            return Ok(Some((image.clone(), *w, *h)));
+            return Ok(Some(preview.clone()));
         }
-        if let Some((image, w, h)) = self.scene_live_preview_frame_cache.get(&key) {
-            let image = image.clone();
-            let w = *w;
-            let h = *h;
+        if let Some(preview) = self.scene_live_preview_frame_cache.get(&key) {
+            let preview = preview.clone();
             self.scene_live_preview_cache_key = Some(key);
-            self.scene_live_preview_cache_image = Some((image.clone(), w, h));
-            return Ok(Some((image, w, h)));
+            self.scene_live_preview_cache_image = Some(preview.clone());
+            return Ok(Some(preview));
         }
         if self.preview_playing && self.scene_live_prerendering {
-            if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
-                return Ok(Some((image.clone(), *w, *h)));
+            if let Some(preview) = self.scene_live_preview_cache_image.as_ref() {
+                return Ok(Some(preview.clone()));
             }
             return Ok(None);
         }
@@ -1037,12 +1076,10 @@ impl MotionLoomPage {
                         match rx.try_recv() {
                             Ok(Ok((w, h, bgra))) => {
                                 this.scene_live_async_render_key = None;
-                                if let Ok(image) = Self::render_image_from_bgra(w, h, bgra) {
+                                if let Ok(preview) = Self::loaded_preview_from_bgra(w, h, bgra) {
                                     this.scene_live_preview_cache_key = Some(key);
-                                    this.scene_live_preview_cache_image =
-                                        Some((image.clone(), w, h));
-                                    this.scene_live_preview_frame_cache
-                                        .insert(key, (image, w, h));
+                                    this.scene_live_preview_cache_image = Some(preview.clone());
+                                    this.scene_live_preview_frame_cache.insert(key, preview);
                                 }
                                 done = true;
                                 cx.notify();
@@ -1073,8 +1110,8 @@ impl MotionLoomPage {
             })
             .detach();
         }
-        if let Some((image, w, h)) = self.scene_live_preview_cache_image.as_ref() {
-            return Ok(Some((image.clone(), *w, *h)));
+        if let Some(preview) = self.scene_live_preview_cache_image.as_ref() {
+            return Ok(Some(preview.clone()));
         }
         Ok(None)
     }
@@ -2027,17 +2064,17 @@ impl MotionLoomPage {
                                 bgra,
                             }) => {
                                 let key = (script_hash, frame, effective_quality, width, height);
-                                if let Ok(image) = Self::render_image_from_bgra(width, height, bgra)
+                                if let Ok(preview) =
+                                    Self::loaded_preview_from_bgra(width, height, bgra)
                                 {
                                     this.scene_live_preview_frame_cache
-                                        .insert(key, (image.clone(), width, height));
+                                        .insert(key, preview.clone());
                                     this.scene_live_prerender_progress =
                                         Some((frame.saturating_add(1), total_frames));
                                     if this.preview_playing || this.preview_frame == frame {
                                         this.preview_frame = frame;
                                         this.scene_live_preview_cache_key = Some(key);
-                                        this.scene_live_preview_cache_image =
-                                            Some((image, width, height));
+                                        this.scene_live_preview_cache_image = Some(preview);
                                     }
                                     should_notify = true;
                                 }
@@ -2204,17 +2241,17 @@ impl MotionLoomPage {
                                 bgra,
                             }) => {
                                 let key = (script_hash, frame, effective_quality, width, height);
-                                if let Ok(image) = Self::render_image_from_bgra(width, height, bgra)
+                                if let Ok(preview) =
+                                    Self::loaded_preview_from_bgra(width, height, bgra)
                                 {
                                     this.scene_live_preview_frame_cache
-                                        .insert(key, (image.clone(), width, height));
+                                        .insert(key, preview.clone());
                                     this.scene_live_prerender_progress =
                                         Some((frame.saturating_add(1), total_frames));
                                     if this.preview_playing || this.preview_frame == frame {
                                         this.preview_frame = frame;
                                         this.scene_live_preview_cache_key = Some(key);
-                                        this.scene_live_preview_cache_image =
-                                            Some((image, width, height));
+                                        this.scene_live_preview_cache_image = Some(preview);
                                     }
                                     should_notify = true;
                                 }
@@ -7800,7 +7837,7 @@ impl Render for MotionLoomPage {
             )
         };
         let scene_live_preview_card = match self.scene_live_preview_image(self.preview_frame, cx) {
-            Ok(Some((image, w, h))) => div()
+            Ok(Some(preview)) => div()
                 .w_full()
                 .h(px(scene_live_preview_h))
                 .flex_shrink_0()
@@ -7809,7 +7846,7 @@ impl Render for MotionLoomPage {
                 .border_color(white().opacity(0.14))
                 .bg(rgb(0x05070c))
                 .overflow_hidden()
-                .child(FitPreviewImageElement::new(image, w, h))
+                .child(FitPreviewImageElement::from_preview(preview))
                 .into_any_element(),
             Ok(None) => div()
                 .w_full()

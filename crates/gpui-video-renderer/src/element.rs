@@ -46,7 +46,15 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use video_engine::Video;
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::{
+    Direct3D11::{
+        D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Texture2D,
+    },
+    Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
+};
 
 const DEFAULT_FRAME_RAM_CACHE_MB: usize = 512;
 pub const VIDEO_MAX_LOCAL_MASK_LAYERS: usize = 5;
@@ -3294,6 +3302,22 @@ fn nv12_debug_enabled() -> bool {
     })
 }
 
+fn ffmpeg_preview_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ANICA_DEBUG_FFMPEG_PREVIEW")
+            .ok()
+            .map(|raw| {
+                let value = raw.trim();
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+                    || value.eq_ignore_ascii_case("on")
+            })
+            .unwrap_or(false)
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn nv12_pixel_format_tag(pixel_format: u32) -> &'static str {
     if pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
@@ -3727,6 +3751,208 @@ impl SurfaceRamCache {
                 self.total_bytes = self.total_bytes.saturating_sub(evicted.estimated_bytes);
             }
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct BgraSurfaceRing {
+    surfaces: Vec<CVPixelBuffer>,
+    width: u32,
+    height: u32,
+    next_index: usize,
+    allocations: u64,
+    reuses: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl BgraSurfaceRing {
+    const RING_LEN: usize = 4;
+
+    fn new() -> Self {
+        Self {
+            surfaces: Vec::new(),
+            width: 0,
+            height: 0,
+            next_index: 0,
+            allocations: 0,
+            reuses: 0,
+        }
+    }
+
+    fn reset(&mut self, width: u32, height: u32) -> bool {
+        self.surfaces.clear();
+        self.width = width;
+        self.height = height;
+        self.next_index = 0;
+
+        // Keep several IOSurface-backed buffers so Metal can finish reading older frames.
+        for _ in 0..Self::RING_LEN {
+            let Some(surface) = Video::create_bgra_surface(width, height) else {
+                self.surfaces.clear();
+                return false;
+            };
+            self.surfaces.push(surface);
+        }
+        self.allocations = self.allocations.saturating_add(Self::RING_LEN as u64);
+        true
+    }
+
+    fn next_surface(&mut self, width: u32, height: u32) -> Option<(CVPixelBuffer, bool)> {
+        let dimensions_changed = self.width != width || self.height != height;
+        if dimensions_changed || self.surfaces.len() != Self::RING_LEN {
+            if !self.reset(width, height) {
+                return None;
+            }
+            return self.surfaces.first().cloned().map(|surface| {
+                self.next_index = 1 % Self::RING_LEN;
+                (surface, false)
+            });
+        }
+
+        let surface = self.surfaces.get(self.next_index)?.clone();
+        self.next_index = (self.next_index + 1) % Self::RING_LEN;
+        self.reuses = self.reuses.saturating_add(1);
+        Some((surface, true))
+    }
+
+    fn stats(&self) -> (usize, u64, u64) {
+        (self.surfaces.len(), self.allocations, self.reuses)
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct D3d11BgraTextureRing {
+    textures: Vec<ID3D11Texture2D>,
+    width: u32,
+    height: u32,
+    next_index: usize,
+    allocations: u64,
+    reuses: u64,
+}
+
+#[cfg(target_os = "windows")]
+impl D3d11BgraTextureRing {
+    const RING_LEN: usize = 4;
+
+    fn new() -> Self {
+        Self {
+            textures: Vec::new(),
+            width: 0,
+            height: 0,
+            next_index: 0,
+            allocations: 0,
+            reuses: 0,
+        }
+    }
+
+    fn reset(&mut self, devices: &gpui::D3d11Devices_anica, width: u32, height: u32) -> bool {
+        self.textures.clear();
+        self.width = width;
+        self.height = height;
+        self.next_index = 0;
+
+        // Keep several GPU textures so the renderer can sample older frames safely.
+        for _ in 0..Self::RING_LEN {
+            let Some(texture) = Self::create_texture(devices, width, height) else {
+                self.textures.clear();
+                return false;
+            };
+            self.textures.push(texture);
+        }
+        self.allocations = self.allocations.saturating_add(Self::RING_LEN as u64);
+        true
+    }
+
+    fn create_texture(
+        devices: &gpui::D3d11Devices_anica,
+        width: u32,
+        height: u32,
+    ) -> Option<ID3D11Texture2D> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut texture = None;
+        unsafe {
+            devices
+                .device
+                .CreateTexture2D(&desc, None, Some(&mut texture))
+                .ok()?;
+        }
+        texture
+    }
+
+    fn next_texture(
+        &mut self,
+        devices: &gpui::D3d11Devices_anica,
+        width: u32,
+        height: u32,
+    ) -> Option<(ID3D11Texture2D, bool)> {
+        let dimensions_changed = self.width != width || self.height != height;
+        if dimensions_changed || self.textures.len() != Self::RING_LEN {
+            if !self.reset(devices, width, height) {
+                return None;
+            }
+            return self.textures.first().cloned().map(|texture| {
+                self.next_index = 1 % Self::RING_LEN;
+                (texture, false)
+            });
+        }
+
+        let texture = self.textures.get(self.next_index)?.clone();
+        self.next_index = (self.next_index + 1) % Self::RING_LEN;
+        self.reuses = self.reuses.saturating_add(1);
+        Some((texture, true))
+    }
+
+    fn upload(
+        devices: &gpui::D3d11Devices_anica,
+        texture: &ID3D11Texture2D,
+        width: u32,
+        height: u32,
+        bgra: &[u8],
+    ) -> bool {
+        let Some(row_pitch) = width.checked_mul(4) else {
+            return false;
+        };
+        let Some(expected_len) = (row_pitch as usize).checked_mul(height as usize) else {
+            return false;
+        };
+        if bgra.len() < expected_len {
+            return false;
+        }
+
+        // Upload into the GPUI-owned device so the paint path can sample directly.
+        unsafe {
+            devices.device_context.UpdateSubresource(
+                texture,
+                0,
+                None,
+                bgra.as_ptr() as _,
+                row_pitch,
+                row_pitch.saturating_mul(height),
+            );
+        }
+        true
+    }
+
+    fn stats(&self) -> (usize, u64, u64) {
+        (self.textures.len(), self.allocations, self.reuses)
     }
 }
 
@@ -4815,6 +5041,15 @@ impl Element for VideoElement {
         let surface_ram_cache: Entity<SurfaceRamCache> =
             window.use_state(cx, |_, _| SurfaceRamCache::new());
         #[cfg(target_os = "macos")]
+        let bgra_surface_ring: Entity<BgraSurfaceRing> =
+            window.use_state(cx, |_, _| BgraSurfaceRing::new());
+        #[cfg(target_os = "windows")]
+        let last_d3d11_bgra_texture: Entity<Option<ID3D11Texture2D>> =
+            window.use_state(cx, |_, _| None);
+        #[cfg(target_os = "windows")]
+        let d3d11_bgra_texture_ring: Entity<D3d11BgraTextureRing> =
+            window.use_state(cx, |_, _| D3d11BgraTextureRing::new());
+        #[cfg(target_os = "macos")]
         let processed_surface_ram_cache: Entity<ProcessedSurfaceRamCache> =
             window.use_state(cx, |_, _| ProcessedSurfaceRamCache::new());
         #[cfg(target_os = "macos")]
@@ -4881,8 +5116,306 @@ impl Element for VideoElement {
         };
         let allow_frame_render_cache = frame_pts_ns > 0 && self.has_frame_render_effects();
 
+        #[cfg(target_os = "windows")]
+        {
+            // Windows can draw FFmpeg BGRA frames as D3D11 textures, avoiding per-frame RenderImage churn.
+            let is_bgra_texture_frame =
+                !strict_surface_only && self.video.current_frame_is_raw_bgra();
+            if is_bgra_texture_frame {
+                let localized_effect = self.local_mask_active()
+                    && (self.has_local_blur_effects() || self.has_local_color_or_alpha_effects());
+                let bgra_needs_pixel_texture = self.brightness.abs() >= 0.001
+                    || (self.contrast - 1.0).abs() >= 0.001
+                    || (self.saturation - 1.0).abs() >= 0.001
+                    || self.lut_mix.abs() >= 0.001
+                    || self.tint_alpha.abs() >= 0.001
+                    || self.effective_signed_blur_sigma().abs() >= 0.001
+                    || self.has_bloom_effect()
+                    || self.local_mask_active()
+                    || localized_effect;
+
+                if !bgra_needs_pixel_texture {
+                    let refresh_needed =
+                        has_new_frame || last_d3d11_bgra_texture.read(cx).is_none();
+                    let mut uploaded_texture = false;
+                    if refresh_needed {
+                        if let Some(devices) = window.d3d11_devices_anica() {
+                            let debug_ffmpeg_preview = ffmpeg_preview_debug_enabled();
+                            let video_id = self.video.id();
+                            let upload_result = self.video.with_current_raw_bgra_frame(
+                                |bgra, width, height| {
+                                    let pool_started = Instant::now();
+                                    let next_texture =
+                                        d3d11_bgra_texture_ring.update(cx, |ring, _| {
+                                            ring.next_texture(&devices, width, height).map(
+                                                |(texture, reused)| {
+                                                    let stats = ring.stats();
+                                                    (texture, reused, stats)
+                                                },
+                                            )
+                                        })?;
+                                    let (texture, reused, (pool_len, allocations, reuses)) =
+                                        next_texture;
+                                    let pool_us = pool_started.elapsed().as_micros();
+                                    let upload_started = Instant::now();
+                                    if !D3d11BgraTextureRing::upload(
+                                        &devices, &texture, width, height, bgra,
+                                    ) {
+                                        return None;
+                                    }
+                                    let upload_us = upload_started.elapsed().as_micros();
+                                    if debug_ffmpeg_preview {
+                                        static D3D11_BGRA_RING_TIMING_COUNT: AtomicU64 =
+                                            AtomicU64::new(0);
+                                        let hit = D3D11_BGRA_RING_TIMING_COUNT
+                                            .fetch_add(1, Ordering::Relaxed)
+                                            + 1;
+                                        if hit <= 20 || hit % 60 == 0 {
+                                            log::info!(
+                                                "[VideoElement][FFmpegPreview] d3d11_bgra_texture_ring hit={} video_id={} frame={}x{} reused={} pool_len={} allocations={} reuses={} pool_ms={:.2} upload_ms={:.2}",
+                                                hit,
+                                                video_id,
+                                                width,
+                                                height,
+                                                reused,
+                                                pool_len,
+                                                allocations,
+                                                reuses,
+                                                pool_us as f64 / 1000.0,
+                                                upload_us as f64 / 1000.0,
+                                            );
+                                        }
+                                    }
+                                    Some(texture)
+                                },
+                            );
+
+                            if let Some(Some(texture)) = upload_result {
+                                let _ = last_d3d11_bgra_texture
+                                    .update(cx, |state, _| state.replace(texture));
+                                let _ =
+                                    last_pixel_key.update(cx, |state, _| state.replace(pixel_key));
+                                uploaded_texture = true;
+                            }
+                        }
+
+                        if has_new_frame && !uploaded_texture {
+                            let _ = last_d3d11_bgra_texture.update(cx, |state, _| state.take());
+                        }
+                    }
+
+                    if let Some(texture) = last_d3d11_bgra_texture.read(cx).clone() {
+                        let surface = gpui::BgraFrameSurface::D3d11Texture(texture);
+                        let width = surface.width().max(1);
+                        let height = surface.height().max(1);
+                        let dest_bounds = self.fitted_bounds(bounds, width, height);
+                        let params = self.build_surface_params_anica(&dest_bounds);
+                        window.paint_bgra_frame_anica(dest_bounds, surface, params);
+                        return;
+                    }
+                } else {
+                    // Drop stale D3D textures while another path owns processed-frame rendering.
+                    let _ = last_d3d11_bgra_texture.update(cx, |state, _| state.take());
+                }
+            }
+        }
+
         #[cfg(target_os = "macos")]
         {
+            // FFmpeg BGRA frames can now use the GPUI CoreVideo surface path directly.
+            // This avoids rebuilding a GPUI RenderImage for every preview frame.
+            let is_bgra_surface_frame =
+                !strict_surface_only && self.video.current_frame_is_raw_bgra();
+            if is_bgra_surface_frame {
+                let bgra_needs_pixel_surface = self.brightness.abs() >= 0.001
+                    || (self.contrast - 1.0).abs() >= 0.001
+                    || (self.saturation - 1.0).abs() >= 0.001
+                    || self.lut_mix.abs() >= 0.001
+                    || self.tint_alpha.abs() >= 0.001
+                    || self.effective_signed_blur_sigma().abs() >= 0.001
+                    || self.has_bloom_effect()
+                    || self.local_mask_active();
+                let refresh_needed =
+                    has_new_frame || last_surface_buffer.read(cx).is_none() || pixel_key_changed;
+
+                if refresh_needed {
+                    let _ = last_surface_blur_cache.update(cx, |state, _| state.take());
+                    let _ = pending_nv12_blur.update(cx, |state, _| state.take());
+                    let _ = nv12_effect_fail_streak.update(cx, |streak, _| *streak = 0);
+
+                    let mut refreshed_surface = false;
+                    if bgra_needs_pixel_surface {
+                        let cached = if allow_frame_render_cache && frame_pts_ns > 0 {
+                            processed_surface_ram_cache
+                                .update(cx, |cache, _| cache.get(frame_cache_key))
+                        } else {
+                            None
+                        };
+
+                        if let Some(surface) = cached {
+                            let _ =
+                                last_surface_buffer.update(cx, |state, _| state.replace(surface));
+                            let _ = last_pixel_key.update(cx, |state, _| state.replace(pixel_key));
+                            refreshed_surface = true;
+                        } else {
+                            let debug_ffmpeg_preview = ffmpeg_preview_debug_enabled();
+                            let fetch_started = Instant::now();
+                            let frame_data = self.video.current_frame_data();
+                            let fetch_us = fetch_started.elapsed().as_micros();
+                            if let Some((mut bgra_data, width, height)) = frame_data {
+                                let process_started = Instant::now();
+                                self.apply_pixel_processing(&mut bgra_data, width, height);
+                                let process_us = process_started.elapsed().as_micros();
+                                let surface_started = Instant::now();
+                                let frame_bytes = bgra_data.len();
+                                if let Some(surface) = Video::build_surface_bgra_copy_from_data(
+                                    width, height, &bgra_data,
+                                ) {
+                                    let surface_us = surface_started.elapsed().as_micros();
+                                    if debug_ffmpeg_preview {
+                                        static BGRA_SURFACE_TIMING_COUNT: AtomicU64 =
+                                            AtomicU64::new(0);
+                                        let hit = BGRA_SURFACE_TIMING_COUNT
+                                            .fetch_add(1, Ordering::Relaxed)
+                                            + 1;
+                                        if hit <= 20 || hit % 60 == 0 {
+                                            log::info!(
+                                                "[VideoElement][FFmpegPreview] bgra_surface hit={} video_id={} frame={}x{} bytes={} fetch_ms={:.2} process_ms={:.2} surface_ms={:.2}",
+                                                hit,
+                                                self.video.id(),
+                                                width,
+                                                height,
+                                                frame_bytes,
+                                                fetch_us as f64 / 1000.0,
+                                                process_us as f64 / 1000.0,
+                                                surface_us as f64 / 1000.0,
+                                            );
+                                        }
+                                    }
+                                    if allow_frame_render_cache {
+                                        processed_surface_ram_cache.update(cx, |cache, _| {
+                                            cache.insert(
+                                                frame_cache_key,
+                                                surface.clone(),
+                                                frame_bytes,
+                                            );
+                                        });
+                                    }
+                                    let _ = last_surface_buffer
+                                        .update(cx, |state, _| state.replace(surface));
+                                    frame_size = (width, height);
+                                    let _ = last_pixel_key
+                                        .update(cx, |state, _| state.replace(pixel_key));
+                                    refreshed_surface = true;
+                                }
+                            }
+                        }
+                    } else {
+                        let cache_key = SurfaceCacheKey {
+                            video_id: self.video.id(),
+                            pts_ns: frame_pts_ns,
+                        };
+                        let cached = if allow_decoded_ram_cache && frame_pts_ns > 0 {
+                            surface_ram_cache.update(cx, |cache, _| cache.get(cache_key))
+                        } else {
+                            None
+                        };
+
+                        if let Some(surface) = cached {
+                            let _ =
+                                last_surface_buffer.update(cx, |state, _| state.replace(surface));
+                            let _ = last_pixel_key.update(cx, |state, _| state.replace(pixel_key));
+                            refreshed_surface = true;
+                        } else if !is_paused {
+                            let debug_ffmpeg_preview = ffmpeg_preview_debug_enabled();
+                            let pool_started = Instant::now();
+                            if let Some((width, height)) = self.video.current_raw_bgra_dimensions()
+                            {
+                                let next_surface = bgra_surface_ring.update(cx, |ring, _| {
+                                    ring.next_surface(width, height).map(|(surface, reused)| {
+                                        let stats = ring.stats();
+                                        (surface, reused, stats)
+                                    })
+                                });
+                                if let Some((surface, reused, (pool_len, allocations, reuses))) =
+                                    next_surface
+                                {
+                                    let pool_us = pool_started.elapsed().as_micros();
+                                    let copy_started = Instant::now();
+                                    if self
+                                        .video
+                                        .copy_current_frame_to_bgra_surface(&surface)
+                                        .is_some()
+                                    {
+                                        let copy_us = copy_started.elapsed().as_micros();
+                                        if debug_ffmpeg_preview {
+                                            static BGRA_RING_TIMING_COUNT: AtomicU64 =
+                                                AtomicU64::new(0);
+                                            let hit = BGRA_RING_TIMING_COUNT
+                                                .fetch_add(1, Ordering::Relaxed)
+                                                + 1;
+                                            if hit <= 20 || hit % 60 == 0 {
+                                                log::info!(
+                                                    "[VideoElement][FFmpegPreview] bgra_surface_ring hit={} video_id={} frame={}x{} reused={} pool_len={} allocations={} reuses={} pool_ms={:.2} copy_ms={:.2}",
+                                                    hit,
+                                                    self.video.id(),
+                                                    width,
+                                                    height,
+                                                    reused,
+                                                    pool_len,
+                                                    allocations,
+                                                    reuses,
+                                                    pool_us as f64 / 1000.0,
+                                                    copy_us as f64 / 1000.0,
+                                                );
+                                            }
+                                        }
+                                        let _ = last_surface_buffer
+                                            .update(cx, |state, _| state.replace(surface));
+                                        let _ = last_pixel_key
+                                            .update(cx, |state, _| state.replace(pixel_key));
+                                        refreshed_surface = true;
+                                    }
+                                }
+                            }
+                        } else if let Some(surface) = self.video.current_frame_surface_bgra() {
+                            if allow_decoded_ram_cache && frame_pts_ns > 0 {
+                                let estimated_bytes =
+                                    surface.get_width() * surface.get_height() * 4;
+                                surface_ram_cache.update(cx, |cache, _| {
+                                    cache.insert(cache_key, surface.clone(), estimated_bytes);
+                                });
+                            }
+                            let _ =
+                                last_surface_buffer.update(cx, |state, _| state.replace(surface));
+                            let _ = last_pixel_key.update(cx, |state, _| state.replace(pixel_key));
+                            refreshed_surface = true;
+                        }
+                    }
+
+                    if has_new_frame && !refreshed_surface {
+                        let _ = last_surface_buffer.update(cx, |state, _| state.take());
+                    }
+                }
+
+                if let Some(surface) = last_surface_buffer.read(cx).clone() {
+                    let width = surface.get_width() as u32;
+                    let height = surface.get_height() as u32;
+                    let dest_bounds = self.fitted_bounds(bounds, width.max(1), height.max(1));
+                    let params = if bgra_needs_pixel_surface {
+                        gpui::SurfaceExParams_anica::default()
+                    } else {
+                        self.build_surface_params_anica(&dest_bounds)
+                    };
+                    window.paint_bgra_frame_anica(
+                        dest_bounds,
+                        gpui::BgraFrameSurface::CvPixelBuffer(surface),
+                        params,
+                    );
+                    return;
+                }
+            }
+
             // macOS keeps zero-copy NV12 surface path whenever local-mask fallback is not required.
             if needs_pixel_processing {
                 // Local-mask compositing still uses BGRA fallback; drop stale NV12 caches first.
@@ -4898,7 +5431,7 @@ impl Element for VideoElement {
                         pts_ns: frame_pts_ns,
                     };
 
-                    // 1. Try surface RAM cache first (avoids GStreamer decode)
+                    // Try the surface RAM cache first to avoid asking the active decoder for the same frame.
                     let cached = if allow_decoded_ram_cache && frame_pts_ns > 0 {
                         surface_ram_cache.update(cx, |cache, _| cache.get(cache_key))
                     } else {
@@ -4906,11 +5439,11 @@ impl Element for VideoElement {
                     };
 
                     if let Some(surface) = cached {
-                        // Cache hit — skip GStreamer decode entirely
+                        // Cache hit: reuse the existing surface without touching the decoder.
                         let _ = last_surface_buffer.update(cx, |state, _| state.replace(surface));
                         refreshed_surface = true;
                     } else if let Some(surface) = self.video.current_frame_surface_nv12() {
-                        // Cache miss — decoded via GStreamer, insert into cache for future reuse
+                        // Cache miss: store the decoder-provided surface for paused-frame reuse.
                         if allow_decoded_ram_cache && frame_pts_ns > 0 {
                             let (w, h) = frame_size;
                             let estimated_bytes = (w as usize) * (h as usize) * 3 / 2;
@@ -5164,37 +5697,64 @@ impl Element for VideoElement {
                 frame_size = (cached.width, cached.height);
                 let _ = last_render_image.update(cx, |state, _| state.replace(cached.image));
                 let _ = last_pixel_key.update(cx, |state, _| state.replace(pixel_key));
-            } else if let Some((mut bgra_data, width, height)) = self.video.current_frame_data() {
-                self.apply_pixel_processing(&mut bgra_data, width, height);
-                let frame_bytes = bgra_data.len();
-                if let Some(image_buffer) =
-                    ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, bgra_data)
-                {
-                    let frames = SmallVec::from_elem(image::Frame::new(image_buffer), 1);
-                    let render_image = Arc::new(RenderImage::new(frames));
-                    let prev_image = last_render_image
-                        .update(cx, |state, _| state.replace(render_image.clone()));
-                    image_to_paint = Some(render_image.clone());
-                    frame_size = (width, height);
-                    let _ = last_pixel_key.update(cx, |state, _| state.replace(pixel_key));
-
-                    if allow_frame_render_cache {
-                        let evicted = frame_ram_cache.update(cx, |cache, _| {
-                            cache.insert(
-                                frame_cache_key,
-                                FrameRamCacheEntry {
-                                    image: render_image,
+            } else {
+                let debug_ffmpeg_preview = ffmpeg_preview_debug_enabled();
+                let fetch_started = Instant::now();
+                let frame_data = self.video.current_frame_data();
+                let fetch_us = fetch_started.elapsed().as_micros();
+                if let Some((mut bgra_data, width, height)) = frame_data {
+                    let process_started = Instant::now();
+                    self.apply_pixel_processing(&mut bgra_data, width, height);
+                    let process_us = process_started.elapsed().as_micros();
+                    let image_started = Instant::now();
+                    let frame_bytes = bgra_data.len();
+                    if let Some(image_buffer) =
+                        ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, bgra_data)
+                    {
+                        let frames = SmallVec::from_elem(image::Frame::new(image_buffer), 1);
+                        let render_image = Arc::new(RenderImage::new(frames));
+                        let image_us = image_started.elapsed().as_micros();
+                        if debug_ffmpeg_preview {
+                            static BGRA_RENDER_TIMING_COUNT: AtomicU64 = AtomicU64::new(0);
+                            let hit = BGRA_RENDER_TIMING_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                            if hit <= 20 || hit % 60 == 0 {
+                                log::info!(
+                                    "[VideoElement][FFmpegPreview] bgra_render hit={} video_id={} frame={}x{} bytes={} fetch_ms={:.2} process_ms={:.2} image_ms={:.2}",
+                                    hit,
+                                    self.video.id(),
                                     width,
                                     height,
-                                    bytes: frame_bytes,
-                                },
-                            )
-                        });
-                        for evicted_image in evicted {
-                            cx.drop_image(evicted_image, Some(window));
+                                    frame_bytes,
+                                    fetch_us as f64 / 1000.0,
+                                    process_us as f64 / 1000.0,
+                                    image_us as f64 / 1000.0,
+                                );
+                            }
                         }
-                    } else if let Some(prev) = prev_image {
-                        cx.drop_image(prev, Some(window));
+                        let prev_image = last_render_image
+                            .update(cx, |state, _| state.replace(render_image.clone()));
+                        image_to_paint = Some(render_image.clone());
+                        frame_size = (width, height);
+                        let _ = last_pixel_key.update(cx, |state, _| state.replace(pixel_key));
+
+                        if allow_frame_render_cache {
+                            let evicted = frame_ram_cache.update(cx, |cache, _| {
+                                cache.insert(
+                                    frame_cache_key,
+                                    FrameRamCacheEntry {
+                                        image: render_image,
+                                        width,
+                                        height,
+                                        bytes: frame_bytes,
+                                    },
+                                )
+                            });
+                            for evicted_image in evicted {
+                                cx.drop_image(evicted_image, Some(window));
+                            }
+                        } else if let Some(prev) = prev_image {
+                            cx.drop_image(prev, Some(window));
+                        }
                     }
                 }
             }

@@ -15,6 +15,16 @@ exe_path="$1"
 shift || true
 ANICA_RESOLVED_RUNTIME_ROOT=""
 
+anica_gstreamer_opt_in_enabled() {
+  case "${ANICA_ENABLE_GSTREAMER:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  case "${ANICA_VIDEO_BACKEND:-}" in
+    gstreamer|GSTREAMER|gst|GST) return 0 ;;
+  esac
+  return 1
+}
+
 configure_curated_host_gstreamer_plugins() {
   local plugin_dir="$1"
   local registry_path="$2"
@@ -272,9 +282,15 @@ setup_repo_media_runtime() {
     gst_launch_exe="gst-launch-1.0.exe"
   fi
 
-  local ffmpeg_root gst_root
+  local ffmpeg_root gst_root gstreamer_enabled
+  gstreamer_enabled=0
   ffmpeg_root="$(resolve_runtime_tool_root "${runtime_root}/ffmpeg" "${ffmpeg_exe}" "${ffmpeg_version}" || true)"
-  gst_root="$(resolve_runtime_tool_root "${runtime_root}/gstreamer" "${gst_launch_exe}" "${gst_version}" || true)"
+  if anica_gstreamer_opt_in_enabled; then
+    gstreamer_enabled=1
+    gst_root="$(resolve_runtime_tool_root "${runtime_root}/gstreamer" "${gst_launch_exe}" "${gst_version}" || true)"
+  else
+    gst_root=""
+  fi
   if [[ -z "${ffmpeg_root}" && -z "${gst_root}" ]]; then
     return 0
   fi
@@ -314,16 +330,18 @@ setup_repo_media_runtime() {
     gst_launch_bin="${gst_bin}/${gst_launch_exe}"
     gst_scanner="${gst_root}/libexec/gstreamer-1.0/gst-plugin-scanner"
   fi
-  host_gst_launch="$(command -v gst-launch-1.0 2>/dev/null || true)"
+  host_gst_launch=""
+  if [[ "${gstreamer_enabled}" == "1" ]]; then
+    host_gst_launch="$(command -v gst-launch-1.0 2>/dev/null || true)"
+  fi
   host_linked_gstreamer=0
 
-  # Prefer vendored GStreamer when available. Set
-  # ANICA_FORCE_HOST_GSTREAMER=1 to use host/Brew GStreamer instead.
-  if [[ -n "${host_gst_launch}" && "${ANICA_FORCE_HOST_GSTREAMER:-0}" == "1" ]]; then
+  # GStreamer is opt-in while FFmpeg preview is the default backend.
+  if [[ "${gstreamer_enabled}" == "1" && -n "${host_gst_launch}" && "${ANICA_FORCE_HOST_GSTREAMER:-0}" == "1" ]]; then
     host_linked_gstreamer=1
   fi
 
-  if [[ "${os}" == "macos" ]]; then
+  if [[ "${gstreamer_enabled}" == "1" && "${os}" == "macos" ]]; then
     # setup_media_tools already patches the runtime tree. Re-running the full patch
     # on every launch is expensive and can crash older macOS bash builds.
     if [[ -n "${gst_root}" && "${ANICA_FORCE_GSTREAMER_RUNTIME_RPATH_PATCH:-0}" == "1" ]]; then
@@ -360,7 +378,12 @@ setup_repo_media_runtime() {
     echo "[anica-runner] Using vendored ffmpeg runtime: ${ffmpeg_bin}" >&2
   fi
 
-  if [[ "${host_linked_gstreamer}" == "1" && -n "${host_gst_launch}" ]]; then
+  if [[ "${gstreamer_enabled}" != "1" ]]; then
+    unset ANICA_GSTREAMER_PATH
+    unset GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_SYSTEM_PATH
+    unset GST_PLUGIN_SCANNER GST_PLUGIN_SCANNER_1_0 GI_TYPELIB_PATH GST_REGISTRY_1_0
+    echo "[anica-runner] GStreamer runtime disabled by default; set ANICA_ENABLE_GSTREAMER=1 to opt in." >&2
+  elif [[ "${host_linked_gstreamer}" == "1" && -n "${host_gst_launch}" ]]; then
     export ANICA_GSTREAMER_PATH="${host_gst_launch}"
     if [[ "${ANICA_FORCE_VENDORED_GSTREAMER:-0}" != "1" ]]; then
       echo "[anica-runner] Using host GStreamer (preferred): ${host_gst_launch}" >&2
@@ -403,7 +426,7 @@ setup_repo_media_runtime() {
       echo "[anica-runner] Using isolated gstreamer registry: ${GST_REGISTRY_1_0}" >&2
     fi
   fi
-  if [[ "${host_linked_gstreamer}" != "1" && -d "${gst_lib}" ]]; then
+  if [[ "${gstreamer_enabled}" == "1" && "${host_linked_gstreamer}" != "1" && -d "${gst_lib}" ]]; then
     if [[ "$os" == "linux" ]]; then
       export LD_LIBRARY_PATH="${gst_lib}${ffmpeg_lib:+:${ffmpeg_lib}}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     elif [[ "$os" == "macos" && "${ANICA_ENABLE_DYLD_RUNTIME_PATH:-0}" == "1" ]]; then

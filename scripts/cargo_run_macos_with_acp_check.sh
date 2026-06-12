@@ -9,6 +9,16 @@ if [[ "$(uname -m)" != "arm64" ]]; then
   exit 1
 fi
 
+anica_gstreamer_opt_in_enabled() {
+  case "${ANICA_ENABLE_GSTREAMER:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  case "${ANICA_VIDEO_BACKEND:-}" in
+    gstreamer|GSTREAMER|gst|GST) return 0 ;;
+  esac
+  return 1
+}
+
 resolve_current_gstreamer_plugin_dir() {
   local gst_root="${repo_root}/tools/runtime/current/macos/gstreamer"
   local candidate
@@ -26,9 +36,12 @@ resolve_current_gstreamer_plugin_dir() {
   return 1
 }
 
-if plugin_dir="$(resolve_current_gstreamer_plugin_dir)"; then
-  export ANICA_HOST_GSTREAMER_PLUGIN_DIR="${plugin_dir}"
+if anica_gstreamer_opt_in_enabled; then
+  # Host GStreamer hints are opt-in while FFmpeg preview is the default backend.
+  if plugin_dir="$(resolve_current_gstreamer_plugin_dir)"; then
+    export ANICA_HOST_GSTREAMER_PLUGIN_DIR="${plugin_dir}"
+  fi
+  export ANICA_HOST_GSTREAMER_REGISTRY="${repo_root}/target/.anica-host-gstreamer-registry.bin"
 fi
-export ANICA_HOST_GSTREAMER_REGISTRY="${repo_root}/target/.anica-host-gstreamer-registry.bin"
 
 exec "${script_dir}/cargo_run_with_acp_check.sh" "$@"

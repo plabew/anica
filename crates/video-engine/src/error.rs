@@ -30,4 +30,6 @@ pub enum Error {
     Lock,
     #[error("invalid framerate: {0}")]
     Framerate(f64),
+    #[error("ffmpeg backend error: {0}")]
+    Ffmpeg(String),
 }
