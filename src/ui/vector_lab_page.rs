@@ -439,7 +439,7 @@ impl VectorLabPage {
             reference_opacity: 0.42,
             reference_zoom: 1.0,
             reference_offset: VectorPoint::default(),
-            canvas_bg_color: Hsla::from(rgb(0x0f1624)),
+            canvas_bg_color: Hsla::from(rgb(0xffffff)),
             canvas_bg_picker: None,
             canvas_bg_picker_sub: None,
             brush_color_picker: None,
@@ -1085,7 +1085,8 @@ impl VectorLabPage {
             brush: self.current_brush.clone(),
             export_simplify_epsilon: self.simplify_epsilon,
         });
-        self.selected_path = Some(self.paths.len().saturating_sub(1));
+        // New strokes are not auto-selected; brush changes should target the next stroke by default.
+        self.selected_path = None;
         self.status_line = format!(
             "Created {id} ({}) with {}.",
             kind.label(),
@@ -1311,12 +1312,14 @@ impl VectorLabPage {
         let existed = existing_group_ids.iter().any(|id| id == &group_id);
         let export_paths = self.paths_for_motionloom_export();
         let export = Self::vector_group_export(&group_id, &export_paths);
+        let background_color = self.canvas_bg_color.to_hex();
         let updated_script = Self::patch_motionloom_group_script(
             &existing_script,
             &group_id,
             &export,
             width.max(1),
             height.max(1),
+            &background_color,
         );
         self.global.update(cx, |gs, cx| {
             gs.set_motionloom_scene_script(updated_script, true);
@@ -1455,12 +1458,18 @@ impl VectorLabPage {
         width: u32,
         height: u32,
         export: &VectorGroupExport,
+        background_color: &str,
     ) -> String {
         let defs_block = Self::brush_defs_block(&export.brush_defs);
         let timeline_block = Self::vector_group_timeline_block(group_id, &export.group_block, "1s");
+        let background_color = if background_color.trim().is_empty() {
+            "#ffffff"
+        } else {
+            background_color.trim()
+        };
         format!(
             r##"<Graph fps={{60}} duration="1s" size={{[{width},{height}]}}>
-  <Background color="#ffffff" />
+  <Background color="{background_color}" />
 
   <Scene id="vector_lab_trace">
 {defs}
@@ -1471,6 +1480,7 @@ impl VectorLabPage {
 </Graph>"##,
             width = width.max(1),
             height = height.max(1),
+            background_color = Self::escape_attr(background_color),
             defs = Self::indent_block(&defs_block, 4),
             timeline = Self::indent_block(&timeline_block, 4),
         )
@@ -1482,14 +1492,22 @@ impl VectorLabPage {
         export: &VectorGroupExport,
         width: u32,
         height: u32,
+        background_color: &str,
     ) -> String {
         let trimmed = existing_script.trim();
         if trimmed.is_empty() || !trimmed.contains("<Scene") || !trimmed.contains("</Scene>") {
-            return Self::new_vector_scene_script(group_id, width, height, export);
+            return Self::new_vector_scene_script(
+                group_id,
+                width,
+                height,
+                export,
+                background_color,
+            );
         }
 
         let duration = Self::motionloom_graph_duration(trimmed).unwrap_or_else(|| "1s".to_string());
         let trimmed = Self::patch_motionloom_brush_defs(trimmed, &export.brush_defs);
+        let trimmed = Self::patch_motionloom_background_color(&trimmed, background_color);
         if let Some((start, end)) = Self::find_group_block_range(&trimmed, group_id) {
             let mut out = trimmed.to_string();
             if Self::range_inside_tag(&out, start, end, "Timeline") {
@@ -1504,11 +1522,56 @@ impl VectorLabPage {
                 &export.group_block,
                 &duration,
             )
-            .unwrap_or_else(|| Self::new_vector_scene_script(group_id, width, height, export));
+            .unwrap_or_else(|| {
+                Self::new_vector_scene_script(group_id, width, height, export, background_color)
+            });
         }
 
         Self::insert_vector_group_into_timeline(&trimmed, group_id, &export.group_block, &duration)
-            .unwrap_or_else(|| Self::new_vector_scene_script(group_id, width, height, export))
+            .unwrap_or_else(|| {
+                Self::new_vector_scene_script(group_id, width, height, export, background_color)
+            })
+    }
+
+    fn patch_motionloom_background_color(script: &str, background_color: &str) -> String {
+        let color = if background_color.trim().is_empty() {
+            "#ffffff"
+        } else {
+            background_color.trim()
+        };
+        let escaped = Self::escape_attr(color);
+        if let Some(start) = Self::find_ascii_case_insensitive(script, "<Background", 0)
+            && let Some(end) = Self::find_tag_end(script, start)
+        {
+            let tag = &script[start..=end];
+            let replacement = if let Some(color_pos) = Self::find_attr_value_range(tag, "color") {
+                let mut next_tag = tag.to_string();
+                next_tag.replace_range(color_pos.0..color_pos.1, &escaped);
+                next_tag
+            } else {
+                let insert_at = tag
+                    .len()
+                    .saturating_sub(if tag.ends_with("/>") { 2 } else { 1 });
+                let mut next_tag = tag.to_string();
+                next_tag.insert_str(insert_at, &format!(r#" color="{escaped}""#));
+                next_tag
+            };
+            let mut out = script.to_string();
+            out.replace_range(start..=end, &replacement);
+            return out;
+        }
+
+        if let Some(graph_start) = Self::find_ascii_case_insensitive(script, "<Graph", 0)
+            && let Some(graph_end) = Self::find_tag_end(script, graph_start)
+        {
+            let mut out = String::with_capacity(script.len() + escaped.len() + 32);
+            out.push_str(&script[..=graph_end]);
+            out.push_str(&format!("\n  <Background color=\"{escaped}\" />"));
+            out.push_str(&script[graph_end.saturating_add(1)..]);
+            return out;
+        }
+
+        script.to_string()
     }
 
     fn vector_group_timeline_block(group_id: &str, group_block: &str, duration: &str) -> String {
@@ -1815,6 +1878,10 @@ impl VectorLabPage {
     }
 
     fn extract_attr(tag: &str, name: &str) -> Option<String> {
+        Self::find_attr_value_range(tag, name).map(|(start, end)| tag[start..end].to_string())
+    }
+
+    fn find_attr_value_range(tag: &str, name: &str) -> Option<(usize, usize)> {
         let bytes = tag.as_bytes();
         let name_bytes = name.as_bytes();
         let mut cursor = 0usize;
@@ -1859,7 +1926,7 @@ impl VectorLabPage {
             let value_end = tag[attr_value_start..]
                 .find(quote as char)
                 .map(|offset| attr_value_start + offset)?;
-            return Some(tag[attr_value_start..value_end].to_string());
+            return Some((attr_value_start, value_end));
         }
         None
     }
@@ -1969,16 +2036,13 @@ impl VectorLabPage {
             .max()
             .unwrap_or(imported.len());
         self.paths = imported;
-        self.selected_path = self.paths.len().checked_sub(1);
+        // Require an explicit path-list click before brush controls edit an imported path.
+        self.selected_path = None;
         self.current_pen_points.clear();
         self.current_freehand.clear();
         self.is_drawing_freehand = false;
         self.path_counter = max_index.saturating_add(1).max(self.paths.len() + 1);
-        self.current_brush = self
-            .selected_path
-            .and_then(|idx| self.paths.get(idx))
-            .map(|path| path.brush.clone())
-            .unwrap_or_else(BrushSettings::default);
+        self.current_brush = BrushSettings::default();
         self.set_group_id_input_value(group_id.clone(), window, cx);
         self.group_picker_open = false;
         self.status_line = format!(
@@ -4056,6 +4120,7 @@ mod tests {
             &export,
             1920,
             1080,
+            "#ffffff",
         );
         let timeline_start = updated.find("<Timeline>").unwrap();
         let timeline_end = updated.find("</Timeline>").unwrap();
@@ -4102,6 +4167,7 @@ mod tests {
             &export,
             1920,
             1080,
+            "#ffffff",
         );
         let timeline_start = updated.find("<Timeline>").unwrap();
         let timeline_end = updated.find("</Timeline>").unwrap();
@@ -4111,6 +4177,59 @@ mod tests {
         assert_eq!(updated.matches(r#"<Group id="vector_group_01""#).count(), 1);
         assert!(timeline_start < group_start && group_start < timeline_end);
         assert!(!updated[timeline_end..scene_end].contains(r#"<Group id="vector_group_01""#));
+    }
+
+    #[test]
+    fn vector_lab_new_scene_uses_selected_background_color() {
+        let paths = vec![VectorPathDraft {
+            id: "vector_path_01".to_string(),
+            kind: VectorPathKind::Freehand,
+            points: vec![VectorPoint::new(2.0, 4.0), VectorPoint::new(12.0, 14.0)],
+            brush: BrushSettings::for_preset(BrushPreset::Pencil),
+            export_simplify_epsilon: 0.0,
+        }];
+        let export = VectorLabPage::vector_group_export("vector_group_01", &paths);
+        let updated = VectorLabPage::patch_motionloom_group_script(
+            "",
+            "vector_group_01",
+            &export,
+            1920,
+            1080,
+            "#123456",
+        );
+
+        assert!(updated.contains(r##"<Background color="#123456" />"##));
+    }
+
+    #[test]
+    fn vector_lab_existing_scene_updates_background_color_on_attach() {
+        let paths = vec![VectorPathDraft {
+            id: "vector_path_01".to_string(),
+            kind: VectorPathKind::Freehand,
+            points: vec![VectorPoint::new(2.0, 4.0), VectorPoint::new(12.0, 14.0)],
+            brush: BrushSettings::for_preset(BrushPreset::Pencil),
+            export_simplify_epsilon: 0.0,
+        }];
+        let export = VectorLabPage::vector_group_export("vector_group_01", &paths);
+        let script = r##"<Graph fps={60} duration="1s" size={[1920,1080]}>
+  <Background color="#ffffff" />
+  <Scene id="vector_lab_trace">
+    <Timeline>
+    </Timeline>
+  </Scene>
+  <Present from="vector_lab_trace" />
+</Graph>"##;
+        let updated = VectorLabPage::patch_motionloom_group_script(
+            script,
+            "vector_group_01",
+            &export,
+            1920,
+            1080,
+            "#DB2626",
+        );
+
+        assert!(updated.contains(r##"<Background color="#DB2626" />"##));
+        assert!(!updated.contains(r##"<Background color="#ffffff" />"##));
     }
 
     #[test]
