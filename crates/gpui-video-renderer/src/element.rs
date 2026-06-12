@@ -4918,9 +4918,9 @@ impl VideoElement {
         }
     }
 
-    /// Build extended surface params for the anica NV12 zero-copy shader.
+    /// Build extended native-frame params for macOS CVPixelBuffer and Windows D3D11 paths.
     /// Converts clip opacity / scale / rotation / position into GPU params.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn build_surface_params_anica(
         &self,
         dest_bounds: &gpui::Bounds<gpui::Pixels>,
