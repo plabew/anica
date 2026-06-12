@@ -10,7 +10,7 @@ This project is an open source Rust video editor. Please read this file before o
 
 - Rust stable toolchain
 - `cargo`
-- GStreamer runtime installed
+- FFmpeg runtime installed
 - On macOS, FFmpeg runtime is bootstrapped on first `cargo run` when needed
 - macOS FFmpeg bootstrap still requires Homebrew for build dependencies
 
@@ -58,7 +58,7 @@ That document defines:
 - `src/core/` - timeline state, export, proxy, subtitle logic
 - `src/ui/` - GPUI panels and interaction
 - `crates/ai-subtitle-engine/` - local Whisper runtime, model pack loading, subtitle inference
-- `crates/video-engine/` - GStreamer playback and frame access
+- `crates/video-engine/` - FFmpeg playback and frame access
 - `crates/gpui-video-renderer/` - rendering bridge for preview
 
 When possible:

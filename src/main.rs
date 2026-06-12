@@ -15,8 +15,7 @@ mod runtime_paths;
 mod ui;
 
 use crate::core::media_tools::{
-    configure_bundled_media_runtime_environment, detect_gstreamer_cli,
-    detect_or_bootstrap_media_dependencies, gstreamer_runtime_opt_in_enabled,
+    configure_bundled_media_runtime_environment, detect_or_bootstrap_media_dependencies,
 };
 
 /// Install a panic hook so unexpected crashes always print stack traces to terminal logs.
@@ -25,26 +24,6 @@ fn install_panic_logging() {
         eprintln!("[Panic] {info}");
         eprintln!("[Panic] backtrace:\n{}", Backtrace::force_capture());
     }));
-}
-
-/// Check GStreamer CLI tool (As an indicator of library presence)
-fn check_gstreamer() -> Option<String> {
-    if !gstreamer_runtime_opt_in_enabled() {
-        println!(
-            "[System Check] GStreamer detection skipped. Set ANICA_ENABLE_GSTREAMER=1 to opt in."
-        );
-        return None;
-    }
-
-    if let Some(candidate) = detect_gstreamer_cli(None) {
-        println!("[System Check] ✅ Found GStreamer CLI: {candidate}");
-        return Some(candidate);
-    }
-
-    eprintln!(
-        "[System Check] ⚠️ GStreamer CLI not found. Video playback might fail if libraries are missing."
-    );
-    None
 }
 
 fn main() {
@@ -57,7 +36,6 @@ fn main() {
 
     // Run environment checks
     let media_tools = detect_or_bootstrap_media_dependencies(None);
-    let gst_cli = check_gstreamer(); // Optional fallback; skipped unless explicitly enabled.
 
     if media_tools.ffmpeg_available {
         println!(
@@ -86,7 +64,6 @@ fn main() {
             load_asset_fonts(cx);
             let global = app::editor_window::open_editor_window(cx);
             global.update(cx, |gs, cx| {
-                gs.apply_gstreamer_dependency_status(gst_cli.clone());
                 gs.apply_media_dependency_status(media_tools_for_app.clone(), true);
                 cx.notify();
             });

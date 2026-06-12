@@ -2014,8 +2014,6 @@ pub struct GlobalState {
     // --- System Configuration (Global) ---
     pub ffmpeg_path: String,
     pub ffprobe_path: String,
-    pub gstreamer_path: String,
-    pub gstreamer_available: bool,
     pub media_dependency: MediaDependencyStatus,
     pub show_media_dependency_modal: bool,
     pub show_preview_memory_budget_modal: bool,
@@ -2129,8 +2127,6 @@ impl Default for GlobalState {
         Self {
             ffmpeg_path: "ffmpeg".to_string(),
             ffprobe_path: "ffprobe".to_string(),
-            gstreamer_path: "gst-launch-1.0".to_string(),
-            gstreamer_available: false,
             media_dependency: MediaDependencyStatus::default(),
             show_media_dependency_modal: false,
             show_preview_memory_budget_modal: false,
@@ -2672,19 +2668,6 @@ impl GlobalState {
         self.media_dependency = status;
         if open_modal_if_missing && !self.media_dependency.all_available() {
             self.show_media_dependency_modal = true;
-        }
-    }
-
-    pub fn apply_gstreamer_dependency_status(&mut self, gstreamer_cli: Option<String>) {
-        match gstreamer_cli {
-            Some(path) => {
-                self.gstreamer_path = path;
-                self.gstreamer_available = true;
-            }
-            None => {
-                self.gstreamer_path = "gst-launch-1.0".to_string();
-                self.gstreamer_available = false;
-            }
         }
     }
 

@@ -1,55 +1,35 @@
 {
   "schema_version": 3,
-  "description": "Anica runtime manifest — shared versions and licenses, platform-specific overrides for download URLs.",
+  "description": "Anica runtime manifest \u2014 shared versions and licenses, platform-specific overrides for download URLs.",
   "release_base_url": "https://github.com/LOVELYZOMBIEYHO/anica/releases/download",
   "common": {
     "ffmpeg": {
       "version": "8.0.1",
       "license": "LGPL-2.1-or-later",
       "build_flags": "LGPL-only, shared, no-GPL, no-nonfree",
-      "enabled_encoders": ["libvpx", "libaom", "libsvtav1", "libopus"],
-      "dependencies": [
-        { "name": "libvpx", "license": "BSD-3-Clause" },
-        { "name": "libaom", "license": "BSD-2-Clause" },
-        { "name": "libsvtav1", "license": "BSD-2-Clause" },
-        { "name": "libopus", "license": "BSD-3-Clause" }
-      ]
-    },
-    "gstreamer": {
-      "version": "1.28.1",
-      "license": "LGPL-2.1-or-later",
-      "plugins_included": [
-        "gstapp",
-        "gstapplemedia",
-        "gstaudioconvert",
-        "gstaudioparsers",
-        "gstaudioresample",
-        "gstautodetect",
-        "gstcoreelements",
-        "gstgio",
-        "gstisomp4",
-        "gstosxaudio",
-        "gstpbtypes",
-        "gstplayback",
-        "gsttypefindfunctions",
-        "gstvideoconvertscale",
-        "gstvideoparsersbad",
-        "gstvideorate",
-        "gstvolume"
-      ],
-      "plugins_excluded": [
-        "gstx264 (GPL)",
-        "gstx265 (GPL)",
-        "gstfaac (nonfree)",
-        "gstfdkaac (nonfree)",
-        "gstlame (GPL)",
-        "gstpython (GPL)",
-        "gstgtk (GPL)"
+      "enabled_encoders": [
+        "libvpx",
+        "libaom",
+        "libsvtav1",
+        "libopus"
       ],
       "dependencies": [
-        { "name": "glib", "license": "LGPL-2.1-or-later" },
-        { "name": "gettext/libintl", "license": "LGPL-2.1-or-later" },
-        { "name": "pcre2", "license": "BSD-3-Clause" }
+        {
+          "name": "libvpx",
+          "license": "BSD-3-Clause"
+        },
+        {
+          "name": "libaom",
+          "license": "BSD-2-Clause"
+        },
+        {
+          "name": "libsvtav1",
+          "license": "BSD-2-Clause"
+        },
+        {
+          "name": "libopus",
+          "license": "BSD-3-Clause"
+        }
       ]
     }
   },

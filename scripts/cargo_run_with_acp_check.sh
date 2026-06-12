@@ -2,11 +2,7 @@
 set -euo pipefail
 
 # Cargo runner receives: <compiled-binary> [args...]
-#
-# Purpose:
-# - Before launching `anica`, check whether `anica-acp` is missing or stale.
-# - If ACP-related sources changed, rebuild `anica-acp` automatically.
-# - Avoid manual `cargo build --bin anica-acp` during ACP debugging.
+# It prepares repo-local FFmpeg and keeps the ACP helper current before launch.
 if [[ $# -lt 1 ]]; then
   exit 1
 fi
@@ -15,231 +11,27 @@ exe_path="$1"
 shift || true
 ANICA_RESOLVED_RUNTIME_ROOT=""
 
-anica_gstreamer_opt_in_enabled() {
-  case "${ANICA_ENABLE_GSTREAMER:-}" in
-    1|true|TRUE|yes|YES|on|ON) return 0 ;;
-  esac
-  case "${ANICA_VIDEO_BACKEND:-}" in
-    gstreamer|GSTREAMER|gst|GST) return 0 ;;
-  esac
-  return 1
-}
-
-configure_curated_host_gstreamer_plugins() {
-  local plugin_dir="$1"
-  local registry_path="$2"
-
-  [[ -d "${plugin_dir}" ]] || return 1
-
-  export GST_PLUGIN_PATH="${plugin_dir}"
-  export GST_PLUGIN_PATH_1_0="${plugin_dir}"
-  export GST_PLUGIN_SYSTEM_PATH_1_0="${plugin_dir}"
-  export GST_PLUGIN_SYSTEM_PATH="${plugin_dir}"
-
-  if [[ -n "${registry_path}" ]]; then
-    mkdir -p "$(dirname "${registry_path}")" 2>/dev/null || true
-    export GST_REGISTRY_1_0="${registry_path}"
-    echo "[anica-runner] Using isolated host gstreamer registry: ${GST_REGISTRY_1_0}" >&2
-  fi
-
-  echo "[anica-runner] Using curated host GStreamer plugins: ${plugin_dir}" >&2
-}
-
-rewrite_macos_macho_links_to_runtime() {
-  local target_bin="$1"
-  local runtime_lib="$2"
-  local changed patched_count
-  changed=0
-  patched_count=0
-  if [[ ! -f "${target_bin}" || ! -d "${runtime_lib}" ]]; then
-    return 0
-  fi
-  if ! command -v otool >/dev/null 2>&1 || ! command -v install_name_tool >/dev/null 2>&1; then
-    return 0
-  fi
-  local kind
-  kind="$(file -b "${target_bin}" 2>/dev/null || true)"
-  if [[ "${kind}" != *"Mach-O"* ]]; then
-    return 0
-  fi
-
-  local dep base runtime_lib_abs
-  runtime_lib_abs="$(cd "${runtime_lib}" && pwd)"
-  while IFS= read -r dep; do
-    [[ -z "${dep}" ]] && continue
-    base="$(basename "${dep}")"
-    if [[ -f "${runtime_lib}/${base}" && "${dep}" == /opt/homebrew/* ]]; then
-      if install_name_tool -change "${dep}" "@rpath/${base}" "${target_bin}" 2>/dev/null; then
-        changed=1
-        patched_count=$((patched_count + 1))
-      fi
-    fi
-  done < <(otool -L "${target_bin}" 2>/dev/null | awk 'NR>1 {print $1}')
-
-  # Ensure runtime library folder is resolvable by @rpath.
-  if install_name_tool -add_rpath "${runtime_lib_abs}" "${target_bin}" 2>/dev/null; then
-    changed=1
-  fi
-
-  if [[ "${changed}" == "1" ]] && command -v codesign >/dev/null 2>&1; then
-    if ! codesign --force --sign - --timestamp=none "${target_bin}" >/dev/null 2>&1; then
-      echo "[anica-runner] WARNING: failed to re-sign patched binary: ${target_bin}" >&2
-      return 1
-    fi
-  fi
-
-  if [[ "${patched_count}" -gt 0 ]]; then
-    echo "[anica-runner] Patched ${patched_count} Homebrew dylib link(s): ${target_bin}" >&2
-  fi
-}
-
-macos_binary_has_homebrew_media_deps() {
-  local target_bin="$1"
-  if [[ ! -f "${target_bin}" ]] || ! command -v otool >/dev/null 2>&1; then
-    return 1
-  fi
-  otool -L "${target_bin}" 2>/dev/null \
-    | awk 'NR>1 {print $1}' \
-    | grep -Eq '^/opt/homebrew/(opt/(gstreamer|glib|gettext)|Cellar/(gstreamer|glib|gettext))/'
-}
-
-patch_macos_gstreamer_runtime_tree_once() {
-  local runtime_root="$1"
-  local runtime_bin="${runtime_root}/bin"
-  local runtime_lib="${runtime_root}/lib"
-  local plugin_root="${runtime_lib}/gstreamer-1.0"
-  local scanner="${runtime_root}/libexec/gstreamer-1.0/gst-plugin-scanner"
-  local stamp="${runtime_root}/.rpath_patch_v2.done"
-
-  if [[ ! -d "${runtime_lib}" ]]; then
-    return 0
-  fi
-  if [[ -f "${stamp}" ]]; then
-    return 0
-  fi
-  if ! command -v otool >/dev/null 2>&1 || ! command -v install_name_tool >/dev/null 2>&1; then
-    return 0
-  fi
-
-  is_macho_file() {
-    local f="$1"
-    local kind
-    kind="$(file -b "${f}" 2>/dev/null || true)"
-    [[ "${kind}" == *"Mach-O"* ]]
-  }
-
-  # Normalize dylib ids for top-level runtime libs.
-  local f dep base
-  while IFS= read -r f; do
-    is_macho_file "${f}" || continue
-    install_name_tool -id "@rpath/$(basename "${f}")" "${f}" 2>/dev/null || true
-  done < <(find "${runtime_lib}" -maxdepth 1 -type f -name "*.dylib" 2>/dev/null)
-
-  local -a patch_targets=()
-  while IFS= read -r f; do patch_targets+=("${f}"); done < <(find "${runtime_bin}" -maxdepth 1 -type f 2>/dev/null)
-  while IFS= read -r f; do patch_targets+=("${f}"); done < <(find "${runtime_lib}" -maxdepth 1 -type f -name "*.dylib" 2>/dev/null)
-  while IFS= read -r f; do patch_targets+=("${f}"); done < <(find "${plugin_root}" -type f -name "*.dylib" 2>/dev/null || true)
-  if [[ -x "${scanner}" ]]; then
-    patch_targets+=("${scanner}")
-  fi
-
-  local patched_any
-  patched_any=0
-
-  for f in "${patch_targets[@]}"; do
-    is_macho_file "${f}" || continue
-    while IFS= read -r dep; do
-      [[ -z "${dep}" ]] && continue
-      base="$(basename "${dep}")"
-      if [[ -f "${runtime_lib}/${base}" && "${dep}" != "@rpath/${base}" ]]; then
-        if install_name_tool -change "${dep}" "@rpath/${base}" "${f}" 2>/dev/null; then
-          patched_any=1
-        fi
-      fi
-    done < <(otool -L "${f}" 2>/dev/null | awk 'NR>1 {print $1}')
-  done
-
-  # Add rpaths so @rpath resolves to runtime lib.
-  while IFS= read -r f; do
-    is_macho_file "${f}" || continue
-    if install_name_tool -add_rpath "@executable_path/../lib" "${f}" 2>/dev/null; then
-      patched_any=1
-    fi
-    if install_name_tool -add_rpath "${runtime_lib}" "${f}" 2>/dev/null; then
-      patched_any=1
-    fi
-  done < <(find "${runtime_bin}" -maxdepth 1 -type f 2>/dev/null)
-
-  while IFS= read -r f; do
-    is_macho_file "${f}" || continue
-    if install_name_tool -add_rpath "@loader_path" "${f}" 2>/dev/null; then
-      patched_any=1
-    fi
-    if install_name_tool -add_rpath "${runtime_lib}" "${f}" 2>/dev/null; then
-      patched_any=1
-    fi
-  done < <(find "${runtime_lib}" -maxdepth 1 -type f -name "*.dylib" 2>/dev/null)
-
-  while IFS= read -r f; do
-    is_macho_file "${f}" || continue
-    if install_name_tool -add_rpath "@loader_path/.." "${f}" 2>/dev/null; then
-      patched_any=1
-    fi
-    if install_name_tool -add_rpath "${runtime_lib}" "${f}" 2>/dev/null; then
-      patched_any=1
-    fi
-  done < <(find "${plugin_root}" -type f -name "*.dylib" 2>/dev/null || true)
-
-  if [[ -x "${scanner}" ]] && is_macho_file "${scanner}"; then
-    if install_name_tool -add_rpath "@executable_path/../../lib" "${scanner}" 2>/dev/null; then
-      patched_any=1
-    fi
-    if install_name_tool -add_rpath "${runtime_lib}" "${scanner}" 2>/dev/null; then
-      patched_any=1
-    fi
-  fi
-
-  if [[ "${patched_any}" == "1" ]] && command -v codesign >/dev/null 2>&1; then
-    for f in "${patch_targets[@]}"; do
-      is_macho_file "${f}" || continue
-      codesign --force --sign - --timestamp=none "${f}" >/dev/null 2>&1 || true
-    done
-  fi
-
-  touch "${stamp}" 2>/dev/null || true
-}
-
 resolve_runtime_tool_root() {
-  local tool_dir="$1"
-  local binary_name="$2"
-  local preferred_version="${3:-}"
-  local candidate
-
-  # Current runtime layout is canonical: current/<os>/<tool>/bin.
-  if [[ -x "${tool_dir}/bin/${binary_name}" ]]; then
-    printf "%s" "${tool_dir}"
+  local root="$1" binary="$2" version="${3:-}" candidate
+  if [[ -x "${root}/bin/${binary}" ]]; then
+    printf "%s" "${root}"
     return 0
   fi
-
-  # Backward-compatible fallback for older local trees that still contain
-  # current/<os>/<tool>/<version>/bin.
-  if [[ -n "${preferred_version}" && -x "${tool_dir}/${preferred_version}/bin/${binary_name}" ]]; then
-    printf "%s" "${tool_dir}/${preferred_version}"
+  if [[ -n "${version}" && -x "${root}/${version}/bin/${binary}" ]]; then
+    printf "%s" "${root}/${version}"
     return 0
   fi
-
   while IFS= read -r candidate; do
-    if [[ -x "${candidate}/bin/${binary_name}" ]]; then
+    if [[ -x "${candidate}/bin/${binary}" ]]; then
       printf "%s" "${candidate}"
       return 0
     fi
-  done < <(find "${tool_dir}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
-
+  done < <(find "${root}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
   return 1
 }
 
 setup_repo_media_runtime() {
-  local script_dir repo_root os arch platform runtime_root
+  local script_dir repo_root os arch platform runtime_root manifest_path ffmpeg_version
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   repo_root="$(cd "${script_dir}/.." && pwd)"
   os="$(uname -s)"
@@ -251,193 +43,52 @@ setup_repo_media_runtime() {
     MINGW*|MSYS*|CYGWIN*) os="windows" ;;
     *) os="other" ;;
   esac
-
   case "$arch" in
     x86_64|amd64) arch="x86_64" ;;
     arm64|aarch64) arch="aarch64" ;;
   esac
 
   platform="${os}-${arch}"
-  runtime_root=""
-  # Manifest versions are fallback hints only; current/<os>/<tool> is canonical.
-  local manifest_path="${repo_root}/tools/media_tools_manifest.json"
-  local ffmpeg_version=""
-  local gst_version=""
+  manifest_path="${repo_root}/tools/media_tools_manifest.json"
+  ffmpeg_version=""
   if command -v jq >/dev/null 2>&1 && [[ -f "${manifest_path}" ]]; then
     ffmpeg_version="$(jq -r ".common.ffmpeg.version // empty" "${manifest_path}" 2>/dev/null || true)"
-    gst_version="$(jq -r ".common.gstreamer.version // empty" "${manifest_path}" 2>/dev/null || true)"
-  fi
-  # Use current/<os>/ as the canonical active runtime path.
-  local runtime_root="${repo_root}/tools/runtime/current/${os}"
-  if [[ ! -d "${runtime_root}" ]]; then
-    return 0
   fi
 
-  local ffmpeg_exe="ffmpeg"
-  local ffprobe_exe="ffprobe"
-  local gst_launch_exe="gst-launch-1.0"
+  runtime_root="${repo_root}/tools/runtime/current/${os}"
+  [[ -d "${runtime_root}" ]] || return 0
+
+  local ffmpeg_exe="ffmpeg" ffprobe_exe="ffprobe"
   if [[ "${os}" == "windows" ]]; then
     ffmpeg_exe="ffmpeg.exe"
     ffprobe_exe="ffprobe.exe"
-    gst_launch_exe="gst-launch-1.0.exe"
   fi
 
-  local ffmpeg_root gst_root gstreamer_enabled
-  gstreamer_enabled=0
+  local ffmpeg_root ffmpeg_bin ffprobe_bin ffmpeg_lib
   ffmpeg_root="$(resolve_runtime_tool_root "${runtime_root}/ffmpeg" "${ffmpeg_exe}" "${ffmpeg_version}" || true)"
-  if anica_gstreamer_opt_in_enabled; then
-    gstreamer_enabled=1
-    gst_root="$(resolve_runtime_tool_root "${runtime_root}/gstreamer" "${gst_launch_exe}" "${gst_version}" || true)"
-  else
-    gst_root=""
-  fi
-  if [[ -z "${ffmpeg_root}" && -z "${gst_root}" ]]; then
-    return 0
-  fi
-  if [[ -z "${runtime_root}" ]]; then
-    return 0
-  fi
+  [[ -n "${ffmpeg_root}" ]] || return 0
+
   ANICA_RESOLVED_RUNTIME_ROOT="${runtime_root}"
+  export ANICA_MEDIA_RUNTIME_STRICT="${ANICA_MEDIA_RUNTIME_STRICT:-1}"
+  export ANICA_ALLOW_SYSTEM_MEDIA="${ANICA_ALLOW_SYSTEM_MEDIA:-0}"
+  export ANICA_TOOLS_HOME="${runtime_root}"
 
-  if [[ -z "${ANICA_MEDIA_RUNTIME_STRICT:-}" ]]; then
-    export ANICA_MEDIA_RUNTIME_STRICT=1
-  fi
-  if [[ -z "${ANICA_ALLOW_SYSTEM_MEDIA:-}" ]]; then
-    export ANICA_ALLOW_SYSTEM_MEDIA=0
-  fi
-
-  local ffmpeg_bin ffprobe_bin ffmpeg_lib gst_bin gst_lib gst_plugins gst_typelib gst_launch_bin
-  local host_gst_launch host_linked_gstreamer
-  ffmpeg_bin=""
-  ffprobe_bin=""
-  ffmpeg_lib=""
-  if [[ -n "${ffmpeg_root}" ]]; then
-    ffmpeg_bin="${ffmpeg_root}/bin/${ffmpeg_exe}"
-    ffprobe_bin="${ffmpeg_root}/bin/${ffprobe_exe}"
-    ffmpeg_lib="${ffmpeg_root}/lib"
-  fi
-  gst_bin=""
-  gst_lib=""
-  gst_plugins=""
-  gst_typelib=""
-  gst_launch_bin=""
-  gst_scanner=""
-  if [[ -n "${gst_root}" ]]; then
-    gst_bin="${gst_root}/bin"
-    gst_lib="${gst_root}/lib"
-    gst_plugins="${gst_lib}/gstreamer-1.0"
-    gst_typelib="${gst_lib}/girepository-1.0"
-    gst_launch_bin="${gst_bin}/${gst_launch_exe}"
-    gst_scanner="${gst_root}/libexec/gstreamer-1.0/gst-plugin-scanner"
-  fi
-  host_gst_launch=""
-  if [[ "${gstreamer_enabled}" == "1" ]]; then
-    host_gst_launch="$(command -v gst-launch-1.0 2>/dev/null || true)"
-  fi
-  host_linked_gstreamer=0
-
-  # GStreamer is opt-in while FFmpeg preview is the default backend.
-  if [[ "${gstreamer_enabled}" == "1" && -n "${host_gst_launch}" && "${ANICA_FORCE_HOST_GSTREAMER:-0}" == "1" ]]; then
-    host_linked_gstreamer=1
-  fi
-
-  if [[ "${gstreamer_enabled}" == "1" && "${os}" == "macos" ]]; then
-    # setup_media_tools already patches the runtime tree. Re-running the full patch
-    # on every launch is expensive and can crash older macOS bash builds.
-    if [[ -n "${gst_root}" && "${ANICA_FORCE_GSTREAMER_RUNTIME_RPATH_PATCH:-0}" == "1" ]]; then
-      patch_macos_gstreamer_runtime_tree_once "${gst_root}"
-    elif [[ -n "${gst_root}" ]]; then
-      touch "${gst_root}/.rpath_patch_v2.done" 2>/dev/null || true
-    fi
-    # Preemptively rewrite Mach-O links to runtime libs to avoid host/runtime mixing.
-    # Do not rewrite the main app binary by default on macOS; mutating target/debug/anica can
-    # invalidate code signatures and cause SIGKILL (Code Signature Invalid).
-    if [[ "${ANICA_PATCH_MAIN_BINARY_LINKS:-0}" == "1" ]]; then
-      rewrite_macos_macho_links_to_runtime "${exe_path}" "${gst_lib}" || true
-    fi
-    if [[ -n "${gst_root}" && "${ANICA_PATCH_VENDORED_GSTREAMER_LINKS:-0}" == "1" ]]; then
-      # Development escape hatch only: mutating Mach-O runtime files on every
-      # launch can invalidate macOS code signatures and make the scanner die.
-      rewrite_macos_macho_links_to_runtime "${gst_bin}/gst-launch-1.0" "${gst_lib}" || true
-      rewrite_macos_macho_links_to_runtime "${gst_bin}/gst-inspect-1.0" "${gst_lib}" || true
-      rewrite_macos_macho_links_to_runtime "${gst_bin}/gst-typefind-1.0" "${gst_lib}" || true
-      rewrite_macos_macho_links_to_runtime "${gst_scanner}" "${gst_lib}" || true
-    fi
-  fi
-
-  # REMOVED: The built anica binary may link to Homebrew, but the vendored
-  # GStreamer runtime is now patched and isolated. Always use vendored.
-  # Previous mixed-library crash protection disabled per user preference.
-
+  ffmpeg_bin="${ffmpeg_root}/bin/${ffmpeg_exe}"
+  ffprobe_bin="${ffmpeg_root}/bin/${ffprobe_exe}"
+  ffmpeg_lib="${ffmpeg_root}/lib"
   if [[ -x "${ffmpeg_bin}" ]]; then
     export ANICA_FFMPEG_PATH="${ffmpeg_bin}"
     export PATH="$(dirname "${ffmpeg_bin}"):${PATH}"
     if [[ -x "${ffprobe_bin}" ]]; then
+      export ANICA_FFPROBE_PATH="${ffprobe_bin}"
       export PATH="$(dirname "${ffprobe_bin}"):${PATH}"
     fi
     echo "[anica-runner] Using vendored ffmpeg runtime: ${ffmpeg_bin}" >&2
   fi
-
-  if [[ "${gstreamer_enabled}" != "1" ]]; then
-    unset ANICA_GSTREAMER_PATH
-    unset GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_SYSTEM_PATH
-    unset GST_PLUGIN_SCANNER GST_PLUGIN_SCANNER_1_0 GI_TYPELIB_PATH GST_REGISTRY_1_0
-    echo "[anica-runner] GStreamer runtime disabled by default; set ANICA_ENABLE_GSTREAMER=1 to opt in." >&2
-  elif [[ "${host_linked_gstreamer}" == "1" && -n "${host_gst_launch}" ]]; then
-    export ANICA_GSTREAMER_PATH="${host_gst_launch}"
-    if [[ "${ANICA_FORCE_VENDORED_GSTREAMER:-0}" != "1" ]]; then
-      echo "[anica-runner] Using host GStreamer (preferred): ${host_gst_launch}" >&2
-    else
-      echo "[anica-runner] Detected host-linked GStreamer in anica binary; using host GStreamer: ${host_gst_launch}" >&2
-    fi
-    # Ensure no vendored runtime vars leak into a host-linked process.
-    unset GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_SYSTEM_PATH
-    unset GST_PLUGIN_SCANNER GST_PLUGIN_SCANNER_1_0 GI_TYPELIB_PATH GST_REGISTRY_1_0
-    if [[ "${os}" == "macos" ]]; then
-      configure_curated_host_gstreamer_plugins \
-        "${ANICA_HOST_GSTREAMER_PLUGIN_DIR:-}" \
-        "${ANICA_HOST_GSTREAMER_REGISTRY:-}" || true
-    fi
-  else
-    if [[ -d "${gst_bin}" ]]; then
-      export PATH="${gst_bin}:${PATH}"
-    fi
-    if [[ -x "${gst_launch_bin}" ]]; then
-      export ANICA_GSTREAMER_PATH="${gst_launch_bin}"
-      echo "[anica-runner] Using vendored gstreamer runtime: ${gst_launch_bin}" >&2
-    fi
-    if [[ -d "${gst_plugins}" ]]; then
-      # Runtime-isolated plugin paths (do not append host paths).
-      export GST_PLUGIN_PATH="${gst_plugins}"
-      export GST_PLUGIN_PATH_1_0="${gst_plugins}"
-      export GST_PLUGIN_SYSTEM_PATH_1_0="${gst_plugins}"
-      export GST_PLUGIN_SYSTEM_PATH="${gst_plugins}"
-    fi
-    if [[ -x "${gst_scanner}" ]]; then
-      export GST_PLUGIN_SCANNER="${gst_scanner}"
-      export GST_PLUGIN_SCANNER_1_0="${gst_scanner}"
-    fi
-    if [[ -d "${gst_typelib}" ]]; then
-      export GI_TYPELIB_PATH="${gst_typelib}${GI_TYPELIB_PATH:+:${GI_TYPELIB_PATH}}"
-    fi
-    if [[ -d "${runtime_root}/gstreamer" ]]; then
-      mkdir -p "${runtime_root}/gstreamer/cache" 2>/dev/null || true
-      export GST_REGISTRY_1_0="${runtime_root}/gstreamer/cache/registry.bin"
-      echo "[anica-runner] Using isolated gstreamer registry: ${GST_REGISTRY_1_0}" >&2
-    fi
-  fi
-  if [[ "${gstreamer_enabled}" == "1" && "${host_linked_gstreamer}" != "1" && -d "${gst_lib}" ]]; then
-    if [[ "$os" == "linux" ]]; then
-      export LD_LIBRARY_PATH="${gst_lib}${ffmpeg_lib:+:${ffmpeg_lib}}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-    elif [[ "$os" == "macos" && "${ANICA_ENABLE_DYLD_RUNTIME_PATH:-0}" == "1" ]]; then
-      # macOS default: keep DYLD_LIBRARY_PATH untouched to avoid overriding
-      # system ImageIO/CoreText dependencies (can cause SIGBUS in emoji rasterization).
-      # Set ANICA_ENABLE_DYLD_RUNTIME_PATH=1 only for low-level runtime debugging.
-      export DYLD_LIBRARY_PATH="${gst_lib}${ffmpeg_lib:+:${ffmpeg_lib}}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
-    elif [[ "$os" == "macos" ]]; then
-      # Safer than DYLD_LIBRARY_PATH for app process, but still lets plugins dlopen bare lib names.
-      export DYLD_FALLBACK_LIBRARY_PATH="${gst_lib}${ffmpeg_lib:+:${ffmpeg_lib}}${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}"
-    fi
+  if [[ "${os}" == "linux" && -d "${ffmpeg_lib}" ]]; then
+    export LD_LIBRARY_PATH="${ffmpeg_lib}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  elif [[ "${os}" == "macos" && -d "${ffmpeg_lib}" ]]; then
+    export DYLD_FALLBACK_LIBRARY_PATH="${ffmpeg_lib}${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}"
   fi
 }
 

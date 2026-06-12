@@ -90,7 +90,7 @@ pub(crate) fn scene_encoder_args(profile: SceneRenderProfile) -> Vec<String> {
 }
 
 fn prores_encoder_args() -> Vec<String> {
-    // Keep scene output on an LGPL-safe, GStreamer-friendly path.
+    // Keep scene output on an LGPL-safe FFmpeg-friendly path.
     // The app's curated preview runtime does not ship libav, so mp4v/mpeg4
     // decodes poorly there. ProRes MOV is larger but avoids GPL encoders.
     // Use ProRes HQ instead of Proxy: flat anime colors plus fine strokes show

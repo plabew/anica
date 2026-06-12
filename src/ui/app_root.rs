@@ -837,14 +837,9 @@ impl AppRoot {
     }
 
     fn render_media_dependency_modal(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let (show_modal, status, gstreamer_available, gstreamer_path) = {
+        let (show_modal, status) = {
             let gs = self.global.read(cx);
-            (
-                gs.show_media_dependency_modal,
-                gs.media_dependency.clone(),
-                gs.gstreamer_available,
-                gs.gstreamer_path.clone(),
-            )
+            (gs.show_media_dependency_modal, gs.media_dependency.clone())
         };
         if !show_modal || status.all_available() {
             return div();
@@ -937,12 +932,6 @@ impl AppRoot {
         } else {
             format!("ffprobe missing (using `{}`)", status.ffprobe_command)
         };
-        let gstreamer_line = if gstreamer_available {
-            format!("optional gstreamer detected (using `{}`)", gstreamer_path)
-        } else {
-            format!("optional gstreamer missing (using `{}`)", gstreamer_path)
-        };
-
         let global_for_close = self.global.clone();
         let global_for_recheck = self.global.clone();
         div()
@@ -988,7 +977,7 @@ impl AppRoot {
                             .text_xs()
                             .text_color(white().opacity(0.6))
                             .child(
-                                "Preview playback, export, proxies, thumbnails, and ACP deep media analysis now depend on FFmpeg/FFprobe. GStreamer is optional.",
+                                "Preview playback, export, proxies, thumbnails, and ACP deep media analysis require FFmpeg/FFprobe.",
                             ),
                     )
                     .child(
@@ -1021,12 +1010,6 @@ impl AppRoot {
                                         rgba(0xf87171eb)
                                     })
                                     .child(ffprobe_line),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(white().opacity(0.62))
-                                    .child(gstreamer_line),
                             ),
                     )
                     .child(install_rows)
@@ -1077,7 +1060,7 @@ impl AppRoot {
                                                 if next_status.all_available() {
                                                     gs.hide_media_dependency_modal();
                                                     gs.ui_notice = Some(
-                                                        "FFmpeg/FFprobe detected. GStreamer remains optional."
+                                                        "FFmpeg/FFprobe detected."
                                                             .to_string(),
                                                     );
                                                 } else {

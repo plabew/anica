@@ -91,43 +91,9 @@ fn is_image_ext(path: &str) -> bool {
         || p.ends_with(".bmp")
 }
 
-fn is_audio_preview_cache_ext(path: &str) -> bool {
-    let p = path.to_lowercase();
-    p.ends_with(".mp3")
-        || p.ends_with(".m4a")
-        || p.ends_with(".aac")
-        || p.ends_with(".opus")
-        || p.ends_with(".flac")
-        || p.ends_with(".ogg")
-}
-
-fn gstreamer_preview_opt_in_enabled() -> bool {
-    let env_truthy = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .map(|raw| {
-                let value = raw.trim();
-                value == "1"
-                    || value.eq_ignore_ascii_case("true")
-                    || value.eq_ignore_ascii_case("yes")
-                    || value.eq_ignore_ascii_case("on")
-            })
-            .unwrap_or(false)
-    };
-
-    env_truthy("ANICA_ENABLE_GSTREAMER")
-        || std::env::var("ANICA_VIDEO_BACKEND")
-            .ok()
-            .map(|raw| {
-                let value = raw.trim();
-                value.eq_ignore_ascii_case("gstreamer") || value.eq_ignore_ascii_case("gst")
-            })
-            .unwrap_or(false)
-}
-
-fn should_use_audio_preview_cache(path: &str) -> bool {
-    // Default audio preview avoids GStreamer entirely by extracting WAV with FFmpeg and playing via Rodio.
-    is_audio_preview_cache_ext(path) || !gstreamer_preview_opt_in_enabled()
+fn should_use_audio_preview_cache(_path: &str) -> bool {
+    // Audio preview always uses FFmpeg-extracted WAV plus Rodio.
+    true
 }
 
 fn is_motionloom_scene_generated_path(path: &str) -> bool {
@@ -744,8 +710,7 @@ impl VideoPreview {
         let tmp_path = output_path.with_extension(format!("wav.tmp.{}", std::process::id()));
         let _ = std::fs::remove_file(&tmp_path);
 
-        // Decode through FFmpeg into a simple PCM WAV so preview playback does not depend
-        // on optional GStreamer audio decoder plugins such as MP3/mpg123.
+        // Decode through FFmpeg into a simple PCM WAV for consistent preview playback.
         let output_result = Command::new(ffmpeg_path)
             .arg("-y")
             .arg("-hide_banner")
@@ -2219,8 +2184,7 @@ impl VideoPreview {
             .map_err(|err| format!("failed to decode audio preview cache: {err}"))?;
         let sink = Sink::try_new(&handle).map_err(|err| format!("failed to create sink: {err}"))?;
 
-        // Rodio is used only for audio-preview cache playback so audio-only imports do not depend
-        // on the host GStreamer audio sink, which can fail state changes on macOS.
+        // Rodio is used only for audio-preview cache playback so audio-only imports stay lightweight.
         sink.append(source.skip_duration(src));
         sink.pause();
         sink.set_volume(gain_linear.clamp(0.0, 4.0) as f32);
@@ -3479,7 +3443,7 @@ impl VideoPreview {
                     );
                     self.mac_video_effect_keys.insert(id, effect_key);
                 }
-                // Effects are renderer-driven and no longer rely on GStreamer videobalance/alpha.
+                // Effects are renderer-driven in the renderer layer.
             }
         }
 

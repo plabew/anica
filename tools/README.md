@@ -1,34 +1,32 @@
 # Runtime Drop Zone
 
-Place vendored dynamic media runtime files here.
+Place vendored FFmpeg/FFprobe runtime files here.
 
 Runtime bootstrap in `scripts/setup_media_tools.sh` and `scripts/setup_media_tools.ps1`
-now syncs **physical copies** into `tools/runtime/current/...` (not host-path symlinks/junctions).
+syncs physical copies into `tools/runtime/current/...` for reproducible local runs.
 
 Use one of:
 
 - `tools/runtime/<os>-<arch>/...`
 - `tools/runtime/current/...`
 
-See `docs/MEDIA_RUNTIME_DROPIN.md` for full structure and environment wiring.
+See `docs/MEDIA_RUNTIME_DROPIN.md` for the current structure and environment wiring.
 
 ## License And Compliance Notes
 
 If you distribute runtime binaries from this folder:
 
-- FFmpeg should be built as `LGPL-only` (for example: `--disable-gpl --disable-nonfree`).
-- The LGPL runtime may still enable `libvpx`, `libaom`, `libsvtav1`, `libmp3lame`, and `libopus`; do not enable GPL/nonfree codecs such as `libx264`.
-- GStreamer runtime distribution must keep its original license notices.
-- Include third-party notices and source-obtain information for both FFmpeg and GStreamer.
+- FFmpeg should be built as `LGPL-only`, for example with `--disable-gpl --disable-nonfree`.
+- LGPL builds may still enable permissive codec libraries such as `libvpx`, `libaom`, `libsvtav1`, and `libopus`.
+- Include third-party notices and source-obtain information for the exact FFmpeg build you ship.
 
 This folder is only a drop zone. Compliance obligations apply when binaries are redistributed.
 
 ## Bootstrap Coverage
 
-- macOS/Linux: `scripts/setup_media_tools.sh` supports `local-lgpl` bootstrap into runtime folders with Anica's extended LGPL FFmpeg encoder set.
-- Windows: `scripts/setup_media_tools.ps1` supports `local-lgpl` runtime sync, with strict FFmpeg GPL/nonfree and required-encoder checks.
+- macOS/Linux: `scripts/setup_media_tools.sh` syncs or downloads the FFmpeg runtime.
+- Windows: `scripts/setup_media_tools.ps1` syncs or downloads the FFmpeg runtime.
 
 ## Runtime Form
 
-- GStreamer runtime sync is physical-copy based for reproducible local runtime folders.
-- FFmpeg local-lgpl runtime is installed under versioned folders and linked via `current`.
+FFmpeg local runtime is installed under versioned folders and mirrored via `current`.

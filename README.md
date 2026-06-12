@@ -7,7 +7,7 @@
 
 **An agentic-first video editor where AI is your collaborator, not just a tool.**
 
-Built with Rust, WGPU, GPUI, GStreamer, and FFmpeg for native GPU-accelerated workflows. Talk to your AI agent in natural language - it can inspect your timeline, suggest edits, and run ACP-powered (Agent Client Protocol) workflows from inside the editor.
+Built with Rust, WGPU, GPUI, FFmpeg for native GPU-accelerated workflows. Talk to your AI agent in natural language - it can inspect your timeline, suggest edits, and run ACP-powered (Agent Client Protocol) workflows from inside the editor.
 
 > **Status:** Alpha - usable for early adopters. APIs, workflows, and project formats may change.
 
@@ -55,7 +55,7 @@ Instead of jumping between timeline tools, subtitle utilities, and export dialog
 
 - **Smart Export Workflows** - Trigger export flows from the editor or through agent actions.
 - **Project-Level Analysis** - Inspect clip lengths, media types, resolution distribution, and related metadata.
-- **Native Preview + Runtime Tooling** - GStreamer powers playback paths; FFmpeg is used for export and analysis.
+- **Native Preview + Runtime Tooling** - FFmpeg powers preview, export, proxies, thumbnails, and analysis.
 
 ---
 
@@ -130,7 +130,7 @@ MotionLoom provides the foundation for Anica's long-term goal of natural languag
 | Language | Rust |
 | UI Framework | GPUI |
 | GPU Rendering | WGPU |
-| Media Runtime | GStreamer + FFmpeg |
+| Media Runtime | FFmpeg/FFprobe |
 | Intelligence | ACP + LLM + generative image/video models |
 | Speech / Subtitles | Local ONNX Whisper model packs |
 
@@ -156,7 +156,7 @@ cargo build --release --bins
 ### Build Requirements
 
 - Rust `1.90.0` (pinned in [`rust-toolchain.toml`](rust-toolchain.toml))
-- GStreamer runtime and development libraries
+- FFmpeg and FFprobe
 - On macOS, first `cargo run` attempts to bootstrap the local FFmpeg runtime if missing
 - macOS FFmpeg bootstrap still requires Homebrew for build dependencies
 - macOS build host: Xcode command-line tools
@@ -186,7 +186,7 @@ If this is your first time running Anica on macOS, install the required host too
 ```bash
 xcode-select -p >/dev/null 2>&1 || xcode-select --install
 command -v brew >/dev/null 2>&1 || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install git gstreamer
+brew install git ffmpeg
 git clone https://github.com/LOVELYZOMBIEYHO/anica.git
 cd anica
 cargo run
@@ -196,17 +196,17 @@ If `cargo` is not installed yet, install Rust first with `rustup` as described i
 
 On macOS, `cargo run` attempts to bootstrap FFmpeg locally when needed.
 
-### Install GStreamer (macOS)
+### Install FFmpeg (macOS)
 
 ```bash
-brew install gstreamer
+brew install ffmpeg
 ```
 
-Homebrew now bundles the common `gst-*` plugin sets inside the `gstreamer` formula on macOS, so separate `gst-plugins-base`, `gst-plugins-good`, and `gst-editing-services` installs are not required there.
+Homebrew provides FFmpeg and FFprobe in the `ffmpeg` formula.
 
 ### Runtime Notes
 
-- Current macOS builds expect host/Homebrew GStreamer.
+- Current macOS builds expect FFmpeg/FFprobe.
 - On macOS, Anica attempts to bootstrap FFmpeg on first run if the runtime is missing.
 - The startup bootstrap can provision FFmpeg locally when required.
 
@@ -240,7 +240,7 @@ Alpha notice: use at your own risk. Validate media, plugin, and third-party depe
 +-------------------------------------------------------+
 |             Timeline + Project State Engine           |
 +-------------------------------------------------------+
-|     GStreamer Preview | FFmpeg Export / Analysis      |
+|     FFmpeg Preview | FFmpeg Export / Analysis      |
 +-------------------------------------------------------+
 |            WGPU / GPU Rendering and Effects           |
 +-------------------------------------------------------+
@@ -258,7 +258,7 @@ src/
   app/        Application bootstrap, window management
 
 crates/
-  video-engine/             GStreamer playback and frame decoding
+  video-engine/             FFmpeg playback and frame decoding
   gpui-video-renderer/      GPUI rendering bridge for video preview
   motionloom/               Compositing and world DSL runtime
   gpu-effect-export-engine/ GPU-effect export helpers

@@ -28,10 +28,9 @@ Crate boundary rule:
 - If a missing feature blocks progress, work around it in higher layers (`src/`, `crates/motionloom/`, or `crates/gpui-video-renderer/`) and discuss with maintainer before considering crate changes.
 
 ## Mandatory preview rendering policy
-- macOS preview GStreamer pipeline must use `NV12`.
-- On macOS, video preview output must render via `paint_surface` with `NV12`.
-- On Windows and Linux, preview pipeline/output must use `BGRA` and render via `paint_image`.
-- Image media rendered as video content must use `BGRA` (do not route image rendering through `NV12` surface path).
+- Video preview must use the FFmpeg backend.
+- Dynamic BGRA video frames should use `paint_bgra_frame_anica` when available.
+- Image media rendered as video content must use `BGRA`.
 
 ## ACP policy separation
 - This file defines coding/development behavior.

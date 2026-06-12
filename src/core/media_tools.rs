@@ -91,30 +91,6 @@ impl MediaDependencyStatus {
     }
 }
 
-pub fn gstreamer_runtime_opt_in_enabled() -> bool {
-    let env_truthy = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .map(|raw| {
-                let value = raw.trim();
-                value == "1"
-                    || value.eq_ignore_ascii_case("true")
-                    || value.eq_ignore_ascii_case("yes")
-                    || value.eq_ignore_ascii_case("on")
-            })
-            .unwrap_or(false)
-    };
-
-    env_truthy("ANICA_ENABLE_GSTREAMER")
-        || std::env::var("ANICA_VIDEO_BACKEND")
-            .ok()
-            .map(|raw| {
-                let value = raw.trim();
-                value.eq_ignore_ascii_case("gstreamer") || value.eq_ignore_ascii_case("gst")
-            })
-            .unwrap_or(false)
-}
-
 #[derive(Debug, Error)]
 pub enum MediaBootstrapError {
     #[error("Failed to launch bootstrap script: {source}")]
@@ -149,10 +125,6 @@ fn bundle_tool_candidate(tool_name: &str) -> Option<String> {
             .as_ref()
             .map(|root| root.join("ffmpeg").join("bin").join(tool_name))
             .unwrap_or_default(),
-        runtime_root
-            .as_ref()
-            .map(|root| root.join("gstreamer").join("bin").join(tool_name))
-            .unwrap_or_default(),
     ];
     for candidate in candidates {
         if candidate.is_file() {
@@ -167,30 +139,6 @@ fn ffmpeg_binary_name() -> &'static str {
         "ffmpeg.exe"
     } else {
         "ffmpeg"
-    }
-}
-
-fn gst_launch_binary_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "gst-launch-1.0.exe"
-    } else {
-        "gst-launch-1.0"
-    }
-}
-
-fn common_host_gstreamer_candidates() -> &'static [&'static str] {
-    #[cfg(target_os = "macos")]
-    {
-        // Homebrew paths removed per user preference: always use vendored runtime.
-        &[]
-    }
-    #[cfg(target_os = "linux")]
-    {
-        &["/usr/bin/gst-launch-1.0", "/usr/local/bin/gst-launch-1.0"]
-    }
-    #[cfg(target_os = "windows")]
-    {
-        &[]
     }
 }
 
@@ -245,37 +193,6 @@ fn local_ffmpeg_tool_candidate(root: &PathBuf) -> Option<String> {
     None
 }
 
-fn local_gstreamer_tool_candidate(root: &PathBuf) -> Option<String> {
-    let direct = root
-        .join("gstreamer")
-        .join("bin")
-        .join(gst_launch_binary_name());
-    if direct.is_file() {
-        return Some(direct.to_string_lossy().to_string());
-    }
-    let current = root
-        .join("gstreamer")
-        .join("current")
-        .join("bin")
-        .join(gst_launch_binary_name());
-    if current.is_file() {
-        return Some(current.to_string_lossy().to_string());
-    }
-    // Check versioned paths (e.g., gstreamer/1.28.1/bin/)
-    let gst_dir = root.join("gstreamer");
-    if gst_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&gst_dir) {
-            for entry in entries.flatten() {
-                let versioned_bin = entry.path().join("bin").join(gst_launch_binary_name());
-                if versioned_bin.is_file() {
-                    return Some(versioned_bin.to_string_lossy().to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
 fn workspace_ffmpeg_tool_candidate() -> Option<String> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
@@ -302,45 +219,6 @@ fn workspace_ffmpeg_tool_candidate() -> Option<String> {
             if let Ok(entries) = std::fs::read_dir(&ffmpeg_dir) {
                 for entry in entries.flatten() {
                     let versioned_bin = entry.path().join("bin").join(ffmpeg_binary_name());
-                    if versioned_bin.is_file() {
-                        return Some(versioned_bin.to_string_lossy().to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn workspace_gstreamer_tool_candidate() -> Option<String> {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let platform = format!("{os}-{arch}");
-    let runtime_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tools")
-        .join("runtime");
-    let roots = [
-        runtime_root.join("current").join(&platform),
-        runtime_root.join("current").join(os),
-        runtime_root.join("current"),
-        runtime_root.join(&platform),
-        runtime_root.join(os),
-    ];
-    for root in roots {
-        // Check unversioned path first
-        let direct = root
-            .join("gstreamer")
-            .join("bin")
-            .join(gst_launch_binary_name());
-        if direct.is_file() {
-            return Some(direct.to_string_lossy().to_string());
-        }
-        // Check versioned paths (e.g., gstreamer/1.28.1/bin/)
-        let gst_dir = root.join("gstreamer");
-        if gst_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&gst_dir) {
-                for entry in entries.flatten() {
-                    let versioned_bin = entry.path().join("bin").join(gst_launch_binary_name());
                     if versioned_bin.is_file() {
                         return Some(versioned_bin.to_string_lossy().to_string());
                     }
@@ -408,27 +286,15 @@ pub fn configure_bundled_media_runtime_environment() {
             "ffprobe"
         });
     let ffmpeg_lib = ffmpeg_root.join("lib");
-    let gstreamer_enabled = gstreamer_runtime_opt_in_enabled();
-    let gst_bin = runtime_root.join("gstreamer").join("bin");
-    let gst_lib = runtime_root.join("gstreamer").join("lib");
-    let gst_plugins = gst_lib.join("gstreamer-1.0");
-    let gst_typelib = gst_lib.join("girepository-1.0");
-    let gst_scanner = runtime_root
-        .join("gstreamer")
-        .join("libexec")
-        .join("gstreamer-1.0")
-        .join("gst-plugin-scanner");
 
     set_env_if_missing("ANICA_MEDIA_RUNTIME_STRICT", "1");
     set_env_if_missing("ANICA_ALLOW_SYSTEM_MEDIA", "0");
     // Keep ANICA_TOOLS_HOME aligned with the runtime root layout used elsewhere.
-    // SAFETY: Startup-only env mutation before media initialization.
     unsafe {
         std::env::set_var("ANICA_TOOLS_HOME", &runtime_root);
     }
 
     if ffmpeg_bin.is_file() {
-        // SAFETY: Startup-only env mutation before media initialization.
         unsafe {
             std::env::set_var("ANICA_FFMPEG_PATH", &ffmpeg_bin);
             if ffprobe_bin.is_file() {
@@ -447,61 +313,8 @@ pub fn configure_bundled_media_runtime_environment() {
         }
     }
 
-    if gstreamer_enabled {
-        // GStreamer remains available as an explicit fallback, but default startup avoids touching it.
-        if gst_bin.is_dir() {
-            prepend_env_path_var("PATH", gst_bin.clone());
-        }
-        let gst_launch = gst_bin.join(gst_launch_binary_name());
-        if gst_launch.is_file() {
-            // SAFETY: Startup-only env mutation before media initialization.
-            unsafe {
-                std::env::set_var("ANICA_GSTREAMER_PATH", &gst_launch);
-            }
-        }
-
-        if gst_plugins.is_dir() {
-            let plugin_path = gst_plugins.to_string_lossy().to_string();
-            for name in [
-                "GST_PLUGIN_PATH",
-                "GST_PLUGIN_PATH_1_0",
-                "GST_PLUGIN_SYSTEM_PATH_1_0",
-                "GST_PLUGIN_SYSTEM_PATH",
-            ] {
-                // SAFETY: Startup-only env mutation before media initialization.
-                unsafe {
-                    std::env::set_var(name, &plugin_path);
-                }
-            }
-        }
-
-        if gst_scanner.is_file() {
-            // SAFETY: Startup-only env mutation before media initialization.
-            unsafe {
-                std::env::set_var("GST_PLUGIN_SCANNER", &gst_scanner);
-                std::env::set_var("GST_PLUGIN_SCANNER_1_0", &gst_scanner);
-            }
-        }
-
-        if gst_typelib.is_dir() {
-            prepend_env_path_var("GI_TYPELIB_PATH", gst_typelib);
-        }
-
-        if runtime_root.join("gstreamer").is_dir() {
-            let cache_dir = runtime_root.join("gstreamer").join("cache");
-            let _ = std::fs::create_dir_all(&cache_dir);
-            // SAFETY: Startup-only env mutation before media initialization.
-            unsafe {
-                std::env::set_var("GST_REGISTRY_1_0", cache_dir.join("registry.bin"));
-            }
-        }
-    }
-
     if cfg!(target_os = "macos") {
         let mut dyld_values = Vec::new();
-        if gstreamer_enabled && gst_lib.is_dir() {
-            dyld_values.push(gst_lib.to_string_lossy().to_string());
-        }
         if ffmpeg_lib.is_dir() {
             dyld_values.push(ffmpeg_lib.to_string_lossy().to_string());
         }
@@ -511,14 +324,12 @@ pub fn configure_bundled_media_runtime_environment() {
             dyld_values.push(existing.to_string_lossy().to_string());
         }
         if !dyld_values.is_empty() {
-            // SAFETY: Startup-only env mutation before media initialization.
             unsafe {
                 std::env::set_var("DYLD_FALLBACK_LIBRARY_PATH", dyld_values.join(":"));
             }
         }
     }
 }
-
 fn probe_tool_version(command: &str) -> Option<String> {
     let out = Command::new(command).arg("-version").output().ok()?;
     if !out.status.success() {
@@ -573,13 +384,6 @@ fn runtime_strict_pinned_enabled() -> bool {
         return false;
     }
     true
-}
-
-fn system_media_fallback_enabled() -> bool {
-    if !runtime_strict_pinned_enabled() {
-        return true;
-    }
-    env_flag_true("ANICA_ALLOW_SYSTEM_MEDIA")
 }
 
 fn setup_media_tools_script_path() -> PathBuf {
@@ -702,7 +506,6 @@ fn run_windows_lgpl_bootstrap_script(tools_home: &PathBuf) -> Result<(), MediaBo
             .arg(script.as_os_str())
             .arg("-Mode")
             .arg("local-lgpl")
-            .arg("-InstallGStreamer")
             .arg("-Yes")
             .arg("-ToolsHome")
             .arg(tools_home.as_os_str());
@@ -817,59 +620,6 @@ pub fn detect_media_dependencies(preferred_ffmpeg: Option<&str>) -> MediaDepende
     }
 
     status
-}
-
-pub fn detect_gstreamer_cli(preferred_gstreamer: Option<&str>) -> Option<String> {
-    let allow_system_fallback = system_media_fallback_enabled();
-    let strict_pinned = runtime_strict_pinned_enabled();
-
-    let preferred = preferred_gstreamer
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string);
-
-    let mut candidates = Vec::new();
-    if let Some(pref) = preferred {
-        push_unique(&mut candidates, pref);
-    }
-    if let Ok(env_gst) = std::env::var("ANICA_GSTREAMER_PATH") {
-        push_unique(&mut candidates, env_gst);
-    }
-    if let Some(workspace_gst) = workspace_gstreamer_tool_candidate() {
-        push_unique(&mut candidates, workspace_gst);
-    }
-    if let Some(configured_home) = configured_tools_home()
-        && let Some(local_gst) = local_gstreamer_tool_candidate(&configured_home)
-    {
-        push_unique(&mut candidates, local_gst);
-    }
-    if !strict_pinned
-        && let Some(default_home) = default_tools_home()
-        && let Some(local_gst) = local_gstreamer_tool_candidate(&default_home)
-    {
-        push_unique(&mut candidates, local_gst);
-    }
-    if let Some(bundle_gst) = bundle_tool_candidate(gst_launch_binary_name()) {
-        push_unique(&mut candidates, bundle_gst);
-    }
-    for candidate in common_host_gstreamer_candidates() {
-        push_unique(&mut candidates, (*candidate).to_string());
-    }
-    if allow_system_fallback {
-        push_unique(&mut candidates, gst_launch_binary_name().to_string());
-    }
-
-    for candidate in candidates {
-        let looks_like_path =
-            candidate.contains('/') || candidate.contains('\\') || candidate.ends_with(".exe");
-        if looks_like_path && PathBuf::from(&candidate).is_file() {
-            return Some(candidate);
-        }
-        if probe_tool_version(&candidate).is_some() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 pub fn detect_or_bootstrap_media_dependencies(
