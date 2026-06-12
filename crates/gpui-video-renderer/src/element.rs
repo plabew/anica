@@ -51,9 +51,10 @@ use video_engine::Video;
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::{
     Direct3D11::{
-        D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Texture2D,
+        D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+        ID3D11ShaderResourceView, ID3D11Texture2D,
     },
-    Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
+    Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
 };
 
 const DEFAULT_FRAME_RAM_CACHE_MB: usize = 512;
@@ -3821,8 +3822,18 @@ impl BgraSurfaceRing {
 }
 
 #[cfg(target_os = "windows")]
+#[derive(Clone)]
+struct D3d11BgraTextureSlot {
+    texture: ID3D11Texture2D,
+    shader_resource_view: ID3D11ShaderResourceView,
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+}
+
+#[cfg(target_os = "windows")]
 struct D3d11BgraTextureRing {
-    textures: Vec<ID3D11Texture2D>,
+    slots: Vec<D3d11BgraTextureSlot>,
     width: u32,
     height: u32,
     next_index: usize,
@@ -3836,7 +3847,7 @@ impl D3d11BgraTextureRing {
 
     fn new() -> Self {
         Self {
-            textures: Vec::new(),
+            slots: Vec::new(),
             width: 0,
             height: 0,
             next_index: 0,
@@ -3845,29 +3856,35 @@ impl D3d11BgraTextureRing {
         }
     }
 
-    fn reset(&mut self, devices: &gpui::D3d11Devices_anica, width: u32, height: u32) -> bool {
-        self.textures.clear();
+    fn reset(
+        &mut self,
+        devices: &gpui::D3d11Devices_anica,
+        width: u32,
+        height: u32,
+    ) -> Option<u128> {
+        self.slots.clear();
         self.width = width;
         self.height = height;
         self.next_index = 0;
 
+        let srv_started = Instant::now();
         // Keep several GPU textures so the renderer can sample older frames safely.
         for _ in 0..Self::RING_LEN {
-            let Some(texture) = Self::create_texture(devices, width, height) else {
-                self.textures.clear();
-                return false;
+            let Some(slot) = Self::create_texture_slot(devices, width, height) else {
+                self.slots.clear();
+                return None;
             };
-            self.textures.push(texture);
+            self.slots.push(slot);
         }
         self.allocations = self.allocations.saturating_add(Self::RING_LEN as u64);
-        true
+        Some(srv_started.elapsed().as_micros())
     }
 
-    fn create_texture(
+    fn create_texture_slot(
         devices: &gpui::D3d11Devices_anica,
         width: u32,
         height: u32,
-    ) -> Option<ID3D11Texture2D> {
+    ) -> Option<D3d11BgraTextureSlot> {
         if width == 0 || height == 0 {
             return None;
         }
@@ -3894,35 +3911,47 @@ impl D3d11BgraTextureRing {
                 .CreateTexture2D(&desc, None, Some(&mut texture))
                 .ok()?;
         }
-        texture
+        let texture = texture?;
+        let mut shader_resource_view = None;
+        unsafe {
+            devices
+                .device
+                .CreateShaderResourceView(&texture, None, Some(&mut shader_resource_view))
+                .ok()?;
+        }
+        Some(D3d11BgraTextureSlot {
+            texture,
+            shader_resource_view: shader_resource_view?,
+            width,
+            height,
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        })
     }
 
-    fn next_texture(
+    fn next_slot(
         &mut self,
         devices: &gpui::D3d11Devices_anica,
         width: u32,
         height: u32,
-    ) -> Option<(ID3D11Texture2D, bool)> {
+    ) -> Option<(D3d11BgraTextureSlot, bool, u128)> {
         let dimensions_changed = self.width != width || self.height != height;
-        if dimensions_changed || self.textures.len() != Self::RING_LEN {
-            if !self.reset(devices, width, height) {
-                return None;
-            }
-            return self.textures.first().cloned().map(|texture| {
+        if dimensions_changed || self.slots.len() != Self::RING_LEN {
+            let srv_create_us = self.reset(devices, width, height)?;
+            return self.slots.first().cloned().map(|slot| {
                 self.next_index = 1 % Self::RING_LEN;
-                (texture, false)
+                (slot, false, srv_create_us)
             });
         }
 
-        let texture = self.textures.get(self.next_index)?.clone();
+        let slot = self.slots.get(self.next_index)?.clone();
         self.next_index = (self.next_index + 1) % Self::RING_LEN;
         self.reuses = self.reuses.saturating_add(1);
-        Some((texture, true))
+        Some((slot, true, 0))
     }
 
     fn upload(
         devices: &gpui::D3d11Devices_anica,
-        texture: &ID3D11Texture2D,
+        slot: &D3d11BgraTextureSlot,
         width: u32,
         height: u32,
         bgra: &[u8],
@@ -3940,7 +3969,7 @@ impl D3d11BgraTextureRing {
         // Upload into the GPUI-owned device so the paint path can sample directly.
         unsafe {
             devices.device_context.UpdateSubresource(
-                texture,
+                &slot.texture,
                 0,
                 None,
                 bgra.as_ptr() as _,
@@ -3952,7 +3981,7 @@ impl D3d11BgraTextureRing {
     }
 
     fn stats(&self) -> (usize, u64, u64) {
-        (self.textures.len(), self.allocations, self.reuses)
+        (self.slots.len(), self.allocations, self.reuses)
     }
 }
 
@@ -5044,7 +5073,7 @@ impl Element for VideoElement {
         let bgra_surface_ring: Entity<BgraSurfaceRing> =
             window.use_state(cx, |_, _| BgraSurfaceRing::new());
         #[cfg(target_os = "windows")]
-        let last_d3d11_bgra_texture: Entity<Option<ID3D11Texture2D>> =
+        let last_d3d11_bgra_texture: Entity<Option<D3d11BgraTextureSlot>> =
             window.use_state(cx, |_, _| None);
         #[cfg(target_os = "windows")]
         let d3d11_bgra_texture_ring: Entity<D3d11BgraTextureRing> =
@@ -5145,21 +5174,25 @@ impl Element for VideoElement {
                             let upload_result = self.video.with_current_raw_bgra_frame(
                                 |bgra, width, height| {
                                     let pool_started = Instant::now();
-                                    let next_texture =
+                                    let next_slot =
                                         d3d11_bgra_texture_ring.update(cx, |ring, _| {
-                                            ring.next_texture(&devices, width, height).map(
-                                                |(texture, reused)| {
+                                            ring.next_slot(&devices, width, height).map(
+                                                |(slot, reused, srv_create_us)| {
                                                     let stats = ring.stats();
-                                                    (texture, reused, stats)
+                                                    (slot, reused, srv_create_us, stats)
                                                 },
                                             )
                                         })?;
-                                    let (texture, reused, (pool_len, allocations, reuses)) =
-                                        next_texture;
+                                    let (
+                                        slot,
+                                        reused,
+                                        srv_create_us,
+                                        (pool_len, allocations, reuses),
+                                    ) = next_slot;
                                     let pool_us = pool_started.elapsed().as_micros();
                                     let upload_started = Instant::now();
                                     if !D3d11BgraTextureRing::upload(
-                                        &devices, &texture, width, height, bgra,
+                                        &devices, &slot, width, height, bgra,
                                     ) {
                                         return None;
                                     }
@@ -5172,7 +5205,7 @@ impl Element for VideoElement {
                                             + 1;
                                         if hit <= 20 || hit % 60 == 0 {
                                             log::info!(
-                                                "[VideoElement][FFmpegPreview] d3d11_bgra_texture_ring hit={} video_id={} frame={}x{} reused={} pool_len={} allocations={} reuses={} pool_ms={:.2} upload_ms={:.2}",
+                                                "[VideoElement][FFmpegPreview] d3d11_bgra_texture_ring hit={} video_id={} frame={}x{} reused={} pool_len={} allocations={} reuses={} pool_ms={:.2} srv_create_ms={:.2} update_subresource_ms={:.2}",
                                                 hit,
                                                 video_id,
                                                 width,
@@ -5182,17 +5215,18 @@ impl Element for VideoElement {
                                                 allocations,
                                                 reuses,
                                                 pool_us as f64 / 1000.0,
+                                                srv_create_us as f64 / 1000.0,
                                                 upload_us as f64 / 1000.0,
                                             );
                                         }
                                     }
-                                    Some(texture)
+                                    Some(slot)
                                 },
                             );
 
-                            if let Some(Some(texture)) = upload_result {
+                            if let Some(Some(slot)) = upload_result {
                                 let _ = last_d3d11_bgra_texture
-                                    .update(cx, |state, _| state.replace(texture));
+                                    .update(cx, |state, _| state.replace(slot));
                                 let _ =
                                     last_pixel_key.update(cx, |state, _| state.replace(pixel_key));
                                 uploaded_texture = true;
@@ -5204,10 +5238,16 @@ impl Element for VideoElement {
                         }
                     }
 
-                    if let Some(texture) = last_d3d11_bgra_texture.read(cx).clone() {
-                        let surface = gpui::BgraFrameSurface::D3d11Texture(texture);
-                        let width = surface.width().max(1);
-                        let height = surface.height().max(1);
+                    if let Some(slot) = last_d3d11_bgra_texture.read(cx).clone() {
+                        let width = slot.width.max(1);
+                        let height = slot.height.max(1);
+                        let surface = gpui::BgraFrameSurface::D3d11Texture {
+                            texture: slot.texture,
+                            shader_resource_view: slot.shader_resource_view,
+                            width: slot.width,
+                            height: slot.height,
+                            format: slot.format,
+                        };
                         let dest_bounds = self.fitted_bounds(bounds, width, height);
                         let params = self.build_surface_params_anica(&dest_bounds);
                         window.paint_bgra_frame_anica(dest_bounds, surface, params);
