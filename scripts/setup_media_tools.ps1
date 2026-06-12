@@ -10,8 +10,9 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $PSCommandPath
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
-$manifestPath = Join-Path $repoRoot "tools" "media_tools_manifest.json"
-$runtimeDir = if ($ToolsHome) { $ToolsHome } else { Join-Path $repoRoot "tools" "runtime" }
+$toolsDir = Join-Path $repoRoot "tools"
+$manifestPath = Join-Path $toolsDir "media_tools_manifest.json"
+$runtimeDir = if ($ToolsHome) { $ToolsHome } else { Join-Path $toolsDir "runtime" }
 
 function Log([string]$Message) { Write-Host "[setup] $Message" }
 function Warn([string]$Message) { Write-Warning "[setup] $Message" }
