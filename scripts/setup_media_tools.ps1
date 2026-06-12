@@ -7,6 +7,7 @@ Param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 $scriptDir = Split-Path -Parent $PSCommandPath
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
@@ -107,7 +108,9 @@ function Download-Runtime {
     $staging = Join-Path $tmp "staging"
     New-Item -ItemType Directory -Force -Path $staging | Out-Null
     Log "Downloading $url"
-    Invoke-WebRequest -Uri $url -OutFile $archive
+    $requestArgs = @{ Uri = $url; OutFile = $archive }
+    if ($PSVersionTable.PSVersion.Major -lt 6) { $requestArgs["UseBasicParsing"] = $true }
+    Invoke-WebRequest @requestArgs
     Expand-RuntimeArchive $archive $staging
     $runtimeRoot = Find-RuntimeRootInStaging $staging
     if (-not $runtimeRoot) { throw "Could not find FFmpeg inside extracted archive." }

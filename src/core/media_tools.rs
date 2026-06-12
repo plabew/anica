@@ -103,7 +103,7 @@ pub enum MediaBootstrapError {
     BootstrapScriptNotFound { path: PathBuf },
     #[error("Windows bootstrap failed via pwsh/powershell. {details}")]
     WindowsBootstrapFailed { details: String },
-    #[error("Bootstrap timed out after {seconds}s.")]
+    #[error("Bootstrap is still running in the background after {seconds}s.")]
     BootstrapTimedOut { seconds: u64 },
     #[error("Unsupported host platform for runtime bootstrap.")]
     UnsupportedHostPlatform,
@@ -470,8 +470,6 @@ fn run_bootstrap_command(mut cmd: Command) -> Result<(), MediaBootstrapError> {
             break status;
         }
         if started_at.elapsed() >= BOOTSTRAP_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
             return Err(MediaBootstrapError::BootstrapTimedOut {
                 seconds: BOOTSTRAP_TIMEOUT.as_secs(),
             });
