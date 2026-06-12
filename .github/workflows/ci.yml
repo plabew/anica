@@ -91,9 +91,10 @@ jobs:
       - name: Install GStreamer SDK
         shell: pwsh
         run: |
-          choco install gstreamer gstreamer-devel --yes --no-progress
+          choco install pkgconfiglite gstreamer gstreamer-devel --yes --no-progress
           $gstRoot = "C:\gstreamer\1.0\msvc_x86_64"
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$gstRoot" >> $env:GITHUB_ENV
+          "PKG_CONFIG=pkg-config" >> $env:GITHUB_ENV
           "PKG_CONFIG_PATH=$gstRoot\lib\pkgconfig" >> $env:GITHUB_ENV
           "$gstRoot\bin" >> $env:GITHUB_PATH
 
