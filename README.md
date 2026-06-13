@@ -118,8 +118,8 @@ MotionLoom provides the foundation for Anica's long-term goal of natural languag
 | Platform | Status |
 |---|---|
 | macOS (Apple Silicon / M-series) | Primary development target |
+| Windows | Secondary development target |
 | Linux | Untested / experimental |
-| Windows | Untested / experimental |
 
 ---
 
@@ -150,43 +150,68 @@ or
 cargo build --release --bins
 ```
 
-> Detailed platform setup: [docs/INSTALL.md](docs/INSTALL.md)
-> macOS app bundling: [docs/MACOS_APP_BUNDLE.md](docs/MACOS_APP_BUNDLE.md)
 
 ### Build Requirements
 
 - Rust `1.90.0` (pinned in [`rust-toolchain.toml`](rust-toolchain.toml))
 - FFmpeg and FFprobe
-- On macOS, first `cargo run` attempts to bootstrap the local FFmpeg runtime if missing
-- macOS FFmpeg bootstrap still requires Homebrew for build dependencies
+- First `cargo run` attempts to bootstrap the local FFmpeg runtime if missing
+- The bundled/runtime FFmpeg path does not require Homebrew
 - macOS build host: Xcode command-line tools
 
 ### Quick Media Setup
 
-On macOS, first `cargo run` attempts to invoke:
+On first run, Anica attempts to download the platform runtime listed in [`tools/media_tools_manifest.json`](tools/media_tools_manifest.json):
+
+- macOS: Anica-maintained FFmpeg runtime
+- Windows: BtbN FFmpeg LGPL shared runtime
+- Linux: BtbN FFmpeg LGPL shared runtime
+
+The setup scripts install both a versioned runtime and the active `current` runtime:
+
+```text
+tools/runtime/<os>/ffmpeg/<version>/
+tools/runtime/current/<os>/ffmpeg/
+```
+
+Manual setup:
 
 ```bash
 ./scripts/setup_media_tools.sh
 ```
 
-This bootstraps the local FFmpeg runtime when needed, but still depends on Homebrew for FFmpeg build dependencies.
+Windows manual setup:
 
-If you want to run the setup manually instead:
-
-```bash
-./scripts/setup_media_tools.sh
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_media_tools.ps1 -Yes
 ```
 
-If you want a repo-local media runtime layout, see [docs/MEDIA_RUNTIME_DROPIN.md](docs/MEDIA_RUNTIME_DROPIN.md).
+If the setup script fails, download the matching runtime archive from the GitHub release listed by the manifest:
+
+```text
+https://github.com/LOVELYZOMBIEYHO/anica/releases/tag/anica-runtime-20260610
+```
+
+Extract the archive at `tools/runtime/`. For example, the Windows archive should create:
+
+```text
+tools/runtime/windows/ffmpeg/8.1/
+```
+
+Then copy or sync that versioned runtime into:
+
+```text
+tools/runtime/current/windows/ffmpeg/
+```
+
+For more layout details, see [docs/MEDIA_RUNTIME_DROPIN.md](docs/MEDIA_RUNTIME_DROPIN.md).
 
 ### macOS Initial Setup
 
-If this is your first time running Anica on macOS, install the required host tools first:
+If this is your first time running Anica on macOS, install Xcode command-line tools and Rust first:
 
 ```bash
 xcode-select -p >/dev/null 2>&1 || xcode-select --install
-command -v brew >/dev/null 2>&1 || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install git ffmpeg
 git clone https://github.com/LOVELYZOMBIEYHO/anica.git
 cd anica
 cargo run
@@ -196,19 +221,11 @@ If `cargo` is not installed yet, install Rust first with `rustup` as described i
 
 On macOS, `cargo run` attempts to bootstrap FFmpeg locally when needed.
 
-### Install FFmpeg (macOS)
-
-```bash
-brew install ffmpeg
-```
-
-Homebrew provides FFmpeg and FFprobe in the `ffmpeg` formula.
-
 ### Runtime Notes
 
-- Current macOS builds expect FFmpeg/FFprobe.
-- On macOS, Anica attempts to bootstrap FFmpeg on first run if the runtime is missing.
-- The startup bootstrap can provision FFmpeg locally when required.
+- Anica requires FFmpeg/FFprobe for preview, export, proxies, thumbnails, waveform preparation, and media analysis.
+- The app prefers `tools/runtime/current/<os>/ffmpeg/bin/ffmpeg` and `ffprobe`.
+- If `current` is missing but a versioned runtime exists, run the setup script with `--sync-only` on macOS/Linux or `-SyncOnly` on Windows.
 
 ### Fonts
 

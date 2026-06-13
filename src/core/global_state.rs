@@ -1834,22 +1834,6 @@ impl PreviewResolution {
         Some((larger_side * scale).round().clamp(2.0, u32::MAX as f32) as u32)
     }
 
-    pub fn size_for_canvas(self, canvas_w: f32, canvas_h: f32) -> Option<(u32, u32)> {
-        fn even_dim(value: f32) -> u32 {
-            let mut dim = value.round().clamp(2.0, u32::MAX as f32) as u32;
-            if dim % 2 != 0 {
-                dim = dim.saturating_add(1);
-            }
-            dim
-        }
-
-        let scale = self.scale_for_canvas(canvas_w, canvas_h)?;
-        if !canvas_w.is_finite() || !canvas_h.is_finite() || canvas_w <= 0.0 || canvas_h <= 0.0 {
-            return None;
-        }
-        Some((even_dim(canvas_w * scale), even_dim(canvas_h * scale)))
-    }
-
     pub fn pixelate(self) -> bool {
         matches!(self, PreviewResolution::P144)
     }

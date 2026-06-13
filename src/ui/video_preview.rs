@@ -3139,7 +3139,6 @@ impl VideoPreview {
         let full_preview_max_dim =
             (canvas_w.max(canvas_h) as u32).clamp(1, DEFAULT_IMAGE_MAX_DIM_FULL);
         let preview_target_max_dim = preview_resolution.max_dim_for_canvas(canvas_w, canvas_h);
-        let preview_target_size = preview_resolution.size_for_canvas(canvas_w, canvas_h);
 
         if self.drop_removed_timeline_media_caches(
             &timeline_video_ids,
@@ -3358,12 +3357,7 @@ impl VideoPreview {
                 let path = PathBuf::from(&clip_path);
                 if let Ok(url) = Url::from_file_path(&path) {
                     let preview_scale = None;
-                    let preview_size = if use_proxy { None } else { preview_target_size };
-                    let preview_max_dim = if use_proxy || preview_size.is_some() {
-                        None
-                    } else {
-                        requested_max_dim
-                    };
+                    let preview_max_dim = if use_proxy { None } else { requested_max_dim };
                     #[cfg(target_os = "macos")]
                     let prefer_surface = target_prefer_surface;
                     #[cfg(not(target_os = "macos"))]
@@ -3376,8 +3370,8 @@ impl VideoPreview {
                         frame_buffer_capacity: Some(self.memory_tuning.frame_buffer_capacity),
                         preview_scale,
                         preview_max_dim,
-                        preview_width: preview_size.map(|(width, _)| width),
-                        preview_height: preview_size.map(|(_, height)| height),
+                        preview_width: None,
+                        preview_height: None,
                         preview_fps: Some(preview_fps),
                         appsink_max_buffers: Some(self.memory_tuning.appsink_max_buffers),
                         prefer_surface,
@@ -3387,13 +3381,13 @@ impl VideoPreview {
                     };
                     if let Ok(video) = Video::new_with_options(&url, opts) {
                         log::info!(
-                            "[Preview] create visual player clip={} path={} proxy={} fps={} resolution={} target_size={:?}",
+                            "[Preview] create visual player clip={} path={} proxy={} fps={} resolution={} target_max_dim={:?}",
                             id,
                             clip_path,
                             use_proxy,
                             preview_fps,
                             preview_resolution.settings_label(),
-                            preview_size
+                            preview_max_dim
                         );
                         // Keep visual decode separate from audio routing to avoid ghost audio after clip unlink/delete.
                         // Boot in paused state first; transport pass below decides whether to unpause.
