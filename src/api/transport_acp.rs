@@ -22,6 +22,10 @@ use crate::api::motionloom::{
     AcpMotionLoomRenderSceneRequest, AcpMotionLoomRenderSceneResponse,
     AcpMotionLoomSetSceneScriptRequest, AcpMotionLoomSetSceneScriptResponse,
 };
+use crate::api::subtitle::{
+    AcpSubtitleAddTrackRequest, AcpSubtitleAddTrackResponse, AcpSubtitleImportSrtRequest,
+    AcpSubtitleImportSrtResponse,
+};
 use crate::api::timeline::{
     AudioSilenceCutPlanRequest, AudioSilenceCutPlanResponse, AudioSilenceMapRequest,
     AudioSilenceMapResponse, AutonomousEditPlanRequest, AutonomousEditPlanResponse,
@@ -154,6 +158,14 @@ pub enum AcpToolBridgeRequest {
     ClearMediaPool {
         request: ClearMediaPoolRequest,
         reply_tx: Sender<Result<ClearMediaPoolResponse, String>>,
+    },
+    ImportSrt {
+        request: AcpSubtitleImportSrtRequest,
+        reply_tx: Sender<Result<AcpSubtitleImportSrtResponse, String>>,
+    },
+    AddSubtitleTrack {
+        request: AcpSubtitleAddTrackRequest,
+        reply_tx: Sender<Result<AcpSubtitleAddTrackResponse, String>>,
     },
     GetMotionLoomSceneScript {
         request: AcpMotionLoomGetSceneScriptRequest,
@@ -1470,6 +1482,33 @@ impl AcpClientHandler {
                     "timeline/apply_edit_plan",
                     move |reply_tx| AcpToolBridgeRequest::ApplyEditPlan { request, reply_tx },
                 )?;
+                let raw = json_raw_from_value(&response)?;
+                Ok(ExtResponse::new(raw))
+            }
+            "anica.subtitle/import_srt" => {
+                let request =
+                    serde_json::from_str::<AcpSubtitleImportSrtRequest>(args.params.get())
+                        .map_err(|err| {
+                            AcpError::invalid_params()
+                                .data(format!("invalid subtitle/import_srt request: {err}"))
+                        })?;
+                let response =
+                    call_tool_bridge(&self.evt_tx, 15, "subtitle/import_srt", move |reply_tx| {
+                        AcpToolBridgeRequest::ImportSrt { request, reply_tx }
+                    })?;
+                let raw = json_raw_from_value(&response)?;
+                Ok(ExtResponse::new(raw))
+            }
+            "anica.subtitle/add_track" => {
+                let request = serde_json::from_str::<AcpSubtitleAddTrackRequest>(args.params.get())
+                    .map_err(|err| {
+                        AcpError::invalid_params()
+                            .data(format!("invalid subtitle/add_track request: {err}"))
+                    })?;
+                let response =
+                    call_tool_bridge(&self.evt_tx, 8, "subtitle/add_track", move |reply_tx| {
+                        AcpToolBridgeRequest::AddSubtitleTrack { request, reply_tx }
+                    })?;
                 let raw = json_raw_from_value(&response)?;
                 Ok(ExtResponse::new(raw))
             }

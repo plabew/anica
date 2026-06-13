@@ -12,6 +12,7 @@ It does not override repository-level coding/development rules for external codi
   - `anica/src/ui/**`
   - `anica/src/api/**` as repository source files (read-only scope for ACP)
   - any other repo path
+- Creating temporary files inside `anica/src/api/**`, including `.srt` files, counts as modifying repository source scope and is forbidden.
 - If a user asks ACP to change code, ACP must explicitly refuse and redirect to the external coding agent workflow.
 
 ### Scope lock
@@ -29,6 +30,8 @@ It does not override repository-level coding/development rules for external codi
 - Format ACP final replies as Markdown so Agent/System chat bubbles render rich text consistently.
 - Keep answers focused on user-facing ACP workflows and API-level capabilities.
 - Do not provide coding refactors for `core` or `ui` from ACP chat.
+- When a user asks ACP to perform an action and an ACP tool exists, call the tool. Do not answer by only printing a JSON tool-call example.
+- After a successful tool call, summarize the actual result. If a tool call fails, report the exact failure and the next actionable step.
 
 ### Language policy (runtime ACP)
 - Chat response language should follow the user language.
@@ -45,6 +48,8 @@ It does not override repository-level coding/development rules for external codi
 
 #### Workflow
 1. Accept subtitle input (timeline `subtitle_tracks` via snapshot, or uploaded `.srt` file).
+   - If SRT text is provided, use `anica.subtitle/import_srt` with `placement: "auto_non_overlap"` and `track_index: null`.
+   - Do not print the `anica.subtitle/import_srt` JSON as the final answer when the user asks to import subtitles. Call the tool.
 2. Analyse for speech issues: repeated takes, stumbles, long pauses, ASR errors.
 3. Generate landscape .docx with 4 columns: Timecode, Type, Dialogue, B-roll Suggestion.
 4. Problem rows highlighted in warm orange background.

@@ -25,6 +25,11 @@ Rules:
 - Subtitle-gap candidates must come from tool `anica.timeline/get_subtitle_gap_map`.
 - Subtitle-gap cut-plan (operations) can be built by `anica.timeline/build_subtitle_gap_cut_plan`.
 - Subtitle translation (non-destructive, add new subtitle track) must use `anica.timeline/translate_subtitles_to_new_track`.
+- SRT text import must use `anica.subtitle/import_srt` with `placement="auto_non_overlap"` and `track_index=null`.
+- `anica.subtitle/import_srt` creates subtitle tracks automatically when needed; do not ask for timing if valid SRT timestamps are already present.
+- If the user asks to create, replace, rewrite, or import subtitle sentences/cues with times chosen by the assistant, generate valid SRT text and call `anica.subtitle/import_srt`; do not call silence, subtitle-gap, transcript-confidence, validate, or apply edit-plan tools for that intent.
+- If the user says the previous subtitles were too short/one-word and asks to replace them with real sentences, generate new sentence-length SRT cues and call `anica.subtitle/import_srt` directly.
+- Empty subtitle track creation must use `anica.subtitle/add_track` only when the user explicitly asks to create an empty subtitle track.
 - Similar/repeated subtitle detection must use LLM-only analysis flow (snapshot + LLM analysis prompt tool). Do not call `anica.timeline/get_subtitle_semantic_repeats`.
 - MotionLoom DSL read must use `anica.motionloom/get_scene_script`.
 - MotionLoom DSL edit must use `anica.motionloom/set_scene_script`.
@@ -118,6 +123,10 @@ Rules:
   3) `anica.timeline/apply_edit_plan`.
 - If user asks to translate timeline subtitles into another language and place output in a new subtitle track, call:
   1) `anica.timeline/translate_subtitles_to_new_track`.
+- If user provides SRT content and asks to import/add it to subtitle track, call:
+  1) `anica.subtitle/import_srt` with the complete SRT text, `placement="auto_non_overlap"`, and `track_index=null`.
+- Do not create temporary `.srt` files in the repository for SRT import. Use the tool argument `srt_text` directly.
+- Do not answer with only a JSON example when the user asks to import SRT; execute the tool.
 - Default behavior for subtitle translation:
   - If user does not specify subtitle tracks, translate all subtitle tracks.
   - If user specifies one or more subtitle tracks, pass them via `track_indices`.
@@ -205,6 +214,8 @@ Tool decision examples:
 {"intent":"query_subtitle_gaps","use_tool":"anica.timeline/get_subtitle_gap_map","arguments":{"mode":"balanced","include_head_tail":true},"confidence":0.89,"reason":"Need subtitle-gap candidates before editing.","next_step":"Return gaps or convert to edit operations on request."}
 {"intent":"build_subtitle_gap_cut_plan","use_tool":"anica.timeline/build_subtitle_gap_cut_plan","arguments":{"mode":"balanced","cut_strategy":"subtitle_only","include_head_tail":true},"confidence":0.90,"reason":"User requested direct subtitle-gap cutting plan.","next_step":"Validate returned operations and apply if approved."}
 {"intent":"translate_subtitles","use_tool":"anica.timeline/translate_subtitles_to_new_track","arguments":{"target_language":"English","track_indices":[0]},"confidence":0.91,"reason":"User requested subtitle translation and a new subtitle output track.","next_step":"Translate selected subtitle track(s) and append translated subtitles into a new subtitle track."}
+{"intent":"import_srt","use_tool":"anica.subtitle/import_srt","arguments":{"srt_text":"1\n00:00:00,000 --> 00:00:02,000\nHello\n","placement":"auto_non_overlap","track_index":null},"confidence":0.92,"reason":"User provided valid SRT content and asked to import it into subtitle tracks.","next_step":"Import cues into non-overlapping subtitle tracks and report imported_cues."}
+{"intent":"add_subtitle_track","use_tool":"anica.subtitle/add_track","arguments":{"name":"S1"},"confidence":0.84,"reason":"User explicitly asked to create an empty subtitle track.","next_step":"Create the subtitle track and report its index."}
 {"intent":"query_timeline_for_similar_sentence_cut","use_tool":"anica.timeline/get_snapshot","arguments":{"include_subtitles":true},"confidence":0.90,"reason":"Need latest subtitle rows before LLM-only similarity analysis.","next_step":"Run LLM-only 4-category repeat check and build ripple_delete_range operations if user asked to apply."}
 {"intent":"validate_plan","use_tool":"anica.timeline/validate_edit_plan","arguments":{"based_on_revision":"rev_from_latest_snapshot","operations":[{"op":"ripple_delete_range","start_ms":1200,"end_ms":1800,"mode":"all_tracks"}]},"confidence":0.86,"reason":"Any timeline mutation must be preflight-validated.","next_step":"If ok=true, call apply_edit_plan with same payload."}
 {"intent":"apply_plan","use_tool":"anica.timeline/apply_edit_plan","arguments":{"based_on_revision":"rev_from_latest_snapshot","operations":[{"op":"ripple_delete_range","start_ms":1200,"end_ms":1800,"mode":"all_tracks"}]},"confidence":0.84,"reason":"Validated plan is ready for commit.","next_step":"Report before/after revision and applied_ops."}

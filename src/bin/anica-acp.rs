@@ -34,6 +34,15 @@ mod export_resolution;
 #[path = "../runtime_paths.rs"]
 mod runtime_paths;
 
+const OPENCODE_INLINE_IMAGE_MAX_BASE64_CHARS: usize = 1_200_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromptInlineImage {
+    mime_type: String,
+    data: String,
+    uri: Option<String>,
+}
+
 #[derive(Debug)]
 struct SessionState {
     cwd: PathBuf,
@@ -3026,6 +3035,18 @@ impl AnicaAcpAgent {
         cwd: &Path,
         prompt: &str,
     ) -> anyhow::Result<String> {
+        self.run_codex_prompt_with_images(session_id, cwd, prompt, &[], &[])
+            .await
+    }
+
+    async fn run_codex_prompt_with_images(
+        &self,
+        session_id: &SessionId,
+        cwd: &Path,
+        prompt: &str,
+        image_paths: &[PathBuf],
+        inline_images: &[PromptInlineImage],
+    ) -> anyhow::Result<String> {
         let provider = std::env::var("ANICA_ACP_PROVIDER")
             .ok()
             .map(|v| v.trim().to_ascii_lowercase())
@@ -3203,9 +3224,18 @@ impl AnicaAcpAgent {
             }
 
             let mut cmd = agent_cli_command(&opencode_bin);
-            cmd.arg("run")
-                .arg(prompt)
-                .current_dir(cwd)
+            cmd.arg("run");
+            if let Some(model) = resolve_model_env("ANICA_OPENCODE_MODEL")? {
+                cmd.arg("--model").arg(model);
+            }
+            let mut opencode_images = image_paths.to_vec();
+            opencode_images.extend(extract_opencode_image_files_from_prompt(prompt));
+            let prompt = prompt_with_inline_images_for_opencode(prompt, inline_images);
+            cmd.arg(prompt);
+            for image_path in unique_supported_image_files(opencode_images) {
+                cmd.arg(format!("--file={}", image_path.display()));
+            }
+            cmd.current_dir(cwd)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -3414,6 +3444,12 @@ impl AnicaAcpAgent {
             }
             "anica.timeline/apply_edit_plan" | "timeline_apply_edit_plan" => {
                 Some("anica.timeline/apply_edit_plan")
+            }
+            "anica.subtitle/import_srt" | "subtitle_import_srt" | "import_srt" => {
+                Some("anica.subtitle/import_srt")
+            }
+            "anica.subtitle/add_track" | "subtitle_add_track" | "add_subtitle_track" => {
+                Some("anica.subtitle/add_track")
             }
             "anica.docs/list_files" | "docs_list_files" => Some("anica.docs/list_files"),
             "anica.docs/read_file" | "docs_read_file" => Some("anica.docs/read_file"),
@@ -3922,6 +3958,8 @@ Rules:\n\
         session_id: &SessionId,
         cwd: &Path,
         user_prompt: &str,
+        image_paths: &[PathBuf],
+        inline_images: &[PromptInlineImage],
     ) -> anyhow::Result<String> {
         let mut tool_results: Vec<String> = Vec::new();
         let mut tool_trace: Vec<(String, String)> = Vec::new();
@@ -3953,7 +3991,13 @@ Rules:\n\
                 .resources
                 .render_tool_router_prompt(user_prompt, &tool_results);
             let raw = self
-                .run_codex_prompt(session_id, cwd, &routing_prompt)
+                .run_codex_prompt_with_images(
+                    session_id,
+                    cwd,
+                    &routing_prompt,
+                    image_paths,
+                    inline_images,
+                )
                 .await?;
             last_raw = raw.clone();
 
@@ -4270,6 +4314,76 @@ fn collect_prompt_text(blocks: &[ContentBlock]) -> String {
     lines.join("\n")
 }
 
+fn collect_prompt_image_paths(blocks: &[ContentBlock]) -> Vec<PathBuf> {
+    let paths = blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Image(image) => {
+                image.uri.as_deref().and_then(image_path_from_file_uri_text)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    unique_supported_image_files(paths)
+}
+
+fn collect_prompt_inline_images(blocks: &[ContentBlock]) -> Vec<PromptInlineImage> {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Image(image) if !image.data.trim().is_empty() => {
+                Some(PromptInlineImage {
+                    mime_type: image.mime_type.clone(),
+                    data: image.data.trim().to_string(),
+                    uri: image.uri.clone(),
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn prompt_with_inline_images_for_opencode(
+    prompt: &str,
+    inline_images: &[PromptInlineImage],
+) -> String {
+    if inline_images.is_empty() {
+        return prompt.to_string();
+    }
+
+    let mut out = prompt.to_string();
+    out.push_str("\n\nInline image data for the vision-capable model follows. Treat each data URL as an attached image, not as ordinary text.\n");
+
+    for (idx, image) in inline_images.iter().enumerate() {
+        let image_number = idx + 1;
+        if image.data.len() > OPENCODE_INLINE_IMAGE_MAX_BASE64_CHARS {
+            out.push_str(&format!(
+                "\nImage {image_number}: omitted inline base64 because it is too large ({} chars).",
+                image.data.len()
+            ));
+            if let Some(uri) = image.uri.as_deref() {
+                out.push_str(&format!(" Source: {uri}."));
+            }
+            out.push('\n');
+            continue;
+        }
+
+        out.push_str(&format!("\nImage {image_number} data URL"));
+        if let Some(uri) = image.uri.as_deref() {
+            out.push_str(&format!(" (source: {uri})"));
+        }
+        out.push_str(":\n");
+        out.push_str("data:");
+        out.push_str(&image.mime_type);
+        out.push_str(";base64,");
+        out.push_str(&image.data);
+        out.push('\n');
+    }
+
+    out
+}
+
 fn chunk_text(input: &str, max_chars: usize) -> Vec<String> {
     if input.trim().is_empty() {
         return vec!["(empty response)".to_string()];
@@ -4483,6 +4597,91 @@ fn resolve_model_env(env_var: &str) -> anyhow::Result<Option<String>> {
     Ok(Some(model.to_string()))
 }
 
+fn extract_opencode_image_files_from_prompt(prompt: &str) -> Vec<PathBuf> {
+    unique_supported_image_files(
+        prompt
+            .lines()
+            .filter_map(|line| {
+                image_path_from_file_uri_line(line)
+                    .or_else(|| image_path_from_attached_file_line(line))
+            })
+            .collect(),
+    )
+}
+
+fn image_path_from_file_uri_line(line: &str) -> Option<PathBuf> {
+    let start = line.find("file://")?;
+    image_path_from_file_uri_text(&line[start..])
+}
+
+fn image_path_from_file_uri_text(uri: &str) -> Option<PathBuf> {
+    let tail = uri.strip_prefix("file://")?;
+    let path_text = tail.split(" (").next().unwrap_or(tail).trim();
+    normalize_prompt_image_path(path_text)
+}
+
+fn image_path_from_attached_file_line(line: &str) -> Option<PathBuf> {
+    let trimmed = line.trim();
+    let dot_space = trimmed.find(". ")?;
+    let prefix = &trimmed[..dot_space];
+    if prefix.is_empty() || !prefix.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let rest = &trimmed[dot_space + 2..];
+    let path_text = rest.split(" (").next().unwrap_or(rest).trim();
+    normalize_prompt_image_path(path_text)
+}
+
+fn normalize_prompt_image_path(path_text: &str) -> Option<PathBuf> {
+    let path_text = path_text.trim().trim_matches('"');
+    if path_text.is_empty() {
+        return None;
+    }
+
+    #[cfg(windows)]
+    let path_text = {
+        if path_text.len() >= 4
+            && path_text.starts_with('/')
+            && path_text.as_bytes().get(2) == Some(&b':')
+        {
+            &path_text[1..]
+        } else {
+            path_text
+        }
+    };
+
+    let path = PathBuf::from(path_text);
+    path.is_file().then_some(path)
+}
+
+fn unique_supported_image_files(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    for path in paths {
+        if is_supported_image_file(&path)
+            && let Ok(key) = path.canonicalize()
+            && seen.insert(key.clone())
+        {
+            out.push(key);
+        }
+    }
+
+    out
+}
+
+fn is_supported_image_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "svg"
+            )
+        })
+        .unwrap_or(false)
+}
+
 impl AnicaAcpAgent {
     async fn handle_initialize(
         &self,
@@ -4560,20 +4759,8 @@ impl AnicaAcpAgent {
         }
         let _ = self.set_cancelled(&args.session_id, false);
 
-        if Self::is_opencode_provider() {
-            let conn = self
-                .opencode_proxy_connection(&args.session_id)?
-                .ok_or_else(|| {
-                    Error::invalid_params().data(format!(
-                        "OpenCode proxy session not found: {}",
-                        args.session_id.0
-                    ))
-                })?;
-            return conn.send_request(args).block_task().await.map_err(|err| {
-                Error::internal_error().data(format!("OpenCode ACP session/prompt failed: {err}"))
-            });
-        }
-
+        let image_paths = collect_prompt_image_paths(&args.prompt);
+        let inline_images = collect_prompt_inline_images(&args.prompt);
         let user_text = collect_prompt_text(&args.prompt);
         let reply = if user_text.trim().is_empty() {
             self.inner.resources.tr("acp.empty_prompt")
@@ -4582,7 +4769,13 @@ impl AnicaAcpAgent {
                 .session_cwd(&args.session_id)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
             match self
-                .run_codex_prompt_with_tool_bridge(&args.session_id, &cwd, &user_text)
+                .run_codex_prompt_with_tool_bridge(
+                    &args.session_id,
+                    &cwd,
+                    &user_text,
+                    &image_paths,
+                    &inline_images,
+                )
                 .await
             {
                 Ok(text) => text,
@@ -4613,7 +4806,7 @@ impl AnicaAcpAgent {
         if Self::is_opencode_provider()
             && let Some(conn) = self.opencode_proxy_connection(&args.session_id)?
         {
-            return conn.send_notification(args);
+            let _ = conn.send_notification(args.clone());
         }
         if let Some(pid) = self.running_pid(&args.session_id) {
             #[cfg(unix)]
@@ -4731,8 +4924,14 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnicaAcpAgent, npm_shim_node_script_relative_path};
+    use super::{
+        AnicaAcpAgent, PromptInlineImage, collect_prompt_image_paths, collect_prompt_inline_images,
+        extract_opencode_image_files_from_prompt, npm_shim_node_script_relative_path,
+        prompt_with_inline_images_for_opencode,
+    };
+    use agent_client_protocol::schema::{ContentBlock, ImageContent};
     use serde_json::json;
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -4747,6 +4946,73 @@ mod tests {
                 .unwrap_or(""),
             "1080x1920"
         );
+    }
+
+    #[test]
+    fn opencode_image_extractor_reads_attached_image_paths() {
+        let image_path = std::env::temp_dir().join(format!(
+            "anica_opencode_attachment_test_{}.png",
+            std::process::id()
+        ));
+        fs::write(
+            &image_path,
+            b"not a real png but enough for path extraction",
+        )
+        .unwrap();
+
+        let prompt = format!(
+            "Current request:\nwhat is in this image?\n\nAttached image files:\n1. {} (image/png, 20x20)\n[attached image 1] file://{} (image/png)",
+            image_path.display(),
+            image_path.display()
+        );
+        let images = extract_opencode_image_files_from_prompt(&prompt);
+
+        let _ = fs::remove_file(&image_path);
+        assert_eq!(images.len(), 1);
+        assert!(images[0].ends_with(image_path.file_name().unwrap()));
+    }
+
+    #[test]
+    fn prompt_image_collector_reads_content_block_image_uri() {
+        let image_path = std::env::temp_dir().join(format!(
+            "anica_acp_image_block_test_{}.png",
+            std::process::id()
+        ));
+        fs::write(
+            &image_path,
+            b"not a real png but enough for path extraction",
+        )
+        .unwrap();
+
+        let blocks = vec![ContentBlock::Image(
+            ImageContent::new("base64", "image/png")
+                .uri(format!("file://{}", image_path.display())),
+        )];
+        let images = collect_prompt_image_paths(&blocks);
+
+        let _ = fs::remove_file(&image_path);
+        assert_eq!(images.len(), 1);
+        assert!(images[0].ends_with(image_path.file_name().unwrap()));
+    }
+
+    #[test]
+    fn opencode_prompt_embeds_inline_image_data_url() {
+        let blocks = vec![ContentBlock::Image(
+            ImageContent::new("QUJD", "image/png").uri("file:///tmp/example.png"),
+        )];
+        let inline_images = collect_prompt_inline_images(&blocks);
+        assert_eq!(
+            inline_images,
+            vec![PromptInlineImage {
+                mime_type: "image/png".to_string(),
+                data: "QUJD".to_string(),
+                uri: Some("file:///tmp/example.png".to_string()),
+            }]
+        );
+
+        let prompt = prompt_with_inline_images_for_opencode("describe image", &inline_images);
+        assert!(prompt.contains("data:image/png;base64,QUJD"));
+        assert!(prompt.contains("Treat each data URL as an attached image"));
     }
 
     #[test]

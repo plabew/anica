@@ -11,6 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const ACP_CONTEXT_TURNS_DEFAULT: usize = 6;
+pub const ACP_CONTEXT_TURNS_MIN: usize = 3;
+pub const ACP_CONTEXT_TURNS_MAX: usize = 10;
 
 #[derive(Debug, Error)]
 pub enum UserSettingsError {
@@ -84,6 +87,16 @@ pub struct EffectiveSettings {
     pub acp_gemini_cli_bin: Option<String>,
     pub acp_claude_cli_bin: Option<String>,
     pub acp_opencode_cli_bin: Option<String>,
+    pub acp_context_turns: usize,
+}
+
+impl EffectiveSettings {
+    fn with_defaults() -> Self {
+        Self {
+            acp_context_turns: ACP_CONTEXT_TURNS_DEFAULT,
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +105,7 @@ pub struct LoadedSettings {
     pub auto_connect_source: SettingSource,
     pub agent_command_source: SettingSource,
     pub reasoning_mode_source: SettingSource,
+    pub context_turns_source: SettingSource,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -108,6 +122,8 @@ struct AcpLayer {
     agent_command: Option<String>,
     #[serde(default)]
     reasoning_mode: Option<String>,
+    #[serde(default)]
+    context_turns: Option<usize>,
     #[serde(default)]
     codex_cli_bin: Option<String>,
     #[serde(default)]
@@ -185,10 +201,11 @@ pub fn load_settings(workspace_root: &Path) -> LoadedSettings {
     let workspace_layer = read_settings_layer(&workspace_path, "workspace");
 
     let mut loaded = LoadedSettings {
-        effective: EffectiveSettings::default(),
+        effective: EffectiveSettings::with_defaults(),
         auto_connect_source: SettingSource::Default,
         agent_command_source: SettingSource::Default,
         reasoning_mode_source: SettingSource::Default,
+        context_turns_source: SettingSource::Default,
     };
 
     if let Some(layer) = user_layer.as_ref() {
@@ -290,6 +307,30 @@ pub fn save_acp_cli_paths(
     Ok(path)
 }
 
+pub fn save_acp_context_turns(
+    scope: SettingsScope,
+    workspace_root: &Path,
+    context_turns: usize,
+) -> Result<PathBuf, UserSettingsError> {
+    let path = match scope {
+        SettingsScope::User => user_settings_path(),
+        SettingsScope::Workspace => workspace_settings_path(workspace_root),
+    };
+    let context_turns = clamp_acp_context_turns(context_turns);
+
+    update_settings_file(&path, |root| {
+        root.insert(
+            "schema_version".to_string(),
+            Value::from(SETTINGS_SCHEMA_VERSION),
+        );
+
+        let acp = ensure_child_object(root, "acp");
+        acp.insert("context_turns".to_string(), Value::from(context_turns));
+    })?;
+
+    Ok(path)
+}
+
 fn apply_layer(loaded: &mut LoadedSettings, layer: &SettingsLayer, source: SettingSource) {
     let Some(acp) = layer.acp.as_ref() else {
         return;
@@ -310,6 +351,11 @@ fn apply_layer(loaded: &mut LoadedSettings, layer: &SettingsLayer, source: Setti
         loaded.reasoning_mode_source = source;
     }
 
+    if let Some(context_turns) = acp.context_turns {
+        loaded.effective.acp_context_turns = clamp_acp_context_turns(context_turns);
+        loaded.context_turns_source = source;
+    }
+
     if let Some(path) = normalize_non_empty(acp.codex_cli_bin.as_deref()) {
         loaded.effective.acp_codex_cli_bin = Some(path);
     }
@@ -322,6 +368,10 @@ fn apply_layer(loaded: &mut LoadedSettings, layer: &SettingsLayer, source: Setti
     if let Some(path) = normalize_non_empty(acp.opencode_cli_bin.as_deref()) {
         loaded.effective.acp_opencode_cli_bin = Some(path);
     }
+}
+
+pub fn clamp_acp_context_turns(value: usize) -> usize {
+    value.clamp(ACP_CONTEXT_TURNS_MIN, ACP_CONTEXT_TURNS_MAX)
 }
 
 fn normalize_non_empty(value: Option<&str>) -> Option<String> {

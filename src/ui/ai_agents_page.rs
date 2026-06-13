@@ -34,6 +34,10 @@ use crate::api::motionloom::{
     AcpMotionLoomGetSceneScriptResponse, AcpMotionLoomRenderSceneResponse,
     AcpMotionLoomSetSceneScriptResponse,
 };
+use crate::api::subtitle::{
+    AcpSubtitleAddTrackResponse, AcpSubtitleImportSrtResponse,
+    IMPORT_SRT_PLACEMENT_AUTO_NON_OVERLAP, normalize_import_srt_placement,
+};
 use crate::api::timeline::{
     apply_edit_plan, build_audio_silence_cut_plan, build_autonomous_edit_plan,
     build_subtitle_gap_cut_plan, build_transcript_low_confidence_cut_plan, get_audio_silence_map,
@@ -49,7 +53,9 @@ use crate::core::global_state::{
     MediaPoolUiEvent, SilencePreviewCandidate, SilencePreviewModalState,
 };
 use crate::core::user_settings::{
-    SettingsScope, load_settings, resolve_workspace_root, save_acp_cli_paths, save_auto_connect,
+    ACP_CONTEXT_TURNS_MAX, ACP_CONTEXT_TURNS_MIN, SettingsScope, clamp_acp_context_turns,
+    load_settings, resolve_workspace_root, save_acp_cli_paths, save_acp_context_turns,
+    save_auto_connect,
 };
 use crate::ui::chat_attachments::{
     append_image_references, attachment_display_name, attachment_size_label,
@@ -103,6 +109,8 @@ impl AcpAgentProvider {
 }
 
 const AI_CHAT_MAX_CONVERSATION_MESSAGES: usize = 1000;
+const ACP_CONTEXT_MESSAGE_MAX_CHARS: usize = 1600;
+const ACP_CONTEXT_TOTAL_MAX_CHARS: usize = 12_000;
 
 #[derive(Debug, Default)]
 struct MotionLoomScriptNormalization {
@@ -1480,6 +1488,8 @@ pub struct AiAgentsPage {
     codex_reasoning_mode: CodexReasoningMode,
     auto_connect_enabled: bool,
     auto_connect_scope: SettingsScope,
+    context_turns: usize,
+    context_turns_scope: SettingsScope,
 
     agent_command: String,
     codex_cli_bin: String,
@@ -1736,6 +1746,8 @@ impl AiAgentsPage {
         let codex_model = choose_codex_model(&codex_model_options, None);
         let auto_connect_enabled = loaded_settings.effective.acp_auto_connect;
         let auto_connect_scope = loaded_settings.auto_connect_source.preferred_scope();
+        let context_turns = loaded_settings.effective.acp_context_turns;
+        let context_turns_scope = loaded_settings.context_turns_source.preferred_scope();
         let gemini_api_key = env::var("GEMINI_API_KEY")
             .ok()
             .or_else(|| env::var("GOOGLE_API_KEY").ok())
@@ -1822,6 +1834,8 @@ impl AiAgentsPage {
             codex_reasoning_mode: reasoning_mode,
             auto_connect_enabled,
             auto_connect_scope,
+            context_turns,
+            context_turns_scope,
 
             agent_command,
             codex_cli_bin,
@@ -2343,6 +2357,31 @@ impl AiAgentsPage {
         cx.notify();
     }
 
+    fn on_set_context_turns(&mut self, context_turns: usize, cx: &mut Context<Self>) {
+        let context_turns = clamp_acp_context_turns(context_turns);
+        self.context_turns = context_turns;
+
+        let workspace_root = self.current_workspace_root(cx);
+        match save_acp_context_turns(self.context_turns_scope, &workspace_root, context_turns) {
+            Ok(path) => {
+                self.push_system_message(
+                    format!(
+                        "ACP context turns set to {} (saved to {} settings: {}).",
+                        context_turns,
+                        self.context_turns_scope.label(),
+                        path.display()
+                    ),
+                    cx,
+                );
+            }
+            Err(err) => {
+                self.push_system_message(format!("Failed to save ACP context setting: {err}"), cx);
+            }
+        }
+
+        cx.notify();
+    }
+
     fn on_save_cli_paths(&mut self, cx: &mut Context<Self>) {
         let workspace_root = self.current_workspace_root(cx);
         let saved_provider = self.agent_provider;
@@ -2800,6 +2839,65 @@ impl AiAgentsPage {
             cx.stop_propagation();
             cx.notify();
         }
+    }
+
+    fn truncate_for_context(text: &str, max_chars: usize) -> String {
+        let mut out = String::new();
+        for ch in text.chars().take(max_chars) {
+            out.push(ch);
+        }
+        if text.chars().count() > max_chars {
+            out.push_str("\n[truncated]");
+        }
+        out
+    }
+
+    fn build_recent_chat_context(messages: &[AiChatMessage], turns: usize) -> String {
+        let max_messages = clamp_acp_context_turns(turns).saturating_mul(2);
+        let mut selected = messages
+            .iter()
+            .rev()
+            .filter(|msg| !msg.pending)
+            .filter(|msg| matches!(msg.role, AiChatRole::User | AiChatRole::Assistant))
+            .filter(|msg| !msg.text.trim().is_empty())
+            .take(max_messages)
+            .cloned()
+            .collect::<Vec<_>>();
+        selected.reverse();
+
+        if selected.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::from(
+            "Previous conversation context. Use this only for continuity; the current request below has priority.\n",
+        );
+        for msg in selected {
+            let role = match msg.role {
+                AiChatRole::User => "User",
+                AiChatRole::Assistant => "Assistant",
+                AiChatRole::System => continue,
+            };
+            let text = Self::truncate_for_context(msg.text.trim(), ACP_CONTEXT_MESSAGE_MAX_CHARS);
+            out.push_str(role);
+            out.push_str(": ");
+            out.push_str(&text);
+            out.push_str("\n\n");
+            if out.chars().count() >= ACP_CONTEXT_TOTAL_MAX_CHARS {
+                out = Self::truncate_for_context(&out, ACP_CONTEXT_TOTAL_MAX_CHARS);
+                break;
+            }
+        }
+        out
+    }
+
+    fn prompt_with_recent_context(&self, prompt: &str, cx: &mut Context<Self>) -> String {
+        let messages = self.global.read(cx).ai_chat_messages.clone();
+        let context = Self::build_recent_chat_context(&messages, self.context_turns);
+        if context.trim().is_empty() {
+            return prompt.to_string();
+        }
+        format!("{context}Current request:\n{prompt}")
     }
 
     fn ensure_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3516,6 +3614,73 @@ impl AiAgentsPage {
                             self.sync_worker_media_pool_snapshot(cx);
                         }
                     }
+                    AcpToolBridgeRequest::ImportSrt { request, reply_tx } => {
+                        let placement_used = normalize_import_srt_placement(&request.placement);
+                        let response = if request.srt_text.trim().is_empty() {
+                            AcpSubtitleImportSrtResponse::failure(
+                                "srt_text must not be empty.",
+                                placement_used,
+                            )
+                        } else if placement_used != IMPORT_SRT_PLACEMENT_AUTO_NON_OVERLAP {
+                            AcpSubtitleImportSrtResponse::failure(
+                                format!(
+                                    "unsupported placement `{}`. Use `{}`.",
+                                    placement_used, IMPORT_SRT_PLACEMENT_AUTO_NON_OVERLAP
+                                ),
+                                placement_used,
+                            )
+                        } else if request.track_index.is_some() {
+                            AcpSubtitleImportSrtResponse::failure(
+                                "track_index must be null when placement is auto_non_overlap.",
+                                placement_used,
+                            )
+                        } else {
+                            self.global.update(cx, |gs, cx| {
+                                match gs.import_srt(&request.srt_text) {
+                                    Ok(imported_cues) => {
+                                        gs.ui_notice = Some(format!(
+                                            "Imported {imported_cues} subtitle cues from ACP SRT."
+                                        ));
+                                        cx.notify();
+                                        AcpSubtitleImportSrtResponse::success(
+                                            imported_cues,
+                                            placement_used,
+                                        )
+                                    }
+                                    Err(err) => AcpSubtitleImportSrtResponse::failure(
+                                        format!("SRT import failed: {err}"),
+                                        placement_used,
+                                    ),
+                                }
+                            })
+                        };
+                        let _ = reply_tx.send(Ok(response));
+                    }
+                    AcpToolBridgeRequest::AddSubtitleTrack { request, reply_tx } => {
+                        let response = self.global.update(cx, |gs, cx| {
+                            let track_index = gs.subtitle_tracks.len();
+                            gs.add_new_subtitle_track();
+                            if let Some(name) = request.name.as_deref().map(str::trim)
+                                && !name.is_empty()
+                                && let Some(track) = gs.subtitle_tracks.last_mut()
+                            {
+                                track.name = name.to_string();
+                            }
+                            let name = gs
+                                .subtitle_tracks
+                                .last()
+                                .map(|t| t.name.clone())
+                                .unwrap_or_else(|| "S1".to_string());
+                            cx.notify();
+                            AcpSubtitleAddTrackResponse {
+                                ok: true,
+                                track_index,
+                                name,
+                                error: None,
+                            }
+                        });
+                        let _ = reply_tx.send(Ok(response));
+                    }
                     AcpToolBridgeRequest::GetMotionLoomSceneScript { request, reply_tx } => {
                         let _ = request;
                         let response = {
@@ -3820,6 +3985,14 @@ impl AiAgentsPage {
         if self.agent_provider == AcpAgentProvider::Claude && !self.claude_model.trim().is_empty() {
             acp_env.push(("ANICA_CLAUDE_MODEL".to_string(), self.claude_model.clone()));
         }
+        if self.agent_provider == AcpAgentProvider::OpenCode
+            && !self.opencode_model.trim().is_empty()
+        {
+            acp_env.push((
+                "ANICA_OPENCODE_MODEL".to_string(),
+                self.opencode_model.clone(),
+            ));
+        }
         if let Some(path) = normalize_cli_override(&self.codex_cli_bin) {
             acp_env.push(("ANICA_CODEX_CLI_BIN".to_string(), path));
         }
@@ -3857,11 +4030,11 @@ impl AiAgentsPage {
             AcpAgentProvider::Claude => format!(" (model: {})", self.claude_model),
             AcpAgentProvider::OpenCode if !self.opencode_model.trim().is_empty() => {
                 format!(
-                    " (anica-acp → opencode acp, model: {})",
+                    " (anica-acp router → opencode run, model: {})",
                     self.opencode_model
                 )
             }
-            AcpAgentProvider::OpenCode => " (anica-acp → opencode acp)".to_string(),
+            AcpAgentProvider::OpenCode => " (anica-acp router → opencode run)".to_string(),
         };
         self.push_system_message(
             format!(
@@ -3928,7 +4101,8 @@ impl AiAgentsPage {
         } else {
             prompt.clone()
         };
-        let prompt_for_agent = append_image_references(&display_prompt, &pending_images);
+        let prompt_with_context = self.prompt_with_recent_context(&display_prompt, cx);
+        let prompt_for_agent = append_image_references(&prompt_with_context, &pending_images);
 
         let acp_image_attachments = pending_images
             .iter()
@@ -4193,6 +4367,40 @@ impl Render for AiAgentsPage {
                 .bg(gpui::Hsla::from(rgb(0x14532d)).opacity(0.45))
                 .border_color(gpui::Hsla::from(rgb(0x22c55e)).opacity(0.45))
                 .text_color(white().opacity(0.95));
+        }
+        let mut context_turn_buttons = div().flex().flex_wrap().gap_1();
+        for turns in ACP_CONTEXT_TURNS_MIN..=ACP_CONTEXT_TURNS_MAX {
+            let active = self.context_turns == turns;
+            let mut chip = div()
+                .h(px(24.0))
+                .px_2()
+                .rounded_md()
+                .border_1()
+                .border_color(if active {
+                    gpui::Hsla::from(rgb(0x3b82f6)).opacity(0.55)
+                } else {
+                    white().opacity(0.14)
+                })
+                .bg(if active {
+                    gpui::Hsla::from(rgb(0x1e3a8a)).opacity(0.35)
+                } else {
+                    white().opacity(0.05)
+                })
+                .text_xs()
+                .text_color(white().opacity(if active { 0.95 } else { 0.72 }))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(turns.to_string());
+            if !active {
+                chip = chip.hover(|s| s.bg(white().opacity(0.1))).cursor_pointer();
+            }
+            context_turn_buttons = context_turn_buttons.child(chip.on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.on_set_context_turns(turns, cx);
+                }),
+            ));
         }
         let mode_button = |label: &'static str, mode: CodexReasoningMode, active: bool| {
             let mut chip = div()
@@ -4628,7 +4836,7 @@ impl Render for AiAgentsPage {
                     .text_color(white().opacity(0.5))
                     .whitespace_normal()
                     .child(
-                        "Connect OpenCode first. Anica talks to anica-acp, which proxies opencode acp and forwards ACP session/new configOptions.",
+                        "Connect OpenCode first. Anica uses opencode acp only to discover native model configOptions.",
                     )
             } else {
                 opencode_model_buttons
@@ -4661,7 +4869,7 @@ impl Render for AiAgentsPage {
                         .text_color(white().opacity(0.5))
                         .whitespace_normal()
                         .child(
-                            "OpenCode runs through bundled anica-acp; anica-acp spawns `opencode acp` behind the scenes. Configure provider credentials with `opencode auth login` or OpenCode config/env.",
+                            "OpenCode prompts run through the Anica tool router, then use `opencode run` as the LLM backend. Configure provider credentials with `opencode auth login` or OpenCode config/env.",
                         ),
                 )
                 .child(
@@ -4961,7 +5169,7 @@ impl Render for AiAgentsPage {
                         div()
                             .text_xs()
                             .text_color(white().opacity(0.45))
-                            .child("Tip: all providers default to bundled anica-acp. OpenCode model choices are proxied from native `opencode acp` behind anica-acp."),
+                            .child("Tip: all providers default to bundled anica-acp. OpenCode prompts use the Anica router; native `opencode acp` is used only for model configOptions."),
                     )
             )
             .child(
@@ -4972,6 +5180,32 @@ impl Render for AiAgentsPage {
                         cx.notify();
                     }),
                 )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.58))
+                                    .child("Context Turns"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(white().opacity(0.42))
+                                    .child("Recent chat turns included with each ACP prompt."),
+                            ),
+                    )
+                    .child(context_turn_buttons),
             )
             .child(
                 div()
@@ -5044,6 +5278,29 @@ mod tests {
             AI_CHAT_MAX_CONVERSATION_MESSAGES
         );
         assert_eq!(messages.first().map(|msg| msg.text.as_str()), Some("u1"));
+    }
+
+    #[test]
+    fn recent_chat_context_excludes_system_and_pending_messages() {
+        let mut messages = vec![
+            msg(AiChatRole::System, "Router turn 1/8."),
+            msg(AiChatRole::User, "first user"),
+            msg(AiChatRole::Assistant, "first assistant"),
+            msg(AiChatRole::System, "Tool call: subtitle/import_srt"),
+            msg(AiChatRole::User, "second user"),
+        ];
+        let mut pending = msg(AiChatRole::Assistant, "pending hidden draft");
+        pending.pending = true;
+        messages.push(pending);
+
+        let context = AiAgentsPage::build_recent_chat_context(&messages, 3);
+
+        assert!(context.contains("first user"));
+        assert!(context.contains("first assistant"));
+        assert!(context.contains("second user"));
+        assert!(!context.contains("Router turn"));
+        assert!(!context.contains("Tool call"));
+        assert!(!context.contains("pending hidden draft"));
     }
 
     #[test]

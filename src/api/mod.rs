@@ -6,6 +6,7 @@ pub mod motionloom;
 pub mod preview;
 pub mod project;
 pub mod proxy;
+pub mod subtitle;
 pub mod timeline;
 pub mod transport_acp;
 pub mod types;
