@@ -1,6 +1,8 @@
 // =========================================
 // =========================================
 // src/ui/app_root.rs
+use std::time::Duration;
+
 use gpui::{
     ClipboardItem, Context, Entity, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, Subscription, Window, div, img,
@@ -36,7 +38,20 @@ use gpui_component::{
 
 // Keep this in sync with the timeline panel fixed height so global mouse-up
 // logic does not cancel drag/drop before timeline handlers run.
-const TIMELINE_PANEL_HEIGHT_PX: f32 = 364.0;
+const TIMELINE_PANEL_HEIGHT_PX: f32 = 390.0;
+const APP_NAV_WIDTH_PX: f32 = 64.0;
+const TIMELINE_LEFT_TOOL_WIDTH_PX: f32 = 44.0;
+const TIMELINE_TRACK_LIST_WIDTH_PX: f32 = 150.0;
+const TIMELINE_HEADER_HEIGHT_PX: f32 = 66.0;
+
+fn fmt_mmss_millis(d: Duration) -> String {
+    let total_ms = d.as_millis() as u64;
+    let ms = total_ms % 1000;
+    let total_sec = total_ms / 1000;
+    let m = total_sec / 60;
+    let s = total_sec % 60;
+    format!("{:02}:{:02}.{:03}", m, s, ms)
+}
 
 pub struct AppRoot {
     pub global: Entity<GlobalState>,
@@ -2057,6 +2072,52 @@ impl Render for AppRoot {
         } else {
             div()
         };
+        let timeline_playback_overlay = if active_page == AppPage::Editor {
+            let metrics = self
+                .timeline
+                .update(cx, |timeline, cx| timeline.playback_overlay_metrics(cx));
+            if metrics.playing {
+                let viewport_h = window.viewport_size().height / px(1.0);
+                let timeline_top = (viewport_h - TIMELINE_PANEL_HEIGHT_PX).max(0.0);
+                let body_top = timeline_top + TIMELINE_HEADER_HEIGHT_PX;
+                let body_h = (TIMELINE_PANEL_HEIGHT_PX - TIMELINE_HEADER_HEIGHT_PX).max(1.0);
+                let playhead_x = APP_NAV_WIDTH_PX
+                    + TIMELINE_LEFT_TOOL_WIDTH_PX
+                    + TIMELINE_TRACK_LIST_WIDTH_PX
+                    + metrics.playhead.as_secs_f32() * metrics.px_per_sec
+                    - metrics.scroll_offset_x;
+
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(APP_NAV_WIDTH_PX + 56.0))
+                            .top(px(timeline_top + 12.0))
+                            .font_family("Mono")
+                            .text_size(px(18.0))
+                            .text_color(rgb(0x3b82f6))
+                            .child(fmt_mmss_millis(metrics.playhead)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(playhead_x))
+                            .top(px(body_top))
+                            .w(px(2.0))
+                            .h(px(body_h))
+                            .bg(rgb(0x3b82f6)),
+                    )
+            } else {
+                div()
+            }
+        } else {
+            div()
+        };
 
         let nav_button = |icon_path: &'static str, page: AppPage, active: bool| {
             let global_for_nav = self.global.clone();
@@ -2217,6 +2278,7 @@ impl Render for AppRoot {
             })
             .child(inspector_expand_toggle)
             .child(media_drag_ghost)
+            .child(timeline_playback_overlay)
             .child(display_modal_overlay)
             .child(export_modal_overlay)
             .child(media_pool_expand_modal_overlay)

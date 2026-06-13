@@ -5250,7 +5250,23 @@ impl Element for VideoElement {
                         };
                         let dest_bounds = self.fitted_bounds(bounds, width, height);
                         let params = self.build_surface_params_anica(&dest_bounds);
+                        let draw_started = Instant::now();
                         window.paint_bgra_frame_anica(dest_bounds, surface, params);
+                        if ffmpeg_preview_debug_enabled() {
+                            static WINDOWS_BGRA_DRAW_TIMING_COUNT: AtomicU64 = AtomicU64::new(0);
+                            let hit =
+                                WINDOWS_BGRA_DRAW_TIMING_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                            if hit <= 20 || hit % 60 == 0 {
+                                log::info!(
+                                    "[VideoElement][FFmpegPreview] d3d11_bgra_draw hit={} video_id={} frame={}x{} draw_ms={:.2}",
+                                    hit,
+                                    self.video.id(),
+                                    width,
+                                    height,
+                                    draw_started.elapsed().as_secs_f64() * 1000.0,
+                                );
+                            }
+                        }
                         return;
                     }
                 } else {
@@ -5447,11 +5463,26 @@ impl Element for VideoElement {
                     } else {
                         self.build_surface_params_anica(&dest_bounds)
                     };
+                    let draw_started = Instant::now();
                     window.paint_bgra_frame_anica(
                         dest_bounds,
                         gpui::BgraFrameSurface::CvPixelBuffer(surface),
                         params,
                     );
+                    if ffmpeg_preview_debug_enabled() {
+                        static MAC_BGRA_DRAW_TIMING_COUNT: AtomicU64 = AtomicU64::new(0);
+                        let hit = MAC_BGRA_DRAW_TIMING_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                        if hit <= 20 || hit % 60 == 0 {
+                            log::info!(
+                                "[VideoElement][FFmpegPreview] cvpixelbuffer_bgra_draw hit={} video_id={} frame={}x{} draw_ms={:.2}",
+                                hit,
+                                self.video.id(),
+                                width,
+                                height,
+                                draw_started.elapsed().as_secs_f64() * 1000.0,
+                            );
+                        }
+                    }
                     return;
                 }
             }

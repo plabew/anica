@@ -73,6 +73,8 @@ const AUDIO_CLIP_CLUSTER_GAP_PX: f32 = 2.0;
 const TIMELINE_LOW_LOAD_MAX_SEGMENTS: usize = 320;
 const TIMELINE_LOW_LOAD_MIN_SEGMENT_PX: f32 = 1.5;
 const TIMELINE_LOW_LOAD_MERGE_GAP_PX: f32 = 1.0;
+const TIMELINE_PLAYING_UI_NOTIFY_MIN_MS: u64 = 100;
+const TIMELINE_PLAYING_STATUS_UPDATE_MIN_MS: u64 = 250;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AudioWaveformDetailLevel {
@@ -91,6 +93,40 @@ struct AudioWaveformOverlayRect {
 struct LowLoadSegmentRect {
     left: f32,
     width: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum TimelineLowLoadLaneKind {
+    V1,
+    Audio(usize),
+    VideoOverlay(usize),
+    Subtitle(usize),
+    Semantic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct TimelineLowLoadCacheKey {
+    body_sig: u64,
+    lane: TimelineLowLoadLaneKind,
+    px_per_sec_q: i32,
+    window_start_ms: i64,
+    window_end_ms: i64,
+}
+
+#[derive(Default)]
+struct TimelineBodyCache {
+    body_sig: Option<u64>,
+    low_load_segments: HashMap<TimelineLowLoadCacheKey, Vec<LowLoadSegmentRect>>,
+}
+
+impl TimelineBodyCache {
+    fn reset_if_changed(&mut self, body_sig: u64) {
+        if self.body_sig == Some(body_sig) {
+            return;
+        }
+        self.body_sig = Some(body_sig);
+        self.low_load_segments.clear();
+    }
 }
 
 // DragState stores TrackType directly instead of the old track_idx field.
@@ -204,7 +240,19 @@ pub struct TimelinePanel {
     audio_lane_clip_end_index: Vec<Vec<f32>>,
     ui_fps_last_instant: Option<Instant>,
     ui_fps_ema: f32,
+    playback_ui_notify_last_instant: Option<Instant>,
+    playback_status_last_instant: Option<Instant>,
+    playback_track_db_summary: String,
+    timeline_body_cache: TimelineBodyCache,
     timeline_load_mode: TimelineLoadMode,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TimelinePlaybackOverlayMetrics {
+    pub playing: bool,
+    pub playhead: Duration,
+    pub px_per_sec: f32,
+    pub scroll_offset_x: f32,
 }
 
 impl Focusable for TimelinePanel {
@@ -336,6 +384,22 @@ fn dur_to_px(d: Duration, px_per_sec: f32) -> f32 {
     d.as_secs_f32() * px_per_sec
 }
 
+fn timeline_quantized_px_per_sec(px_per_sec: f32) -> i32 {
+    if px_per_sec.is_finite() {
+        (px_per_sec * 100.0).round() as i32
+    } else {
+        0
+    }
+}
+
+fn timeline_quantized_ms(seconds: f32) -> i64 {
+    if seconds.is_finite() {
+        (seconds.max(0.0) * 1000.0).round() as i64
+    } else {
+        0
+    }
+}
+
 fn waveform_bucket_count_for_media_duration(media_duration: Duration) -> usize {
     let secs = media_duration.as_secs_f32().max(1.0);
     ((secs * AUDIO_WAVEFORM_BUCKETS_PER_SEC).round() as usize)
@@ -368,6 +432,22 @@ fn audio_waveform_extreme_threshold() -> usize {
             .and_then(|raw| raw.trim().parse::<usize>().ok())
             .filter(|value| *value >= 16)
             .unwrap_or(AUDIO_WAVEFORM_EXTREME_CLIP_THRESHOLD_DEFAULT)
+    })
+}
+
+fn timeline_perf_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ANICA_DEBUG_FFMPEG_PREVIEW")
+            .ok()
+            .map(|raw| {
+                let value = raw.trim();
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+                    || value.eq_ignore_ascii_case("on")
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -516,7 +596,7 @@ fn get_dynamic_ruler_steps(px_per_sec: f32) -> (u64, u64, u64) {
     (minor, major, label_step)
 }
 
-fn timeline_state_sig(gs: &GlobalState) -> u64 {
+fn timeline_body_structure_sig(gs: &GlobalState) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::mem::discriminant;
@@ -529,14 +609,24 @@ fn timeline_state_sig(gs: &GlobalState) -> u64 {
     gs.selected_subtitle_ids.hash(&mut h);
     gs.selected_layer_effect_clip_id().hash(&mut h);
     gs.selected_semantic_clip_id().hash(&mut h);
-    // Playback control (play/pause transitions not covered by Tick)
-    gs.is_playing.hash(&mut h);
     // Tool / display mode
     discriminant(&gs.active_tool).hash(&mut h);
     discriminant(&gs.v1_move_mode).hash(&mut h);
     discriminant(&gs.preview_quality).hash(&mut h);
     discriminant(&gs.preview_resolution).hash(&mut h);
     discriminant(&gs.preview_fps).hash(&mut h);
+    gs.pending_trim_to_fit.is_some().hash(&mut h);
+    h.finish()
+}
+
+fn timeline_panel_sig(gs: &GlobalState) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut h = DefaultHasher::new();
+    timeline_body_structure_sig(gs).hash(&mut h);
+    // Playback control (play/pause transitions not covered by Tick)
+    gs.is_playing.hash(&mut h);
     // Canvas dimensions
     gs.canvas_w.to_bits().hash(&mut h);
     gs.canvas_h.to_bits().hash(&mut h);
@@ -549,21 +639,174 @@ fn timeline_state_sig(gs: &GlobalState) -> u64 {
     gs.export_last_out_path.hash(&mut h);
     // UI notices
     gs.ui_notice.hash(&mut h);
-    gs.pending_trim_to_fit.is_some().hash(&mut h);
     h.finish()
 }
 
 impl TimelinePanel {
+    fn should_notify_for_playback_ui(&mut self) -> bool {
+        let now = Instant::now();
+        let should_notify = self
+            .playback_ui_notify_last_instant
+            .map(|last| {
+                now.saturating_duration_since(last)
+                    >= Duration::from_millis(TIMELINE_PLAYING_UI_NOTIFY_MIN_MS)
+            })
+            .unwrap_or(true);
+        if should_notify {
+            self.playback_ui_notify_last_instant = Some(now);
+        }
+        should_notify
+    }
+
+    fn effective_low_load_mode(&self, playing: bool) -> bool {
+        self.timeline_load_mode.use_low_load(playing)
+    }
+
+    fn track_db_summary_for_render(
+        &mut self,
+        playing: bool,
+        playhead: Duration,
+        cx: &mut Context<TimelinePanel>,
+    ) -> String {
+        let now = Instant::now();
+        let should_refresh = !playing
+            || self.playback_track_db_summary.is_empty()
+            || self
+                .playback_status_last_instant
+                .map(|last| {
+                    now.saturating_duration_since(last)
+                        >= Duration::from_millis(TIMELINE_PLAYING_STATUS_UPDATE_MIN_MS)
+                })
+                .unwrap_or(true);
+
+        if should_refresh {
+            let summary = {
+                let gs = self.global.read(cx);
+                Self::all_tracks_db_summary(gs, playhead)
+            };
+            self.playback_track_db_summary = summary;
+            self.playback_status_last_instant = Some(now);
+        }
+
+        self.playback_track_db_summary.clone()
+    }
+
+    fn low_load_cache_key(
+        body_sig: u64,
+        lane: TimelineLowLoadLaneKind,
+        px_per_sec: f32,
+        window_start_sec: f32,
+        window_end_sec: f32,
+    ) -> TimelineLowLoadCacheKey {
+        TimelineLowLoadCacheKey {
+            body_sig,
+            lane,
+            px_per_sec_q: timeline_quantized_px_per_sec(px_per_sec),
+            window_start_ms: timeline_quantized_ms(window_start_sec),
+            window_end_ms: timeline_quantized_ms(window_end_sec),
+        }
+    }
+
+    fn cached_clip_low_load_segments(
+        &mut self,
+        body_sig: u64,
+        lane: TimelineLowLoadLaneKind,
+        clips: &[Clip],
+        clip_start_index: Option<&[f32]>,
+        clip_end_index: Option<&[f32]>,
+        px_per_sec: f32,
+        window_start_sec: f32,
+        window_end_sec: f32,
+    ) -> Vec<LowLoadSegmentRect> {
+        let key =
+            Self::low_load_cache_key(body_sig, lane, px_per_sec, window_start_sec, window_end_sec);
+        if let Some(segments) = self.timeline_body_cache.low_load_segments.get(&key) {
+            return segments.clone();
+        }
+        let segments = Self::build_clip_low_load_segments(
+            clips,
+            clip_start_index,
+            clip_end_index,
+            px_per_sec,
+            window_start_sec,
+            window_end_sec,
+        );
+        self.timeline_body_cache
+            .low_load_segments
+            .insert(key, segments.clone());
+        segments
+    }
+
+    fn cached_subtitle_low_load_segments(
+        &mut self,
+        body_sig: u64,
+        lane: TimelineLowLoadLaneKind,
+        clips: &[SubtitleClip],
+        px_per_sec: f32,
+        window_start_sec: f32,
+        window_end_sec: f32,
+    ) -> Vec<LowLoadSegmentRect> {
+        let key =
+            Self::low_load_cache_key(body_sig, lane, px_per_sec, window_start_sec, window_end_sec);
+        if let Some(segments) = self.timeline_body_cache.low_load_segments.get(&key) {
+            return segments.clone();
+        }
+        let segments = Self::build_subtitle_low_load_segments(
+            clips,
+            px_per_sec,
+            window_start_sec,
+            window_end_sec,
+        );
+        self.timeline_body_cache
+            .low_load_segments
+            .insert(key, segments.clone());
+        segments
+    }
+
+    fn cached_semantic_low_load_segments(
+        &mut self,
+        body_sig: u64,
+        lane: TimelineLowLoadLaneKind,
+        clips: &[SemanticClip],
+        px_per_sec: f32,
+        window_start_sec: f32,
+        window_end_sec: f32,
+    ) -> Vec<LowLoadSegmentRect> {
+        let key =
+            Self::low_load_cache_key(body_sig, lane, px_per_sec, window_start_sec, window_end_sec);
+        if let Some(segments) = self.timeline_body_cache.low_load_segments.get(&key) {
+            return segments.clone();
+        }
+        let segments = Self::build_semantic_low_load_segments(
+            clips,
+            px_per_sec,
+            window_start_sec,
+            window_end_sec,
+        );
+        self.timeline_body_cache
+            .low_load_segments
+            .insert(key, segments.clone());
+        segments
+    }
+
     pub fn new(global: Entity<GlobalState>, cx: &mut Context<Self>) -> Self {
         let initial_sig = {
             let gs = global.read(cx);
-            timeline_state_sig(gs)
+            timeline_panel_sig(gs)
         };
         cx.observe(&global, |this, global, cx| {
-            let sig = timeline_state_sig(global.read(cx));
+            let gs = global.read(cx);
+            let sig = timeline_panel_sig(gs);
             if sig != this.state_sig {
                 this.state_sig = sig;
-                cx.notify();
+                if gs.active_page == AppPage::Editor && gs.is_playing {
+                    if this.should_notify_for_playback_ui() {
+                        cx.notify();
+                    }
+                } else {
+                    this.playback_ui_notify_last_instant = None;
+                    cx.notify();
+                }
             }
         })
         .detach();
@@ -573,10 +816,18 @@ impl TimelinePanel {
             }
         })
         .detach();
-        cx.subscribe(&global, |_, global, evt: &PlaybackUiEvent, cx| {
-            if matches!(evt, PlaybackUiEvent::Tick)
-                && global.read(cx).active_page == AppPage::Editor
-            {
+        cx.subscribe(&global, |this, global, evt: &PlaybackUiEvent, cx| {
+            if !matches!(evt, PlaybackUiEvent::Tick) {
+                return;
+            }
+            let gs = global.read(cx);
+            if gs.active_page != AppPage::Editor {
+                return;
+            }
+            if gs.is_playing {
+                return;
+            } else {
+                this.playback_ui_notify_last_instant = None;
                 cx.notify();
             }
         })
@@ -619,13 +870,27 @@ impl TimelinePanel {
             audio_lane_clip_end_index: Vec::new(),
             ui_fps_last_instant: None,
             ui_fps_ema: 0.0,
+            playback_ui_notify_last_instant: None,
+            playback_status_last_instant: None,
+            playback_track_db_summary: String::new(),
+            timeline_body_cache: TimelineBodyCache::default(),
             timeline_load_mode: TimelineLoadMode::Normal,
         }
     }
 
     pub fn is_low_load_mode_effective(&self, cx: &gpui::App) -> bool {
         let playing = self.global.read(cx).is_playing;
-        self.timeline_load_mode.use_low_load(playing)
+        self.effective_low_load_mode(playing)
+    }
+
+    pub fn playback_overlay_metrics(&self, cx: &gpui::App) -> TimelinePlaybackOverlayMetrics {
+        let gs = self.global.read(cx);
+        TimelinePlaybackOverlayMetrics {
+            playing: gs.active_page == AppPage::Editor && gs.is_playing,
+            playhead: gs.playhead,
+            px_per_sec: self.px_per_sec,
+            scroll_offset_x: self.scroll_offset_x,
+        }
     }
 
     fn ensure_audio_lane_time_index(&mut self, tracks: &[AudioTrack], timeline_edit_token: u64) {
@@ -2782,32 +3047,16 @@ impl TimelinePanel {
         merged
     }
 
-    fn render_lane_low_load(
+    fn build_clip_low_load_segments(
         clips: &[Clip],
         clip_start_index: Option<&[f32]>,
         clip_end_index: Option<&[f32]>,
         px_per_sec: f32,
         window_start_sec: f32,
         window_end_sec: f32,
-        is_audio: bool,
-        is_media_drop_hovered: bool,
-    ) -> gpui::Div {
-        let mut lane = div()
-            .h(px(LANE_H))
-            .w_full()
-            .flex_shrink_0()
-            .relative()
-            .bg(if is_media_drop_hovered {
-                white().opacity(0.14)
-            } else {
-                black().opacity(if is_audio { 0.12 } else { 0.15 })
-            })
-            .border_b_1()
-            .border_color(white().opacity(0.06))
-            .overflow_hidden();
-
+    ) -> Vec<LowLoadSegmentRect> {
         if clips.is_empty() {
-            return lane;
+            return Vec::new();
         }
 
         let t_start = Duration::from_secs_f32(window_start_sec.max(0.0));
@@ -2832,7 +3081,7 @@ impl TimelinePanel {
         };
         let visible_count = end_exclusive.saturating_sub(i);
         if visible_count == 0 {
-            return lane;
+            return Vec::new();
         }
         let chunk_size = visible_count
             .div_ceil(TIMELINE_LOW_LOAD_MAX_SEGMENTS)
@@ -2860,7 +3109,28 @@ impl TimelinePanel {
                 });
             }
         }
-        let segments = Self::compact_low_load_segments(segments);
+        Self::compact_low_load_segments(segments)
+    }
+
+    fn render_lane_low_load_segments(
+        segments: Vec<LowLoadSegmentRect>,
+        is_audio: bool,
+        is_media_drop_hovered: bool,
+    ) -> gpui::Div {
+        let mut lane = div()
+            .h(px(LANE_H))
+            .w_full()
+            .flex_shrink_0()
+            .relative()
+            .bg(if is_media_drop_hovered {
+                white().opacity(0.14)
+            } else {
+                black().opacity(if is_audio { 0.12 } else { 0.15 })
+            })
+            .border_b_1()
+            .border_color(white().opacity(0.06))
+            .overflow_hidden();
+
         if segments.is_empty() {
             return lane;
         }
@@ -2904,24 +3174,14 @@ impl TimelinePanel {
         lane
     }
 
-    fn render_subtitle_lane_low_load(
+    fn build_subtitle_low_load_segments(
         clips: &[SubtitleClip],
         px_per_sec: f32,
         window_start_sec: f32,
         window_end_sec: f32,
-    ) -> gpui::Div {
-        let mut lane = div()
-            .h(px(LANE_H))
-            .w_full()
-            .flex_shrink_0()
-            .relative()
-            .bg(black().opacity(0.12))
-            .border_b_1()
-            .border_color(white().opacity(0.06))
-            .overflow_hidden();
-
+    ) -> Vec<LowLoadSegmentRect> {
         if clips.is_empty() {
-            return lane;
+            return Vec::new();
         }
 
         let t_start = Duration::from_secs_f32(window_start_sec.max(0.0));
@@ -2942,7 +3202,20 @@ impl TimelinePanel {
             }
             i += 1;
         }
-        let segments = Self::compact_low_load_segments(segments);
+        Self::compact_low_load_segments(segments)
+    }
+
+    fn render_subtitle_lane_low_load_segments(segments: Vec<LowLoadSegmentRect>) -> gpui::Div {
+        let mut lane = div()
+            .h(px(LANE_H))
+            .w_full()
+            .flex_shrink_0()
+            .relative()
+            .bg(black().opacity(0.12))
+            .border_b_1()
+            .border_color(white().opacity(0.06))
+            .overflow_hidden();
+
         if segments.is_empty() {
             return lane;
         }
@@ -2981,24 +3254,14 @@ impl TimelinePanel {
         lane
     }
 
-    fn render_semantic_lane_low_load(
+    fn build_semantic_low_load_segments(
         clips: &[SemanticClip],
         px_per_sec: f32,
         window_start_sec: f32,
         window_end_sec: f32,
-    ) -> gpui::Div {
-        let mut lane = div()
-            .h(px(LANE_H))
-            .w_full()
-            .flex_shrink_0()
-            .relative()
-            .bg(black().opacity(0.17))
-            .border_b_1()
-            .border_color(white().opacity(0.06))
-            .overflow_hidden();
-
+    ) -> Vec<LowLoadSegmentRect> {
         if clips.is_empty() {
-            return lane;
+            return Vec::new();
         }
 
         let t_start = Duration::from_secs_f32(window_start_sec.max(0.0));
@@ -3019,7 +3282,20 @@ impl TimelinePanel {
             }
             i += 1;
         }
-        let segments = Self::compact_low_load_segments(segments);
+        Self::compact_low_load_segments(segments)
+    }
+
+    fn render_semantic_lane_low_load_segments(segments: Vec<LowLoadSegmentRect>) -> gpui::Div {
+        let mut lane = div()
+            .h(px(LANE_H))
+            .w_full()
+            .flex_shrink_0()
+            .relative()
+            .bg(black().opacity(0.17))
+            .border_b_1()
+            .border_color(white().opacity(0.06))
+            .overflow_hidden();
+
         if segments.is_empty() {
             return lane;
         }
@@ -3932,6 +4208,7 @@ impl Render for TimelinePanel {
             playing,
             active_tool,
             timeline_edit_token,
+            timeline_body_sig,
             playhead,
             selected_clip_ids,
             selected_subtitle_ids,
@@ -3973,6 +4250,7 @@ impl Render for TimelinePanel {
                 gs.is_playing,
                 gs.active_tool,
                 gs.timeline_edit_token(),
+                timeline_body_structure_sig(gs),
                 gs.playhead,
                 gs.selected_clip_ids.clone(),
                 gs.selected_subtitle_ids.clone(),
@@ -4011,7 +4289,8 @@ impl Render for TimelinePanel {
         self.ensure_audio_lane_time_index(&audio_tracks_data, timeline_edit_token);
 
         let play_label: &'static str = if playing { "Pause" } else { "Play" };
-        let timeline_low_load_mode = self.timeline_load_mode.use_low_load(playing);
+        let timeline_low_load_mode = self.effective_low_load_mode(playing);
+        self.timeline_body_cache.reset_if_changed(timeline_body_sig);
         let show_fps_counters = !timeline_low_load_mode;
         if playing && show_fps_counters {
             let now = Instant::now();
@@ -4024,6 +4303,22 @@ impl Render for TimelinePanel {
                     } else {
                         self.ui_fps_ema * 0.90 + sample_fps * 0.10
                     };
+                    if timeline_perf_debug_enabled() {
+                        static TIMELINE_UI_RENDER_TIMING_COUNT: std::sync::atomic::AtomicU64 =
+                            std::sync::atomic::AtomicU64::new(0);
+                        let hit = TIMELINE_UI_RENDER_TIMING_COUNT
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            + 1;
+                        if hit <= 20 || hit % 30 == 0 {
+                            log::info!(
+                                "[TimelinePanel][FFmpegPreview] ui_repaint hit={} dt_ms={:.2} ema_fps={:.1} throttled_min_ms={}",
+                                hit,
+                                dt * 1000.0,
+                                self.ui_fps_ema,
+                                TIMELINE_PLAYING_UI_NOTIFY_MIN_MS,
+                            );
+                        }
+                    }
                 }
             }
             self.ui_fps_last_instant = Some(now);
@@ -5458,6 +5753,37 @@ impl Render for TimelinePanel {
             let global_bg_click = self.global.clone();
             let global_for_this_lane = self.global.clone(); // Each lane keeps its own state handle.
             let lane_is_hovered = self.media_pool_hover_track == Some(TrackType::Audio(idx));
+            let audio_clip_start_index = self.audio_lane_clip_start_index.get(idx).cloned();
+            let audio_clip_end_index = self.audio_lane_clip_end_index.get(idx).cloned();
+            let lane_child = if timeline_low_load_mode {
+                let segments = self.cached_clip_low_load_segments(
+                    timeline_body_sig,
+                    TimelineLowLoadLaneKind::Audio(idx),
+                    &track.clips,
+                    audio_clip_start_index.as_deref(),
+                    audio_clip_end_index.as_deref(),
+                    current_px_per_sec,
+                    lane_window_start_sec,
+                    lane_window_end_sec,
+                );
+                Self::render_lane_low_load_segments(segments, true, lane_is_hovered)
+            } else {
+                Self::render_lane(
+                    &track.clips,
+                    audio_clip_start_index.as_deref(),
+                    audio_clip_end_index.as_deref(),
+                    &selected_clip_ids,
+                    current_px_per_sec,
+                    lane_window_start_sec,
+                    lane_window_end_sec,
+                    true,
+                    lane_is_hovered,
+                    TrackType::Audio(idx),
+                    cx,
+                    active_tool,
+                    global_for_this_lane,
+                )
+            };
 
             let lane_div = div()
                 .w_full()
@@ -5548,34 +5874,7 @@ impl Render for TimelinePanel {
                         cx.focus_self(win);
                     }),
                 )
-                .child(if timeline_low_load_mode {
-                    Self::render_lane_low_load(
-                        &track.clips,
-                        self.audio_lane_clip_start_index.get(idx).map(Vec::as_slice),
-                        self.audio_lane_clip_end_index.get(idx).map(Vec::as_slice),
-                        current_px_per_sec,
-                        lane_window_start_sec,
-                        lane_window_end_sec,
-                        true,
-                        lane_is_hovered,
-                    )
-                } else {
-                    Self::render_lane(
-                        &track.clips,
-                        self.audio_lane_clip_start_index.get(idx).map(Vec::as_slice),
-                        self.audio_lane_clip_end_index.get(idx).map(Vec::as_slice),
-                        &selected_clip_ids,
-                        current_px_per_sec,
-                        lane_window_start_sec,
-                        lane_window_end_sec,
-                        true,
-                        lane_is_hovered,
-                        TrackType::Audio(idx),
-                        cx,
-                        active_tool,
-                        global_for_this_lane,
-                    )
-                });
+                .child(lane_child);
 
             audio_lane_divs.push(lane_div);
         }
@@ -5584,6 +5883,29 @@ impl Render for TimelinePanel {
         for (idx, track) in subtitle_tracks_data.iter().enumerate() {
             let global_bg_click = self.global.clone();
             let global_for_this_lane = self.global.clone();
+            let lane_child = if timeline_low_load_mode {
+                let segments = self.cached_subtitle_low_load_segments(
+                    timeline_body_sig,
+                    TimelineLowLoadLaneKind::Subtitle(idx),
+                    &track.clips,
+                    current_px_per_sec,
+                    lane_window_start_sec,
+                    lane_window_end_sec,
+                );
+                Self::render_subtitle_lane_low_load_segments(segments)
+            } else {
+                Self::render_subtitle_lane(
+                    &track.clips,
+                    &selected_subtitle_ids,
+                    current_px_per_sec,
+                    lane_window_start_sec,
+                    lane_window_end_sec,
+                    idx,
+                    cx,
+                    active_tool,
+                    global_for_this_lane,
+                )
+            };
 
             let lane_div = div()
                 .w_full()
@@ -5647,26 +5969,7 @@ impl Render for TimelinePanel {
                         });
                     }),
                 )
-                .child(if timeline_low_load_mode {
-                    Self::render_subtitle_lane_low_load(
-                        &track.clips,
-                        current_px_per_sec,
-                        lane_window_start_sec,
-                        lane_window_end_sec,
-                    )
-                } else {
-                    Self::render_subtitle_lane(
-                        &track.clips,
-                        &selected_subtitle_ids,
-                        current_px_per_sec,
-                        lane_window_start_sec,
-                        lane_window_end_sec,
-                        idx,
-                        cx,
-                        active_tool,
-                        global_for_this_lane,
-                    )
-                });
+                .child(lane_child);
 
             subtitle_lane_divs.push(lane_div);
         }
@@ -5724,10 +6027,7 @@ impl Render for TimelinePanel {
             None
         };
 
-        let track_db_summary = {
-            let gs = self.global.read(cx);
-            Self::all_tracks_db_summary(gs, playhead)
-        };
+        let track_db_summary = self.track_db_summary_for_render(playing, playhead, cx);
         let audio_gain_rows: Vec<(String, String, f32, Entity<SliderState>)> =
             if timeline_low_load_mode {
                 Vec::new()
@@ -6597,7 +6897,7 @@ impl Render for TimelinePanel {
                             .flex_shrink_0()
                             .gap_3()
                             .child(div().text_sm().text_color(white().opacity(0.85)).child("Time"))
-                            .child(div().font_family("Mono").text_size(px(18.0)).text_color(rgb(0x3b82f6)).child(fmt_mmss_millis(playhead))),
+                            .child(div().font_family("Mono").text_size(px(18.0)).text_color(if playing { rgba(0x3b82f600) } else { rgb(0x3b82f6) }).child(fmt_mmss_millis(playhead))),
                     )
 
 
@@ -7150,12 +7450,15 @@ impl Render for TimelinePanel {
                                                                     }),
                                                                 )
                                                                 .child(if timeline_low_load_mode {
-                                                                    Self::render_semantic_lane_low_load(
+                                                                    let segments = self.cached_semantic_low_load_segments(
+                                                                        timeline_body_sig,
+                                                                        TimelineLowLoadLaneKind::Semantic,
                                                                         &semantic_clips,
                                                                         current_px_per_sec,
                                                                         lane_window_start_sec,
                                                                         lane_window_end_sec,
-                                                                    )
+                                                                    );
+                                                                    Self::render_semantic_lane_low_load_segments(segments)
                                                                 } else {
                                                                     Self::render_semantic_lane(
                                                                         &semantic_clips,
@@ -7268,13 +7571,18 @@ impl Render for TimelinePanel {
                                                                 }))
                                                                 .child({
                                                                     if timeline_low_load_mode {
-                                                                        let mut lane = Self::render_lane_low_load(
+                                                                        let segments = self.cached_clip_low_load_segments(
+                                                                            timeline_body_sig,
+                                                                            TimelineLowLoadLaneKind::VideoOverlay(idx),
                                                                             &track.clips,
                                                                             None,
                                                                             None,
                                                                             current_px_per_sec,
                                                                             lane_window_start_sec,
                                                                             lane_window_end_sec,
+                                                                        );
+                                                                        let mut lane = Self::render_lane_low_load_segments(
+                                                                            segments,
                                                                             false,
                                                                             lane_is_hovered,
                                                                         );
@@ -7414,13 +7722,18 @@ impl Render for TimelinePanel {
                                                                 }
                                                             }))
                                                             .child(if timeline_low_load_mode {
-                                                                Self::render_lane_low_load(
+                                                                let segments = self.cached_clip_low_load_segments(
+                                                                    timeline_body_sig,
+                                                                    TimelineLowLoadLaneKind::V1,
                                                                     &v1_clips,
                                                                     None,
                                                                     None,
                                                                     current_px_per_sec,
                                                                     lane_window_start_sec,
                                                                     lane_window_end_sec,
+                                                                );
+                                                                Self::render_lane_low_load_segments(
+                                                                    segments,
                                                                     false,
                                                                     self.media_pool_hover_track
                                                                         == Some(TrackType::V1),
@@ -7451,7 +7764,11 @@ impl Render for TimelinePanel {
 
                                             // Playhead Overlay
                                             .child(div().absolute().top(px(RULER_H - 1.0)).left(px(0.0)).h(px(2.0)).w_full().bg(rgb(0xd04a4a)))
-                                            .child(div().absolute().top_0().bottom_0().left(px(playhead_x)).w(px(2.0)).bg(rgb(0x3b82f6))),
+                                            .child(if playing {
+                                                div()
+                                            } else {
+                                                div().absolute().top_0().bottom_0().left(px(playhead_x)).w(px(2.0)).bg(rgb(0x3b82f6))
+                                            }),
                                     )
                             ),
                     )

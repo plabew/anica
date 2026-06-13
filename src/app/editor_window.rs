@@ -3,7 +3,7 @@
 // src/app/editor_window.rs
 use gpui::{App, AppContext, Bounds, Context, WindowBounds, WindowOptions, size};
 
-use crate::core::global_state::{GlobalState, MediaPoolUiEvent};
+use crate::core::global_state::{AppPage, GlobalState, MediaPoolUiEvent, PlaybackUiEvent};
 use crate::ui::ai_agents_page::AiAgentsPage;
 use crate::ui::ai_srt_page::AiSrtPage;
 use crate::ui::app_root::AppRoot;
@@ -92,6 +92,18 @@ pub fn open_editor_window(cx: &mut App) -> gpui::Entity<GlobalState> {
                             MediaPoolUiEvent::StateChanged | MediaPoolUiEvent::DragCursorChanged
                         ) {
                             cx.notify();
+                        }
+                    },
+                )
+                .detach();
+                cx.subscribe(
+                    &global_for_app_root,
+                    |_, global, event: &PlaybackUiEvent, cx| {
+                        if matches!(event, PlaybackUiEvent::Tick) {
+                            let gs = global.read(cx);
+                            if gs.active_page == AppPage::Editor && gs.is_playing {
+                                cx.notify();
+                            }
                         }
                     },
                 )

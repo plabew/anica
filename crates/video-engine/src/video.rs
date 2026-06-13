@@ -651,6 +651,7 @@ impl Video {
                     let mut metric_read_max_us = 0u128;
                     let mut metric_publish_us = 0u128;
                     let mut metric_publish_max_us = 0u128;
+                    let mut metric_mailbox_overwrites = 0u64;
                     let mut retry_without_hwaccel = false;
                     loop {
                         if !alive_ref.load(Ordering::Acquire)
@@ -717,12 +718,14 @@ impl Video {
                         let capacity = frame_buffer_capacity_ref.load(Ordering::SeqCst);
                         if capacity > 0 {
                             let mut buf = frame_buffer_ref.lock();
+                            // Keep FFmpeg preview as a latest-frame mailbox. Queuing old BGRA
+                            // frames creates visible A/V drift when UI upload is the bottleneck.
+                            buf.clear();
                             buf.push_back(raw);
-                            while buf.len() > capacity {
-                                buf.pop_front();
-                            }
                         }
-                        upload_frame_ref.store(true, Ordering::SeqCst);
+                        if upload_frame_ref.swap(true, Ordering::SeqCst) {
+                            metric_mailbox_overwrites = metric_mailbox_overwrites.saturating_add(1);
+                        }
                         dropped_since_publish = 0;
                         let publish_us = publish_started.elapsed().as_micros();
                         if debug_ffmpeg_preview {
@@ -746,9 +749,16 @@ impl Video {
                                     use_hwaccel,
                                     hwaccel_name,
                                 );
+                                if metric_mailbox_overwrites > 0 {
+                                    log::info!(
+                                        "[Video {id}][FFmpegPreview] mailbox_overwrites={} latest_frame_only=true",
+                                        metric_mailbox_overwrites
+                                    );
+                                }
                                 metric_started = Instant::now();
                                 metric_frames = 0;
                                 metric_dropped = 0;
+                                metric_mailbox_overwrites = 0;
                                 metric_read_us = 0;
                                 metric_read_max_us = 0;
                                 metric_publish_us = 0;

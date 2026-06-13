@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
@@ -68,6 +68,22 @@ const EDITOR_PANEL_W: f32 = 300.0;
 const TIMELINE_PANEL_H: f32 = 364.0;
 const DEFAULT_VISUAL_PLAYER_CACHE_LIMIT: usize = 16;
 const DEFAULT_AUDIO_PLAYER_CACHE_LIMIT: usize = 16;
+
+fn preview_perf_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ANICA_DEBUG_FFMPEG_PREVIEW")
+            .ok()
+            .map(|raw| {
+                let value = raw.trim();
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+                    || value.eq_ignore_ascii_case("on")
+            })
+            .unwrap_or(false)
+    })
+}
 const DEFAULT_IMAGE_CACHE_LIMIT: usize = 32;
 const DEFAULT_IMAGE_MAX_DIM_FULL: u32 = 1280;
 const COLOR_KEY_SCALE: f32 = 1000.0;
@@ -3486,8 +3502,8 @@ impl VideoPreview {
             .retain(|clip_id, _| self.visual_players.contains_key(clip_id));
 
         // Phase 2: Audio
-        if !audio_clips.is_empty() {
-            log::warn!(
+        if preview_perf_debug_enabled() && !audio_clips.is_empty() {
+            log::debug!(
                 "[Audio] audio_clips count={} ids={:?}",
                 audio_clips.len(),
                 audio_clips
