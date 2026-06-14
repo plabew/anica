@@ -3,7 +3,7 @@
 // src/ui/motionloom_page.rs — MotionLoom VFX Studio page with graph preview and template picker
 
 use std::any::Any;
-use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
+use std::collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -23,11 +23,11 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectState},
     white,
 };
-use image::{ImageBuffer, Rgba};
+use image::{ImageBuffer, Rgba, RgbaImage};
 use motionloom::{
     GraphScript, MotionLoomDocument, MotionLoomRenderProgress, RuntimeProgram, SceneRenderProfile,
-    WorldFrameRenderer, WorldGraph, WorldPathStyle, compile_runtime_program, is_graph_script,
-    is_world_graph_script, load_glb_mesh_data, next_scene_output_path_for_profile,
+    SceneRenderer, WorldFrameRenderer, WorldGraph, WorldPathStyle, compile_runtime_program,
+    is_graph_script, is_world_graph_script, load_glb_mesh_data, next_scene_output_path_for_profile,
     parse_graph_script, parse_motionloom_document, parse_process_graph_script,
     parse_world_graph_script, render_motionloom_document_to_video_with_progress,
     render_scene_graph_frame,
@@ -46,11 +46,14 @@ const SCENE_RENDER_PROGRESS_EVERY_FRAMES: u32 = 10;
 const SCENE_RENDER_PROGRESS_POLL_MS: u64 = 120;
 const SCENE_RENDER_LOG_MAX_LINES: usize = 10;
 const SCENE_LIVE_PREVIEW_144P_MAX_DIM: u32 = 256;
+const SCENE_LIVE_PREVIEW_240P_MAX_DIM: u32 = 426;
 const SCENE_LIVE_PREVIEW_360P_MAX_DIM: u32 = 640;
 const SCENE_LIVE_PREVIEW_480P_MAX_DIM: u32 = 854;
 const SCENE_LIVE_SCROLL_RENDER_DEBOUNCE_MS: u64 = 2000;
 const SCENE_LIVE_INPUT_RENDER_DEBOUNCE_MS: u64 = 120;
-const SCENE_LIVE_PRERENDER_MAX_FRAMES: u32 = 240;
+const SCENE_LIVE_PRERENDER_MAX_FRAMES: u32 = 6000;
+const SCENE_LIVE_PREVIEW_FRAME_CACHE_CAPACITY: usize = 6000;
+const SCENE_LIVE_PREVIEW_FRAME_CACHE_MAX_BYTES: usize = 768 * 1024 * 1024;
 const SCENE_LIVE_PRERENDER_POLL_MS: u64 = 16;
 const SCENE_LIVE_IDLE_POLL_MS: u64 = 120;
 const DEFAULT_SCENE_LIVE_NODE_ID: &str = "iris_outer_soft";
@@ -63,6 +66,12 @@ struct WorldLivePreviewRequest {
     frame: u32,
     asset_root: PathBuf,
     response_tx: Sender<Result<(u32, u32, Vec<u8>), String>>,
+}
+
+struct SceneLivePreviewRequest {
+    graph: GraphScript,
+    frame: u32,
+    response_tx: Sender<Result<(u32, u32, Vec<u8>, Option<String>), String>>,
 }
 
 #[cfg(test)]
@@ -165,6 +174,7 @@ impl SceneRenderMode {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum SceneLivePreviewQuality {
     P144,
+    P240,
     P360,
     P480,
 }
@@ -173,6 +183,7 @@ impl SceneLivePreviewQuality {
     const fn label(self) -> &'static str {
         match self {
             SceneLivePreviewQuality::P144 => "144p",
+            SceneLivePreviewQuality::P240 => "240p",
             SceneLivePreviewQuality::P360 => "360p",
             SceneLivePreviewQuality::P480 => "480p",
         }
@@ -181,6 +192,7 @@ impl SceneLivePreviewQuality {
     const fn max_dim(self) -> u32 {
         match self {
             SceneLivePreviewQuality::P144 => SCENE_LIVE_PREVIEW_144P_MAX_DIM,
+            SceneLivePreviewQuality::P240 => SCENE_LIVE_PREVIEW_240P_MAX_DIM,
             SceneLivePreviewQuality::P360 => SCENE_LIVE_PREVIEW_360P_MAX_DIM,
             SceneLivePreviewQuality::P480 => SCENE_LIVE_PREVIEW_480P_MAX_DIM,
         }
@@ -479,11 +491,16 @@ pub struct MotionLoomPage {
     scene_live_preview_cache_key: Option<SceneLivePreviewCacheKey>,
     scene_live_preview_cache_image: Option<LoadedPreview>,
     scene_live_preview_frame_cache: HashMap<SceneLivePreviewCacheKey, LoadedPreview>,
+    scene_live_preview_frame_cache_order: VecDeque<SceneLivePreviewCacheKey>,
+    scene_live_preview_frame_cache_bytes: usize,
+    scene_live_parsed_script_hash: Option<u64>,
+    scene_live_parsed_graph: Option<GraphScript>,
     scene_live_preview_quality: SceneLivePreviewQuality,
     scene_live_render_defer_until: Option<Instant>,
     scene_live_render_defer_token: u64,
     scene_live_async_render_key: Option<SceneLivePreviewCacheKey>,
     scene_live_async_render_token: u64,
+    scene_live_preview_tx: Sender<SceneLivePreviewRequest>,
     world_live_preview_tx: Sender<WorldLivePreviewRequest>,
     scene_live_prerender_token: u64,
     scene_live_prerendering: bool,
@@ -497,6 +514,9 @@ pub struct MotionLoomPage {
     scene_live_knob_input: Option<Entity<InputState>>,
     scene_live_knob_input_sub: Option<Subscription>,
     scene_live_knob_input_syncing: bool,
+    preview_frame_input: Option<Entity<InputState>>,
+    preview_frame_input_sub: Option<Subscription>,
+    preview_frame_input_syncing: bool,
     scene_live_target_offset: usize,
     scene_live_tag_filters: HashSet<String>,
     preview_playing: bool,
@@ -559,11 +579,16 @@ impl MotionLoomPage {
             scene_live_preview_cache_key: None,
             scene_live_preview_cache_image: None,
             scene_live_preview_frame_cache: HashMap::new(),
+            scene_live_preview_frame_cache_order: VecDeque::new(),
+            scene_live_preview_frame_cache_bytes: 0,
+            scene_live_parsed_script_hash: None,
+            scene_live_parsed_graph: None,
             scene_live_preview_quality: SceneLivePreviewQuality::P360,
             scene_live_render_defer_until: None,
             scene_live_render_defer_token: 0,
             scene_live_async_render_key: None,
             scene_live_async_render_token: 0,
+            scene_live_preview_tx: Self::spawn_scene_live_preview_worker(),
             world_live_preview_tx: Self::spawn_world_live_preview_worker(),
             scene_live_prerender_token: 0,
             scene_live_prerendering: false,
@@ -577,6 +602,9 @@ impl MotionLoomPage {
             scene_live_knob_input: None,
             scene_live_knob_input_sub: None,
             scene_live_knob_input_syncing: false,
+            preview_frame_input: None,
+            preview_frame_input_sub: None,
+            preview_frame_input_syncing: false,
             scene_live_target_offset: 0,
             scene_live_tag_filters: HashSet::new(),
             preview_playing: false,
@@ -701,6 +729,61 @@ impl MotionLoomPage {
         PathBuf::from("examples/motionloom/world")
     }
 
+    fn rgba_image_to_bgra(rgba: RgbaImage) -> (u32, u32, Vec<u8>) {
+        let (w, h) = rgba.dimensions();
+        let mut bgra = rgba.into_raw();
+        for px in bgra.chunks_mut(4) {
+            px.swap(0, 2);
+        }
+        (w, h, bgra)
+    }
+
+    fn spawn_scene_live_preview_worker() -> Sender<SceneLivePreviewRequest> {
+        let (request_tx, request_rx) = mpsc::channel::<SceneLivePreviewRequest>();
+        std::thread::spawn(move || {
+            let mut gpu_renderer =
+                pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).ok();
+            let mut cpu_renderer =
+                pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).ok();
+            while let Ok(mut request) = request_rx.recv() {
+                // Keep preview responsive by discarding stale queued frames.
+                while let Ok(next_request) = request_rx.try_recv() {
+                    request = next_request;
+                }
+                let gpu_error = if let Some(renderer) = gpu_renderer.as_mut() {
+                    match pollster::block_on(renderer.render_frame(&request.graph, request.frame)) {
+                        Ok(rgba) => {
+                            let result = Self::rgba_image_to_bgra(rgba);
+                            let _ = request
+                                .response_tx
+                                .send(Ok((result.0, result.1, result.2, None)));
+                            continue;
+                        }
+                        Err(err) => Some(err.to_string()),
+                    }
+                } else {
+                    None
+                };
+                let result = if let Some(renderer) = cpu_renderer.as_mut() {
+                    pollster::block_on(renderer.render_frame(&request.graph, request.frame))
+                        .map(Self::rgba_image_to_bgra)
+                        .map(|(w, h, bgra)| {
+                            let warning = gpu_error
+                                .map(|err| format!("Scene live preview used CPU fallback: {err}"));
+                            (w, h, bgra, warning)
+                        })
+                        .map_err(|err| {
+                            format!("Scene live render error: CPU preview failed: {err}")
+                        })
+                } else {
+                    Err("Scene live render error: no preview renderer initialized.".to_string())
+                };
+                let _ = request.response_tx.send(result);
+            }
+        });
+        request_tx
+    }
+
     fn spawn_world_live_preview_worker() -> Sender<WorldLivePreviewRequest> {
         let (request_tx, request_rx) = mpsc::channel::<WorldLivePreviewRequest>();
         std::thread::spawn(move || {
@@ -715,14 +798,7 @@ impl MotionLoomPage {
                     &request.asset_root,
                 ))
                 .map_err(|err| format!("World live render error: {err}"))
-                .map(|rgba| {
-                    let (w, h) = rgba.dimensions();
-                    let mut bgra = rgba.into_raw();
-                    for px in bgra.chunks_mut(4) {
-                        px.swap(0, 2);
-                    }
-                    (w, h, bgra)
-                });
+                .map(Self::rgba_image_to_bgra);
                 let _ = request.response_tx.send(result);
             }
         });
@@ -746,22 +822,6 @@ impl MotionLoomPage {
         }
     }
 
-    async fn render_scene_live_preview_bgra(
-        graph: &GraphScript,
-        frame: u32,
-    ) -> Result<(u32, u32, Vec<u8>, Option<String>), String> {
-        let rgba = render_scene_graph_frame(graph, frame, SceneRenderProfile::Gpu)
-            .await
-            .map_err(|err| format!("Scene live render error: GPU preview failed: {err}"))?;
-
-        let (w, h) = rgba.dimensions();
-        let mut bgra = rgba.into_raw();
-        for px in bgra.chunks_mut(4) {
-            px.swap(0, 2);
-        }
-        Ok((w, h, bgra, None))
-    }
-
     fn script_hash(script: &str) -> u64 {
         let mut hasher = DefaultHasher::new();
         script.hash(&mut hasher);
@@ -773,6 +833,8 @@ impl MotionLoomPage {
             cancel.store(true, Ordering::Relaxed);
         }
         self.clear_scene_live_preview_images();
+        self.scene_live_parsed_script_hash = None;
+        self.scene_live_parsed_graph = None;
         self.scene_live_async_render_key = None;
         self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
         self.scene_live_prerender_token = self.scene_live_prerender_token.wrapping_add(1);
@@ -785,7 +847,55 @@ impl MotionLoomPage {
     fn clear_scene_live_preview_images(&mut self) {
         self.scene_live_preview_cache_key = None;
         self.scene_live_preview_cache_image = None;
+        self.clear_scene_live_preview_frame_cache();
+    }
+
+    fn clear_scene_live_preview_frame_cache(&mut self) {
         self.scene_live_preview_frame_cache.clear();
+        self.scene_live_preview_frame_cache_order.clear();
+        self.scene_live_preview_frame_cache_bytes = 0;
+    }
+
+    fn scene_live_preview_cache_bytes(preview: &LoadedPreview) -> usize {
+        preview
+            .bgra
+            .as_ref()
+            .map(|bgra| bgra.len())
+            .unwrap_or_else(|| {
+                preview.width as usize * preview.height as usize * std::mem::size_of::<u32>()
+            })
+    }
+
+    fn insert_scene_live_preview_frame_cache(
+        &mut self,
+        key: SceneLivePreviewCacheKey,
+        preview: LoadedPreview,
+    ) {
+        let preview_bytes = Self::scene_live_preview_cache_bytes(&preview);
+        if !self.scene_live_preview_frame_cache.contains_key(&key) {
+            self.scene_live_preview_frame_cache_order.push_back(key);
+        }
+        if let Some(old_preview) = self.scene_live_preview_frame_cache.insert(key, preview) {
+            self.scene_live_preview_frame_cache_bytes = self
+                .scene_live_preview_frame_cache_bytes
+                .saturating_sub(Self::scene_live_preview_cache_bytes(&old_preview));
+        }
+        self.scene_live_preview_frame_cache_bytes = self
+            .scene_live_preview_frame_cache_bytes
+            .saturating_add(preview_bytes);
+        while (self.scene_live_preview_frame_cache.len() > SCENE_LIVE_PREVIEW_FRAME_CACHE_CAPACITY
+            || self.scene_live_preview_frame_cache_bytes > SCENE_LIVE_PREVIEW_FRAME_CACHE_MAX_BYTES)
+            && self.scene_live_preview_frame_cache.len() > 1
+        {
+            let Some(old_key) = self.scene_live_preview_frame_cache_order.pop_front() else {
+                break;
+            };
+            if let Some(old_preview) = self.scene_live_preview_frame_cache.remove(&old_key) {
+                self.scene_live_preview_frame_cache_bytes = self
+                    .scene_live_preview_frame_cache_bytes
+                    .saturating_sub(Self::scene_live_preview_cache_bytes(&old_preview));
+            }
+        }
     }
 
     fn has_scene_live_preview_state(&self) -> bool {
@@ -895,12 +1005,22 @@ impl MotionLoomPage {
             return self.world_live_preview_image(&raw, frame, cx);
         }
 
-        let graph = parse_graph_script(&raw).map_err(|err| {
-            format!(
-                "Scene live parse error at line {}: {}",
-                err.line, err.message
-            )
-        })?;
+        let script_hash = Self::script_hash(&raw);
+        let graph = if self.scene_live_parsed_script_hash == Some(script_hash) {
+            self.scene_live_parsed_graph
+                .clone()
+                .ok_or_else(|| "Scene live preview parse cache is missing.".to_string())?
+        } else {
+            let graph = parse_graph_script(&raw).map_err(|err| {
+                format!(
+                    "Scene live parse error at line {}: {}",
+                    err.line, err.message
+                )
+            })?;
+            self.scene_live_parsed_script_hash = Some(script_hash);
+            self.scene_live_parsed_graph = Some(graph.clone());
+            graph
+        };
         if !graph.has_scene_nodes() {
             return Err("Scene live preview needs at least one scene node.".to_string());
         }
@@ -909,7 +1029,6 @@ impl MotionLoomPage {
         let effective_quality = self.scene_live_effective_preview_quality();
         let preview_size =
             Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()));
-        let script_hash = Self::script_hash(&raw);
         let key = (
             script_hash,
             frame,
@@ -928,6 +1047,9 @@ impl MotionLoomPage {
             self.scene_live_preview_cache_image = Some(preview.clone());
             return Ok(Some(preview));
         }
+        if self.scene_live_async_render_key.is_some() {
+            return Ok(self.scene_live_preview_cache_image.clone());
+        }
         if self.preview_playing && self.scene_live_prerendering {
             if let Some(preview) = self.scene_live_preview_cache_image.as_ref() {
                 return Ok(Some(preview.clone()));
@@ -945,11 +1067,15 @@ impl MotionLoomPage {
             self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
             let token = self.scene_live_async_render_token;
             let (tx, rx) = mpsc::channel::<Result<(u32, u32, Vec<u8>, Option<String>), String>>();
-            std::thread::spawn(move || {
-                let result =
-                    pollster::block_on(Self::render_scene_live_preview_bgra(&preview_graph, frame));
-                let _ = tx.send(result);
-            });
+            let request = SceneLivePreviewRequest {
+                graph: preview_graph,
+                frame,
+                response_tx: tx,
+            };
+            if self.scene_live_preview_tx.send(request).is_err() {
+                self.scene_live_async_render_key = None;
+                return Err("Scene live preview worker is unavailable.".to_string());
+            }
             cx.spawn(async move |view, cx| {
                 let mut poll_ms = SCENE_LIVE_PRERENDER_POLL_MS;
                 loop {
@@ -966,7 +1092,7 @@ impl MotionLoomPage {
                                 if let Ok(preview) = Self::loaded_preview_from_bgra(w, h, bgra) {
                                     this.scene_live_preview_cache_key = Some(key);
                                     this.scene_live_preview_cache_image = Some(preview.clone());
-                                    this.scene_live_preview_frame_cache.insert(key, preview);
+                                    this.insert_scene_live_preview_frame_cache(key, preview);
                                 }
                                 if let Some(warning) = warning {
                                     this.push_scene_render_log(warning);
@@ -1084,7 +1210,7 @@ impl MotionLoomPage {
                                 if let Ok(preview) = Self::loaded_preview_from_bgra(w, h, bgra) {
                                     this.scene_live_preview_cache_key = Some(key);
                                     this.scene_live_preview_cache_image = Some(preview.clone());
-                                    this.scene_live_preview_frame_cache.insert(key, preview);
+                                    this.insert_scene_live_preview_frame_cache(key, preview);
                                 }
                                 done = true;
                                 cx.notify();
@@ -1936,17 +2062,8 @@ impl MotionLoomPage {
             if step > 0 {
                 this.preview_frame_accum -= step as f32;
                 let frame_count = this.playback_frame_count().max(1);
-                let last_frame = frame_count.saturating_sub(1);
                 let next_frame = this.preview_frame.saturating_add(step);
-                if next_frame >= last_frame {
-                    this.stop_preview_playback_at_end(frame_count);
-                    this.status_line =
-                        format!("Playback finished at frame {}.", this.preview_frame);
-                    cx.notify();
-                    return;
-                }
-
-                this.preview_frame = next_frame;
+                this.preview_frame = next_frame % frame_count;
                 cx.notify();
             }
 
@@ -1994,7 +2111,7 @@ impl MotionLoomPage {
         if !self.preview_playing {
             self.scene_live_preview_cache_image = None;
         }
-        self.scene_live_preview_frame_cache.clear();
+        self.clear_scene_live_preview_frame_cache();
         self.scene_live_prerendering = true;
         self.scene_live_prerender_progress = Some((0, total_frames));
 
@@ -2010,26 +2127,52 @@ impl MotionLoomPage {
 
         let (tx, rx) = mpsc::channel::<SceneLivePrerenderEvent>();
         std::thread::spawn(move || {
+            let mut gpu_renderer =
+                pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).ok();
+            let mut cpu_renderer =
+                pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).ok();
             for frame in 0..total_frames {
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                let rgba = match pollster::block_on(render_scene_graph_frame(
-                    &preview_graph,
-                    frame,
-                    SceneRenderProfile::Gpu,
-                )) {
-                    Ok(rgba) => rgba,
-                    Err(err) => {
-                        let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(err.to_string())));
+                let rgba = if let Some(renderer) = gpu_renderer.as_mut() {
+                    match pollster::block_on(renderer.render_frame(&preview_graph, frame)) {
+                        Ok(rgba) => rgba,
+                        Err(gpu_err) => {
+                            let Some(renderer) = cpu_renderer.as_mut() else {
+                                let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(
+                                    gpu_err.to_string()
+                                )));
+                                return;
+                            };
+                            match pollster::block_on(renderer.render_frame(&preview_graph, frame)) {
+                                Ok(rgba) => rgba,
+                                Err(cpu_err) => {
+                                    let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(
+                                        format!("{gpu_err}; CPU fallback failed: {cpu_err}"),
+                                    )));
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let Some(renderer) = cpu_renderer.as_mut() else {
+                        let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(
+                            "Scene prerender error: no preview renderer initialized.".to_string(),
+                        )));
                         return;
+                    };
+                    match pollster::block_on(renderer.render_frame(&preview_graph, frame)) {
+                        Ok(rgba) => rgba,
+                        Err(err) => {
+                            let _ =
+                                tx.send(SceneLivePrerenderEvent::Finished(Err(err.to_string())));
+                            return;
+                        }
                     }
                 };
-                let (width, height) = rgba.dimensions();
-                let mut bgra = rgba.into_raw();
-                for px in bgra.chunks_mut(4) {
-                    px.swap(0, 2);
-                }
+                let (width, height, bgra) = Self::rgba_image_to_bgra(rgba);
                 if tx
                     .send(SceneLivePrerenderEvent::Frame {
                         frame,
@@ -2053,7 +2196,7 @@ impl MotionLoomPage {
             loop {
                 let mut done = false;
                 let mut should_notify = false;
-                let _ = view.update_in(window, |this, _window, cx| {
+                let _ = view.update_in(window, |this, window, cx| {
                     poll_ms = Self::scene_live_poll_ms(this.preview_playing);
                     if this.scene_live_prerender_token != token {
                         done = true;
@@ -2092,9 +2235,14 @@ impl MotionLoomPage {
                                 match result {
                                     Ok(frames) => {
                                         if this.preview_playing {
-                                            this.stop_preview_playback_at_end(frames.max(1));
+                                            let frame_count = frames.max(1);
+                                            this.preview_frame %= frame_count;
+                                            this.preview_last_tick = Some(Instant::now());
+                                            this.preview_frame_accum = 0.0;
+                                            let play_token = this.preview_play_token;
+                                            this.schedule_preview_playback(play_token, window, cx);
                                             this.status_line = format!(
-                                                "RAM preview cached {} frame(s); playback stopped at end.",
+                                                "RAM preview cached {} frame(s); loop playback running.",
                                                 frames
                                             );
                                         } else {
@@ -2173,7 +2321,7 @@ impl MotionLoomPage {
         if !self.preview_playing {
             self.scene_live_preview_cache_image = None;
         }
-        self.scene_live_preview_frame_cache.clear();
+        self.clear_scene_live_preview_frame_cache();
         self.scene_live_prerendering = true;
         self.scene_live_prerender_progress = Some((0, total_frames));
 
@@ -2234,7 +2382,7 @@ impl MotionLoomPage {
             loop {
                 let mut done = false;
                 let mut should_notify = false;
-                let _ = view.update_in(window, |this, _window, cx| {
+                let _ = view.update_in(window, |this, window, cx| {
                     poll_ms = Self::scene_live_poll_ms(this.preview_playing);
                     if this.scene_live_prerender_token != token {
                         done = true;
@@ -2273,9 +2421,14 @@ impl MotionLoomPage {
                                 match result {
                                     Ok(frames) => {
                                         if this.preview_playing {
-                                            this.stop_preview_playback_at_end(frames.max(1));
+                                            let frame_count = frames.max(1);
+                                            this.preview_frame %= frame_count;
+                                            this.preview_last_tick = Some(Instant::now());
+                                            this.preview_frame_accum = 0.0;
+                                            let play_token = this.preview_play_token;
+                                            this.schedule_preview_playback(play_token, window, cx);
                                             this.status_line = format!(
-                                                "GPU RAM preview cached {} frame(s); playback stopped at end.",
+                                                "GPU RAM preview cached {} frame(s); loop playback running.",
                                                 frames
                                             );
                                         } else {
@@ -2325,11 +2478,57 @@ impl MotionLoomPage {
     fn step_preview_frame(&mut self, delta: i32) {
         self.stop_preview_playback();
         self.cancel_scene_live_prerender();
-        if delta >= 0 {
-            self.preview_frame = self.preview_frame.saturating_add(delta as u32);
+        self.set_preview_frame_value(if delta >= 0 {
+            self.preview_frame.saturating_add(delta as u32)
         } else {
-            self.preview_frame = self.preview_frame.saturating_sub(delta.unsigned_abs());
+            self.preview_frame.saturating_sub(delta.unsigned_abs())
+        });
+    }
+
+    fn set_preview_frame_value(&mut self, frame: u32) {
+        let frame_count = self.playback_frame_count().max(1);
+        self.preview_frame = frame.min(frame_count.saturating_sub(1));
+    }
+
+    fn set_preview_frame(&mut self, frame: u32) {
+        self.stop_preview_playback();
+        self.cancel_scene_live_prerender();
+        self.set_preview_frame_value(frame);
+    }
+
+    fn commit_preview_frame_input_value(&mut self, cx: &mut Context<Self>, stop_playback: bool) {
+        let Some(input) = self.preview_frame_input.as_ref() else {
+            return;
+        };
+        let raw = input.read(cx).value().trim().to_string();
+        let Ok(frame) = raw.parse::<u32>() else {
+            return;
+        };
+        if stop_playback {
+            self.set_preview_frame(frame);
+        } else {
+            self.set_preview_frame_value(frame);
+            self.preview_frame_accum = 0.0;
         }
+    }
+
+    fn sync_preview_frame_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.preview_frame_input.clone() else {
+            return;
+        };
+        let focused = input.read(cx).focus_handle(cx).is_focused(window);
+        if focused {
+            return;
+        }
+        let value = self.preview_frame.to_string();
+        if input.read(cx).value() == value {
+            return;
+        }
+        self.preview_frame_input_syncing = true;
+        input.update(cx, |this, cx| {
+            this.set_value(value, window, cx);
+        });
+        self.preview_frame_input_syncing = false;
     }
 
     fn stop_preview_playback(&mut self) {
@@ -2337,11 +2536,6 @@ impl MotionLoomPage {
         self.preview_play_token = self.preview_play_token.wrapping_add(1);
         self.preview_last_tick = None;
         self.preview_frame_accum = 0.0;
-    }
-
-    fn stop_preview_playback_at_end(&mut self, frame_count: u32) {
-        self.preview_frame = frame_count.max(1).saturating_sub(1);
-        self.stop_preview_playback();
     }
 
     fn toggle_preview_playback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2362,12 +2556,13 @@ impl MotionLoomPage {
             return;
         }
 
+        self.commit_preview_frame_input_value(cx, false);
         self.preview_playing = true;
         self.preview_play_token = self.preview_play_token.wrapping_add(1);
         self.preview_last_tick = Some(Instant::now());
         self.preview_frame_accum = 0.0;
         let token = self.preview_play_token;
-        self.status_line = format!("Playback started at {} fps.", self.playback_fps());
+        self.status_line = format!("Loop playback started at {} fps.", self.playback_fps());
         if self.has_scene_playback_graph() {
             self.start_scene_live_prerender(window, cx);
         } else {
@@ -2708,6 +2903,29 @@ impl MotionLoomPage {
         });
         self.scene_live_knob_input = Some(input);
         self.scene_live_knob_input_sub = Some(sub);
+    }
+
+    fn ensure_preview_frame_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.preview_frame_input.is_some() {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("frame"));
+        let initial = self.preview_frame.to_string();
+        input.update(cx, |this, cx| {
+            this.set_value(initial, window, cx);
+        });
+        let sub = cx.subscribe(&input, |this, _input, ev, cx| match ev {
+            InputEvent::PressEnter { .. } => {
+                if this.preview_frame_input_syncing {
+                    return;
+                }
+                this.commit_preview_frame_input_value(cx, true);
+                cx.notify();
+            }
+            _ => {}
+        });
+        self.preview_frame_input = Some(input);
+        self.preview_frame_input_sub = Some(sub);
     }
 
     fn sync_script_input_if_needed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3497,7 +3715,7 @@ impl MotionLoomPage {
         self.cancel_scene_live_prerender();
         self.cancel_scene_live_async_render();
         self.scene_live_preview_cache_key = None;
-        self.scene_live_preview_frame_cache.clear();
+        self.clear_scene_live_preview_frame_cache();
         if text.trim().is_empty() || !is_graph_script(&text) {
             self.scene_live_preview_cache_image = None;
             self.preview_playing = false;
@@ -7431,6 +7649,7 @@ impl Render for MotionLoomPage {
         self.sync_render_request_from_global(window, cx);
         self.ensure_script_input(window, cx);
         self.ensure_scene_live_knob_input(window, cx);
+        self.ensure_preview_frame_input(window, cx);
         self.sync_script_input_if_needed(window, cx);
         self.sync_preview_frame_to_global(cx);
         let scene_template_modal = if self.scene_template_modal_open {
@@ -7948,6 +8167,7 @@ impl Render for MotionLoomPage {
         let scene_live_scroll_hint = Self::scene_live_scroll_hint(&self.scene_live_knob_attr);
         let scene_live_preview_quality_chips = [
             SceneLivePreviewQuality::P144,
+            SceneLivePreviewQuality::P240,
             SceneLivePreviewQuality::P360,
             SceneLivePreviewQuality::P480,
         ]
@@ -7985,6 +8205,49 @@ impl Render for MotionLoomPage {
                     .child("Preview"),
             )
             .children(scene_live_preview_quality_chips);
+        self.sync_preview_frame_input(window, cx);
+        let frame_count = self.playback_frame_count().max(1);
+        let preview_frame_input_elem = if let Some(input) = self.preview_frame_input.as_ref() {
+            let input_for_focus = input.clone();
+            div()
+                .h(px(28.0))
+                .min_w(px(150.0))
+                .px_2()
+                .rounded_md()
+                .border_1()
+                .border_color(white().opacity(0.18))
+                .bg(white().opacity(0.055))
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(white().opacity(0.58))
+                        .child(format!("Frame / {}", frame_count.saturating_sub(1))),
+                )
+                .child(
+                    div()
+                        .h(px(22.0))
+                        .w(px(58.0))
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(white().opacity(0.10))
+                        .bg(rgb(0x090d14))
+                        .overflow_hidden()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |_, _, window, cx| {
+                                cx.stop_propagation();
+                                input_for_focus.read(cx).focus_handle(cx).focus(window);
+                            }),
+                        )
+                        .child(Input::new(input).h_full().w_full()),
+                )
+                .into_any_element()
+        } else {
+            div().h(px(28.0)).w(px(150.0)).into_any_element()
+        };
         let scene_live_knob_scroll = div()
             .h(px(28.0))
             .min_w(px(148.0))
@@ -8048,27 +8311,11 @@ impl Render for MotionLoomPage {
                         }),
                     ),
             )
-            .child(
-                div()
-                    .h(px(28.0))
-                    .px_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(white().opacity(0.14))
-                    .bg(white().opacity(0.035))
-                    .flex()
-                    .items_center()
-                    .text_xs()
-                    .text_color(white().opacity(0.86))
-                    .child(format!("Frame {}", self.preview_frame)),
-            )
+            .child(preview_frame_input_elem)
             .child(Self::control_button("Frame 0").on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
-                    this.preview_playing = false;
-                    this.preview_last_tick = None;
-                    this.preview_frame_accum = 0.0;
-                    this.preview_frame = 0;
+                    this.set_preview_frame(0);
                     cx.notify();
                 }),
             ))
