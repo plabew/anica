@@ -79,6 +79,7 @@ pub fn next_scene_output_path_for_profile(
     )))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn scene_encoder_args(profile: SceneRenderProfile) -> Vec<String> {
     match profile {
         SceneRenderProfile::Cpu => prores_encoder_args(),
@@ -89,6 +90,7 @@ pub(crate) fn scene_encoder_args(profile: SceneRenderProfile) -> Vec<String> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn prores_encoder_args() -> Vec<String> {
     // Keep scene output on an LGPL-safe FFmpeg-friendly path.
     // The app's curated preview runtime does not ship libav, so mp4v/mpeg4
@@ -115,6 +117,7 @@ fn prores_encoder_args() -> Vec<String> {
     ]
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn prores_4444_encoder_args() -> Vec<String> {
     vec![
         "-vf".to_string(),
@@ -140,7 +143,7 @@ fn prores_4444_encoder_args() -> Vec<String> {
     ]
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
 fn gpu_h264_encoder_args() -> Vec<String> {
     vec![
         "-c:v".to_string(),
@@ -168,7 +171,7 @@ fn gpu_h264_encoder_args() -> Vec<String> {
     ]
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
 fn gpu_h264_encoder_args() -> Vec<String> {
     vec![
         "-c:v".to_string(),

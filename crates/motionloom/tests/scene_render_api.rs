@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_frame};
 
 #[test]
@@ -24,7 +26,8 @@ fn public_scene_render_api_draws_cpu_frame() {
     )
     .expect("parse scene graph");
 
-    let frame = render_scene_frame(&graph, 0, SceneRenderProfile::Cpu).expect("render frame");
+    let frame = pollster::block_on(render_scene_frame(&graph, 0, SceneRenderProfile::Cpu))
+        .expect("render frame");
     assert_eq!(frame.width(), 32);
     assert_eq!(frame.height(), 24);
 

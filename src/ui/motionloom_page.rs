@@ -709,17 +709,20 @@ impl MotionLoomPage {
                 while let Ok(next_request) = request_rx.try_recv() {
                     request = next_request;
                 }
-                let result = renderer
-                    .render_frame_gpu(&request.graph, request.frame, &request.asset_root)
-                    .map_err(|err| format!("World live render error: {err}"))
-                    .map(|rgba| {
-                        let (w, h) = rgba.dimensions();
-                        let mut bgra = rgba.into_raw();
-                        for px in bgra.chunks_mut(4) {
-                            px.swap(0, 2);
-                        }
-                        (w, h, bgra)
-                    });
+                let result = pollster::block_on(renderer.render_frame_gpu(
+                    &request.graph,
+                    request.frame,
+                    &request.asset_root,
+                ))
+                .map_err(|err| format!("World live render error: {err}"))
+                .map(|rgba| {
+                    let (w, h) = rgba.dimensions();
+                    let mut bgra = rgba.into_raw();
+                    for px in bgra.chunks_mut(4) {
+                        px.swap(0, 2);
+                    }
+                    (w, h, bgra)
+                });
                 let _ = request.response_tx.send(result);
             }
         });
@@ -743,11 +746,12 @@ impl MotionLoomPage {
         }
     }
 
-    fn render_scene_live_preview_bgra(
+    async fn render_scene_live_preview_bgra(
         graph: &GraphScript,
         frame: u32,
     ) -> Result<(u32, u32, Vec<u8>, Option<String>), String> {
         let rgba = render_scene_graph_frame(graph, frame, SceneRenderProfile::Gpu)
+            .await
             .map_err(|err| format!("Scene live render error: GPU preview failed: {err}"))?;
 
         let (w, h) = rgba.dimensions();
@@ -942,7 +946,8 @@ impl MotionLoomPage {
             let token = self.scene_live_async_render_token;
             let (tx, rx) = mpsc::channel::<Result<(u32, u32, Vec<u8>, Option<String>), String>>();
             std::thread::spawn(move || {
-                let result = Self::render_scene_live_preview_bgra(&preview_graph, frame);
+                let result =
+                    pollster::block_on(Self::render_scene_live_preview_bgra(&preview_graph, frame));
                 let _ = tx.send(result);
             });
             cx.spawn(async move |view, cx| {
@@ -2009,11 +2014,11 @@ impl MotionLoomPage {
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                let rgba = match render_scene_graph_frame(
+                let rgba = match pollster::block_on(render_scene_graph_frame(
                     &preview_graph,
                     frame,
                     SceneRenderProfile::Gpu,
-                ) {
+                )) {
                     Ok(rgba) => rgba,
                     Err(err) => {
                         let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(err.to_string())));
@@ -2190,7 +2195,11 @@ impl MotionLoomPage {
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                let rgba = match renderer.render_frame_gpu(&preview_graph, frame, &asset_root) {
+                let rgba = match pollster::block_on(renderer.render_frame_gpu(
+                    &preview_graph,
+                    frame,
+                    &asset_root,
+                )) {
                     Ok(rgba) => rgba,
                     Err(err) => {
                         let _ = tx.send(WorldLivePrerenderEvent::Finished(Err(err.to_string())));
@@ -3008,7 +3017,7 @@ impl MotionLoomPage {
                     mode.label(),
                     output_path_for_thread.display()
                 )));
-                render_motionloom_document_to_video_with_progress(
+                pollster::block_on(render_motionloom_document_to_video_with_progress(
                     &ffmpeg_for_render,
                     &raw,
                     &asset_root,
@@ -3018,7 +3027,7 @@ impl MotionLoomPage {
                     move |progress| {
                         let _ = tx_progress.send(SceneRenderEvent::Progress(progress));
                     },
-                )
+                ))
                 .map(|_| output_path_for_thread.clone())
                 .map_err(|err| err.to_string())
             }))
@@ -3286,9 +3295,9 @@ impl MotionLoomPage {
                             .map_err(|err| format!("Failed to create output directory: {err}"))?;
                     }
                     let mut renderer = WorldFrameRenderer::default();
-                    let image = renderer
-                        .render_frame_gpu(&graph, frame, &asset_root)
-                        .map_err(|err| err.to_string())?;
+                    let image =
+                        pollster::block_on(renderer.render_frame_gpu(&graph, frame, &asset_root))
+                            .map_err(|err| err.to_string())?;
                     image
                         .save(&output_path)
                         .map_err(|err| format!("Failed to save PNG frame: {err}"))?;
@@ -3360,8 +3369,12 @@ impl MotionLoomPage {
                         fs::create_dir_all(parent)
                             .map_err(|err| format!("Failed to create output directory: {err}"))?;
                     }
-                    let image = render_scene_graph_frame(&graph, frame, SceneRenderProfile::Gpu)
-                        .map_err(|err| err.to_string())?;
+                    let image = pollster::block_on(render_scene_graph_frame(
+                        &graph,
+                        frame,
+                        SceneRenderProfile::Gpu,
+                    ))
+                    .map_err(|err| err.to_string())?;
                     image
                         .save(&output_path)
                         .map_err(|err| format!("Failed to save PNG frame: {err}"))?;

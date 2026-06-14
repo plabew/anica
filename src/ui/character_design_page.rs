@@ -1248,10 +1248,14 @@ impl CharacterDesignPage {
                     let graph = cached_graph
                         .as_ref()
                         .expect("cached graph is parsed before Character Design preview render");
-                    viewport
-                        .render_frame(graph, request.frame, &request.asset_root, &request.actor_id)
-                        .map_err(|err| format!("Character GPU preview error: {err}"))
-                        .map(|frame| (frame.image, frame.diagnostics))
+                    pollster::block_on(viewport.render_frame(
+                        graph,
+                        request.frame,
+                        &request.asset_root,
+                        &request.actor_id,
+                    ))
+                    .map_err(|err| format!("Character GPU preview error: {err}"))
+                    .map(|frame| (frame.image, frame.diagnostics))
                 })()
                 .map(|(rgba, diagnostics)| {
                     let (w, h) = rgba.dimensions();

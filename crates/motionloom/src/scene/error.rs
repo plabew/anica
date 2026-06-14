@@ -73,6 +73,30 @@ pub enum MotionLoomSceneRenderError {
     GpuRender { message: String },
     #[error("world source render failed: {message}")]
     WorldSource { message: String },
+    #[error("video export is not available on this platform: {message}")]
+    VideoExportNotAvailable { message: String },
+}
+
+impl From<crate::export::EncodeError> for MotionLoomSceneRenderError {
+    fn from(err: crate::export::EncodeError) -> Self {
+        use crate::export::EncodeError;
+        match err {
+            EncodeError::CreateOutputDir { path, source } => Self::CreateOutputDir { path, source },
+            EncodeError::StartEncoder(message) => Self::StartFfmpeg {
+                source: std::io::Error::new(std::io::ErrorKind::Other, message),
+            },
+            EncodeError::MissingEncoderInput => Self::MissingFfmpegStdin,
+            EncodeError::WriteFrame(source) => Self::WriteFrame {
+                source,
+                stderr: String::new(),
+            },
+            EncodeError::EncoderFailed(stderr) => Self::FfmpegFailed { stderr },
+            EncodeError::NotImplemented(message) => Self::VideoExportNotAvailable { message },
+            EncodeError::NotStarted => Self::GpuRender {
+                message: "encoder was not started".to_string(),
+            },
+        }
+    }
 }
 
 pub type SceneRenderError = MotionLoomSceneRenderError;

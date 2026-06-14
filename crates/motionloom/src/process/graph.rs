@@ -2,7 +2,7 @@
 // =========================================
 // crates/motionloom/src/process/graph.rs
 
-use crate::eval::sample_anim_f32;
+use crate::process::adapters::clip::curve::sample_anim_f32;
 use crate::process::adapters::clip::model::ClipZoomSpec;
 
 #[derive(Debug, Clone)]

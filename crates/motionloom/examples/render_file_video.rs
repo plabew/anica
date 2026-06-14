@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "tools/runtime/current/macos/ffmpeg/bin/ffmpeg".to_string());
 
     let script = fs::read_to_string(&path)?;
-    render_motionloom_document_to_video_with_progress(
+    pollster::block_on(render_motionloom_document_to_video_with_progress(
         &ffmpeg,
         &script,
         "examples/motionloom/world",
@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 progress.total_frames()
             );
         },
-    )?;
+    ))?;
 
     println!("saved {}", output.display());
     Ok(())

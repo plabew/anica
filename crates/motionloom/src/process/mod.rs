@@ -1,4 +1,6 @@
 pub mod adapters;
+pub mod cpu_effects;
+pub mod cpu_renderer;
 pub mod dsl;
 pub mod effect;
 pub mod error;
@@ -9,6 +11,7 @@ pub mod pass;
 pub mod process_catalog;
 pub mod runtime;
 
+pub use cpu_renderer::*;
 pub use dsl::*;
 pub use effect::*;
 pub use error::*;

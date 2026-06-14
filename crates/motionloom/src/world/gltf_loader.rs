@@ -185,6 +185,22 @@ pub fn load_glb_mesh_data(path: impl AsRef<Path>) -> Result<GlbMeshData, GlbLoad
     parse_glb_mesh_data(path, &bytes)
 }
 
+/// Load GLB metadata from an in-memory byte buffer.
+pub fn load_glb_metadata_from_bytes(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<GlbMetadata, GlbLoadError> {
+    parse_glb_metadata(path, bytes)
+}
+
+/// Load GLB mesh data from an in-memory byte buffer.
+pub fn load_glb_mesh_data_from_bytes(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<GlbMeshData, GlbLoadError> {
+    parse_glb_mesh_data(path, bytes)
+}
+
 pub fn parse_glb_metadata(path: &Path, bytes: &[u8]) -> Result<GlbMetadata, GlbLoadError> {
     let chunks = parse_glb_chunks(path, bytes)?;
     let skin_count = array_len(chunks.json.get("skins"));
@@ -1159,6 +1175,7 @@ fn invalid_err(path: &Path, message: &str) -> GlbLoadError {
 }
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use serde_json::json;
 

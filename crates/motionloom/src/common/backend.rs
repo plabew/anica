@@ -16,8 +16,3 @@ impl OutputFormat {
         }
     }
 }
-
-pub trait CompositorBackend: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn output_format(&self) -> OutputFormat;
-}

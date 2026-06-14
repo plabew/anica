@@ -1,9 +1,9 @@
 pub mod backend;
-pub mod curve;
 pub mod error;
+pub mod gpu_async;
 pub mod keyframe;
 
 pub use backend::*;
-pub use curve::*;
 pub use error::*;
+pub use gpu_async::*;
 pub use keyframe::*;

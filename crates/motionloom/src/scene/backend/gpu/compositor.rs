@@ -1,8 +1,12 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use image::RgbaImage;
 
+use crate::common::gpu_async::{
+    BufferMapAsyncFuture, DevicePoller, request_adapter_async, request_device_async,
+};
 use crate::dsl::GraphScript;
 use crate::scene::backend::gpu::shaders::{
     WGPU_BATCH_SHAPE_SHADER, WGPU_MATTE_TEXTURE_SHADER, WGPU_POST_SHADER, WGPU_SCENE_SHADER,
@@ -24,8 +28,9 @@ struct WgpuImageTexture {
 }
 
 pub(crate) struct WgpuSceneCompositor {
-    device: wgpu::Device,
+    device: Arc<wgpu::Device>,
     queue: wgpu::Queue,
+    _poller: DevicePoller,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     matte_texture_bind_group_layout: wgpu::BindGroupLayout,
@@ -42,12 +47,17 @@ pub(crate) struct WgpuSceneCompositor {
     readback_buffer: wgpu::Buffer,
     padded_bytes_per_row: u32,
     image_textures: HashMap<String, WgpuImageTexture>,
+    asset_resolver: Arc<dyn crate::asset::AssetResolver>,
 }
 
 impl WgpuSceneCompositor {
-    pub(crate) fn new(width: u32, height: u32) -> Result<Self, MotionLoomSceneRenderError> {
+    pub(crate) async fn new(
+        width: u32,
+        height: u32,
+        asset_resolver: Arc<dyn crate::asset::AssetResolver>,
+    ) -> Result<Self, MotionLoomSceneRenderError> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter = request_scene_gpu_adapter(&instance)?;
+        let adapter = request_scene_gpu_adapter_async(&instance).await?;
         let adapter_limits = adapter.limits();
         let max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
         if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
@@ -59,16 +69,22 @@ impl WgpuSceneCompositor {
             });
         }
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("anica-motionloom-scene-gpu-device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: adapter_limits,
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        }))
+        let (device, queue) = request_device_async(
+            &adapter,
+            &wgpu::DeviceDescriptor {
+                label: Some("anica-motionloom-scene-gpu-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: adapter_limits,
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            },
+        )
+        .await
         .map_err(|err| MotionLoomSceneRenderError::GpuRender {
             message: format!("device request failed: {err}"),
         })?;
+        let device = Arc::new(device);
+        let poller = DevicePoller::start(device.clone());
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("anica-motionloom-scene-gpu-shader"),
@@ -378,6 +394,7 @@ impl WgpuSceneCompositor {
         Ok(Self {
             device,
             queue,
+            _poller: poller,
             bind_group_layout,
             pipeline,
             matte_texture_bind_group_layout,
@@ -394,6 +411,7 @@ impl WgpuSceneCompositor {
             readback_buffer,
             padded_bytes_per_row,
             image_textures: HashMap::new(),
+            asset_resolver,
         })
     }
 
@@ -438,7 +456,7 @@ impl WgpuSceneCompositor {
         })
     }
 
-    pub(crate) fn render(
+    pub(crate) async fn render(
         &mut self,
         graph: &GraphScript,
         solid: [u8; 4],
@@ -614,19 +632,20 @@ impl WgpuSceneCompositor {
             },
         );
         self.queue.submit([encoder.finish()]);
-        let rendered = self.readback_rgba();
+        let rendered = self.readback_rgba_async().await;
         drop(uniform_buffers);
         rendered
     }
 
-    pub(crate) fn render_scene_content(
+    pub(crate) async fn render_scene_content(
         &mut self,
         primitives: &[GpuScenePrimitive],
         texture_layers: &[GpuSceneTextureLayer],
     ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
         let final_texture =
             self.render_scene_content_to_texture(primitives, texture_layers, [0, 0, 0, 0])?;
-        self.readback_texture_rgba(&final_texture.texture)
+        self.readback_texture_rgba_async(&final_texture.texture)
+            .await
     }
 
     pub(crate) fn render_scene_content_to_texture(
@@ -826,7 +845,7 @@ impl WgpuSceneCompositor {
         })
     }
 
-    pub(crate) fn apply_gpu_blur_passes(
+    pub(crate) async fn apply_gpu_blur_passes(
         &mut self,
         input: &RgbaImage,
         passes: &[(bool, f32)],
@@ -896,12 +915,12 @@ impl WgpuSceneCompositor {
             },
         );
         self.queue.submit([encoder.finish()]);
-        let rendered = self.readback_rgba();
+        let rendered = self.readback_rgba_async().await;
         drop(uniform_buffers);
         rendered
     }
 
-    pub(crate) fn apply_gpu_opacity_pass(
+    pub(crate) async fn apply_gpu_opacity_pass(
         &mut self,
         input: &RgbaImage,
         opacity: f32,
@@ -949,7 +968,7 @@ impl WgpuSceneCompositor {
             },
         );
         self.queue.submit([encoder.finish()]);
-        let rendered = self.readback_rgba();
+        let rendered = self.readback_rgba_async().await;
         drop(uniform_buffer);
         rendered
     }
@@ -1499,7 +1518,7 @@ impl WgpuSceneCompositor {
         src: &str,
     ) -> Result<(u32, u32, std::sync::Arc<wgpu::Texture>), MotionLoomSceneRenderError> {
         if !self.image_textures.contains_key(src) {
-            let image = load_rgba_image_source(src)?;
+            let image = load_rgba_image_source(src, self.asset_resolver.as_ref())?;
             let (width, height) = image.dimensions();
             let texture = self.make_source_texture(width.max(1), height.max(1));
             self.write_texture_rgba(&texture, width.max(1), height.max(1), image.as_raw())?;
@@ -1525,7 +1544,7 @@ impl WgpuSceneCompositor {
     ) -> Result<(u32, u32, std::sync::Arc<wgpu::Texture>), MotionLoomSceneRenderError> {
         let cache_key = format!("svg:{src}");
         if !self.image_textures.contains_key(&cache_key) {
-            let image = load_svg_source(src)?;
+            let image = load_svg_source(src, self.asset_resolver.as_ref())?;
             let (width, height) = image.dimensions();
             let texture = self.make_source_texture(width.max(1), height.max(1));
             self.write_texture_rgba(&texture, width.max(1), height.max(1), image.as_raw())?;
@@ -1545,7 +1564,7 @@ impl WgpuSceneCompositor {
         Ok((source.width, source.height, source.texture.clone()))
     }
 
-    pub(crate) fn readback_texture_rgba(
+    pub(crate) async fn readback_texture_rgba_async(
         &self,
         texture: &wgpu::Texture,
     ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
@@ -1576,24 +1595,15 @@ impl WgpuSceneCompositor {
             },
         );
         self.queue.submit([encoder.finish()]);
-        self.readback_rgba()
+        self.readback_rgba_async().await
     }
 
-    pub(crate) fn readback_rgba(&self) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+    pub(crate) async fn readback_rgba_async(
+        &self,
+    ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
         let slice = self.readback_buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        self.device.poll(wgpu::PollType::wait()).map_err(|err| {
-            MotionLoomSceneRenderError::GpuRender {
-                message: format!("device poll failed: {err}"),
-            }
-        })?;
-        rx.recv()
-            .map_err(|err| MotionLoomSceneRenderError::GpuRender {
-                message: format!("readback channel failed: {err}"),
-            })?
+        BufferMapAsyncFuture::new(&self._poller, &self.readback_buffer)
+            .await
             .map_err(|err| MotionLoomSceneRenderError::GpuRender {
                 message: format!("readback map failed: {err}"),
             })?;
@@ -1618,7 +1628,7 @@ impl WgpuSceneCompositor {
     }
 }
 
-fn request_scene_gpu_adapter(
+async fn request_scene_gpu_adapter_async(
     instance: &wgpu::Instance,
 ) -> Result<wgpu::Adapter, MotionLoomSceneRenderError> {
     let first_preference =
@@ -1636,11 +1646,16 @@ fn request_scene_gpu_adapter(
             continue;
         }
         // Stay GPU-first by falling back between GPU adapter classes, not to CPU rendering.
-        match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: preference,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        })) {
+        match request_adapter_async(
+            instance,
+            &wgpu::RequestAdapterOptions {
+                power_preference: preference,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            },
+        )
+        .await
+        {
             Ok(adapter) => return Ok(adapter),
             Err(err) => errors.push(format!("{preference:?}: {err}")),
         }

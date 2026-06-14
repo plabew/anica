@@ -7,8 +7,8 @@ pub mod render;
 pub use dsl::{is_world_graph_script, parse_world_graph_script};
 pub use error::*;
 pub use gltf_loader::{
-    GlbLoadError, GlbMeshData, GlbMetadata, load_glb_mesh_data, load_glb_metadata,
-    parse_glb_mesh_data, parse_glb_metadata,
+    GlbLoadError, GlbMeshData, GlbMetadata, load_glb_mesh_data, load_glb_mesh_data_from_bytes,
+    load_glb_metadata, load_glb_metadata_from_bytes, parse_glb_mesh_data, parse_glb_metadata,
 };
 pub use model::{
     WorldAction, WorldActionBone, WorldActionPose, WorldActor, WorldApplyAction, WorldBackground,

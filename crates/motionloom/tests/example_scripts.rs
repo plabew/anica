@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::path::{Path, PathBuf};
 
 use motionloom::{
@@ -28,7 +30,7 @@ fn collect_motionloom_files(root: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn render_gpu_example_or_skip_adapter(file: &Path, graph: &motionloom::GraphScript) {
-    match render_scene_graph_frame(graph, 0, SceneRenderProfile::Gpu) {
+    match pollster::block_on(render_scene_graph_frame(graph, 0, SceneRenderProfile::Gpu)) {
         Ok(_) => {}
         Err(err) if is_gpu_adapter_unavailable(&err) => {
             eprintln!(

@@ -9,7 +9,7 @@ mod assets;
 mod defs;
 mod fonts;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) use assets::scene_asset_relative_suffixes;
 pub use assets::{clear_scene_asset_roots, set_scene_asset_roots};
 pub(crate) use assets::{

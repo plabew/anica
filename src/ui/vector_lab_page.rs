@@ -757,7 +757,7 @@ impl VectorLabPage {
             && !raw.contains("<Clip")
     }
 
-    fn render_vfx_preview_reference_frame(
+    async fn render_vfx_preview_reference_frame(
         raw: String,
         frame: u32,
     ) -> Result<(u32, u32, Vec<u8>), String> {
@@ -780,6 +780,7 @@ impl VectorLabPage {
             let mut renderer = WorldFrameRenderer::new();
             renderer
                 .render_frame_gpu(&graph, frame, Self::world_asset_root())
+                .await
                 .map_err(|err| format!("VFX world render error: {err}"))?
         } else {
             let graph = parse_graph_script(&raw).map_err(|err| {
@@ -792,6 +793,7 @@ impl VectorLabPage {
                 return Err("VFX scene preview needs at least one <Scene> node.".to_string());
             }
             render_scene_graph_frame(&graph, frame, SceneRenderProfile::Gpu)
+                .await
                 .map_err(|err| format!("VFX scene render error: {err}"))?
         };
 
@@ -815,7 +817,7 @@ impl VectorLabPage {
         self.status_line = format!("Importing VFX Studio preview frame {frame}...");
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = Self::render_vfx_preview_reference_frame(raw, frame);
+            let result = pollster::block_on(Self::render_vfx_preview_reference_frame(raw, frame));
             let _ = tx.send((frame, result));
         });
 

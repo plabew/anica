@@ -116,7 +116,7 @@ pub fn parse_motionloom_document(script: &str) -> Result<MotionLoomDocument, Gra
     parse_graph_script(script).map(MotionLoomDocument::Scene)
 }
 
-pub fn render_motionloom_document_to_video_with_progress<F>(
+pub async fn render_motionloom_document_to_video_with_progress<F>(
     ffmpeg_bin: &str,
     script: &str,
     asset_root: impl AsRef<Path>,
@@ -140,6 +140,7 @@ where
             progress_every_frames,
             |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),
         )
+        .await
         .map_err(MotionLoomError::from);
     }
 
@@ -160,6 +161,7 @@ where
             progress_every_frames,
             |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),
         )
+        .await
         .map_err(MotionLoomError::from);
     }
 
@@ -174,6 +176,7 @@ where
             progress_every_frames,
             |progress| progress_callback(MotionLoomRenderProgress::World(progress)),
         )
+        .await
         .map_err(MotionLoomError::from);
     }
 
@@ -186,6 +189,7 @@ where
         progress_every_frames,
         |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),
     )
+    .await
     .map_err(MotionLoomError::from)
 }
 

@@ -1,17 +1,20 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use image::{Rgba, RgbaImage, imageops};
 use thiserror::Error;
 
+use crate::asset::{AssetResolver, AssetSource, PathAssetResolver};
+use crate::common::gpu_async::{
+    BufferMapAsyncFuture, DevicePoller, request_adapter_async, request_device_async,
+};
 use crate::runtime::eval_time_expr;
 use crate::scene_render::SceneRenderProfile;
 use crate::world::gltf_loader::{
     GlbLoadError, GlbMeshData, GlbTextureData, GlbTriangle, load_glb_mesh_data,
+    load_glb_mesh_data_from_bytes,
 };
 use crate::world::model::{
     WorldAction, WorldActionBone, WorldActor, WorldBackgroundFit, WorldBoneAxis, WorldBoneAxisMap,
@@ -75,6 +78,30 @@ pub enum WorldRenderError {
     },
     #[error("world GPU render failed: {message}")]
     GpuRender { message: String },
+    #[error("video export is not available on this platform: {message}")]
+    VideoExportNotAvailable { message: String },
+}
+
+impl From<crate::export::EncodeError> for WorldRenderError {
+    fn from(err: crate::export::EncodeError) -> Self {
+        use crate::export::EncodeError;
+        match err {
+            EncodeError::CreateOutputDir { path, source } => Self::CreateOutputDir { path, source },
+            EncodeError::StartEncoder(message) => Self::StartFfmpeg {
+                source: std::io::Error::new(std::io::ErrorKind::Other, message),
+            },
+            EncodeError::MissingEncoderInput => Self::MissingFfmpegStdin,
+            EncodeError::WriteFrame(source) => Self::WriteFrame {
+                source,
+                stderr: String::new(),
+            },
+            EncodeError::EncoderFailed(stderr) => Self::FfmpegFailed { stderr },
+            EncodeError::NotImplemented(message) => Self::VideoExportNotAvailable { message },
+            EncodeError::NotStarted => Self::GpuRender {
+                message: "encoder was not started".to_string(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +142,7 @@ pub struct WorldGpuDiagnostics {
     pub skipped_reasons: Vec<String>,
 }
 
-pub fn render_world_frame(
+pub async fn render_world_frame(
     graph: &WorldGraph,
     frame: u32,
     asset_root: impl AsRef<Path>,
@@ -346,8 +373,12 @@ pub fn diagnose_world_graph_actor_gpu_frame(
         .ok_or_else(|| WorldRenderError::GpuRender {
             message: "GPU diagnostics found no Actor in presented world".to_string(),
         })?;
-    let model_path = resolve_asset_path_with_style(asset_root, &actor.model, actor.path_style);
-    let mesh = load_glb_mesh_data(&model_path)?;
+    let (model_key, mesh) = load_glb_mesh_resolved(
+        asset_root,
+        &actor.model,
+        actor.path_style,
+        &PathAssetResolver,
+    )?;
     let mut diagnostics = diagnose_world_glb_gpu_plan(&mesh);
     let time = WorldTime {
         frame,
@@ -486,7 +517,7 @@ pub fn diagnose_world_graph_actor_gpu_frame(
         graph,
         actor,
         &mesh,
-        &model_path,
+        &model_key,
         width,
         height,
         world,
@@ -693,8 +724,8 @@ fn format_bounds3(min: [f32; 3], max: [f32; 3]) -> String {
     )
 }
 
-#[derive(Default)]
 pub struct WorldFrameRenderer {
+    asset_resolver: Arc<dyn AssetResolver>,
     image_cache: HashMap<PathBuf, RgbaImage>,
     mesh_cache: HashMap<PathBuf, GlbMeshData>,
     gpu_static_draw_cache: HashMap<GpuWorldStaticPlanKey, Vec<GpuWorldStaticDraw>>,
@@ -702,9 +733,26 @@ pub struct WorldFrameRenderer {
     gpu_renderer: Option<GpuWorldRenderer>,
 }
 
+impl Default for WorldFrameRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WorldFrameRenderer {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_resolver(Arc::new(PathAssetResolver))
+    }
+
+    pub fn with_resolver(asset_resolver: Arc<dyn AssetResolver>) -> Self {
+        Self {
+            asset_resolver,
+            image_cache: HashMap::new(),
+            mesh_cache: HashMap::new(),
+            gpu_static_draw_cache: HashMap::new(),
+            skinning_strategy_cache: HashMap::new(),
+            gpu_renderer: None,
+        }
     }
 
     pub fn render_frame(
@@ -725,12 +773,21 @@ impl WorldFrameRenderer {
             duration_ms: graph.duration_ms,
         };
 
-        draw_world_background(&mut canvas, world, asset_root, time, &mut self.image_cache)?;
+        let resolver = self.asset_resolver.as_ref();
+        draw_world_background(
+            &mut canvas,
+            world,
+            asset_root,
+            resolver,
+            time,
+            &mut self.image_cache,
+        )?;
         draw_directional_characters(
             &mut canvas,
             world,
             graph.size,
             asset_root,
+            resolver,
             time,
             &mut self.image_cache,
         )?;
@@ -739,31 +796,34 @@ impl WorldFrameRenderer {
             graph,
             world,
             asset_root,
+            resolver,
             time,
             &mut self.mesh_cache,
         )?;
         Ok(canvas)
     }
 
-    pub fn render_frame_gpu(
+    pub async fn render_frame_gpu(
         &mut self,
         graph: &WorldGraph,
         frame: u32,
         asset_root: impl AsRef<Path>,
     ) -> Result<RgbaImage, WorldRenderError> {
         self.render_frame_gpu_internal(graph, frame, asset_root, false, false)
+            .await
     }
 
-    pub fn render_frame_gpu_with_ground_grid(
+    pub async fn render_frame_gpu_with_ground_grid(
         &mut self,
         graph: &WorldGraph,
         frame: u32,
         asset_root: impl AsRef<Path>,
     ) -> Result<RgbaImage, WorldRenderError> {
         self.render_frame_gpu_internal(graph, frame, asset_root, true, false)
+            .await
     }
 
-    pub fn render_frame_gpu_with_ground_grid_mode(
+    pub async fn render_frame_gpu_with_ground_grid_mode(
         &mut self,
         graph: &WorldGraph,
         frame: u32,
@@ -771,9 +831,10 @@ impl WorldFrameRenderer {
         debug_grid: bool,
     ) -> Result<RgbaImage, WorldRenderError> {
         self.render_frame_gpu_internal(graph, frame, asset_root, true, debug_grid)
+            .await
     }
 
-    fn render_frame_gpu_internal(
+    async fn render_frame_gpu_internal(
         &mut self,
         graph: &WorldGraph,
         frame: u32,
@@ -795,12 +856,21 @@ impl WorldFrameRenderer {
             duration_ms: graph.duration_ms,
         };
 
-        draw_world_background(&mut canvas, world, asset_root, time, &mut self.image_cache)?;
+        let resolver = self.asset_resolver.as_ref();
+        draw_world_background(
+            &mut canvas,
+            world,
+            asset_root,
+            resolver,
+            time,
+            &mut self.image_cache,
+        )?;
         draw_directional_characters(
             &mut canvas,
             world,
             graph.size,
             asset_root,
+            resolver,
             time,
             &mut self.image_cache,
         )?;
@@ -809,6 +879,7 @@ impl WorldFrameRenderer {
             graph,
             world,
             asset_root,
+            resolver,
             time,
             &mut self.mesh_cache,
             &mut self.gpu_static_draw_cache,
@@ -823,7 +894,7 @@ impl WorldFrameRenderer {
             .as_ref()
             .is_none_or(|renderer| renderer.width != width || renderer.height != height);
         if needs_renderer {
-            self.gpu_renderer = Some(GpuWorldRenderer::new(width, height)?);
+            self.gpu_renderer = Some(GpuWorldRenderer::new(width, height).await?);
         }
         let grid_params = if ground_grid {
             let camera_view = perspective_camera_view(world, width, height, time)?;
@@ -839,6 +910,7 @@ impl WorldFrameRenderer {
             .as_mut()
             .expect("GPU renderer initialized above")
             .render(&canvas, &draw_calls, grid_params)
+            .await
     }
 }
 
@@ -866,7 +938,7 @@ impl CharacterDesignGpuViewport {
         Self::default()
     }
 
-    pub fn render_frame(
+    pub async fn render_frame(
         &mut self,
         graph: &WorldGraph,
         frame: u32,
@@ -883,17 +955,20 @@ impl CharacterDesignGpuViewport {
             .find(|actor| actor.id == actor_id)
             .or_else(|| world.actors.first());
         let diagnostics = if let Some(actor) = actor {
-            let model_path =
-                resolve_asset_path_with_style(asset_root, &actor.model, actor.path_style);
-            if !self.renderer.mesh_cache.contains_key(&model_path) {
-                let mesh = load_glb_mesh_data(&model_path)?;
-                self.renderer.mesh_cache.insert(model_path.clone(), mesh);
+            let (model_key, mesh) = load_glb_mesh_resolved(
+                asset_root,
+                &actor.model,
+                actor.path_style,
+                self.renderer.asset_resolver.as_ref(),
+            )?;
+            if !self.renderer.mesh_cache.contains_key(&model_key) {
+                self.renderer.mesh_cache.insert(model_key.clone(), mesh);
             }
-            if !self.diagnostics_cache.contains_key(&model_path) {
+            if !self.diagnostics_cache.contains_key(&model_key) {
                 let mesh = self
                     .renderer
                     .mesh_cache
-                    .get(&model_path)
+                    .get(&model_key)
                     .expect("character viewport mesh cache entry inserted before diagnostics");
                 let mut diagnostics = diagnose_world_glb_gpu_plan(mesh);
                 diagnostics.skipped_reasons.push(
@@ -901,9 +976,9 @@ impl CharacterDesignGpuViewport {
                         .to_string(),
                 );
                 self.diagnostics_cache
-                    .insert(model_path.clone(), diagnostics);
+                    .insert(model_key.clone(), diagnostics);
             }
-            let mut diagnostics = self.diagnostics_cache.get(&model_path).cloned();
+            let mut diagnostics = self.diagnostics_cache.get(&model_key).cloned();
             if let Some(diagnostics) = diagnostics.as_mut() {
                 let time = WorldTime {
                     frame,
@@ -918,11 +993,14 @@ impl CharacterDesignGpuViewport {
             None
         };
 
-        let image = self.renderer.render_frame_gpu(graph, frame, asset_root)?;
+        let image = self
+            .renderer
+            .render_frame_gpu(graph, frame, asset_root)
+            .await?;
         Ok(CharacterDesignViewportFrame { image, diagnostics })
     }
 
-    pub fn render_frame_with_ground_grid(
+    pub async fn render_frame_with_ground_grid(
         &mut self,
         graph: &WorldGraph,
         frame: u32,
@@ -930,9 +1008,10 @@ impl CharacterDesignGpuViewport {
         actor_id: &str,
     ) -> Result<CharacterDesignViewportFrame, WorldRenderError> {
         self.render_frame_with_ground_grid_mode(graph, frame, asset_root, actor_id, false)
+            .await
     }
 
-    pub fn render_frame_with_ground_grid_mode(
+    pub async fn render_frame_with_ground_grid_mode(
         &mut self,
         graph: &WorldGraph,
         frame: u32,
@@ -950,17 +1029,20 @@ impl CharacterDesignGpuViewport {
             .find(|actor| actor.id == actor_id)
             .or_else(|| world.actors.first());
         let diagnostics = if let Some(actor) = actor {
-            let model_path =
-                resolve_asset_path_with_style(asset_root, &actor.model, actor.path_style);
-            if !self.renderer.mesh_cache.contains_key(&model_path) {
-                let mesh = load_glb_mesh_data(&model_path)?;
-                self.renderer.mesh_cache.insert(model_path.clone(), mesh);
+            let (model_key, mesh) = load_glb_mesh_resolved(
+                asset_root,
+                &actor.model,
+                actor.path_style,
+                self.renderer.asset_resolver.as_ref(),
+            )?;
+            if !self.renderer.mesh_cache.contains_key(&model_key) {
+                self.renderer.mesh_cache.insert(model_key.clone(), mesh);
             }
-            if !self.diagnostics_cache.contains_key(&model_path) {
+            if !self.diagnostics_cache.contains_key(&model_key) {
                 let mesh = self
                     .renderer
                     .mesh_cache
-                    .get(&model_path)
+                    .get(&model_key)
                     .expect("character viewport mesh cache entry inserted before diagnostics");
                 let mut diagnostics = diagnose_world_glb_gpu_plan(mesh);
                 diagnostics.skipped_reasons.push(
@@ -968,9 +1050,9 @@ impl CharacterDesignGpuViewport {
                         .to_string(),
                 );
                 self.diagnostics_cache
-                    .insert(model_path.clone(), diagnostics);
+                    .insert(model_key.clone(), diagnostics);
             }
-            let mut diagnostics = self.diagnostics_cache.get(&model_path).cloned();
+            let mut diagnostics = self.diagnostics_cache.get(&model_key).cloned();
             if let Some(diagnostics) = diagnostics.as_mut() {
                 let time = WorldTime {
                     frame,
@@ -987,14 +1069,16 @@ impl CharacterDesignGpuViewport {
 
         let image = self
             .renderer
-            .render_frame_gpu_with_ground_grid_mode(graph, frame, asset_root, debug_grid)?;
+            .render_frame_gpu_with_ground_grid_mode(graph, frame, asset_root, debug_grid)
+            .await?;
         Ok(CharacterDesignViewportFrame { image, diagnostics })
     }
 }
 
 struct GpuWorldRenderer {
-    device: wgpu::Device,
+    device: Arc<wgpu::Device>,
     queue: wgpu::Queue,
+    _poller: DevicePoller,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     grid_pipeline: wgpu::RenderPipeline,
@@ -1013,13 +1097,17 @@ struct GpuWorldRenderer {
 }
 
 impl GpuWorldRenderer {
-    fn new(width: u32, height: u32) -> Result<Self, WorldRenderError> {
+    async fn new(width: u32, height: u32) -> Result<Self, WorldRenderError> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        }))
+        let adapter = request_adapter_async(
+            &instance,
+            &wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            },
+        )
+        .await
         .map_err(|_| WorldRenderError::GpuRender {
             message: "no high-performance GPU adapter was available".to_string(),
         })?;
@@ -1034,16 +1122,22 @@ impl GpuWorldRenderer {
             });
         }
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("anica-motionloom-world-gpu-device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: adapter_limits,
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        }))
+        let (device, queue) = request_device_async(
+            &adapter,
+            &wgpu::DeviceDescriptor {
+                label: Some("anica-motionloom-world-gpu-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: adapter_limits,
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            },
+        )
+        .await
         .map_err(|err| WorldRenderError::GpuRender {
             message: format!("device request failed: {err}"),
         })?;
+        let device = Arc::new(device);
+        let poller = DevicePoller::start(device.clone());
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("anica-motionloom-world-gpu-shader"),
@@ -1293,6 +1387,7 @@ impl GpuWorldRenderer {
         Ok(Self {
             device,
             queue,
+            _poller: poller,
             bind_group_layout,
             pipeline,
             grid_pipeline,
@@ -1311,7 +1406,7 @@ impl GpuWorldRenderer {
         })
     }
 
-    fn render(
+    async fn render(
         &mut self,
         background: &RgbaImage,
         draw_calls: &[GpuWorldDraw],
@@ -1516,7 +1611,7 @@ impl GpuWorldRenderer {
             },
         );
         self.queue.submit([encoder.finish()]);
-        self.readback_rgba()
+        self.readback_rgba_async().await
     }
 
     fn make_target_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
@@ -1624,21 +1719,10 @@ impl GpuWorldRenderer {
         gpu_texture
     }
 
-    fn readback_rgba(&self) -> Result<RgbaImage, WorldRenderError> {
+    async fn readback_rgba_async(&self) -> Result<RgbaImage, WorldRenderError> {
         let slice = self.readback_buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        self.device
-            .poll(wgpu::PollType::wait())
-            .map_err(|err| WorldRenderError::GpuRender {
-                message: format!("device poll failed: {err}"),
-            })?;
-        rx.recv()
-            .map_err(|err| WorldRenderError::GpuRender {
-                message: format!("readback channel failed: {err}"),
-            })?
+        BufferMapAsyncFuture::new(&self._poller, &self.readback_buffer)
+            .await
             .map_err(|err| WorldRenderError::GpuRender {
                 message: format!("readback map failed: {err}"),
             })?;
@@ -2032,7 +2116,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-pub fn render_world_graph_to_video_with_progress<F>(
+#[cfg_attr(target_arch = "wasm32", allow(unused_mut, unused_variables))]
+pub async fn render_world_graph_to_video_with_progress<F>(
     ffmpeg_bin: &str,
     graph: &WorldGraph,
     asset_root: impl AsRef<Path>,
@@ -2052,99 +2137,60 @@ where
             profile,
             progress_every_frames,
             progress_callback,
-        );
+        )
+        .await;
     }
 
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| WorldRenderError::CreateOutputDir {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(WorldRenderError::VideoExportNotAvailable {
+            message: "FFmpeg video export is not available in WASM".to_string(),
+        })
     }
 
-    let asset_root = asset_root.as_ref().to_path_buf();
-    let (w, h) = graph.output_size();
-    let fps = graph.fps.max(1.0);
-    let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / fps);
-    let total_frames = ((duration_sec * fps).round() as u32).max(1);
-    let size_arg = format!("{}x{}", w.max(1), h.max(1));
-    let fps_arg = format!("{fps:.6}");
-    let output_arg = output_path.to_string_lossy().to_string();
-    let encoder_args = world_encoder_args(profile);
-    let mut child = Command::new(ffmpeg_bin)
-        .args([
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgba",
-            "-s",
-            &size_arg,
-            "-r",
-            &fps_arg,
-            "-i",
-            "pipe:0",
-            "-an",
-        ])
-        .args(&encoder_args)
-        .arg(output_arg.as_str())
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| WorldRenderError::StartFfmpeg { source })?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::export::{FfmpegVideoEncoder, VideoEncoder};
 
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or(WorldRenderError::MissingFfmpegStdin)?;
-
-    let mut renderer = WorldFrameRenderer::default();
-    progress_callback(WorldRenderProgress {
-        rendered_frames: 0,
-        total_frames,
-    });
-    for frame in 0..total_frames {
-        let image = if profile.uses_gpu_compositor() {
-            renderer.render_frame_gpu(graph, frame, &asset_root)?
-        } else {
-            renderer.render_frame(graph, frame, &asset_root)?
-        };
-        if let Err(source) = stdin.write_all(image.as_raw()) {
-            drop(stdin);
-            let stderr = child
-                .wait_with_output()
-                .ok()
-                .map(|output| String::from_utf8_lossy(&output.stderr).trim().to_string())
-                .unwrap_or_else(|| "unable to collect ffmpeg stderr".to_string());
-            return Err(WorldRenderError::WriteFrame { source, stderr });
-        }
-        let rendered_frames = frame + 1;
-        if rendered_frames == total_frames
-            || (progress_every_frames > 0 && rendered_frames % progress_every_frames == 0)
-        {
-            progress_callback(WorldRenderProgress {
-                rendered_frames,
-                total_frames,
-            });
-        }
-    }
-    drop(stdin);
-
-    let output = child
-        .wait_with_output()
-        .map_err(|source| WorldRenderError::WaitFfmpeg { source })?;
-    if !output.status.success() {
-        return Err(WorldRenderError::FfmpegFailed {
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        let asset_root = asset_root.as_ref().to_path_buf();
+        let (w, h) = graph.output_size();
+        let fps = graph.fps.max(1.0);
+        let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / fps);
+        let total_frames = ((duration_sec * fps).round() as u32).max(1);
+        let encoder_args = world_encoder_args(profile);
+        let mut renderer = WorldFrameRenderer::default();
+        progress_callback(WorldRenderProgress {
+            rendered_frames: 0,
+            total_frames,
         });
+
+        let mut encoder =
+            FfmpegVideoEncoder::new(ffmpeg_bin, output_path).with_encoder_args(encoder_args);
+        encoder.begin(w, h, fps)?;
+
+        for frame in 0..total_frames {
+            let image = if profile.uses_gpu_compositor() {
+                renderer.render_frame_gpu(graph, frame, &asset_root).await?
+            } else {
+                renderer.render_frame(graph, frame, &asset_root)?
+            };
+            encoder.push_frame(frame, image.as_raw())?;
+            let rendered_frames = frame + 1;
+            if rendered_frames == total_frames
+                || (progress_every_frames > 0 && rendered_frames % progress_every_frames == 0)
+            {
+                progress_callback(WorldRenderProgress {
+                    rendered_frames,
+                    total_frames,
+                });
+            }
+        }
+        encoder.finish()?;
+        Ok(())
     }
-    Ok(())
 }
 
-fn render_world_graph_to_png_sequence_with_progress<F>(
+async fn render_world_graph_to_png_sequence_with_progress<F>(
     graph: &WorldGraph,
     asset_root: impl AsRef<Path>,
     output_dir: &Path,
@@ -2172,7 +2218,7 @@ where
 
     for frame in 0..total_frames {
         let image = if profile.uses_gpu_compositor() {
-            renderer.render_frame_gpu(graph, frame, &asset_root)?
+            renderer.render_frame_gpu(graph, frame, &asset_root).await?
         } else {
             renderer.render_frame(graph, frame, &asset_root)?
         };
@@ -2195,6 +2241,7 @@ where
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn world_encoder_args(profile: SceneRenderProfile) -> Vec<String> {
     match profile {
         SceneRenderProfile::Cpu | SceneRenderProfile::GpuProRes => world_prores_encoder_args(),
@@ -2204,6 +2251,7 @@ fn world_encoder_args(profile: SceneRenderProfile) -> Vec<String> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn world_prores_encoder_args() -> Vec<String> {
     vec![
         "-vf".to_string(),
@@ -2225,6 +2273,7 @@ fn world_prores_encoder_args() -> Vec<String> {
     ]
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn world_prores_4444_encoder_args() -> Vec<String> {
     vec![
         "-vf".to_string(),
@@ -2250,7 +2299,7 @@ fn world_prores_4444_encoder_args() -> Vec<String> {
     ]
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
 fn world_gpu_h264_encoder_args() -> Vec<String> {
     vec![
         "-c:v".to_string(),
@@ -2278,7 +2327,7 @@ fn world_gpu_h264_encoder_args() -> Vec<String> {
     ]
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
 fn world_gpu_h264_encoder_args() -> Vec<String> {
     vec![
         "-c:v".to_string(),
@@ -2304,6 +2353,7 @@ fn draw_world_background(
     canvas: &mut RgbaImage,
     world: &WorldNode,
     asset_root: &Path,
+    resolver: &dyn AssetResolver,
     time: WorldTime,
     image_cache: &mut HashMap<PathBuf, RgbaImage>,
 ) -> Result<(), WorldRenderError> {
@@ -2319,21 +2369,20 @@ fn draw_world_background(
     let Some(src) = background.src.as_deref() else {
         return Ok(());
     };
-    let path = resolve_asset_path(asset_root, src);
-    if !path.exists() {
+    let resolved = resolve_world_asset_source(asset_root, src, WorldPathStyle::Relative, resolver)?;
+    let key = resolved.key().to_path_buf();
+    if matches!(resolved, ResolvedWorldAsset::Missing { .. }) {
         return Ok(());
     }
     let opacity = eval_number(&background.opacity, 1.0, time)?.clamp(0.0, 1.0);
-    if !image_cache.contains_key(&path) {
-        let image = image::open(&path)
-            .map_err(|source| WorldRenderError::BackgroundImage {
-                path: path.clone(),
-                source,
-            })?
-            .to_rgba8();
-        image_cache.insert(path.clone(), image);
+    if !image_cache.contains_key(&key) {
+        let image = load_rgba_image_from_resolved(&resolved, |path, source| {
+            WorldRenderError::BackgroundImage { path, source }
+        })?
+        .to_rgba8();
+        image_cache.insert(key.clone(), image);
     }
-    if let Some(image) = image_cache.get(&path) {
+    if let Some(image) = image_cache.get(&key) {
         composite_background(canvas, image, &background.fit, opacity);
     }
     Ok(())
@@ -2344,6 +2393,7 @@ fn draw_directional_characters(
     world: &WorldNode,
     logical_size: (u32, u32),
     asset_root: &Path,
+    resolver: &dyn AssetResolver,
     time: WorldTime,
     image_cache: &mut HashMap<PathBuf, RgbaImage>,
 ) -> Result<(), WorldRenderError> {
@@ -2368,20 +2418,20 @@ fn draw_directional_characters(
         let Some(image_src) = direction.image.as_deref().or(character.sheet.as_deref()) else {
             continue;
         };
-        let path = resolve_asset_path_with_style(asset_root, image_src, character.path_style);
-        if !path.exists() {
-            return Err(WorldRenderError::MissingDirectionalCharacterImage(path));
+        let resolved =
+            resolve_world_asset_source(asset_root, image_src, character.path_style, resolver)?;
+        let key = resolved.key().to_path_buf();
+        if matches!(resolved, ResolvedWorldAsset::Missing { .. }) {
+            return Err(WorldRenderError::MissingDirectionalCharacterImage(key));
         }
-        if !image_cache.contains_key(&path) {
-            let image = image::open(&path)
-                .map_err(|source| WorldRenderError::DirectionalCharacterImage {
-                    path: path.clone(),
-                    source,
-                })?
-                .to_rgba8();
-            image_cache.insert(path.clone(), image);
+        if !image_cache.contains_key(&key) {
+            let image = load_rgba_image_from_resolved(&resolved, |path, source| {
+                WorldRenderError::DirectionalCharacterImage { path, source }
+            })?
+            .to_rgba8();
+            image_cache.insert(key.clone(), image);
         }
-        let Some(source_image) = image_cache.get(&path) else {
+        let Some(source_image) = image_cache.get(&key) else {
             continue;
         };
         let (rect_x, rect_y, rect_w, rect_h) = if let Some(play_sprite) =
@@ -2660,6 +2710,7 @@ fn draw_actor_debug_projections(
     graph: &WorldGraph,
     world: &WorldNode,
     asset_root: &Path,
+    resolver: &dyn AssetResolver,
     time: WorldTime,
     mesh_cache: &mut HashMap<PathBuf, GlbMeshData>,
 ) -> Result<(), WorldRenderError> {
@@ -2673,13 +2724,13 @@ fn draw_actor_debug_projections(
     let distance = eval_number(&world.camera.distance, 3.2, time)?.max(0.2);
 
     for actor in &world.actors {
-        let model_path = resolve_asset_path_with_style(asset_root, &actor.model, actor.path_style);
-        if !mesh_cache.contains_key(&model_path) {
-            let mesh = load_glb_mesh_data(&model_path)?;
-            mesh_cache.insert(model_path.clone(), mesh);
+        let (model_key, mesh) =
+            load_glb_mesh_resolved(asset_root, &actor.model, actor.path_style, resolver)?;
+        if !mesh_cache.contains_key(&model_key) {
+            mesh_cache.insert(model_key.clone(), mesh);
         }
         let mesh = mesh_cache
-            .get(&model_path)
+            .get(&model_key)
             .expect("mesh cache entry inserted before render");
         let x = eval_number(&actor.x, 0.0, time)?;
         let y = eval_number(&actor.y, 0.0, time)?;
@@ -2741,6 +2792,7 @@ fn build_actor_gpu_draws(
     graph: &WorldGraph,
     world: &WorldNode,
     asset_root: &Path,
+    resolver: &dyn AssetResolver,
     time: WorldTime,
     mesh_cache: &mut HashMap<PathBuf, GlbMeshData>,
     gpu_static_draw_cache: &mut HashMap<GpuWorldStaticPlanKey, Vec<GpuWorldStaticDraw>>,
@@ -2751,13 +2803,13 @@ fn build_actor_gpu_draws(
     let mut draws = Vec::new();
 
     for actor in &world.actors {
-        let model_path = resolve_asset_path_with_style(asset_root, &actor.model, actor.path_style);
-        if !mesh_cache.contains_key(&model_path) {
-            let mesh = load_glb_mesh_data(&model_path)?;
-            mesh_cache.insert(model_path.clone(), mesh);
+        let (model_key, mesh) =
+            load_glb_mesh_resolved(asset_root, &actor.model, actor.path_style, resolver)?;
+        if !mesh_cache.contains_key(&model_key) {
+            mesh_cache.insert(model_key.clone(), mesh);
         }
         let mesh = mesh_cache
-            .get(&model_path)
+            .get(&model_key)
             .expect("mesh cache entry inserted before render");
         let x = eval_number(&actor.x, 0.0, time)?;
         let y = eval_number(&actor.y, 0.0, time)?;
@@ -2784,7 +2836,7 @@ fn build_actor_gpu_draws(
             continue;
         }
         let static_plan_key = GpuWorldStaticPlanKey {
-            model_path: model_path.clone(),
+            model_path: model_key.clone(),
             outline: actor
                 .material
                 .as_ref()
@@ -2793,7 +2845,7 @@ fn build_actor_gpu_draws(
             hide_materials: actor.hide_materials.clone(),
         };
         if !gpu_static_draw_cache.contains_key(&static_plan_key) {
-            let static_draws = build_actor_mesh_gpu_static_draws(actor, mesh, &model_path);
+            let static_draws = build_actor_mesh_gpu_static_draws(actor, mesh, &model_key);
             gpu_static_draw_cache.insert(static_plan_key.clone(), static_draws);
         }
         let static_draws = gpu_static_draw_cache
@@ -2816,7 +2868,7 @@ fn build_actor_gpu_draws(
             scale * camera_zoom,
             opacity,
             time,
-            &model_path,
+            &model_key,
             skinning_strategy_cache,
         )?;
         draws.extend(actor_draws);
@@ -5007,15 +5059,6 @@ fn eval_number(expr: &str, default: f32, time: WorldTime) -> Result<f32, WorldRe
     })
 }
 
-fn resolve_asset_path(asset_root: &Path, src: &str) -> PathBuf {
-    let path = Path::new(src);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        asset_root.join(path)
-    }
-}
-
 fn resolve_asset_path_with_style(
     asset_root: &Path,
     src: &str,
@@ -5034,7 +5077,132 @@ fn resolve_asset_path_with_style(
     }
 }
 
+/// Result of resolving a world asset source, used to load from either the
+/// filesystem or an in-memory resolver (e.g. WASM `add_asset`).
+enum ResolvedWorldAsset {
+    Path(PathBuf),
+    Bytes { key: PathBuf, bytes: Vec<u8> },
+    Missing { key: PathBuf },
+}
+
+impl ResolvedWorldAsset {
+    /// Cache key used to deduplicate loaded images. For filesystem assets this
+    /// is the resolved path; for memory assets it is the original source name.
+    fn key(&self) -> &Path {
+        match self {
+            ResolvedWorldAsset::Path(path) => path,
+            ResolvedWorldAsset::Bytes { key, .. } => key,
+            ResolvedWorldAsset::Missing { key } => key,
+        }
+    }
+}
+
+/// Resolve an asset source through the global resolver, falling back to the
+/// legacy filesystem resolution when no resolver entry exists.
+fn resolve_world_asset_source(
+    asset_root: &Path,
+    src: &str,
+    path_style: WorldPathStyle,
+    resolver: &dyn AssetResolver,
+) -> Result<ResolvedWorldAsset, WorldRenderError> {
+    match resolver.resolve(src) {
+        Ok(AssetSource::Bytes(bytes)) => Ok(ResolvedWorldAsset::Bytes {
+            key: PathBuf::from(src),
+            bytes,
+        }),
+        Ok(AssetSource::Path(resolved_path)) => {
+            // The resolver may return the raw source path (e.g. PathAssetResolver).
+            // Resolve relative paths against the asset root and verify existence on
+            // native platforms. On WASM there is no filesystem, so treat Path results
+            // as missing and rely on memory assets instead.
+            let path = if resolved_path.is_absolute() {
+                resolved_path
+            } else {
+                resolve_asset_path_with_style(asset_root, src, path_style)
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if path.exists() {
+                    Ok(ResolvedWorldAsset::Path(path))
+                } else {
+                    Ok(ResolvedWorldAsset::Missing {
+                        key: PathBuf::from(src),
+                    })
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = path;
+                Ok(ResolvedWorldAsset::Missing {
+                    key: PathBuf::from(src),
+                })
+            }
+        }
+        Ok(AssetSource::Url(url)) => Err(WorldRenderError::Expression {
+            expr: src.to_string(),
+            message: format!("URL asset source is not supported for world assets: {url}"),
+        }),
+        Err(_) => {
+            let path = resolve_asset_path_with_style(asset_root, src, path_style);
+            if path.exists() {
+                Ok(ResolvedWorldAsset::Path(path))
+            } else {
+                Ok(ResolvedWorldAsset::Missing {
+                    key: PathBuf::from(src),
+                })
+            }
+        }
+    }
+}
+
+/// Load a dynamic image from a resolved world asset.
+fn load_rgba_image_from_resolved(
+    resolved: &ResolvedWorldAsset,
+    error_ctor: impl Fn(PathBuf, image::ImageError) -> WorldRenderError,
+) -> Result<image::DynamicImage, WorldRenderError> {
+    match resolved {
+        ResolvedWorldAsset::Path(path) => {
+            image::open(path).map_err(|source| error_ctor(path.clone(), source))
+        }
+        ResolvedWorldAsset::Bytes { key, bytes } => {
+            image::load_from_memory(bytes).map_err(|source| error_ctor(key.clone(), source))
+        }
+        ResolvedWorldAsset::Missing { key } => Err(error_ctor(
+            key.clone(),
+            image::ImageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "asset not found",
+            )),
+        )),
+    }
+}
+
+/// Load a GLB mesh from a resolved world asset. Returns the mesh together with a
+/// stable cache key derived from the source resolution.
+fn load_glb_mesh_resolved(
+    asset_root: &Path,
+    src: &str,
+    path_style: WorldPathStyle,
+    resolver: &dyn AssetResolver,
+) -> Result<(PathBuf, GlbMeshData), WorldRenderError> {
+    let resolved = resolve_world_asset_source(asset_root, src, path_style, resolver)?;
+    let key = resolved.key().to_path_buf();
+    let mesh = match resolved {
+        ResolvedWorldAsset::Path(path) => load_glb_mesh_data(&path)?,
+        ResolvedWorldAsset::Bytes { bytes, .. } => load_glb_mesh_data_from_bytes(&key, &bytes)?,
+        ResolvedWorldAsset::Missing { .. } => {
+            return Err(GlbLoadError::Io {
+                path: key,
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "GLB asset not found"),
+            }
+            .into());
+        }
+    };
+    Ok((key, mesh))
+}
+
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use std::{fs, path::Path};
 
@@ -5069,7 +5237,7 @@ mod tests {
         if !model.exists() {
             return;
         }
-        let frame = render_world_frame(&graph, 0, &root).expect("world frame");
+        let frame = pollster::block_on(render_world_frame(&graph, 0, &root)).expect("world frame");
         assert_eq!(frame.width(), 320);
         assert_eq!(frame.height(), 180);
     }
@@ -5108,17 +5276,20 @@ mod tests {
   <Present from="sprite_stage" />
 </Graph>"##;
         let graph = parse_world_graph_script(script).expect("directional graph");
-        let frame = render_world_frame(&graph, 0, &root).expect("directional frame");
+        let frame =
+            pollster::block_on(render_world_frame(&graph, 0, &root)).expect("directional frame");
         assert_eq!(frame.get_pixel(10, 10).0, [0, 255, 0, 255]);
 
         let top_script = script.replace("pitch=\"0\"", "pitch=\"90\"");
         let graph = parse_world_graph_script(&top_script).expect("top directional graph");
-        let frame = render_world_frame(&graph, 0, &root).expect("top directional frame");
+        let frame = pollster::block_on(render_world_frame(&graph, 0, &root))
+            .expect("top directional frame");
         assert_eq!(frame.get_pixel(10, 10).0, [0, 0, 255, 255]);
 
         let scaled_script = script.replace("size={[40,20]}", "size={[40,20]} renderSize={[20,10]}");
         let graph = parse_world_graph_script(&scaled_script).expect("scaled directional graph");
-        let frame = render_world_frame(&graph, 0, &root).expect("scaled directional frame");
+        let frame = pollster::block_on(render_world_frame(&graph, 0, &root))
+            .expect("scaled directional frame");
         assert_eq!(frame.width(), 20);
         assert_eq!(frame.height(), 10);
         assert_eq!(frame.get_pixel(5, 5).0, [0, 255, 0, 255]);
@@ -5157,9 +5328,12 @@ mod tests {
   <Present from="sprite_stage" />
 </Graph>"##;
         let graph = parse_world_graph_script(script).expect("play sprite graph");
-        let frame0 = render_world_frame(&graph, 0, &root).expect("play sprite frame 0");
-        let frame1 = render_world_frame(&graph, 1, &root).expect("play sprite frame 1");
-        let frame2 = render_world_frame(&graph, 2, &root).expect("play sprite frame 2");
+        let frame0 =
+            pollster::block_on(render_world_frame(&graph, 0, &root)).expect("play sprite frame 0");
+        let frame1 =
+            pollster::block_on(render_world_frame(&graph, 1, &root)).expect("play sprite frame 1");
+        let frame2 =
+            pollster::block_on(render_world_frame(&graph, 2, &root)).expect("play sprite frame 2");
 
         assert_eq!(frame0.get_pixel(0, 0).0, [255, 0, 0, 255]);
         assert_eq!(frame1.get_pixel(0, 0).0, [0, 255, 0, 255]);
@@ -5191,7 +5365,8 @@ mod tests {
   <Present from="sprite_stage" />
 </Graph>"##;
         let graph = parse_world_graph_script(script).expect("split directional graph");
-        let rendered = render_world_frame(&graph, 0, &root).expect("split directional frame");
+        let rendered = pollster::block_on(render_world_frame(&graph, 0, &root))
+            .expect("split directional frame");
         let pixel = rendered.get_pixel(5, 5).0;
         assert_eq!(pixel[0], 0);
         assert!(

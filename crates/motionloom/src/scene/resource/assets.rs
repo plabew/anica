@@ -1,15 +1,19 @@
 use std::{
     fs,
-    io::Read,
     path::{Path, PathBuf},
     sync::{OnceLock, RwLock},
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Read;
+
 use base64::Engine;
 use image::RgbaImage;
 
+use crate::asset::AssetResolver;
 use crate::scene::render::MotionLoomSceneRenderError;
 
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_REMOTE_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 
 static SCENE_ASSET_ROOTS: OnceLock<RwLock<Vec<PathBuf>>> = OnceLock::new();
@@ -32,35 +36,90 @@ pub fn clear_scene_asset_roots() {
     set_scene_asset_roots(Vec::new());
 }
 
-pub(crate) fn load_rgba_image_source(src: &str) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+pub(crate) fn load_rgba_image_source(
+    src: &str,
+    resolver: &dyn AssetResolver,
+) -> Result<RgbaImage, MotionLoomSceneRenderError> {
     if is_remote_image_source(src) {
-        let bytes = fetch_remote_asset_bytes(src)?;
-        return image::load_from_memory(&bytes)
-            .map_err(|source| MotionLoomSceneRenderError::DecodeImage {
-                source_ref: src.to_string(),
-                source,
-            })
-            .map(|decoded| decoded.to_rgba8());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let bytes = fetch_remote_asset_bytes(src)?;
+            return decode_image_bytes(src, &bytes);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Err(MotionLoomSceneRenderError::FetchAsset {
+                url: src.to_string(),
+                message: "remote asset fetching is not implemented for WASM".to_string(),
+            });
+        }
     }
 
-    let path = resolve_local_scene_asset_path(src);
-    image::open(&path)
-        .map_err(|source| MotionLoomSceneRenderError::OpenImage { path, source })
+    match resolver.resolve(src) {
+        Ok(crate::asset::AssetSource::Bytes(bytes)) => decode_image_bytes(src, &bytes),
+        Ok(crate::asset::AssetSource::Path(path)) => image::open(&path)
+            .map_err(|source| MotionLoomSceneRenderError::OpenImage { path, source })
+            .map(|decoded| decoded.to_rgba8()),
+        Ok(crate::asset::AssetSource::Url(url)) => Err(MotionLoomSceneRenderError::FetchAsset {
+            url,
+            message: "URL asset source requires a fetch implementation".to_string(),
+        }),
+        Err(message) => Err(MotionLoomSceneRenderError::FetchAsset {
+            url: src.to_string(),
+            message,
+        }),
+    }
+}
+
+fn decode_image_bytes(src: &str, bytes: &[u8]) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+    image::load_from_memory(bytes)
+        .map_err(|source| MotionLoomSceneRenderError::DecodeImage {
+            source_ref: src.to_string(),
+            source,
+        })
         .map(|decoded| decoded.to_rgba8())
 }
 
-pub(crate) fn load_svg_source(src: &str) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+pub(crate) fn load_svg_source(
+    src: &str,
+    resolver: &dyn AssetResolver,
+) -> Result<RgbaImage, MotionLoomSceneRenderError> {
     let (bytes, resources_dir) = if is_svg_data_uri(src) {
         (decode_svg_data_uri(src)?, None)
     } else if is_remote_image_source(src) {
-        (fetch_remote_asset_bytes(src)?, None)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            (fetch_remote_asset_bytes(src)?, None)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Err(MotionLoomSceneRenderError::FetchAsset {
+                url: src.to_string(),
+                message: "remote asset fetching is not implemented for WASM".to_string(),
+            });
+        }
     } else {
-        let path = resolve_local_scene_asset_path(src);
-        let bytes = fs::read(&path).map_err(|source| MotionLoomSceneRenderError::ReadSvg {
-            path: path.clone(),
-            source,
-        })?;
-        (bytes, path.parent().map(Path::to_path_buf))
+        match resolver.resolve(src) {
+            Ok(crate::asset::AssetSource::Bytes(bytes)) => Ok((bytes, None)),
+            Ok(crate::asset::AssetSource::Path(path)) => {
+                let bytes =
+                    fs::read(&path).map_err(|source| MotionLoomSceneRenderError::ReadSvg {
+                        path: path.clone(),
+                        source,
+                    })?;
+                Ok((bytes, path.parent().map(Path::to_path_buf)))
+            }
+            Ok(crate::asset::AssetSource::Url(url)) => {
+                Err(MotionLoomSceneRenderError::FetchAsset {
+                    url,
+                    message: "URL asset source requires a fetch implementation".to_string(),
+                })
+            }
+            Err(message) => Err(MotionLoomSceneRenderError::FetchAsset {
+                url: src.to_string(),
+                message,
+            }),
+        }?
     };
 
     render_svg_bytes(src, &bytes, resources_dir)
@@ -145,11 +204,18 @@ fn render_svg_bytes(
     bytes: &[u8],
     resources_dir: Option<PathBuf>,
 ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+    #[cfg(not(target_arch = "wasm32"))]
     let mut options = resvg::usvg::Options {
         resources_dir,
         ..Default::default()
     };
+    #[cfg(not(target_arch = "wasm32"))]
     options.fontdb_mut().load_system_fonts();
+    #[cfg(target_arch = "wasm32")]
+    let options = resvg::usvg::Options {
+        resources_dir,
+        ..Default::default()
+    };
 
     let tree = resvg::usvg::Tree::from_data(bytes, &options).map_err(|source| {
         MotionLoomSceneRenderError::ParseSvg {
@@ -345,6 +411,7 @@ fn is_remote_image_source(src: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn fetch_remote_asset_bytes(src: &str) -> Result<Vec<u8>, MotionLoomSceneRenderError> {
     let response = ureq::get(src)
         .call()
@@ -369,6 +436,7 @@ fn fetch_remote_asset_bytes(src: &str) -> Result<Vec<u8>, MotionLoomSceneRenderE
     Ok(bytes)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn format_ureq_error(err: ureq::Error) -> String {
     match err {
         ureq::Error::Status(code, response) => {

@@ -186,8 +186,8 @@ let script = r##"
 "##;
 
 let graph = parse_graph_script(script)?;
-let frame = render_scene_frame(&graph, 0, SceneRenderProfile::Gpu)
-    .or_else(|_| render_scene_frame(&graph, 0, SceneRenderProfile::Cpu))?;
+let frame = pollster::block_on(render_scene_frame(&graph, 0, SceneRenderProfile::Gpu))
+    .or_else(|_| pollster::block_on(render_scene_frame(&graph, 0, SceneRenderProfile::Cpu)))?;
 frame.save("motionloom_frame.png")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```

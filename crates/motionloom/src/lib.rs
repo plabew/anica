@@ -1,23 +1,31 @@
 // =========================================
 // crates/motionloom/src/lib.rs
 
+pub mod asset;
 pub mod common;
 pub mod dsl;
 pub mod error;
+pub mod export;
 pub mod process;
 pub mod root;
 pub mod scene;
 pub mod world;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_api;
+
 // Compatibility module aliases. Public API names stay stable while the source
 // tree is split by product domain.
+pub use asset::{AssetResolver, AssetSource, MemoryAssetResolver, PathAssetResolver};
 pub use common::backend;
-pub use common::curve as eval;
 pub use common::keyframe;
+pub use export::{EncodeError, VideoEncoder, VideoFrame, create_encoder};
+pub use process::adapters::clip::curve as eval;
 pub use process::adapters::clip::export_adapter;
 pub use process::adapters::clip::model;
 pub use process::adapters::clip::preview_adapter;
 pub use process::adapters::clip::transitions;
+pub use process::cpu_renderer;
 pub use process::effect as effects;
 pub use process::graph;
 pub use process::pass as effect_kernel_map;
@@ -39,6 +47,9 @@ pub use eval::sample_anim_f32;
 pub use process::adapters::clip::model::{
     AnimF32, ClipZoomSpec, ColorRgba, LayerEffectClip, LocalMaskLayer, MAX_LOCAL_MASK_LAYERS,
     SlideDirection, TextStyle, VideoEffect, ZoomStyle,
+};
+pub use process::cpu_renderer::{
+    ProcessCpuRenderError, ProcessCpuRenderer, render_process_frame_cpu,
 };
 pub use process::effect::{
     LayerColorBlurEffects, PerClipColorBlurEffects, combine_clip_with_layer,

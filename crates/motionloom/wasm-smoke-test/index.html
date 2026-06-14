@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MotionLoom WASM Smoke Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    canvas { border: 1px solid #ccc; image-rendering: pixelated; }
+    pre { background: #f5f5f5; padding: 1rem; overflow: auto; }
+    .error { color: #c00; }
+    .success { color: #080; }
+  </style>
+</head>
+<body>
+  <h1>MotionLoom WASM Smoke Test</h1>
+  <p>
+    Build the WASM package first:
+    <code>wasm-pack build crates/motionloom --target web --out-dir ../../crates/motionloom/wasm-smoke-test/pkg</code>
+  </p>
+
+  <h2>Controls</h2>
+  <button id="parse-btn">Parse Summary</button>
+  <button id="render-btn">Render Red Frame</button>
+  <button id="render-image-btn">Render With Memory Image</button>
+  <pre id="log"></pre>
+
+  <h2>Canvas Output</h2>
+  <canvas id="output" width="64" height="64"></canvas>
+
+  <script type="module">
+    import init, {
+      motionloom_document_type,
+      motionloom_parse_summary,
+      WasmSceneRenderer,
+      WasmWorldRenderer,
+    } from "./pkg/motionloom.js";
+
+    const logEl = document.getElementById("log");
+    function log(message, isError = false) {
+      const line = document.createElement("div");
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      line.className = isError ? "error" : "success";
+      logEl.appendChild(line);
+    }
+
+    const colorScene = `<Graph fps={30} duration="1s" size={[64,64]}>
+  <Background color="#000000" />
+  <Scene id="stage">
+    <Timeline>
+      <Track id="main" z="0">
+        <Sequence duration="1s">
+          <Layer>
+            <Rect x="0" y="0" width="64" height="64" color="#ff0000" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="stage" />
+</Graph>`;
+
+    const imageScene = `<Graph fps={30} duration="1s" size={[64,64]}>
+  <Scene id="stage">
+    <Timeline>
+      <Track id="main" z="0">
+        <Sequence duration="1s">
+          <Layer>
+            <Background color="#000000" />
+            <Image src="gradient.png" x={0} y={0} width={64} height={64} />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="stage" />
+</Graph>`;
+
+    await init();
+    log("WASM module initialized.");
+
+    document.getElementById("parse-btn").addEventListener("click", () => {
+      try {
+        const type = motionloom_document_type(colorScene);
+        const summary = motionloom_parse_summary(colorScene);
+        log(`document_type=${type}, summary=${summary}`);
+      } catch (err) {
+        log(`parse error: ${err}`, true);
+      }
+    });
+
+    document.getElementById("render-btn").addEventListener("click", async () => {
+      try {
+        const renderer = new WasmSceneRenderer(colorScene, "cpu");
+        const rgba = await renderer.render_frame(0);
+        const canvas = document.getElementById("output");
+        const ctx = canvas.getContext("2d");
+        const imageData = new ImageData(
+          new Uint8ClampedArray(rgba),
+          canvas.width,
+          canvas.height
+        );
+        ctx.putImageData(imageData, 0, 0);
+        log(`rendered ${rgba.length} bytes`);
+      } catch (err) {
+        log(`render error: ${err}`, true);
+      }
+    });
+
+    document.getElementById("render-image-btn").addEventListener("click", async () => {
+      try {
+        // Valid 1x1 white RGB PNG generated with zlib-compressed scanline data.
+        const pngBytes = new Uint8Array([
+          0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+          0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+          0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+          0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xff, 0xff, 0x3f,
+          0x00, 0x05, 0xfe, 0x02, 0xfe, 0x0d, 0xef, 0x46, 0xb8, 0x00, 0x00, 0x00,
+          0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+        ]);
+        const renderer = new WasmSceneRenderer(imageScene, "cpu");
+        renderer.add_asset("gradient.png", pngBytes);
+        const rgba = await renderer.render_frame(0);
+        const canvas = document.getElementById("output");
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext("2d");
+        const imageData = new ImageData(
+          new Uint8ClampedArray(rgba),
+          canvas.width,
+          canvas.height
+        );
+        ctx.putImageData(imageData, 0, 0);
+        log(`rendered with memory image: ${rgba.length} bytes`);
+      } catch (err) {
+        log(`render with image error: ${err}`, true);
+      }
+    });
+  </script>
+</body>
+</html>

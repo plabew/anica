@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let script = fs::read_to_string(&path)?;
     let graph = parse_graph_script(&script)?;
-    let frame = render_scene_graph_frame(&graph, frame_index, profile)?;
+    let frame = pollster::block_on(render_scene_graph_frame(&graph, frame_index, profile))?;
 
     frame.save(&output)?;
     println!("saved frame {} to {}", frame_index, output.display());

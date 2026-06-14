@@ -1,6 +1,6 @@
 // =========================================
+// crates/motionloom/src/process/adapters/clip/curve.rs
 // =========================================
-// crates/motionloom/src/curve.rs
 
 use crate::model::AnimF32;
 
