@@ -204,11 +204,10 @@ impl ExportMode {
     }
 }
 
-// macOS and Windows VideoToolbox/hardware encoders do not reliably support
-// frame rates below ~23.976 fps.  Low fps exports (5, 10, 15) cause the
-// encoder to hang indefinitely because it cannot initialise a hardware
-// encoding session at those rates.  Only expose these low fps options for GIF
-// exports, which use a completely different (software) pipeline.
+// Hardware H.264 encoders do not reliably support frame rates below ~23.976
+// fps. Low fps exports (5, 10, 15) can hang indefinitely because the encoder
+// cannot initialise a hardware encoding session at those rates. Only expose
+// these low fps options for GIF exports, which use a software pipeline.
 pub const UI_EXPORT_FPS_CHOICES: [u32; 11] = [24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 144];
 pub const UI_EXPORT_FPS_CHOICES_GIF: [u32; 14] =
     [5, 10, 15, 24, 25, 30, 48, 50, 60, 72, 90, 100, 120, 144];
@@ -237,6 +236,51 @@ pub const fn export_fps_choices_for_ui() -> &'static [u32] {
 
 pub fn export_resolution_choices_for_ui() -> &'static [(&'static str, &'static str)] {
     crate::export_resolution::export_resolution_choices_for_ui()
+}
+
+#[cfg(target_os = "macos")]
+const fn platform_h264_label() -> &'static str {
+    "H.264 MP4 (VideoToolbox, macOS)"
+}
+
+#[cfg(target_os = "windows")]
+const fn platform_h264_label() -> &'static str {
+    "H.264 MP4 (Media Foundation, Windows)"
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+const fn platform_h264_label() -> &'static str {
+    "H.264 MP4 (OpenH264)"
+}
+
+#[cfg(target_os = "macos")]
+const fn platform_h264_description() -> &'static str {
+    "macOS hardware H.264 encoder (VideoToolbox). Faster encode with bitrate control."
+}
+
+#[cfg(target_os = "windows")]
+const fn platform_h264_description() -> &'static str {
+    "Windows built-in H.264 encoder (Media Foundation). No x264/GPL dependency."
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+const fn platform_h264_description() -> &'static str {
+    "OpenH264 compatibility encoder. No x264/GPL dependency."
+}
+
+#[cfg(target_os = "macos")]
+const fn platform_h264_encoder_name() -> &'static str {
+    "h264_videotoolbox"
+}
+
+#[cfg(target_os = "windows")]
+const fn platform_h264_encoder_name() -> &'static str {
+    "h264_mf"
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+const fn platform_h264_encoder_name() -> &'static str {
+    "libopenh264"
 }
 
 impl ExportPreset {
@@ -356,7 +400,7 @@ impl ExportPreset {
     pub fn label(self) -> &'static str {
         match self {
             ExportPreset::H264Mp4 => "H.264 MP4",
-            ExportPreset::H264VideotoolboxMp4 => "H.264 MP4 (VideoToolbox, macOS)",
+            ExportPreset::H264VideotoolboxMp4 => platform_h264_label(),
             ExportPreset::HevcMp4 => "HEVC MP4",
             ExportPreset::Gif => "Animated GIF",
             ExportPreset::Vp8Webm => "VP8 WEBM",
@@ -379,11 +423,9 @@ impl ExportPreset {
     pub fn description(self) -> &'static str {
         match self {
             ExportPreset::H264Mp4 => {
-                "Best compatibility. Uses non-x264 H.264 encoders (VideoToolbox/OpenH264 path)."
+                "Best compatibility. Uses non-x264 H.264 encoders (VideoToolbox/Media Foundation/OpenH264 path)."
             }
-            ExportPreset::H264VideotoolboxMp4 => {
-                "macOS hardware H.264 encoder (VideoToolbox). Faster encode with bitrate control."
-            }
+            ExportPreset::H264VideotoolboxMp4 => platform_h264_description(),
             ExportPreset::HevcMp4 => {
                 "HEVC via VideoToolbox on macOS. On other platforms falls back to H.264 compatibility export."
             }
@@ -539,11 +581,13 @@ impl ExportPreset {
             }
             ExportPreset::H264VideotoolboxMp4 => {
                 args.push("-c:v".into());
-                args.push("h264_videotoolbox".into());
-                args.push("-allow_sw".into());
-                // VideoToolbox hardware encoder requires ~23.976+ fps.
-                // Allow software fallback at low fps so the encoder does not hang.
-                args.push(if fps < 24 { "1" } else { "0" }.into());
+                args.push(platform_h264_encoder_name().into());
+                if cfg!(target_os = "macos") {
+                    args.push("-allow_sw".into());
+                    // VideoToolbox hardware encoder requires ~23.976+ fps.
+                    // Allow software fallback at low fps so the encoder does not hang.
+                    args.push(if fps < 24 { "1" } else { "0" }.into());
+                }
                 args.push("-pix_fmt".into());
                 args.push("yuv420p".into());
                 args.push("-b:v".into());
@@ -1058,6 +1102,9 @@ impl FfmpegExporter {
         layer_effect_clips: &[LayerEffectClip],
         preset: ExportPreset,
     ) -> bool {
+        if !cfg!(target_os = "macos") {
+            return false;
+        }
         if preset != ExportPreset::H264VideotoolboxMp4 {
             return false;
         }
@@ -1086,6 +1133,9 @@ impl FfmpegExporter {
         layer_effect_clips: &[LayerEffectClip],
         preset: ExportPreset,
     ) -> bool {
+        if !cfg!(target_os = "macos") {
+            return false;
+        }
         if preset != ExportPreset::H264VideotoolboxMp4 {
             return false;
         }
@@ -3481,15 +3531,17 @@ impl FfmpegExporter {
             {
                 if stderr_trimmed.is_empty() {
                     eprintln!(
-                        "[Export] VideoToolbox H.264 failed with status {} and empty stderr. Retrying with H.264 compatibility preset.",
+                        "[Export] {} failed with status {} and empty stderr. Retrying with H.264 compatibility preset.",
+                        platform_h264_label(),
                         status
                     );
                 } else {
                     eprintln!(
-                        "[Export] VideoToolbox H.264 failed with status {}. Retrying with H.264 compatibility preset.",
+                        "[Export] {} failed with status {}. Retrying with H.264 compatibility preset.",
+                        platform_h264_label(),
                         status
                     );
-                    eprintln!("[Export][videotoolbox][stderr]\n{}", stderr_trimmed);
+                    eprintln!("[Export][platform-h264][stderr]\n{}", stderr_trimmed);
                 }
                 active_export_preset = ExportPreset::H264Mp4;
                 used_videotoolbox_fallback = true;
@@ -3687,6 +3739,11 @@ impl FfmpegExporter {
         export_preset: ExportPreset,
         export_settings: &ExportSettings,
     ) -> Result<Vec<String>, ExportError> {
+        if !cfg!(target_os = "macos") {
+            return Err(ExportError::GpuOpacityPathUnavailable {
+                reason: "VideoToolbox opacity fast path is macOS-only".to_string(),
+            });
+        }
         if export_preset != ExportPreset::H264VideotoolboxMp4 {
             return Err(ExportError::GpuOpacityPathUnavailable {
                 reason: "preset is not h264_videotoolbox_mp4".to_string(),
