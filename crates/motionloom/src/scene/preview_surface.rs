@@ -261,8 +261,10 @@ fn upload_bgra_to_d3d11_texture(
             None,
             data.as_ptr() as *const _,
             row_pitch as u32,
-            0,
+            row_pitch.saturating_mul(height as usize) as u32,
         );
+        // Make the upload visible to any device that opens the shared handle.
+        context.Flush();
     }
     true
 }
@@ -290,6 +292,15 @@ impl WindowsD3DSharedSurface {
         height: u32,
         bgra: &[u8],
     ) -> Option<Self> {
+        if std::env::var_os("ANICA_DEBUG_PREVIEW_BGRA").is_some() && !bgra.is_empty() {
+            eprintln!(
+                "[motionloom] WindowsD3DSharedSurface first pixel BGRA=({}, {}, {}, {})",
+                bgra[0],
+                bgra[1],
+                bgra[2],
+                bgra.get(3).copied().unwrap_or(0)
+            );
+        }
         let texture = create_windows_shared_bgra_texture(device, width, height)?;
         if !upload_bgra_to_d3d11_texture(context, &texture, width, height, bgra) {
             return None;
