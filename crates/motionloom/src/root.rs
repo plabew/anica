@@ -20,14 +20,14 @@ pub enum MotionLoomDocument {
     Mixed(RootGraphShell),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RootGraphDomain {
     Process,
     Scene,
     World,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RootGraphShell {
     pub has_process: bool,
     pub has_scene: bool,
