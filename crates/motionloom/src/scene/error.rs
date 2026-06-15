@@ -83,7 +83,7 @@ impl From<crate::export::EncodeError> for MotionLoomSceneRenderError {
         match err {
             EncodeError::CreateOutputDir { path, source } => Self::CreateOutputDir { path, source },
             EncodeError::StartEncoder(message) => Self::StartFfmpeg {
-                source: std::io::Error::new(std::io::ErrorKind::Other, message),
+                source: std::io::Error::other(message),
             },
             EncodeError::MissingEncoderInput => Self::MissingFfmpegStdin,
             EncodeError::WriteFrame(source) => Self::WriteFrame {

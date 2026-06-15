@@ -4202,6 +4202,8 @@ name = "motionloom"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "core-foundation 0.10.0",
+ "core-video",
  "cosmic-text",
  "exmex",
  "image",

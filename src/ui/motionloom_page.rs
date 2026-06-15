@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "macos")]
+use core_video::pixel_buffer::CVPixelBuffer;
+
 use gpui::{
     ClipboardItem, Context, Element, Entity, Focusable, GlobalElementId, InspectorElementId,
     IntoElement, LayoutId, MouseButton, MouseDownEvent, PathPromptOptions, Render, RenderImage,
@@ -25,12 +28,13 @@ use gpui_component::{
 };
 use image::{ImageBuffer, Rgba, RgbaImage};
 use motionloom::{
-    GraphScript, MotionLoomDocument, MotionLoomRenderProgress, RuntimeProgram, SceneRenderProfile,
-    SceneRenderer, WorldFrameRenderer, WorldGraph, WorldPathStyle, compile_runtime_program,
-    is_graph_script, is_world_graph_script, load_glb_mesh_data, next_scene_output_path_for_profile,
-    parse_graph_script, parse_motionloom_document, parse_process_graph_script,
-    parse_world_graph_script, render_motionloom_document_to_video_with_progress,
-    render_scene_graph_frame,
+    GraphScript, MotionLoomDocument, MotionLoomRenderProgress, RuntimeProgram,
+    ScenePlatformPreviewSurface, ScenePreviewBackend, ScenePreviewSurface,
+    ScenePreviewSurfaceOptions, SceneRenderProfile, SceneRenderer, WorldFrameRenderer, WorldGraph,
+    WorldPathStyle, compile_runtime_program, is_graph_script, is_world_graph_script,
+    load_glb_mesh_data, next_scene_output_path_for_profile, parse_graph_script,
+    parse_motionloom_document, parse_world_graph_script,
+    render_motionloom_document_to_video_with_progress, render_scene_graph_frame,
 };
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -54,12 +58,60 @@ const SCENE_LIVE_INPUT_RENDER_DEBOUNCE_MS: u64 = 120;
 const SCENE_LIVE_PRERENDER_MAX_FRAMES: u32 = 6000;
 const SCENE_LIVE_PREVIEW_FRAME_CACHE_CAPACITY: usize = 6000;
 const SCENE_LIVE_PREVIEW_FRAME_CACHE_MAX_BYTES: usize = 768 * 1024 * 1024;
+const SCENE_LIVE_RENDER_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 const SCENE_LIVE_PRERENDER_POLL_MS: u64 = 16;
 const SCENE_LIVE_IDLE_POLL_MS: u64 = 120;
 const DEFAULT_SCENE_LIVE_NODE_ID: &str = "iris_outer_soft";
 const DEFAULT_SCENE_LIVE_ATTR: &str = "x";
 
 type SceneLivePreviewCacheKey = (u64, u32, SceneLivePreviewQuality, u32, u32);
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct SendableCVPixelBuffer(Arc<CVPixelBuffer>);
+
+#[cfg(target_os = "macos")]
+// SAFETY: The worker only transfers a retained CVPixelBuffer handle to the UI
+// thread. The buffer contents are fully written before send and are consumed by
+// GPUI's surface paint path; no mutable access is shared after transfer.
+unsafe impl Send for SendableCVPixelBuffer {}
+
+#[cfg(target_os = "macos")]
+// SAFETY: Shared references are used only to keep the retained CVPixelBuffer
+// alive while GPUI paints it. The wrapper does not expose mutation.
+unsafe impl Sync for SendableCVPixelBuffer {}
+
+enum SceneLivePreviewFrame {
+    Bgra {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
+    #[cfg(target_os = "macos")]
+    MacOsSurface {
+        width: u32,
+        height: u32,
+        surface: SendableCVPixelBuffer,
+    },
+}
+
+impl SceneLivePreviewFrame {
+    fn into_loaded_preview(self) -> Result<LoadedPreview, MotionLoomPageError> {
+        match self {
+            Self::Bgra {
+                width,
+                height,
+                data,
+            } => MotionLoomPage::loaded_preview_from_bgra(width, height, data),
+            #[cfg(target_os = "macos")]
+            Self::MacOsSurface {
+                width,
+                height,
+                surface,
+            } => MotionLoomPage::loaded_preview_from_macos_surface(width, height, surface.0),
+        }
+    }
+}
 
 struct WorldLivePreviewRequest {
     graph: WorldGraph,
@@ -71,7 +123,7 @@ struct WorldLivePreviewRequest {
 struct SceneLivePreviewRequest {
     graph: GraphScript,
     frame: u32,
-    response_tx: Sender<Result<(u32, u32, Vec<u8>, Option<String>), String>>,
+    response_tx: Sender<Result<(SceneLivePreviewFrame, Option<String>), String>>,
 }
 
 #[cfg(test)]
@@ -218,6 +270,9 @@ impl ImportedClipKind {
 struct LoadedPreview {
     image: Arc<RenderImage>,
     bgra: Option<Arc<Vec<u8>>>,
+    /// Reusable IOSurface-backed BGRA pixel buffer for `paint_bgra_frame_anica`.
+    #[cfg(target_os = "macos")]
+    bgra_surface: Option<Arc<CVPixelBuffer>>,
     width: u32,
     height: u32,
 }
@@ -325,8 +380,6 @@ struct GlbAxisBindingScore {
 enum MotionLoomPageError {
     #[error("Failed to open preview image: {source}")]
     OpenPreviewImage { source: image::ImageError },
-    #[error("Failed to construct preview image buffer")]
-    BuildPreviewImageBuffer,
     #[error("Failed to construct runtime preview buffer")]
     BuildRuntimePreviewBuffer,
     #[error(transparent)]
@@ -338,24 +391,20 @@ enum MotionLoomPageError {
 struct FitPreviewImageElement {
     image: Arc<RenderImage>,
     bgra: Option<Arc<Vec<u8>>>,
+    /// Cached IOSurface-backed BGRA surface for the extended surface paint path.
+    #[cfg(target_os = "macos")]
+    bgra_surface: Option<Arc<CVPixelBuffer>>,
     width: u32,
     height: u32,
 }
 
 impl FitPreviewImageElement {
-    fn new(image: Arc<RenderImage>, width: u32, height: u32) -> Self {
-        Self {
-            image,
-            bgra: None,
-            width,
-            height,
-        }
-    }
-
     fn from_preview(preview: LoadedPreview) -> Self {
         Self {
             image: preview.image,
             bgra: preview.bgra,
+            #[cfg(target_os = "macos")]
+            bgra_surface: preview.bgra_surface,
             width: preview.width,
             height: preview.height,
         }
@@ -439,20 +488,34 @@ impl Element for FitPreviewImageElement {
         _cx: &mut gpui::App,
     ) {
         let dest_bounds = self.fitted_bounds(bounds);
+
+        // Prefer the extended BGRA surface path; it avoids CPU-side reallocation
+        // per paint and matches the video-preview rendering pipeline.
         #[cfg(target_os = "macos")]
-        if let Some(bgra) = self.bgra.as_ref()
-            && let Some(surface) = video_engine::Video::build_surface_bgra_copy_from_data(
-                self.width,
-                self.height,
-                bgra,
-            )
         {
-            window.paint_bgra_frame_anica(
-                dest_bounds,
-                gpui::BgraFrameSurface::CvPixelBuffer(surface),
-                gpui::SurfaceExParams_anica::default(),
-            );
-            return;
+            if let Some(surface) = self.bgra_surface.as_ref() {
+                window.paint_bgra_frame_anica(
+                    dest_bounds,
+                    gpui::BgraFrameSurface::CvPixelBuffer((**surface).clone()),
+                    gpui::SurfaceExParams_anica::default(),
+                );
+                return;
+            }
+
+            if let Some(bgra) = self.bgra.as_ref()
+                && let Some(surface) = video_engine::Video::build_surface_bgra_copy_from_data(
+                    self.width,
+                    self.height,
+                    bgra,
+                )
+            {
+                window.paint_bgra_frame_anica(
+                    dest_bounds,
+                    gpui::BgraFrameSurface::CvPixelBuffer(surface),
+                    gpui::SurfaceExParams_anica::default(),
+                );
+                return;
+            }
         }
 
         let _ = window.paint_image(
@@ -669,20 +732,23 @@ impl MotionLoomPage {
     ) -> Result<LoadedPreview, MotionLoomPageError> {
         let rgba = decoded.to_rgba8();
         let (w, h) = rgba.dimensions();
+        // Keep a correct RGBA RenderImage for the rare paint_image fallback path.
+        let image = {
+            let frames = SmallVec::from_elem(image::Frame::new(rgba.clone()), 1);
+            Arc::new(RenderImage::new(frames))
+        };
         let mut bgra = rgba.into_raw();
         for px in bgra.chunks_mut(4) {
-            let r = px[0];
-            let b = px[2];
-            px[0] = b;
-            px[2] = r;
+            px.swap(0, 2);
         }
         let bgra = Arc::new(bgra);
-        let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, bgra.as_ref().clone())
-            .ok_or(MotionLoomPageError::BuildPreviewImageBuffer)?;
-        let frames = SmallVec::from_elem(image::Frame::new(image_buffer), 1);
+        #[cfg(target_os = "macos")]
+        let bgra_surface = Self::build_bgra_surface(w, h, bgra.as_ref());
         Ok(LoadedPreview {
-            image: Arc::new(RenderImage::new(frames)),
+            image,
             bgra: Some(bgra),
+            #[cfg(target_os = "macos")]
+            bgra_surface,
             width: w,
             height: h,
         })
@@ -695,9 +761,30 @@ impl MotionLoomPage {
     ) -> Result<LoadedPreview, MotionLoomPageError> {
         let bgra = Arc::new(bgra);
         let image = Self::render_image_from_bgra(width, height, bgra.as_ref().clone())?;
+        #[cfg(target_os = "macos")]
+        let bgra_surface = Self::build_bgra_surface(width, height, bgra.as_ref());
         Ok(LoadedPreview {
             image,
             bgra: Some(bgra),
+            #[cfg(target_os = "macos")]
+            bgra_surface,
+            width,
+            height,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn loaded_preview_from_macos_surface(
+        width: u32,
+        height: u32,
+        surface: Arc<CVPixelBuffer>,
+    ) -> Result<LoadedPreview, MotionLoomPageError> {
+        let rgba = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255]));
+        let frames = SmallVec::from_elem(image::Frame::new(rgba), 1);
+        Ok(LoadedPreview {
+            image: Arc::new(RenderImage::new(frames)),
+            bgra: None,
+            bgra_surface: Some(surface),
             width,
             height,
         })
@@ -706,8 +793,12 @@ impl MotionLoomPage {
     fn render_image_from_bgra(
         width: u32,
         height: u32,
-        bgra: Vec<u8>,
+        mut bgra: Vec<u8>,
     ) -> Result<Arc<RenderImage>, MotionLoomPageError> {
+        // Convert BGRA back to RGBA so the fallback RenderImage displays correct colors.
+        for px in bgra.chunks_mut(4) {
+            px.swap(0, 2);
+        }
         let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, bgra)
             .ok_or(MotionLoomPageError::BuildRuntimePreviewBuffer)?;
         let frames = SmallVec::from_elem(image::Frame::new(image_buffer), 1);
@@ -738,49 +829,177 @@ impl MotionLoomPage {
         (w, h, bgra)
     }
 
+    /// Create an IOSurface-backed BGRA CVPixelBuffer and copy BGRA data into it.
+    /// Returns `None` if allocation fails so callers can fall back to other paths.
+    #[cfg(target_os = "macos")]
+    fn build_bgra_surface(width: u32, height: u32, bgra: &[u8]) -> Option<Arc<CVPixelBuffer>> {
+        let surface = video_engine::Video::create_bgra_surface(width, height)?;
+        if video_engine::Video::copy_bgra_into_surface(&surface, width, height, bgra) {
+            Some(Arc::new(surface))
+        } else {
+            None
+        }
+    }
+
+    fn scene_preview_surface_to_live_frame(
+        surface: ScenePlatformPreviewSurface,
+    ) -> Option<SceneLivePreviewFrame> {
+        match surface {
+            #[cfg(target_os = "macos")]
+            ScenePlatformPreviewSurface::MacOs {
+                surface,
+                width,
+                height,
+                ..
+            } => Some(SceneLivePreviewFrame::MacOsSurface {
+                width,
+                height,
+                surface: SendableCVPixelBuffer(Arc::new(surface)),
+            }),
+            #[cfg(target_os = "windows")]
+            ScenePlatformPreviewSurface::Windows { .. } => None,
+            #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+            ScenePlatformPreviewSurface::Linux { .. } => None,
+        }
+    }
+
+    fn render_panic_message(panic: Box<dyn Any + Send>) -> String {
+        if let Some(message) = panic.downcast_ref::<String>() {
+            message.clone()
+        } else if let Some(message) = panic.downcast_ref::<&'static str>() {
+            (*message).to_string()
+        } else {
+            "unknown renderer panic".to_string()
+        }
+    }
+
     fn spawn_scene_live_preview_worker() -> Sender<SceneLivePreviewRequest> {
         let (request_tx, request_rx) = mpsc::channel::<SceneLivePreviewRequest>();
-        std::thread::spawn(move || {
-            let mut gpu_renderer =
-                pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).ok();
-            let mut cpu_renderer =
-                pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).ok();
-            while let Ok(mut request) = request_rx.recv() {
-                // Keep preview responsive by discarding stale queued frames.
-                while let Ok(next_request) = request_rx.try_recv() {
-                    request = next_request;
-                }
-                let gpu_error = if let Some(renderer) = gpu_renderer.as_mut() {
-                    match pollster::block_on(renderer.render_frame(&request.graph, request.frame)) {
-                        Ok(rgba) => {
-                            let result = Self::rgba_image_to_bgra(rgba);
-                            let _ = request
-                                .response_tx
-                                .send(Ok((result.0, result.1, result.2, None)));
-                            continue;
-                        }
-                        Err(err) => Some(err.to_string()),
+        let _ = std::thread::Builder::new()
+            .name("motionloom-scene-live-preview".to_string())
+            .stack_size(SCENE_LIVE_RENDER_WORKER_STACK_SIZE)
+            .spawn(move || {
+                let mut gpu_renderer = std::panic::catch_unwind(|| {
+                    pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).ok()
+                })
+                .ok()
+                .flatten();
+                let mut cpu_renderer = std::panic::catch_unwind(|| {
+                    pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).ok()
+                })
+                .ok()
+                .flatten();
+                while let Ok(mut request) = request_rx.recv() {
+                    // Keep preview responsive by discarding stale queued frames.
+                    while let Ok(next_request) = request_rx.try_recv() {
+                        request = next_request;
                     }
-                } else {
-                    None
-                };
-                let result = if let Some(renderer) = cpu_renderer.as_mut() {
-                    pollster::block_on(renderer.render_frame(&request.graph, request.frame))
-                        .map(Self::rgba_image_to_bgra)
-                        .map(|(w, h, bgra)| {
-                            let warning = gpu_error
-                                .map(|err| format!("Scene live preview used CPU fallback: {err}"));
-                            (w, h, bgra, warning)
+                    let graph = request.graph.clone();
+                    let frame = request.frame;
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let gpu_error = if let Some(renderer) = gpu_renderer.as_mut() {
+                            match pollster::block_on(renderer.render_frame_to_preview_surface(
+                                &request.graph,
+                                request.frame,
+                                ScenePreviewSurfaceOptions {
+                                    backend: ScenePreviewBackend::PlatformSurface,
+                                    ..ScenePreviewSurfaceOptions::default()
+                                },
+                            )) {
+                                Ok(ScenePreviewSurface::PlatformSurface(surface)) => {
+                                    if let Some(frame) = Self::scene_preview_surface_to_live_frame(surface)
+                                    {
+                                        return Ok((frame, None));
+                                    }
+                                    Some(
+                                        "platform preview surface is not displayable on this target yet"
+                                            .to_string(),
+                                    )
+                                }
+                                Ok(ScenePreviewSurface::CpuBgra {
+                                    width,
+                                    height,
+                                    data,
+                                    ..
+                                }) => {
+                                    return Ok((
+                                        SceneLivePreviewFrame::Bgra {
+                                            width,
+                                            height,
+                                            data: (*data).clone(),
+                                        },
+                                        None,
+                                    ));
+                                }
+                                Ok(ScenePreviewSurface::WgpuTexture(_)) => {
+                                    Some("wgpu texture preview is not wired to GPUI display yet".to_string())
+                                }
+                                Err(err) => Some(err.to_string()),
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(renderer) = cpu_renderer.as_mut() {
+                            pollster::block_on(renderer.render_frame(&request.graph, request.frame))
+                                .map(Self::rgba_image_to_bgra)
+                                .map(|(w, h, bgra)| {
+                                    let warning = gpu_error.map(|err| {
+                                        format!("Scene live preview used CPU fallback: {err}")
+                                    });
+                                    (
+                                        SceneLivePreviewFrame::Bgra {
+                                            width: w,
+                                            height: h,
+                                            data: bgra,
+                                        },
+                                        warning,
+                                    )
+                                })
+                                .map_err(|err| {
+                                    format!("Scene live render error: CPU preview failed: {err}")
+                                })
+                        } else {
+                            Err("Scene live render error: no preview renderer initialized."
+                                .to_string())
+                        }
+                    }))
+                    .unwrap_or_else(|panic| {
+                        let panic_message = Self::render_panic_message(panic);
+                        gpu_renderer = None;
+                        cpu_renderer = std::panic::catch_unwind(|| {
+                            pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).ok()
                         })
-                        .map_err(|err| {
-                            format!("Scene live render error: CPU preview failed: {err}")
-                        })
-                } else {
-                    Err("Scene live render error: no preview renderer initialized.".to_string())
-                };
-                let _ = request.response_tx.send(result);
-            }
-        });
+                        .ok()
+                        .flatten();
+                        if let Some(renderer) = cpu_renderer.as_mut() {
+                            pollster::block_on(renderer.render_frame(&graph, frame))
+                                .map(Self::rgba_image_to_bgra)
+                                .map(|(w, h, bgra)| {
+                                    (
+                                        SceneLivePreviewFrame::Bgra {
+                                            width: w,
+                                            height: h,
+                                            data: bgra,
+                                        },
+                                        Some(format!(
+                                            "Scene live preview used CPU fallback after GPU panic: {panic_message}"
+                                        )),
+                                    )
+                                })
+                                .map_err(|err| {
+                                    format!(
+                                        "Scene live render error: GPU panicked ({panic_message}); CPU fallback failed: {err}"
+                                    )
+                                })
+                        } else {
+                            Err(format!(
+                                "Scene live render error: GPU panicked ({panic_message}); CPU renderer could not initialize."
+                            ))
+                        }
+                    });
+                    let _ = request.response_tx.send(result);
+                }
+            });
         request_tx
     }
 
@@ -1001,8 +1220,33 @@ impl MotionLoomPage {
             }
             return Ok(None);
         }
-        if Self::uses_pure_world_renderer(&raw) {
-            return self.world_live_preview_image(&raw, frame, cx);
+        match parse_motionloom_document(&raw) {
+            Ok(MotionLoomDocument::World(_)) => {
+                return self.world_live_preview_image(&raw, frame, cx);
+            }
+            Ok(MotionLoomDocument::Process(_)) => {
+                return Err(
+                    "Scene live preview cannot render process-only Layer FX graphs without a source clip."
+                        .to_string(),
+                );
+            }
+            Ok(MotionLoomDocument::Scene(_)) => {}
+            Ok(MotionLoomDocument::Mixed(shell)) if shell.has_scene || shell.has_process => {
+                // Mixed Scene/Process graphs use the scene composition renderer so scene: sources
+                // can feed post-process passes.
+            }
+            Ok(MotionLoomDocument::Mixed(shell)) if shell.has_world => {}
+            Ok(MotionLoomDocument::Mixed(_)) => {
+                return Err(
+                    "Scene live preview needs a renderable Scene or World node.".to_string()
+                );
+            }
+            Err(err) => {
+                return Err(format!(
+                    "Scene live parse error at line {}: {}",
+                    err.line, err.message
+                ));
+            }
         }
 
         let script_hash = Self::script_hash(&raw);
@@ -1066,15 +1310,19 @@ impl MotionLoomPage {
             self.scene_live_async_render_key = Some(key);
             self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
             let token = self.scene_live_async_render_token;
-            let (tx, rx) = mpsc::channel::<Result<(u32, u32, Vec<u8>, Option<String>), String>>();
+            let (tx, rx) =
+                mpsc::channel::<Result<(SceneLivePreviewFrame, Option<String>), String>>();
             let request = SceneLivePreviewRequest {
                 graph: preview_graph,
                 frame,
                 response_tx: tx,
             };
-            if self.scene_live_preview_tx.send(request).is_err() {
-                self.scene_live_async_render_key = None;
-                return Err("Scene live preview worker is unavailable.".to_string());
+            if let Err(err) = self.scene_live_preview_tx.send(request) {
+                self.scene_live_preview_tx = Self::spawn_scene_live_preview_worker();
+                if self.scene_live_preview_tx.send(err.0).is_err() {
+                    self.scene_live_async_render_key = None;
+                    return Err("Scene live preview worker is unavailable.".to_string());
+                }
             }
             cx.spawn(async move |view, cx| {
                 let mut poll_ms = SCENE_LIVE_PRERENDER_POLL_MS;
@@ -1087,9 +1335,9 @@ impl MotionLoomPage {
                             return;
                         }
                         match rx.try_recv() {
-                            Ok(Ok((w, h, bgra, warning))) => {
+                            Ok(Ok((frame, warning))) => {
                                 this.scene_live_async_render_key = None;
-                                if let Ok(preview) = Self::loaded_preview_from_bgra(w, h, bgra) {
+                                if let Ok(preview) = frame.into_loaded_preview() {
                                     this.scene_live_preview_cache_key = Some(key);
                                     this.scene_live_preview_cache_image = Some(preview.clone());
                                     this.insert_scene_live_preview_frame_cache(key, preview);
@@ -1984,16 +2232,24 @@ impl MotionLoomPage {
     }
 
     fn script_playback_spec(&self) -> Option<(f32, u32)> {
-        if Self::uses_pure_world_renderer(&self.script_text) {
-            let graph = parse_world_graph_script(&self.script_text).ok()?;
-            let fps = graph.fps;
-            let total = ((graph.duration_ms as f64 / 1000.0) * fps as f64).round() as u32;
-            return Some((fps, total.max(1)));
-        }
-        let graph = if self.script_text.contains("<Process") {
-            parse_process_graph_script(&self.script_text).ok()?
-        } else {
-            parse_graph_script(&self.script_text).ok()?
+        let graph = match parse_motionloom_document(&self.script_text).ok()? {
+            MotionLoomDocument::World(graph) => {
+                let fps = graph.fps;
+                let total = ((graph.duration_ms as f64 / 1000.0) * fps as f64).round() as u32;
+                return Some((fps, total.max(1)));
+            }
+            MotionLoomDocument::Process(graph) | MotionLoomDocument::Scene(graph) => graph,
+            MotionLoomDocument::Mixed(shell) if shell.has_scene || shell.has_process => {
+                // Mixed Scene/Process documents are rendered by the scene composition path.
+                parse_graph_script(&self.script_text).ok()?
+            }
+            MotionLoomDocument::Mixed(shell) if shell.has_world => {
+                let graph = parse_world_graph_script(&self.script_text).ok()?;
+                let fps = graph.fps;
+                let total = ((graph.duration_ms as f64 / 1000.0) * fps as f64).round() as u32;
+                return Some((fps, total.max(1)));
+            }
+            MotionLoomDocument::Mixed(_) => return None,
         };
         let fps = graph.fps;
         let total = ((graph.duration_ms as f64 / 1000.0) * fps as f64).round() as u32;
@@ -2126,70 +2382,82 @@ impl MotionLoomPage {
         }
 
         let (tx, rx) = mpsc::channel::<SceneLivePrerenderEvent>();
-        std::thread::spawn(move || {
-            let mut gpu_renderer =
-                pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).ok();
-            let mut cpu_renderer =
-                pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).ok();
-            for frame in 0..total_frames {
-                if cancel.load(Ordering::Relaxed) {
-                    return;
-                }
-                let rgba = if let Some(renderer) = gpu_renderer.as_mut() {
-                    match pollster::block_on(renderer.render_frame(&preview_graph, frame)) {
-                        Ok(rgba) => rgba,
-                        Err(gpu_err) => {
-                            let Some(renderer) = cpu_renderer.as_mut() else {
-                                let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(
-                                    gpu_err.to_string()
-                                )));
-                                return;
-                            };
-                            match pollster::block_on(renderer.render_frame(&preview_graph, frame)) {
-                                Ok(rgba) => rgba,
-                                Err(cpu_err) => {
+        let _ = std::thread::Builder::new()
+            .name("motionloom-scene-live-prerender".to_string())
+            .stack_size(SCENE_LIVE_RENDER_WORKER_STACK_SIZE)
+            .spawn(move || {
+                let mut gpu_renderer = std::panic::catch_unwind(|| {
+                    pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).ok()
+                })
+                .ok()
+                .flatten();
+                let mut cpu_renderer = std::panic::catch_unwind(|| {
+                    pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).ok()
+                })
+                .ok()
+                .flatten();
+                for frame in 0..total_frames {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let rgba = if let Some(renderer) = gpu_renderer.as_mut() {
+                        match pollster::block_on(renderer.render_frame(&preview_graph, frame)) {
+                            Ok(rgba) => rgba,
+                            Err(gpu_err) => {
+                                let Some(renderer) = cpu_renderer.as_mut() else {
                                     let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(
-                                        format!("{gpu_err}; CPU fallback failed: {cpu_err}"),
+                                        gpu_err.to_string(),
                                     )));
                                     return;
+                                };
+                                match pollster::block_on(
+                                    renderer.render_frame(&preview_graph, frame),
+                                ) {
+                                    Ok(rgba) => rgba,
+                                    Err(cpu_err) => {
+                                        let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(
+                                            format!("{gpu_err}; CPU fallback failed: {cpu_err}"),
+                                        )));
+                                        return;
+                                    }
                                 }
                             }
                         }
-                    }
-                } else {
-                    let Some(renderer) = cpu_renderer.as_mut() else {
-                        let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(
-                            "Scene prerender error: no preview renderer initialized.".to_string(),
-                        )));
-                        return;
-                    };
-                    match pollster::block_on(renderer.render_frame(&preview_graph, frame)) {
-                        Ok(rgba) => rgba,
-                        Err(err) => {
-                            let _ =
-                                tx.send(SceneLivePrerenderEvent::Finished(Err(err.to_string())));
+                    } else {
+                        let Some(renderer) = cpu_renderer.as_mut() else {
+                            let _ = tx.send(SceneLivePrerenderEvent::Finished(Err(
+                                "Scene prerender error: no preview renderer initialized."
+                                    .to_string(),
+                            )));
                             return;
+                        };
+                        match pollster::block_on(renderer.render_frame(&preview_graph, frame)) {
+                            Ok(rgba) => rgba,
+                            Err(err) => {
+                                let _ = tx
+                                    .send(SceneLivePrerenderEvent::Finished(Err(err.to_string())));
+                                return;
+                            }
                         }
+                    };
+                    let (width, height, bgra) = Self::rgba_image_to_bgra(rgba);
+                    if tx
+                        .send(SceneLivePrerenderEvent::Frame {
+                            frame,
+                            width,
+                            height,
+                            bgra,
+                        })
+                        .is_err()
+                    {
+                        return;
                     }
-                };
-                let (width, height, bgra) = Self::rgba_image_to_bgra(rgba);
-                if tx
-                    .send(SceneLivePrerenderEvent::Frame {
-                        frame,
-                        width,
-                        height,
-                        bgra,
-                    })
-                    .is_err()
-                {
+                }
+                if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-            }
-            if cancel.load(Ordering::Relaxed) {
-                return;
-            }
-            let _ = tx.send(SceneLivePrerenderEvent::Finished(Ok(total_frames)));
-        });
+                let _ = tx.send(SceneLivePrerenderEvent::Finished(Ok(total_frames)));
+            });
 
         cx.spawn_in(window, async move |view, window| {
             let mut poll_ms = SCENE_LIVE_PRERENDER_POLL_MS;
@@ -3018,10 +3286,17 @@ impl MotionLoomPage {
             return;
         }
 
-        let parsed_runtime_graph = if raw.contains("<Process") {
-            parse_process_graph_script(&raw)
-        } else {
-            parse_graph_script(&raw)
+        let parsed_runtime_graph = match parse_motionloom_document(&raw) {
+            Ok(MotionLoomDocument::Process(graph) | MotionLoomDocument::Scene(graph)) => Ok(graph),
+            Ok(MotionLoomDocument::Mixed(shell)) if shell.has_scene || shell.has_process => {
+                // Mixed documents must stay on the scene composition parser; the process parser is
+                // only for process-only Layer FX graphs with an external source clip.
+                parse_graph_script(&raw)
+            }
+            Ok(MotionLoomDocument::Mixed(shell)) if shell.has_world => parse_graph_script(&raw),
+            Ok(MotionLoomDocument::World(_)) => parse_graph_script(&raw),
+            Ok(MotionLoomDocument::Mixed(_)) => parse_graph_script(&raw),
+            Err(err) => Err(err),
         };
         match parsed_runtime_graph {
             Ok(graph) => match compile_runtime_program(graph.clone()) {
@@ -6819,10 +7094,7 @@ impl MotionLoomPage {
             } else {
                 "Still".to_string()
             };
-            let thumb = item
-                .preview
-                .as_ref()
-                .map(|preview| (preview.image.clone(), preview.width, preview.height));
+            let thumb = item.preview.clone();
             let mut row = div()
                 .rounded_md()
                 .border_1()
@@ -6865,8 +7137,8 @@ impl MotionLoomPage {
                     .border_color(white().opacity(0.10))
                     .bg(rgb(0x05070c))
                     .overflow_hidden()
-                    .when_some(thumb, |el, (image, width, height)| {
-                        el.child(FitPreviewImageElement::new(image, width, height))
+                    .when_some(thumb, |el, preview| {
+                        el.child(FitPreviewImageElement::from_preview(preview))
                     }),
             );
             row.child(
@@ -6894,15 +7166,7 @@ impl MotionLoomPage {
         });
 
         let preview_panel = if let Some(asset) = selected_asset {
-            let preview = asset.preview.as_ref().map(|preview| {
-                (
-                    preview.image.clone(),
-                    preview.width,
-                    preview.height,
-                    preview.width,
-                    preview.height,
-                )
-            });
+            let preview = asset.preview.clone();
             div()
                 .w(px(330.0))
                 .flex_shrink_0()
@@ -6924,8 +7188,8 @@ impl MotionLoomPage {
                         .border_color(white().opacity(0.12))
                         .bg(rgb(0x05070c))
                         .overflow_hidden()
-                        .when_some(preview, |el, (image, width, height, _, _)| {
-                            el.child(FitPreviewImageElement::new(image, width, height))
+                        .when_some(preview, |el, preview| {
+                            el.child(FitPreviewImageElement::from_preview(preview))
                         }),
                 )
                 .child(

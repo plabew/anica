@@ -39,6 +39,7 @@ use crate::scene::composition::{
     pass_param_expr, scene_post_bloom_params, scene_post_blur_passes,
 };
 use crate::scene::domain::apply_action_graph_at_time;
+
 use crate::scene::drawable::{
     CpuSceneOverlay, EvaluatedShadow, GPU_SHAPE_CIRCLE_FILL, GPU_SHAPE_CIRCLE_SHADOW,
     GPU_SHAPE_CIRCLE_STROKE, GPU_SHAPE_LINE, GPU_SHAPE_RECT_FILL, GPU_SHAPE_RECT_SHADOW,
@@ -90,6 +91,18 @@ use crate::scene::timeline::{
     eval_repeat_count, scene_layer_source_time, scene_sequence_local_time,
 };
 use crate::world::{WorldFrameRenderer, parse_world_graph_script};
+#[cfg(target_os = "macos")]
+use core_foundation::base::{CFType, TCFType};
+#[cfg(target_os = "macos")]
+use core_foundation::boolean::CFBoolean;
+#[cfg(target_os = "macos")]
+use core_foundation::dictionary::CFDictionary;
+#[cfg(target_os = "macos")]
+use core_foundation::string::CFString;
+#[cfg(target_os = "macos")]
+use core_video::pixel_buffer::{CVPixelBuffer, CVPixelBufferKeys, kCVPixelFormatType_32BGRA};
+#[cfg(target_os = "macos")]
+use core_video::r#return::kCVReturnSuccess;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 use image::{Rgba, RgbaImage, imageops::FilterType};
 
@@ -276,6 +289,92 @@ pub async fn render_scene_frame(
     render_scene_graph_frame(graph, frame, profile).await
 }
 
+/// GPU-native output of a scene frame render.
+///
+/// The texture is returned without CPU readback. Callers can sample or blit it
+/// directly in their own wgpu pipeline, or extract the native backend handle
+/// (e.g. `MTLTexture` on Metal) for zero-copy display.
+#[derive(Debug, Clone)]
+pub struct SceneGpuTexture {
+    pub texture: Arc<wgpu::Texture>,
+    pub width: u32,
+    pub height: u32,
+    pub format: wgpu::TextureFormat,
+}
+
+/// Pixel formats used by preview surfaces exposed to host applications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScenePreviewPixelFormat {
+    Rgba8Unorm,
+    Bgra8Unorm,
+}
+
+/// Preferred preview backend for `render_frame_to_preview_surface`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScenePreviewBackend {
+    /// Prefer the most efficient displayable surface and fall back safely.
+    Auto,
+    /// Return a wgpu texture without CPU readback.
+    WgpuTexture,
+    /// Return a platform display surface when the bridge is implemented.
+    PlatformSurface,
+    /// Return CPU BGRA bytes for compatibility with existing UI paths.
+    CpuBgra,
+}
+
+/// Options for high-level preview surface rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScenePreviewSurfaceOptions {
+    pub backend: ScenePreviewBackend,
+    pub preferred_format: ScenePreviewPixelFormat,
+}
+
+impl Default for ScenePreviewSurfaceOptions {
+    fn default() -> Self {
+        Self {
+            backend: ScenePreviewBackend::Auto,
+            preferred_format: ScenePreviewPixelFormat::Bgra8Unorm,
+        }
+    }
+}
+
+/// Platform-specific display surface placeholder for zero-copy preview bridges.
+#[derive(Debug, Clone)]
+pub enum ScenePlatformPreviewSurface {
+    #[cfg(target_os = "macos")]
+    MacOs {
+        surface: CVPixelBuffer,
+        width: u32,
+        height: u32,
+        format: ScenePreviewPixelFormat,
+    },
+    #[cfg(target_os = "windows")]
+    Windows {
+        width: u32,
+        height: u32,
+        format: ScenePreviewPixelFormat,
+    },
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+    Linux {
+        width: u32,
+        height: u32,
+        format: ScenePreviewPixelFormat,
+    },
+}
+
+/// High-level preview output for apps that want the fastest available path.
+#[derive(Debug, Clone)]
+pub enum ScenePreviewSurface {
+    WgpuTexture(SceneGpuTexture),
+    PlatformSurface(ScenePlatformPreviewSurface),
+    CpuBgra {
+        width: u32,
+        height: u32,
+        data: Arc<Vec<u8>>,
+        format: ScenePreviewPixelFormat,
+    },
+}
+
 pub struct SceneRenderer {
     inner: SceneFrameRenderer,
 }
@@ -296,6 +395,48 @@ impl SceneRenderer {
         })
     }
 
+    /// Create a renderer that reuses an externally-owned wgpu device and queue.
+    ///
+    /// This is intended for host applications that already manage a wgpu context
+    /// and want to consume motionloom output as a GPU texture without a separate
+    /// device or CPU readback.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn new_with_device(
+        device: Arc<wgpu::Device>,
+        queue: wgpu::Queue,
+        profile: SceneRenderProfile,
+    ) -> Result<Self, SceneRenderError> {
+        Ok(Self {
+            inner: SceneFrameRenderer::new_with_resolver_and_device(
+                profile,
+                Arc::new(PathAssetResolver),
+                device,
+                queue,
+            )
+            .await,
+        })
+    }
+
+    /// Create a renderer that reuses an externally-owned wgpu device and queue
+    /// with a custom asset resolver.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn with_resolver_and_device(
+        profile: SceneRenderProfile,
+        asset_resolver: Arc<dyn AssetResolver>,
+        device: Arc<wgpu::Device>,
+        queue: wgpu::Queue,
+    ) -> Result<Self, SceneRenderError> {
+        Ok(Self {
+            inner: SceneFrameRenderer::new_with_resolver_and_device(
+                profile,
+                asset_resolver,
+                device,
+                queue,
+            )
+            .await,
+        })
+    }
+
     pub async fn render_frame(
         &mut self,
         graph: &GraphScript,
@@ -303,6 +444,37 @@ impl SceneRenderer {
     ) -> Result<RgbaImage, SceneRenderError> {
         validate_scene_graph(graph)?;
         self.inner.render_frame(graph, frame).await
+    }
+
+    /// Render a scene frame to a GPU texture without CPU readback.
+    ///
+    /// The returned `SceneGpuTexture` wraps an `Arc<wgpu::Texture>` that is safe
+    /// to keep alive after the renderer is dropped. The texture's dimensions
+    /// match the graph's output size.
+    pub async fn render_frame_to_wgpu_texture(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+    ) -> Result<SceneGpuTexture, SceneRenderError> {
+        validate_scene_graph(graph)?;
+        self.inner.render_frame_to_wgpu_texture(graph, frame).await
+    }
+
+    /// Render a frame to the best preview surface requested by the host.
+    ///
+    /// `Auto` tries future platform-native surfaces first, then wgpu texture,
+    /// then CPU BGRA. This keeps the public API stable while platform bridges
+    /// are added behind the same abstraction.
+    pub async fn render_frame_to_preview_surface(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        options: ScenePreviewSurfaceOptions,
+    ) -> Result<ScenePreviewSurface, SceneRenderError> {
+        validate_scene_graph(graph)?;
+        self.inner
+            .render_frame_to_preview_surface(graph, frame, options)
+            .await
     }
 
     /// Render a GPU-native scene frame directly into a browser canvas.
@@ -515,6 +687,9 @@ struct SceneFrameRenderer {
     scene_masks: HashMap<String, MaskNode>,
     world_renderer: WorldFrameRenderer,
     gpu_compositor: Option<WgpuSceneCompositor>,
+    /// Optional externally-owned wgpu device/queue for shared-context rendering.
+    #[cfg(not(target_arch = "wasm32"))]
+    external_device_queue: Option<(Arc<wgpu::Device>, wgpu::Queue)>,
 }
 
 #[derive(Clone, Copy)]
@@ -562,6 +737,40 @@ impl SceneFrameRenderer {
             scene_masks: HashMap::new(),
             world_renderer: WorldFrameRenderer::with_resolver(Arc::new(PathAssetResolver)),
             gpu_compositor: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            external_device_queue: None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn new_with_resolver_and_device(
+        profile: SceneRenderProfile,
+        asset_resolver: Arc<dyn AssetResolver>,
+        device: Arc<wgpu::Device>,
+        queue: wgpu::Queue,
+    ) -> Self {
+        let mut font_system = FontSystem::new();
+        load_extra_fonts(&mut font_system);
+        Self {
+            profile,
+            asset_resolver,
+            font_system,
+            swash_cache: SwashCache::new(),
+            image_cache: HashMap::new(),
+            svg_cache: HashMap::new(),
+            path_cache: HashMap::new(),
+            polyline_cache: HashMap::new(),
+            gradient_defs: HashMap::new(),
+            palette_defs: HashMap::new(),
+            font_defs: HashMap::new(),
+            filter_defs: HashMap::new(),
+            scene_components: HashMap::new(),
+            scene_precompose_defs: HashMap::new(),
+            scene_precomposes: HashMap::new(),
+            scene_masks: HashMap::new(),
+            world_renderer: WorldFrameRenderer::with_resolver(Arc::new(PathAssetResolver)),
+            gpu_compositor: None,
+            external_device_queue: Some((device, queue)),
         }
     }
 
@@ -576,24 +785,7 @@ impl SceneFrameRenderer {
         let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
-        self.gradient_defs.clear();
-        self.palette_defs.clear();
-        self.font_defs.clear();
-        self.filter_defs.clear();
-        self.scene_components.clear();
-        self.scene_precompose_defs.clear();
-        self.scene_precomposes.clear();
-        self.scene_masks.clear();
-        collect_graph_gradient_defs(graph, &mut self.gradient_defs);
-        collect_graph_palette_defs(graph, &mut self.palette_defs);
-        collect_graph_font_defs(graph, &mut self.font_defs);
-        collect_graph_filter_defs(graph, &mut self.filter_defs);
-        collect_graph_component_defs(graph, &mut self.scene_components);
-        collect_graph_mask_defs(graph, &mut self.scene_masks);
-        for precompose in collect_graph_precompose_defs(graph) {
-            self.scene_precompose_defs
-                .insert(precompose.id.clone(), precompose);
-        }
+        self.prepare_frame_caches(graph);
         if graph_has_rich_scene_tree(graph) {
             return self
                 .render_scene_tree_frame(graph, time_norm, time_sec)
@@ -615,6 +807,270 @@ impl SceneFrameRenderer {
             Ok(fit_logical_canvas_to_output(&canvas, output_size))
         } else {
             Ok(canvas)
+        }
+    }
+
+    /// Render a frame to a GPU texture without CPU readback.
+    ///
+    /// This path requires a GPU profile. CPU-only graphs and graphs that need
+    /// process-pass composition are rejected so that callers can rely on a true
+    /// GPU texture output.
+    async fn render_frame_to_wgpu_texture(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+    ) -> Result<SceneGpuTexture, MotionLoomSceneRenderError> {
+        if !self.profile.uses_gpu_compositor() {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "render_frame_to_wgpu_texture requires a GPU profile".to_string(),
+            });
+        }
+
+        let fps = graph.fps.max(1.0);
+        let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / fps);
+        let time_sec = frame as f32 / fps;
+        let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
+        let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
+        let graph = applied_graph.as_ref().unwrap_or(graph);
+        self.prepare_frame_caches(graph);
+
+        let native_texture = if graph_has_rich_scene_tree(graph) {
+            self.render_scene_tree_frame_to_wgpu_texture(graph, time_norm, time_sec)
+                .await?
+        } else {
+            if !graph.texts.is_empty() {
+                return Err(MotionLoomSceneRenderError::GpuRender {
+                    message: "render_frame_to_wgpu_texture does not support top-level <Text> nodes in the simple scene path yet"
+                        .to_string(),
+                });
+            }
+            self.render_gpu_base_frame_to_texture(graph, time_norm, time_sec)
+                .await?
+        };
+
+        Ok(SceneGpuTexture {
+            texture: native_texture.texture,
+            width: native_texture.width,
+            height: native_texture.height,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+        })
+    }
+
+    async fn render_frame_to_preview_surface(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        options: ScenePreviewSurfaceOptions,
+    ) -> Result<ScenePreviewSurface, MotionLoomSceneRenderError> {
+        match options.backend {
+            ScenePreviewBackend::Auto => {
+                if let Ok(surface) = self
+                    .render_frame_to_platform_preview_surface(graph, frame, options)
+                    .await
+                {
+                    return Ok(surface);
+                }
+                if let Ok(texture) = self.render_frame_to_wgpu_texture(graph, frame).await {
+                    return Ok(ScenePreviewSurface::WgpuTexture(texture));
+                }
+                self.render_frame_to_cpu_bgra_preview_surface(graph, frame)
+                    .await
+            }
+            ScenePreviewBackend::WgpuTexture => self
+                .render_frame_to_wgpu_texture(graph, frame)
+                .await
+                .map(ScenePreviewSurface::WgpuTexture),
+            ScenePreviewBackend::PlatformSurface => {
+                self.render_frame_to_platform_preview_surface(graph, frame, options)
+                    .await
+            }
+            ScenePreviewBackend::CpuBgra => {
+                self.render_frame_to_cpu_bgra_preview_surface(graph, frame)
+                    .await
+            }
+        }
+    }
+
+    async fn render_frame_to_cpu_bgra_preview_surface(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+    ) -> Result<ScenePreviewSurface, MotionLoomSceneRenderError> {
+        let image = self.render_frame(graph, frame).await?;
+        let width = image.width();
+        let height = image.height();
+        let mut data = image.into_raw();
+        for pixel in data.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        Ok(ScenePreviewSurface::CpuBgra {
+            width,
+            height,
+            data: Arc::new(data),
+            format: ScenePreviewPixelFormat::Bgra8Unorm,
+        })
+    }
+
+    async fn render_frame_to_platform_preview_surface(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        options: ScenePreviewSurfaceOptions,
+    ) -> Result<ScenePreviewSurface, MotionLoomSceneRenderError> {
+        #[cfg(target_os = "macos")]
+        {
+            self.render_frame_to_macos_preview_surface(graph, frame, options)
+                .await
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (graph, frame, options);
+            Err(MotionLoomSceneRenderError::GpuRender {
+                message: "platform preview surfaces are not implemented for this target yet"
+                    .to_string(),
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn render_frame_to_macos_preview_surface(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        _options: ScenePreviewSurfaceOptions,
+    ) -> Result<ScenePreviewSurface, MotionLoomSceneRenderError> {
+        let image = self.render_frame(graph, frame).await?;
+        let width = image.width();
+        let height = image.height();
+        let mut bgra = image.into_raw();
+        for pixel in bgra.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let surface = Self::create_macos_bgra_surface(width, height).ok_or_else(|| {
+            MotionLoomSceneRenderError::GpuRender {
+                message: format!("failed to allocate macOS BGRA preview surface {width}x{height}"),
+            }
+        })?;
+        if !Self::copy_bgra_into_macos_surface(&surface, width, height, &bgra) {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: format!(
+                    "failed to copy BGRA preview data into macOS surface {width}x{height}"
+                ),
+            });
+        }
+        Ok(ScenePreviewSurface::PlatformSurface(
+            ScenePlatformPreviewSurface::MacOs {
+                surface,
+                width,
+                height,
+                format: ScenePreviewPixelFormat::Bgra8Unorm,
+            },
+        ))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn create_macos_bgra_surface(width: u32, height: u32) -> Option<CVPixelBuffer> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let iosurface_props: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[]);
+        let cv_options: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[
+            (
+                CFString::from(CVPixelBufferKeys::MetalCompatibility),
+                CFBoolean::true_value().as_CFType(),
+            ),
+            (
+                CFString::from(CVPixelBufferKeys::IOSurfaceProperties),
+                iosurface_props.as_CFType(),
+            ),
+        ]);
+        CVPixelBuffer::new(
+            kCVPixelFormatType_32BGRA,
+            width as usize,
+            height as usize,
+            Some(&cv_options),
+        )
+        .or_else(|_| {
+            CVPixelBuffer::new(
+                kCVPixelFormatType_32BGRA,
+                width as usize,
+                height as usize,
+                None,
+            )
+        })
+        .ok()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn copy_bgra_into_macos_surface(
+        pixel_buffer: &CVPixelBuffer,
+        width: u32,
+        height: u32,
+        src: &[u8],
+    ) -> bool {
+        let w = width as usize;
+        let h = height as usize;
+        if w == 0
+            || h == 0
+            || pixel_buffer.get_pixel_format() != kCVPixelFormatType_32BGRA
+            || pixel_buffer.get_width() < w
+            || pixel_buffer.get_height() < h
+        {
+            return false;
+        }
+        let Some(src_stride) = w.checked_mul(4) else {
+            return false;
+        };
+        if src.len() < src_stride.saturating_mul(h) {
+            return false;
+        }
+        if pixel_buffer.lock_base_address(0) != kCVReturnSuccess {
+            return false;
+        }
+        let copied = (|| {
+            let dst_stride = pixel_buffer.get_bytes_per_row();
+            let dst_height = pixel_buffer.get_height();
+            if dst_height < h || dst_stride < src_stride {
+                return None;
+            }
+            let dst_ptr = unsafe { pixel_buffer.get_base_address() as *mut u8 };
+            if dst_ptr.is_null() {
+                return None;
+            }
+            let dst_len = dst_stride.checked_mul(dst_height)?;
+            let dst = unsafe { std::slice::from_raw_parts_mut(dst_ptr, dst_len) };
+            for row in 0..h {
+                let src_off = row * src_stride;
+                let dst_off = row * dst_stride;
+                dst[dst_off..(dst_off + src_stride)]
+                    .copy_from_slice(&src[src_off..(src_off + src_stride)]);
+            }
+            Some(())
+        })()
+        .is_some();
+        let _ = pixel_buffer.unlock_base_address(0);
+        copied
+    }
+
+    fn prepare_frame_caches(&mut self, graph: &GraphScript) {
+        self.gradient_defs.clear();
+        self.palette_defs.clear();
+        self.font_defs.clear();
+        self.filter_defs.clear();
+        self.scene_components.clear();
+        self.scene_precompose_defs.clear();
+        self.scene_precomposes.clear();
+        self.scene_masks.clear();
+        collect_graph_gradient_defs(graph, &mut self.gradient_defs);
+        collect_graph_palette_defs(graph, &mut self.palette_defs);
+        collect_graph_font_defs(graph, &mut self.font_defs);
+        collect_graph_filter_defs(graph, &mut self.filter_defs);
+        collect_graph_component_defs(graph, &mut self.scene_components);
+        collect_graph_mask_defs(graph, &mut self.scene_masks);
+        for precompose in collect_graph_precompose_defs(graph) {
+            self.scene_precompose_defs
+                .insert(precompose.id.clone(), precompose);
         }
     }
 
@@ -1264,6 +1720,128 @@ impl SceneFrameRenderer {
         compositor.present_texture_to_canvas(&texture, &canvas)
     }
 
+    /// Render a strict GPU scene-tree frame to a texture.
+    async fn render_scene_tree_frame_to_wgpu_texture(
+        &mut self,
+        graph: &GraphScript,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let has_composition = !graph.textures.is_empty()
+            || !graph.passes.is_empty()
+            || !graph.outputs.is_empty()
+            || !graph.layers.is_empty()
+            || !graph.world_sources.is_empty();
+        if has_composition {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message:
+                    "direct GPU texture rendering does not support Tex/Pass/Output composition yet"
+                        .to_string(),
+            });
+        }
+
+        let Some(nodes) = scene_nodes_for_present(graph) else {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "direct GPU texture rendering needs a presentable scene tree".to_string(),
+            });
+        };
+        let background = graph
+            .backgrounds
+            .last()
+            .map(|background| parse_color(&background.color))
+            .transpose()?
+            .unwrap_or([0, 0, 0, 0]);
+        self.present_gpu_scene_nodes_with_background_to_texture(
+            nodes,
+            graph_output_size(graph),
+            graph_logical_render_size(graph),
+            render_size_root_transform(graph_output_size(graph), graph_logical_render_size(graph)),
+            time_norm,
+            time_sec,
+            Some(background),
+        )
+        .await
+    }
+
+    /// Collect and render scene nodes to a GPU texture without presenting to a surface.
+    #[allow(clippy::too_many_arguments)]
+    async fn present_gpu_scene_nodes_with_background_to_texture(
+        &mut self,
+        nodes: &[SceneNode],
+        output_size: (u32, u32),
+        logical_size: (u32, u32),
+        root_transform: Affine2,
+        time_norm: f32,
+        time_sec: f32,
+        background: Option<[u8; 4]>,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let scaled_scene = output_size != logical_size || !affine_is_identity(root_transform);
+        let scene_transform = if scaled_scene {
+            root_transform
+        } else {
+            Affine2::identity()
+        };
+        let scene_canvas_size = if scaled_scene {
+            logical_size
+        } else {
+            output_size
+        };
+
+        self.ensure_gpu_compositor_size(output_size.0.max(1), output_size.1.max(1))
+            .await?;
+        let mut assets = GpuSceneNativeAssets::default();
+        let mut primitives = Vec::<GpuScenePrimitive>::new();
+        let mut texture_layers = Vec::<GpuSceneTextureLayer>::new();
+        let mut text_requests = Vec::<GpuSceneTextRequest>::new();
+        let mut unsupported = false;
+        self.collect_gpu_scene_native_commands(
+            nodes,
+            scene_transform,
+            None,
+            1.0,
+            time_norm,
+            time_sec,
+            scene_canvas_size,
+            &mut assets,
+            &mut primitives,
+            &mut texture_layers,
+            &mut text_requests,
+            &mut unsupported,
+        )
+        .await?;
+        if unsupported {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "direct GPU texture rendering does not support this scene node set yet"
+                    .to_string(),
+            });
+        }
+
+        for request in text_requests {
+            texture_layers.extend(self.rasterize_text_texture_layers_gpu_effects(
+                &request.node,
+                request.transform,
+                request.opacity,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+            )?);
+        }
+
+        self.ensure_gpu_compositor_size(output_size.0.max(1), output_size.1.max(1))
+            .await?;
+        let compositor =
+            self.gpu_compositor
+                .as_mut()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        compositor.render_scene_content_to_texture(
+            &primitives,
+            &texture_layers,
+            background.unwrap_or([0, 0, 0, 0]),
+        )
+    }
+
     async fn ensure_gpu_compositor_size(
         &mut self,
         width: u32,
@@ -1275,8 +1853,32 @@ impl SceneFrameRenderer {
             .map(|compositor| compositor.width != width || compositor.height != height)
             .unwrap_or(true);
         if needs_new_compositor {
-            self.gpu_compositor =
-                Some(WgpuSceneCompositor::new(width, height, self.asset_resolver.clone()).await?);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Some((device, queue)) = self.external_device_queue.clone() {
+                    self.gpu_compositor = Some(
+                        WgpuSceneCompositor::new_with_device(
+                            device,
+                            queue,
+                            width,
+                            height,
+                            self.asset_resolver.clone(),
+                        )
+                        .await?,
+                    );
+                } else {
+                    self.gpu_compositor = Some(
+                        WgpuSceneCompositor::new(width, height, self.asset_resolver.clone())
+                            .await?,
+                    );
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.gpu_compositor = Some(
+                    WgpuSceneCompositor::new(width, height, self.asset_resolver.clone()).await?,
+                );
+            }
         }
         Ok(())
     }
@@ -3154,16 +3756,8 @@ impl SceneFrameRenderer {
         time_norm: f32,
         time_sec: f32,
     ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
-        if self.gpu_compositor.is_none() {
-            self.gpu_compositor = Some(
-                WgpuSceneCompositor::new(
-                    graph.size.0.max(1),
-                    graph.size.1.max(1),
-                    self.asset_resolver.clone(),
-                )
-                .await?,
-            );
-        }
+        self.ensure_gpu_compositor(graph.size.0.max(1), graph.size.1.max(1))
+            .await?;
 
         let compositor =
             self.gpu_compositor
@@ -3180,6 +3774,68 @@ impl SceneFrameRenderer {
         compositor
             .render(graph, background, time_norm, time_sec)
             .await
+    }
+
+    async fn render_gpu_base_frame_to_texture(
+        &mut self,
+        graph: &GraphScript,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        self.ensure_gpu_compositor(graph.size.0.max(1), graph.size.1.max(1))
+            .await?;
+
+        let compositor =
+            self.gpu_compositor
+                .as_mut()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        let background = graph
+            .backgrounds
+            .last()
+            .map(|background| parse_color(&background.color))
+            .transpose()?
+            .unwrap_or([0, 0, 0, 0]);
+        compositor
+            .render_to_texture(graph, background, time_norm, time_sec)
+            .await
+    }
+
+    async fn ensure_gpu_compositor(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        if self.gpu_compositor.is_none() {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Some((device, queue)) = self.external_device_queue.clone() {
+                    self.gpu_compositor = Some(
+                        WgpuSceneCompositor::new_with_device(
+                            device,
+                            queue,
+                            width,
+                            height,
+                            self.asset_resolver.clone(),
+                        )
+                        .await?,
+                    );
+                } else {
+                    self.gpu_compositor = Some(
+                        WgpuSceneCompositor::new(width, height, self.asset_resolver.clone())
+                            .await?,
+                    );
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.gpu_compositor = Some(
+                    WgpuSceneCompositor::new(width, height, self.asset_resolver.clone()).await?,
+                );
+            }
+        }
+        Ok(())
     }
 
     async fn render_gpu_background_frame(
@@ -7675,8 +8331,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        MotionLoomSceneRenderError, SceneFrameRenderer, SceneRenderProfile, eval_text_box_padding,
-        eval_text_font_weight, eval_text_tracking_em, validate_scene_graph,
+        MotionLoomSceneRenderError, SceneFrameRenderer, ScenePlatformPreviewSurface,
+        ScenePreviewBackend, ScenePreviewPixelFormat, ScenePreviewSurface,
+        ScenePreviewSurfaceOptions, SceneRenderError, SceneRenderProfile, SceneRenderer,
+        eval_text_box_padding, eval_text_font_weight, eval_text_tracking_em, validate_scene_graph,
     };
 
     fn max_rgb(image: &image::RgbaImage) -> u8 {
@@ -7689,6 +8347,10 @@ mod tests {
 
     fn max_green(image: &image::RgbaImage) -> u8 {
         image.pixels().map(|pixel| pixel[1]).max().unwrap_or(0)
+    }
+
+    fn skip_gpu_texture_test(message: impl std::fmt::Display) {
+        eprintln!("Skipping GPU texture render test: {message}");
     }
 
     fn basic_text_node(render_scale: &str) -> TextNode {
@@ -10751,5 +11413,209 @@ mod tests {
 
         let _ = std::fs::remove_file(image1_path);
         let _ = std::fs::remove_file(image2_path);
+    }
+
+    #[test]
+    fn render_frame_to_wgpu_texture_outputs_rgba8_texture() {
+        let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,48]}>
+  <Background color="#FF0000" />
+  <Rect x="0" y="0" width="32" height="48" fill="#00FF00" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let gpu_texture = match pollster::block_on(renderer.render_frame_to_wgpu_texture(&graph, 0))
+        {
+            Ok(texture) => texture,
+            Err(SceneRenderError::GpuRender { message }) => {
+                skip_gpu_texture_test(message);
+                return;
+            }
+            Err(err) => panic!("unexpected GPU texture render error: {err}"),
+        };
+
+        assert_eq!(gpu_texture.width, 64);
+        assert_eq!(gpu_texture.height, 48);
+        assert_eq!(gpu_texture.format, wgpu::TextureFormat::Rgba8Unorm);
+
+        // The texture should be usable to create a view, confirming it is a
+        // valid wgpu texture handle.
+        let _view = gpu_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+    }
+
+    #[test]
+    fn render_frame_to_wgpu_texture_matches_cpu_render_dimensions() {
+        let mut cpu_renderer =
+            pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).unwrap();
+        let mut gpu_renderer =
+            pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[128,96]}>
+  <Background color="#0000FF" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let cpu_image =
+            pollster::block_on(cpu_renderer.render_frame(&graph, 0)).expect("CPU render");
+        let gpu_texture =
+            match pollster::block_on(gpu_renderer.render_frame_to_wgpu_texture(&graph, 0)) {
+                Ok(texture) => texture,
+                Err(SceneRenderError::GpuRender { message }) => {
+                    skip_gpu_texture_test(message);
+                    return;
+                }
+                Err(err) => panic!("unexpected GPU texture render error: {err}"),
+            };
+
+        assert_eq!(cpu_image.width(), gpu_texture.width);
+        assert_eq!(cpu_image.height(), gpu_texture.height);
+    }
+
+    #[test]
+    fn render_frame_to_wgpu_texture_with_external_device() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,48]}>
+  <Background color="#000000" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let Some((device, queue)) = pollster::block_on(async {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+            let adapter = match instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await
+            {
+                Ok(adapter) => adapter,
+                Err(err) => {
+                    skip_gpu_texture_test(err);
+                    return None;
+                }
+            };
+            match adapter
+                .request_device(&wgpu::DeviceDescriptor::default())
+                .await
+            {
+                Ok(device_queue) => Some(device_queue),
+                Err(err) => {
+                    skip_gpu_texture_test(err);
+                    None
+                }
+            }
+        }) else {
+            return;
+        };
+        let device = std::sync::Arc::new(device);
+
+        let mut renderer = pollster::block_on(SceneRenderer::new_with_device(
+            device,
+            queue,
+            SceneRenderProfile::Gpu,
+        ))
+        .expect("renderer with external device");
+
+        let gpu_texture = match pollster::block_on(renderer.render_frame_to_wgpu_texture(&graph, 0))
+        {
+            Ok(texture) => texture,
+            Err(SceneRenderError::GpuRender { message }) => {
+                skip_gpu_texture_test(message);
+                return;
+            }
+            Err(err) => panic!("unexpected GPU texture render error: {err}"),
+        };
+
+        assert_eq!(gpu_texture.width, 64);
+        assert_eq!(gpu_texture.height, 48);
+    }
+
+    #[test]
+    fn render_frame_to_preview_surface_can_return_cpu_bgra_without_gpu() {
+        let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[8,4]}>
+  <Background color="#FF0000" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let surface = pollster::block_on(renderer.render_frame_to_preview_surface(
+            &graph,
+            0,
+            ScenePreviewSurfaceOptions {
+                backend: ScenePreviewBackend::CpuBgra,
+                preferred_format: ScenePreviewPixelFormat::Bgra8Unorm,
+            },
+        ))
+        .expect("CPU BGRA preview surface");
+
+        let ScenePreviewSurface::CpuBgra {
+            width,
+            height,
+            data,
+            format,
+        } = surface
+        else {
+            panic!("expected CPU BGRA preview surface");
+        };
+        assert_eq!(width, 8);
+        assert_eq!(height, 4);
+        assert_eq!(format, ScenePreviewPixelFormat::Bgra8Unorm);
+        assert_eq!(data.len(), 8 * 4 * 4);
+        assert_eq!(&data[0..4], &[0, 0, 255, 255]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn render_frame_to_preview_surface_can_return_macos_surface() {
+        let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[8,4]}>
+  <Background color="#00FF00" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let surface = pollster::block_on(renderer.render_frame_to_preview_surface(
+            &graph,
+            0,
+            ScenePreviewSurfaceOptions {
+                backend: ScenePreviewBackend::PlatformSurface,
+                preferred_format: ScenePreviewPixelFormat::Bgra8Unorm,
+            },
+        ))
+        .expect("macOS preview surface");
+
+        let ScenePreviewSurface::PlatformSurface(ScenePlatformPreviewSurface::MacOs {
+            width,
+            height,
+            format,
+            ..
+        }) = surface
+        else {
+            panic!("expected macOS platform preview surface");
+        };
+        assert_eq!(width, 8);
+        assert_eq!(height, 4);
+        assert_eq!(format, ScenePreviewPixelFormat::Bgra8Unorm);
     }
 }

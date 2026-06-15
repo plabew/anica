@@ -111,6 +111,8 @@ The prompt generates MotionLoom DSL code, which you can copy and paste on any co
 
 MotionLoom provides the foundation for Anica's long-term goal of natural language to motion graphics and VFX.
 
+MotionLoom supports WASM, which enables it to run directly in modern web browsers. You can try the demo here: [MotionLoom Demo](https://lovelyzombieyho.github.io/anica-landing-page/motionloom/)
+
 ---
 
 ## Platform Support

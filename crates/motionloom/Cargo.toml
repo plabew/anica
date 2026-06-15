@@ -30,6 +30,10 @@ pollster = "0.4.0"
 ureq = "2.12.1"
 resvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-video = { version = "0.4", features = ["metal"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3.83"
 wasm-bindgen = "0.2.106"

@@ -27,11 +27,17 @@ struct WgpuImageTexture {
     texture: std::sync::Arc<wgpu::Texture>,
 }
 
+#[derive(Default)]
+pub(crate) struct WgpuDispatchKeepalive {
+    texture_views: Vec<wgpu::TextureView>,
+    bind_groups: Vec<wgpu::BindGroup>,
+}
+
 pub(crate) struct WgpuSceneCompositor {
     #[cfg(target_arch = "wasm32")]
-    instance: wgpu::Instance,
+    instance: Option<wgpu::Instance>,
     #[cfg(target_arch = "wasm32")]
-    adapter: wgpu::Adapter,
+    adapter: Option<wgpu::Adapter>,
     device: Arc<wgpu::Device>,
     queue: wgpu::Queue,
     _poller: DevicePoller,
@@ -52,6 +58,28 @@ pub(crate) struct WgpuSceneCompositor {
     padded_bytes_per_row: u32,
     image_textures: HashMap<String, WgpuImageTexture>,
     asset_resolver: Arc<dyn crate::asset::AssetResolver>,
+}
+
+/// Platform-specific surface handles needed only for WASM canvas presentation.
+/// Empty on native targets where zero-copy interop uses external surfaces.
+#[derive(Clone)]
+struct WgpuPresentationContext {
+    #[cfg(target_arch = "wasm32")]
+    instance: Option<wgpu::Instance>,
+    #[cfg(target_arch = "wasm32")]
+    adapter: Option<wgpu::Adapter>,
+}
+
+impl WgpuPresentationContext {
+    #[cfg(target_arch = "wasm32")]
+    fn new(instance: Option<wgpu::Instance>, adapter: Option<wgpu::Adapter>) -> Self {
+        Self { instance, adapter }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn new() -> Self {
+        Self {}
+    }
 }
 
 impl WgpuSceneCompositor {
@@ -88,8 +116,64 @@ impl WgpuSceneCompositor {
             message: format!("device request failed: {err}"),
         })?;
         let device = Arc::new(device);
-        let poller = DevicePoller::start(device.clone());
 
+        Self::new_with_device_internal(
+            device,
+            queue,
+            #[cfg(target_arch = "wasm32")]
+            WgpuPresentationContext::new(Some(instance), Some(adapter)),
+            #[cfg(not(target_arch = "wasm32"))]
+            WgpuPresentationContext::new(),
+            width,
+            height,
+            asset_resolver,
+        )
+        .await
+    }
+
+    /// Create a compositor from an externally-owned wgpu device and queue.
+    ///
+    /// This lets downstream applications (e.g. anica) share a GPU context with
+    /// motionloom so that rendered textures can be consumed without CPU readback.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn new_with_device(
+        device: Arc<wgpu::Device>,
+        queue: wgpu::Queue,
+        width: u32,
+        height: u32,
+        asset_resolver: Arc<dyn crate::asset::AssetResolver>,
+    ) -> Result<Self, MotionLoomSceneRenderError> {
+        let limits = device.limits();
+        let max_texture_dimension_2d = limits.max_texture_dimension_2d;
+        if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: format!(
+                    "requested scene render size {}x{} exceeds GPU max 2D texture dimension {}",
+                    width, height, max_texture_dimension_2d
+                ),
+            });
+        }
+
+        Self::new_with_device_internal(
+            device,
+            queue,
+            WgpuPresentationContext::new(),
+            width,
+            height,
+            asset_resolver,
+        )
+        .await
+    }
+
+    async fn new_with_device_internal(
+        device: Arc<wgpu::Device>,
+        queue: wgpu::Queue,
+        #[allow(unused_variables)] presentation: WgpuPresentationContext,
+        width: u32,
+        height: u32,
+        asset_resolver: Arc<dyn crate::asset::AssetResolver>,
+    ) -> Result<Self, MotionLoomSceneRenderError> {
+        let poller = DevicePoller::start(device.clone());
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("anica-motionloom-scene-gpu-shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(WGPU_SCENE_SHADER)),
@@ -397,9 +481,9 @@ impl WgpuSceneCompositor {
 
         Ok(Self {
             #[cfg(target_arch = "wasm32")]
-            instance,
+            instance: presentation.instance,
             #[cfg(target_arch = "wasm32")]
-            adapter,
+            adapter: presentation.adapter,
             device,
             queue,
             _poller: poller,
@@ -438,13 +522,27 @@ impl WgpuSceneCompositor {
         canvas.set_width(width);
         canvas.set_height(height);
 
-        let surface = self
-            .instance
+        let Some(instance) = self.instance.as_ref() else {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "canvas presentation requires an internally-created wgpu instance; \
+                          use the default constructor instead of new_with_device"
+                    .to_string(),
+            });
+        };
+        let Some(adapter) = self.adapter.as_ref() else {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "canvas presentation requires an internally-created wgpu adapter; \
+                          use the default constructor instead of new_with_device"
+                    .to_string(),
+            });
+        };
+
+        let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
             .map_err(|err| MotionLoomSceneRenderError::GpuRender {
                 message: format!("canvas surface creation failed: {err}"),
             })?;
-        let caps = surface.get_capabilities(&self.adapter);
+        let caps = surface.get_capabilities(adapter);
         let format = caps
             .formats
             .iter()
@@ -791,13 +889,28 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         })
     }
 
-    pub(crate) async fn render(
+    /// Render the scene graph to a freshly-allocated GPU texture.
+    ///
+    /// The returned texture is owned by the caller and can be presented by an
+    /// external renderer without a CPU readback round-trip.
+    pub(crate) async fn render_to_texture(
         &mut self,
         graph: &GraphScript,
         solid: [u8; 4],
         time_norm: f32,
         time_sec: f32,
-    ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let tex_a = Arc::new(Self::make_canvas_texture(
+            &self.device,
+            self.width,
+            self.height,
+        ));
+        let tex_b = Arc::new(Self::make_canvas_texture(
+            &self.device,
+            self.width,
+            self.height,
+        ));
+
         let canvas_len = (self.width as usize)
             .saturating_mul(self.height as usize)
             .saturating_mul(4);
@@ -805,7 +918,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         for pixel in base.chunks_exact_mut(4) {
             pixel.copy_from_slice(&solid);
         }
-        self.write_texture_rgba(&self.tex_a, self.width, self.height, &base)?;
+        self.write_texture_rgba(&tex_a, self.width, self.height, &base)?;
 
         let mut current_is_a = true;
         let mut encoder = self
@@ -814,6 +927,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 label: Some("anica-motionloom-scene-gpu-encoder"),
             });
         let mut uniform_buffers = Vec::with_capacity(graph.images.len() + graph.svgs.len());
+        let mut keepalive = WgpuDispatchKeepalive::default();
 
         for image_node in &graph.images {
             let opacity =
@@ -863,9 +977,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             let uniform_buffer = self.make_uniform_buffer(&uniform);
 
             let (src_canvas, dst_canvas) = if current_is_a {
-                (&self.tex_a, &self.tex_b)
+                (&tex_a, &tex_b)
             } else {
-                (&self.tex_b, &self.tex_a)
+                (&tex_b, &tex_a)
             };
             self.dispatch_image_pass(
                 &mut encoder,
@@ -873,6 +987,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 &source_texture,
                 dst_canvas,
                 &uniform_buffer,
+                &mut keepalive,
             );
             uniform_buffers.push(uniform_buffer);
             current_is_a = !current_is_a;
@@ -925,9 +1040,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             let uniform_buffer = self.make_uniform_buffer(&uniform);
 
             let (src_canvas, dst_canvas) = if current_is_a {
-                (&self.tex_a, &self.tex_b)
+                (&tex_a, &tex_b)
             } else {
-                (&self.tex_b, &self.tex_a)
+                (&tex_b, &tex_a)
             };
             self.dispatch_image_pass(
                 &mut encoder,
@@ -935,41 +1050,36 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 &source_texture,
                 dst_canvas,
                 &uniform_buffer,
+                &mut keepalive,
             );
             uniform_buffers.push(uniform_buffer);
             current_is_a = !current_is_a;
         }
 
-        let final_texture = if current_is_a {
-            &self.tex_a
-        } else {
-            &self.tex_b
-        };
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: final_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.readback_buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.padded_bytes_per_row),
-                    rows_per_image: Some(self.height),
-                },
-            },
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
+        let final_texture = if current_is_a { tex_a } else { tex_b };
         self.queue.submit([encoder.finish()]);
-        let rendered = self.readback_rgba_async().await;
         drop(uniform_buffers);
-        rendered
+        drop(keepalive);
+
+        Ok(GpuSceneNativeTexture {
+            texture: final_texture,
+            width: self.width,
+            height: self.height,
+        })
+    }
+
+    pub(crate) async fn render(
+        &mut self,
+        graph: &GraphScript,
+        solid: [u8; 4],
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+        let final_texture = self
+            .render_to_texture(graph, solid, time_norm, time_sec)
+            .await?;
+        self.readback_texture_rgba_async(&final_texture.texture)
+            .await
     }
 
     pub(crate) async fn render_scene_content(
@@ -1019,6 +1129,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 label: Some("anica-motionloom-scene-shape-gpu-encoder"),
             });
         let mut uniform_buffers = Vec::with_capacity(texture_layers.len() + 2);
+        let mut keepalive = WgpuDispatchKeepalive::default();
         let mut texture_sources =
             Vec::<std::sync::Arc<wgpu::Texture>>::with_capacity(texture_layers.len());
 
@@ -1053,6 +1164,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 &storage_buffer,
                 &tile_range_buffer,
                 &tile_index_buffer,
+                &mut keepalive,
             );
             uniform_buffers.push(uniform_buffer);
             uniform_buffers.push(storage_buffer);
@@ -1151,6 +1263,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 &uniform_buffer,
                 bounds_w,
                 bounds_h,
+                &mut keepalive,
             );
             uniform_buffers.push(uniform_buffer);
             let changed = TextureRect {
@@ -1172,6 +1285,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let final_texture = if current_is_a { tex_a } else { tex_b };
         self.queue.submit([encoder.finish()]);
         drop(uniform_buffers);
+        drop(keepalive);
         drop(texture_sources);
         Ok(GpuSceneNativeTexture {
             texture: final_texture,
@@ -1209,6 +1323,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 label: Some("anica-motionloom-scene-post-gpu-encoder"),
             });
         let mut uniform_buffers = Vec::with_capacity(passes.len());
+        let mut keepalive = WgpuDispatchKeepalive::default();
 
         for (horizontal, sigma) in passes {
             let uniform = post_blur_uniform(self.width, self.height, *horizontal, *sigma);
@@ -1218,7 +1333,13 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             } else {
                 (&self.tex_b, &self.tex_a)
             };
-            self.dispatch_post_pass(&mut encoder, src_canvas, dst_canvas, &uniform_buffer);
+            self.dispatch_post_pass(
+                &mut encoder,
+                src_canvas,
+                dst_canvas,
+                &uniform_buffer,
+                &mut keepalive,
+            );
             uniform_buffers.push(uniform_buffer);
             current_is_a = !current_is_a;
         }
@@ -1252,6 +1373,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         self.queue.submit([encoder.finish()]);
         let rendered = self.readback_rgba_async().await;
         drop(uniform_buffers);
+        drop(keepalive);
         rendered
     }
 
@@ -1280,7 +1402,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             });
         let uniform = post_opacity_uniform(self.width, self.height, opacity);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
-        self.dispatch_post_pass(&mut encoder, &self.tex_a, &self.tex_b, &uniform_buffer);
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        self.dispatch_post_pass(
+            &mut encoder,
+            &self.tex_a,
+            &self.tex_b,
+            &uniform_buffer,
+            &mut keepalive,
+        );
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.tex_b,
@@ -1305,6 +1434,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         self.queue.submit([encoder.finish()]);
         let rendered = self.readback_rgba_async().await;
         drop(uniform_buffer);
+        drop(keepalive);
         rendered
     }
 
@@ -1326,6 +1456,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             });
         let mut uniform_buffers = Vec::with_capacity(passes.len());
         let mut temp_textures = Vec::<std::sync::Arc<wgpu::Texture>>::with_capacity(passes.len());
+        let mut keepalive = WgpuDispatchKeepalive::default();
         let mut current = input.texture.clone();
 
         for (horizontal, sigma) in passes {
@@ -1339,6 +1470,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 &uniform_buffer,
                 width,
                 height,
+                &mut keepalive,
             );
             uniform_buffers.push(uniform_buffer);
             current = dst.clone();
@@ -1347,6 +1479,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 
         self.queue.submit([encoder.finish()]);
         drop(uniform_buffers);
+        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: current,
             width,
@@ -1370,6 +1503,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let uniform = post_tint_uniform(width, height, color, intensity);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
+        let mut keepalive = WgpuDispatchKeepalive::default();
         self.dispatch_post_pass_sized(
             &mut encoder,
             &input.texture,
@@ -1377,9 +1511,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             &uniform_buffer,
             width,
             height,
+            &mut keepalive,
         );
         self.queue.submit([encoder.finish()]);
         drop(uniform_buffer);
+        drop(keepalive);
         GpuSceneNativeTexture {
             texture: dst,
             width,
@@ -1430,9 +1566,17 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             self.width,
             self.height,
         ));
-        self.dispatch_post_pass(&mut encoder, &input.texture, &dst, &uniform_buffer);
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        self.dispatch_post_pass(
+            &mut encoder,
+            &input.texture,
+            &dst,
+            &uniform_buffer,
+            &mut keepalive,
+        );
         self.queue.submit([encoder.finish()]);
         drop(uniform_buffer);
+        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width: self.width,
@@ -1631,6 +1775,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         image_texture: &wgpu::Texture,
         out_texture: &wgpu::Texture,
         uniform_buffer: &wgpu::Buffer,
+        keepalive: &mut WgpuDispatchKeepalive,
     ) {
         let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let image_view = image_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1673,6 +1818,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             self.height.div_ceil(16).max(1),
             1,
         );
+        drop(pass);
+        keepalive
+            .texture_views
+            .extend([base_view, image_view, out_view]);
+        keepalive.bind_groups.push(bind_group);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1685,6 +1835,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         primitive_buffer: &wgpu::Buffer,
         tile_range_buffer: &wgpu::Buffer,
         tile_index_buffer: &wgpu::Buffer,
+        keepalive: &mut WgpuDispatchKeepalive,
     ) {
         let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let out_view = out_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1730,6 +1881,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             self.height.div_ceil(16).max(1),
             1,
         );
+        drop(pass);
+        keepalive.texture_views.extend([base_view, out_view]);
+        keepalive.bind_groups.push(bind_group);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1743,6 +1897,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         uniform_buffer: &wgpu::Buffer,
         bounds_w: u32,
         bounds_h: u32,
+        keepalive: &mut WgpuDispatchKeepalive,
     ) {
         let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let image_view = image_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1790,6 +1945,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             bounds_h.div_ceil(16).max(1),
             1,
         );
+        drop(pass);
+        keepalive
+            .texture_views
+            .extend([base_view, image_view, matte_view, out_view]);
+        keepalive.bind_groups.push(bind_group);
     }
 
     pub(crate) fn dispatch_post_pass(
@@ -1798,6 +1958,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         base_texture: &wgpu::Texture,
         out_texture: &wgpu::Texture,
         uniform_buffer: &wgpu::Buffer,
+        keepalive: &mut WgpuDispatchKeepalive,
     ) {
         self.dispatch_post_pass_sized(
             encoder,
@@ -1806,9 +1967,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             uniform_buffer,
             self.width,
             self.height,
+            keepalive,
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_post_pass_sized(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1817,6 +1980,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         uniform_buffer: &wgpu::Buffer,
         width: u32,
         height: u32,
+        keepalive: &mut WgpuDispatchKeepalive,
     ) {
         let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let out_view = out_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1846,6 +2010,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         pass.set_pipeline(&self.post_pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.dispatch_workgroups(width.div_ceil(16).max(1), height.div_ceil(16).max(1), 1);
+        drop(pass);
+        keepalive.texture_views.extend([base_view, out_view]);
+        keepalive.bind_groups.push(bind_group);
     }
 
     pub(crate) fn load_image_texture(

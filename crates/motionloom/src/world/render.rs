@@ -88,7 +88,7 @@ impl From<crate::export::EncodeError> for WorldRenderError {
         match err {
             EncodeError::CreateOutputDir { path, source } => Self::CreateOutputDir { path, source },
             EncodeError::StartEncoder(message) => Self::StartFfmpeg {
-                source: std::io::Error::new(std::io::ErrorKind::Other, message),
+                source: std::io::Error::other(message),
             },
             EncodeError::MissingEncoderInput => Self::MissingFfmpegStdin,
             EncodeError::WriteFrame(source) => Self::WriteFrame {
@@ -914,6 +914,7 @@ impl WorldFrameRenderer {
     }
 }
 
+#[derive(Default)]
 pub struct CharacterDesignGpuViewport {
     renderer: WorldFrameRenderer,
     diagnostics_cache: HashMap<PathBuf, WorldGpuDiagnostics>,
@@ -922,15 +923,6 @@ pub struct CharacterDesignGpuViewport {
 pub struct CharacterDesignViewportFrame {
     pub image: RgbaImage,
     pub diagnostics: Option<WorldGpuDiagnostics>,
-}
-
-impl Default for CharacterDesignGpuViewport {
-    fn default() -> Self {
-        Self {
-            renderer: WorldFrameRenderer::new(),
-            diagnostics_cache: HashMap::new(),
-        }
-    }
 }
 
 impl CharacterDesignGpuViewport {

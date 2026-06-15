@@ -90,10 +90,12 @@ pub use scene::{
     TextTransformNode, TextWrapMode, UseNode,
 };
 pub use scene_render::{
-    MotionLoomSceneRenderError, SceneRenderError, SceneRenderProfile, SceneRenderProgress,
-    SceneRenderer, clear_scene_asset_roots, next_scene_output_path,
-    next_scene_output_path_for_profile, render_scene_frame, render_scene_graph_frame,
-    render_scene_graph_to_video, render_scene_graph_to_video_with_progress, set_scene_asset_roots,
+    MotionLoomSceneRenderError, SceneGpuTexture, ScenePlatformPreviewSurface, ScenePreviewBackend,
+    ScenePreviewPixelFormat, ScenePreviewSurface, ScenePreviewSurfaceOptions, SceneRenderError,
+    SceneRenderProfile, SceneRenderProgress, SceneRenderer, clear_scene_asset_roots,
+    next_scene_output_path, next_scene_output_path_for_profile, render_scene_frame,
+    render_scene_graph_frame, render_scene_graph_to_video,
+    render_scene_graph_to_video_with_progress, set_scene_asset_roots,
 };
 pub use world::error::{MotionLoomWorldError, WorldAssetError, WorldError, WorldParseError};
 pub use world::{
