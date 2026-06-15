@@ -3,6 +3,7 @@
 
 pub mod asset;
 pub mod common;
+pub mod compat;
 pub mod dsl;
 pub mod error;
 pub mod export;
@@ -19,6 +20,10 @@ pub mod wasm_api;
 pub use asset::{AssetResolver, AssetSource, MemoryAssetResolver, PathAssetResolver};
 pub use common::backend;
 pub use common::keyframe;
+pub use compat::{
+    GpuCompatibilityIssue, GpuCompatibilityReport, GpuCompatibilitySeverity,
+    GpuCompatibilityTarget, ScenePreviewPath, inspect_gpu_compatibility,
+};
 pub use export::{EncodeError, VideoEncoder, VideoFrame, create_encoder};
 pub use process::adapters::clip::curve as eval;
 pub use process::adapters::clip::export_adapter;
@@ -89,6 +94,8 @@ pub use scene::{
     TextLayoutNode, TextNode, TextOverflowMode, TextSelectorKind, TextStyleOverrideNode,
     TextTransformNode, TextWrapMode, UseNode,
 };
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+pub use scene_render::DmabufPlane;
 pub use scene_render::{
     MotionLoomSceneRenderError, SceneGpuTexture, ScenePlatformPreviewSurface, ScenePreviewBackend,
     ScenePreviewPixelFormat, ScenePreviewSurface, ScenePreviewSurfaceOptions, SceneRenderError,
@@ -97,6 +104,8 @@ pub use scene_render::{
     render_scene_graph_frame, render_scene_graph_to_video,
     render_scene_graph_to_video_with_progress, set_scene_asset_roots,
 };
+#[cfg(target_os = "windows")]
+pub use scene_render::{WindowsD3DSharedHandle, WindowsD3DSharedSurface};
 pub use world::error::{MotionLoomWorldError, WorldAssetError, WorldError, WorldParseError};
 pub use world::{
     CharacterDesignGpuViewport, CharacterDesignViewportFrame, GlbLoadError, GlbMeshData,

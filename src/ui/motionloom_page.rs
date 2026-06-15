@@ -93,6 +93,12 @@ enum SceneLivePreviewFrame {
         height: u32,
         surface: SendableCVPixelBuffer,
     },
+    #[cfg(target_os = "windows")]
+    WindowsSurface {
+        width: u32,
+        height: u32,
+        surface: motionloom::WindowsD3DSharedSurface,
+    },
 }
 
 impl SceneLivePreviewFrame {
@@ -109,6 +115,12 @@ impl SceneLivePreviewFrame {
                 height,
                 surface,
             } => MotionLoomPage::loaded_preview_from_macos_surface(width, height, surface.0),
+            #[cfg(target_os = "windows")]
+            Self::WindowsSurface {
+                width,
+                height,
+                surface,
+            } => MotionLoomPage::loaded_preview_from_windows_surface(width, height, surface),
         }
     }
 }
@@ -273,6 +285,9 @@ struct LoadedPreview {
     /// Reusable IOSurface-backed BGRA pixel buffer for `paint_bgra_frame_anica`.
     #[cfg(target_os = "macos")]
     bgra_surface: Option<Arc<CVPixelBuffer>>,
+    /// Reusable D3D11 shared texture for `paint_bgra_frame_anica` on Windows.
+    #[cfg(target_os = "windows")]
+    d3d_surface: Option<motionloom::WindowsD3DSharedSurface>,
     width: u32,
     height: u32,
 }
@@ -394,6 +409,9 @@ struct FitPreviewImageElement {
     /// Cached IOSurface-backed BGRA surface for the extended surface paint path.
     #[cfg(target_os = "macos")]
     bgra_surface: Option<Arc<CVPixelBuffer>>,
+    /// Cached D3D11 shared texture for the extended surface paint path on Windows.
+    #[cfg(target_os = "windows")]
+    d3d_surface: Option<motionloom::WindowsD3DSharedSurface>,
     width: u32,
     height: u32,
 }
@@ -405,6 +423,8 @@ impl FitPreviewImageElement {
             bgra: preview.bgra,
             #[cfg(target_os = "macos")]
             bgra_surface: preview.bgra_surface,
+            #[cfg(target_os = "windows")]
+            d3d_surface: preview.d3d_surface,
             width: preview.width,
             height: preview.height,
         }
@@ -515,6 +535,27 @@ impl Element for FitPreviewImageElement {
                     gpui::SurfaceExParams_anica::default(),
                 );
                 return;
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(surface) = self.d3d_surface.as_ref() {
+                if let Some(devices) = window.d3d11_devices_anica() {
+                    if let Some(frame_surface) = gpui::BgraFrameSurface::from_shared_handle_bgra(
+                        &devices,
+                        surface.handle.0,
+                        surface.width,
+                        surface.height,
+                    ) {
+                        window.paint_bgra_frame_anica(
+                            dest_bounds,
+                            frame_surface,
+                            gpui::SurfaceExParams_anica::default(),
+                        );
+                        return;
+                    }
+                }
             }
         }
 
@@ -749,6 +790,8 @@ impl MotionLoomPage {
             bgra: Some(bgra),
             #[cfg(target_os = "macos")]
             bgra_surface,
+            #[cfg(target_os = "windows")]
+            d3d_surface: None,
             width: w,
             height: h,
         })
@@ -768,6 +811,8 @@ impl MotionLoomPage {
             bgra: Some(bgra),
             #[cfg(target_os = "macos")]
             bgra_surface,
+            #[cfg(target_os = "windows")]
+            d3d_surface: None,
             width,
             height,
         })
@@ -785,6 +830,27 @@ impl MotionLoomPage {
             image: Arc::new(RenderImage::new(frames)),
             bgra: None,
             bgra_surface: Some(surface),
+            #[cfg(target_os = "windows")]
+            d3d_surface: None,
+            width,
+            height,
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    fn loaded_preview_from_windows_surface(
+        width: u32,
+        height: u32,
+        surface: motionloom::WindowsD3DSharedSurface,
+    ) -> Result<LoadedPreview, MotionLoomPageError> {
+        let rgba = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255]));
+        let frames = SmallVec::from_elem(image::Frame::new(rgba), 1);
+        Ok(LoadedPreview {
+            image: Arc::new(RenderImage::new(frames)),
+            bgra: None,
+            #[cfg(target_os = "macos")]
+            bgra_surface: None,
+            d3d_surface: Some(surface),
             width,
             height,
         })
@@ -857,9 +923,15 @@ impl MotionLoomPage {
                 surface: SendableCVPixelBuffer(Arc::new(surface)),
             }),
             #[cfg(target_os = "windows")]
-            ScenePlatformPreviewSurface::Windows { .. } => None,
+            ScenePlatformPreviewSurface::WindowsD3D(surface) => {
+                Some(SceneLivePreviewFrame::WindowsSurface {
+                    width: surface.width,
+                    height: surface.height,
+                    surface,
+                })
+            }
             #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
-            ScenePlatformPreviewSurface::Linux { .. } => None,
+            ScenePlatformPreviewSurface::LinuxDmabuf { .. } => None,
         }
     }
 

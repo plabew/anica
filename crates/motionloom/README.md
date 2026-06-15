@@ -82,6 +82,71 @@ Selects the renderer/output path:
 
 Scene `zDepth` uses camera-space depth: negative is closer, positive is farther.
 
+## Preview Surfaces
+
+`SceneRenderer::render_frame_to_preview_surface(graph, frame, options)`
+
+Renders a scene frame to the fastest preview surface available on the current
+platform. This is the intended integration point for host applications such as
+Anica that want to display live previews without choosing between CPU, GPU, and
+platform interop code themselves.
+
+`ScenePreviewSurfaceOptions::default()` uses `ScenePreviewBackend::Auto`, which
+picks a platform surface when available, otherwise falls back to a wgpu texture
+or CPU BGRA bytes.
+
+Supported backends:
+
+- `ScenePreviewBackend::Auto` — prefer platform surface, then wgpu texture, then
+  CPU BGRA.
+- `ScenePreviewBackend::WgpuTexture` — return a `SceneGpuTexture` wrapping an
+  `Arc<wgpu::Texture>` in `Rgba8Unorm`.
+- `ScenePreviewBackend::PlatformSurface` — return a platform display surface.
+- `ScenePreviewBackend::CpuBgra` — return CPU BGRA bytes for compatibility.
+
+Platform surfaces are host-consumable descriptors. MotionLoom produces the
+surface; it is the downstream application's responsibility to import and paint
+it (for example through GPUI, DirectComposition, Wayland, or Metal).
+
+- **macOS** — `ScenePlatformPreviewSurface::MacOs { surface: CVPixelBuffer, ... }`
+  in `Bgra8Unorm`. The pixel buffer is Metal-compatible.
+- **Windows** — `ScenePlatformPreviewSurface::WindowsD3D(WindowsD3DSharedSurface)`
+  in `Bgra8Unorm`. The contained `WindowsD3DSharedSurface` keeps the
+  `ID3D11Texture2D` alive so the legacy DXGI shared handle remains valid. The
+  host can open `shared_handle` on another D3D10/11 device on the same adapter;
+  the handle is owned by the OS and does not need to be closed by the caller.
+- **Linux** — `ScenePlatformPreviewSurface::LinuxDmabuf { ... }` is the planned
+  DMA-BUF BGRA descriptor. As long as real fd/export is not implemented,
+  `PlatformSurface` returns a clear error and `Auto` falls back to `CpuBgra`.
+
+```rust
+use motionloom::{
+    ScenePreviewBackend, ScenePreviewSurface, ScenePreviewSurfaceOptions, SceneRenderer,
+    SceneRenderProfile, parse_graph_script,
+};
+
+let graph = parse_graph_script(script)?;
+let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu))?;
+let surface = pollster::block_on(renderer.render_frame_to_preview_surface(
+    &graph,
+    0,
+    ScenePreviewSurfaceOptions::default(),
+))?;
+
+match surface {
+    ScenePreviewSurface::PlatformSurface(platform) => {
+        // Hand the platform surface off to the host compositor/GPUI.
+    }
+    ScenePreviewSurface::WgpuTexture(tex) => {
+        // Consume tex.texture as a wgpu texture.
+    }
+    ScenePreviewSurface::CpuBgra { width, height, data, .. } => {
+        // Upload data (width x height BGRA bytes) to the UI.
+    }
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ## World Rendering
 
 `render_world_frame(graph: &WorldGraph, frame: u32, asset_root)`
@@ -126,6 +191,71 @@ Evaluates effect parameters at an explicit normalized time and second value.
 
 Evaluates MotionLoom time expressions such as `$time.sec`, `curve(...)`, and
 math expressions used in effect parameters.
+
+## GPU Compatibility Inspector
+
+`inspect_gpu_compatibility(script: &str) -> Result<GpuCompatibilityReport, GraphParseError>`
+
+Inspects a MotionLoom script and reports whether it is likely to run on the
+strict GPU preview paths or fall back to CPU. This is a static diagnostic tool:
+it parses and analyzes the DSL, but it does not render frames and does not
+allocate GPU resources.
+
+Use this before choosing a preview/render path in host applications:
+
+```rust
+use motionloom::{GpuCompatibilitySeverity, inspect_gpu_compatibility};
+
+let report = inspect_gpu_compatibility(script)?;
+
+if report.likely_cpu_fallback {
+    for issue in report.blocking_issues() {
+        eprintln!("[{:?}] {}: {}", issue.target, issue.code, issue.message);
+    }
+}
+
+// `likely_preview_path` predicts what `ScenePreviewBackend::Auto` will pick
+// on the current platform: `MacOsCVPixelBuffer`, `WindowsD3D`, `WgpuTexture`,
+// or `CpuBgra`. (Linux DMA-BUF is planned but reports `CpuBgra` for now.)
+match report.likely_preview_path {
+    _ => {}
+}
+
+if report.can_use_wasm_scene_canvas {
+    // Browser/WASM can try the direct WebGPU scene canvas path.
+} else if report.can_use_wasm_process_webgpu {
+    // Browser/WASM can try the process WebGPU path for supported process effects.
+} else {
+    // Use CPU/WASM fallback or a compatibility renderer.
+}
+
+# let _ = GpuCompatibilitySeverity::Blocking;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The report is intentionally conservative. It only flags known limitations, so a
+script that passes inspection can still fail at runtime because of the user's
+GPU, driver, browser, missing assets, or platform-specific surface integration.
+
+Current report targets:
+
+- `NativeScenePreview` — Anica/native live scene preview.
+- `WasmSceneCanvas` — browser direct WebGPU scene-to-canvas render.
+- `WasmProcessWebGpu` — browser WebGPU process/effect render.
+- `WgpuTextureOutput` — `SceneRenderer::render_frame_to_wgpu_texture`.
+
+Common CPU-fallback reasons:
+
+- Mixed `<Scene>` + `<Process>` graphs need scene-to-process composition.
+- `Tex` / `Pass` / `Output` composition is not supported by the strict direct
+  scene canvas path yet.
+- `Tex from="scene:..."` requires scene output to become a process input.
+- Some process effects are not implemented in the WASM process WebGPU path yet.
+
+Important distinction: Anica/native and WASM/browser do not have identical GPU
+paths. A script can be GPU-compatible in one target and CPU fallback in another.
+Use the per-target booleans and issue list instead of assuming one target's
+result applies to every platform.
 
 ## Process Catalog
 

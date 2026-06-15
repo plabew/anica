@@ -15,6 +15,7 @@ use crate::process::runtime::eval_time_expr;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::scene::backend::encoding::scene_encoder_args;
 
+pub use super::preview_surface::*;
 use crate::asset::{AssetResolver, PathAssetResolver};
 pub use crate::scene::backend::encoding::{
     SceneRenderProfile, SceneRenderProgress, next_scene_output_path,
@@ -91,18 +92,6 @@ use crate::scene::timeline::{
     eval_repeat_count, scene_layer_source_time, scene_sequence_local_time,
 };
 use crate::world::{WorldFrameRenderer, parse_world_graph_script};
-#[cfg(target_os = "macos")]
-use core_foundation::base::{CFType, TCFType};
-#[cfg(target_os = "macos")]
-use core_foundation::boolean::CFBoolean;
-#[cfg(target_os = "macos")]
-use core_foundation::dictionary::CFDictionary;
-#[cfg(target_os = "macos")]
-use core_foundation::string::CFString;
-#[cfg(target_os = "macos")]
-use core_video::pixel_buffer::{CVPixelBuffer, CVPixelBufferKeys, kCVPixelFormatType_32BGRA};
-#[cfg(target_os = "macos")]
-use core_video::r#return::kCVReturnSuccess;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 use image::{Rgba, RgbaImage, imageops::FilterType};
 
@@ -287,92 +276,6 @@ pub async fn render_scene_frame(
     profile: SceneRenderProfile,
 ) -> Result<RgbaImage, SceneRenderError> {
     render_scene_graph_frame(graph, frame, profile).await
-}
-
-/// GPU-native output of a scene frame render.
-///
-/// The texture is returned without CPU readback. Callers can sample or blit it
-/// directly in their own wgpu pipeline, or extract the native backend handle
-/// (e.g. `MTLTexture` on Metal) for zero-copy display.
-#[derive(Debug, Clone)]
-pub struct SceneGpuTexture {
-    pub texture: Arc<wgpu::Texture>,
-    pub width: u32,
-    pub height: u32,
-    pub format: wgpu::TextureFormat,
-}
-
-/// Pixel formats used by preview surfaces exposed to host applications.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScenePreviewPixelFormat {
-    Rgba8Unorm,
-    Bgra8Unorm,
-}
-
-/// Preferred preview backend for `render_frame_to_preview_surface`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScenePreviewBackend {
-    /// Prefer the most efficient displayable surface and fall back safely.
-    Auto,
-    /// Return a wgpu texture without CPU readback.
-    WgpuTexture,
-    /// Return a platform display surface when the bridge is implemented.
-    PlatformSurface,
-    /// Return CPU BGRA bytes for compatibility with existing UI paths.
-    CpuBgra,
-}
-
-/// Options for high-level preview surface rendering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScenePreviewSurfaceOptions {
-    pub backend: ScenePreviewBackend,
-    pub preferred_format: ScenePreviewPixelFormat,
-}
-
-impl Default for ScenePreviewSurfaceOptions {
-    fn default() -> Self {
-        Self {
-            backend: ScenePreviewBackend::Auto,
-            preferred_format: ScenePreviewPixelFormat::Bgra8Unorm,
-        }
-    }
-}
-
-/// Platform-specific display surface placeholder for zero-copy preview bridges.
-#[derive(Debug, Clone)]
-pub enum ScenePlatformPreviewSurface {
-    #[cfg(target_os = "macos")]
-    MacOs {
-        surface: CVPixelBuffer,
-        width: u32,
-        height: u32,
-        format: ScenePreviewPixelFormat,
-    },
-    #[cfg(target_os = "windows")]
-    Windows {
-        width: u32,
-        height: u32,
-        format: ScenePreviewPixelFormat,
-    },
-    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
-    Linux {
-        width: u32,
-        height: u32,
-        format: ScenePreviewPixelFormat,
-    },
-}
-
-/// High-level preview output for apps that want the fastest available path.
-#[derive(Debug, Clone)]
-pub enum ScenePreviewSurface {
-    WgpuTexture(SceneGpuTexture),
-    PlatformSurface(ScenePlatformPreviewSurface),
-    CpuBgra {
-        width: u32,
-        height: u32,
-        data: Arc<Vec<u8>>,
-        format: ScenePreviewPixelFormat,
-    },
 }
 
 pub struct SceneRenderer {
@@ -690,6 +593,9 @@ struct SceneFrameRenderer {
     /// Optional externally-owned wgpu device/queue for shared-context rendering.
     #[cfg(not(target_arch = "wasm32"))]
     external_device_queue: Option<(Arc<wgpu::Device>, wgpu::Queue)>,
+    /// Cached D3D11 device/context used to allocate Windows shared preview surfaces.
+    #[cfg(target_os = "windows")]
+    windows_d3d11: Option<WindowsD3D11Context>,
 }
 
 #[derive(Clone, Copy)]
@@ -739,6 +645,8 @@ impl SceneFrameRenderer {
             gpu_compositor: None,
             #[cfg(not(target_arch = "wasm32"))]
             external_device_queue: None,
+            #[cfg(target_os = "windows")]
+            windows_d3d11: None,
         }
     }
 
@@ -771,6 +679,8 @@ impl SceneFrameRenderer {
             world_renderer: WorldFrameRenderer::with_resolver(Arc::new(PathAssetResolver)),
             gpu_compositor: None,
             external_device_queue: Some((device, queue)),
+            #[cfg(target_os = "windows")]
+            windows_d3d11: None,
         }
     }
 
@@ -923,7 +833,26 @@ impl SceneFrameRenderer {
                 .await
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            self.render_frame_to_windows_preview_surface(graph, frame, options)
+                .await
+        }
+
+        #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+        {
+            let _ = (graph, frame, options);
+            Err(MotionLoomSceneRenderError::GpuRender {
+                message: "Linux DMA-BUF platform preview surfaces are not implemented yet"
+                    .to_string(),
+            })
+        }
+
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "windows",
+            all(unix, not(target_os = "macos"), not(target_arch = "wasm32"))
+        )))]
         {
             let _ = (graph, frame, options);
             Err(MotionLoomSceneRenderError::GpuRender {
@@ -947,12 +876,12 @@ impl SceneFrameRenderer {
         for pixel in bgra.chunks_exact_mut(4) {
             pixel.swap(0, 2);
         }
-        let surface = Self::create_macos_bgra_surface(width, height).ok_or_else(|| {
+        let surface = create_macos_bgra_surface(width, height).ok_or_else(|| {
             MotionLoomSceneRenderError::GpuRender {
                 message: format!("failed to allocate macOS BGRA preview surface {width}x{height}"),
             }
         })?;
-        if !Self::copy_bgra_into_macos_surface(&surface, width, height, &bgra) {
+        if !copy_bgra_into_macos_surface(&surface, width, height, &bgra) {
             return Err(MotionLoomSceneRenderError::GpuRender {
                 message: format!(
                     "failed to copy BGRA preview data into macOS surface {width}x{height}"
@@ -969,88 +898,44 @@ impl SceneFrameRenderer {
         ))
     }
 
-    #[cfg(target_os = "macos")]
-    fn create_macos_bgra_surface(width: u32, height: u32) -> Option<CVPixelBuffer> {
-        if width == 0 || height == 0 {
-            return None;
+    #[cfg(target_os = "windows")]
+    async fn render_frame_to_windows_preview_surface(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        _options: ScenePreviewSurfaceOptions,
+    ) -> Result<ScenePreviewSurface, MotionLoomSceneRenderError> {
+        // First render to CPU and convert to BGRA. Future iterations can keep
+        // the entire pipeline on GPU once wgpu shared-handle export is stable.
+        let image = self.render_frame(graph, frame).await?;
+        let width = image.width();
+        let height = image.height();
+        let mut bgra = image.into_raw();
+        for pixel in bgra.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
         }
-        let iosurface_props: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[]);
-        let cv_options: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[
-            (
-                CFString::from(CVPixelBufferKeys::MetalCompatibility),
-                CFBoolean::true_value().as_CFType(),
-            ),
-            (
-                CFString::from(CVPixelBufferKeys::IOSurfaceProperties),
-                iosurface_props.as_CFType(),
-            ),
-        ]);
-        CVPixelBuffer::new(
-            kCVPixelFormatType_32BGRA,
-            width as usize,
-            height as usize,
-            Some(&cv_options),
-        )
-        .or_else(|_| {
-            CVPixelBuffer::new(
-                kCVPixelFormatType_32BGRA,
-                width as usize,
-                height as usize,
-                None,
-            )
-        })
-        .ok()
-    }
 
-    #[cfg(target_os = "macos")]
-    fn copy_bgra_into_macos_surface(
-        pixel_buffer: &CVPixelBuffer,
-        width: u32,
-        height: u32,
-        src: &[u8],
-    ) -> bool {
-        let w = width as usize;
-        let h = height as usize;
-        if w == 0
-            || h == 0
-            || pixel_buffer.get_pixel_format() != kCVPixelFormatType_32BGRA
-            || pixel_buffer.get_width() < w
-            || pixel_buffer.get_height() < h
-        {
-            return false;
+        if self.windows_d3d11.is_none() {
+            self.windows_d3d11 = WindowsD3D11Context::new();
         }
-        let Some(src_stride) = w.checked_mul(4) else {
-            return false;
-        };
-        if src.len() < src_stride.saturating_mul(h) {
-            return false;
-        }
-        if pixel_buffer.lock_base_address(0) != kCVReturnSuccess {
-            return false;
-        }
-        let copied = (|| {
-            let dst_stride = pixel_buffer.get_bytes_per_row();
-            let dst_height = pixel_buffer.get_height();
-            if dst_height < h || dst_stride < src_stride {
-                return None;
-            }
-            let dst_ptr = unsafe { pixel_buffer.get_base_address() as *mut u8 };
-            if dst_ptr.is_null() {
-                return None;
-            }
-            let dst_len = dst_stride.checked_mul(dst_height)?;
-            let dst = unsafe { std::slice::from_raw_parts_mut(dst_ptr, dst_len) };
-            for row in 0..h {
-                let src_off = row * src_stride;
-                let dst_off = row * dst_stride;
-                dst[dst_off..(dst_off + src_stride)]
-                    .copy_from_slice(&src[src_off..(src_off + src_stride)]);
-            }
-            Some(())
-        })()
-        .is_some();
-        let _ = pixel_buffer.unlock_base_address(0);
-        copied
+        let ctx =
+            self.windows_d3d11
+                .as_ref()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "failed to create D3D11 device for Windows preview surface"
+                        .to_string(),
+                })?;
+
+        let surface = WindowsD3DSharedSurface::new(&ctx.device, &ctx.context, width, height, &bgra)
+            .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                message: format!(
+                    "failed to create D3D11 shared BGRA preview surface {width}x{height}"
+                ),
+            })?;
+
+        Ok(ScenePreviewSurface::PlatformSurface(
+            ScenePlatformPreviewSurface::WindowsD3D(surface),
+        ))
     }
 
     fn prepare_frame_caches(&mut self, graph: &GraphScript) {
@@ -11617,5 +11502,222 @@ mod tests {
         assert_eq!(width, 8);
         assert_eq!(height, 4);
         assert_eq!(format, ScenePreviewPixelFormat::Bgra8Unorm);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn render_frame_to_preview_surface_auto_prefers_macos_platform_surface() {
+        let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[8,4]}>
+  <Background color="#0000FF" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let surface = pollster::block_on(renderer.render_frame_to_preview_surface(
+            &graph,
+            0,
+            ScenePreviewSurfaceOptions::default(),
+        ))
+        .expect("auto preview surface on macOS");
+
+        assert!(
+            matches!(
+                surface,
+                ScenePreviewSurface::PlatformSurface(ScenePlatformPreviewSurface::MacOs { .. })
+            ),
+            "expected macOS platform surface from Auto backend"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn render_frame_to_preview_surface_can_return_windows_d3d_surface() {
+        let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[8,4]}>
+  <Background color="#FF0000" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let surface = pollster::block_on(renderer.render_frame_to_preview_surface(
+            &graph,
+            0,
+            ScenePreviewSurfaceOptions {
+                backend: ScenePreviewBackend::PlatformSurface,
+                preferred_format: ScenePreviewPixelFormat::Bgra8Unorm,
+            },
+        ))
+        .expect("Windows preview surface");
+
+        let ScenePreviewSurface::PlatformSurface(ScenePlatformPreviewSurface::WindowsD3D(surface)) =
+            surface
+        else {
+            panic!("expected Windows D3D platform preview surface");
+        };
+        assert_eq!(surface.width, 8);
+        assert_eq!(surface.height, 4);
+        assert_eq!(surface.format, ScenePreviewPixelFormat::Bgra8Unorm);
+        assert_ne!(surface.handle.0, 0, "shared handle must be non-null");
+        assert_eq!(surface.stride, 8 * 4);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn render_frame_to_preview_surface_auto_prefers_windows_d3d_surface() {
+        let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[8,4]}>
+  <Background color="#00FF00" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let surface = pollster::block_on(renderer.render_frame_to_preview_surface(
+            &graph,
+            0,
+            ScenePreviewSurfaceOptions::default(),
+        ))
+        .expect("auto preview surface on Windows");
+
+        assert!(
+            matches!(
+                surface,
+                ScenePreviewSurface::PlatformSurface(ScenePlatformPreviewSurface::WindowsD3D(_))
+            ),
+            "expected Windows D3D platform surface from Auto backend"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_d3d_shared_surface_can_be_opened_on_another_device() {
+        use windows::Win32::Graphics::Direct3D::*;
+        use windows::Win32::Graphics::Direct3D11::*;
+
+        let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[8,4]}>
+  <Background color="#0000FF" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let surface = pollster::block_on(renderer.render_frame_to_preview_surface(
+            &graph,
+            0,
+            ScenePreviewSurfaceOptions {
+                backend: ScenePreviewBackend::PlatformSurface,
+                preferred_format: ScenePreviewPixelFormat::Bgra8Unorm,
+            },
+        ))
+        .expect("Windows preview surface");
+
+        let ScenePreviewSurface::PlatformSurface(ScenePlatformPreviewSurface::WindowsD3D(shared)) =
+            surface
+        else {
+            panic!("expected Windows D3D platform preview surface");
+        };
+
+        // Open the shared handle on a separate D3D11 device to verify lifetime.
+        unsafe {
+            use windows::Win32::Foundation::HMODULE;
+            let mut device = None;
+            let mut context = None;
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .expect("second D3D11 device");
+            let device = device.unwrap();
+
+            let opened: ID3D11Texture2D = device
+                .OpenSharedResource(shared.handle.0 as *const _)
+                .expect("open shared texture on second device");
+
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            opened.GetDesc(&mut desc);
+            assert_eq!(desc.Width, shared.width);
+            assert_eq!(desc.Height, shared.height);
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+    #[test]
+    fn render_frame_to_preview_surface_linux_platform_returns_clear_error() {
+        let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[8,4]}>
+  <Background color="#FF0000" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let result = pollster::block_on(renderer.render_frame_to_preview_surface(
+            &graph,
+            0,
+            ScenePreviewSurfaceOptions {
+                backend: ScenePreviewBackend::PlatformSurface,
+                preferred_format: ScenePreviewPixelFormat::Bgra8Unorm,
+            },
+        ));
+
+        let err = result.expect_err("Linux platform surface should be unsupported");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Linux DMA-BUF"),
+            "expected clear DMA-BUF unsupported message, got: {msg}"
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+    #[test]
+    fn render_frame_to_preview_surface_auto_falls_back_to_cpu_bgra_on_linux() {
+        let mut renderer = pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).unwrap();
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[8,4]}>
+  <Background color="#0000FF" />
+  <Present from="scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+
+        let surface = pollster::block_on(renderer.render_frame_to_preview_surface(
+            &graph,
+            0,
+            ScenePreviewSurfaceOptions::default(),
+        ))
+        .expect("auto preview surface on Linux should fall back to CPU BGRA");
+
+        assert!(
+            matches!(surface, ScenePreviewSurface::CpuBgra { .. }),
+            "expected CPU BGRA fallback on Linux from Auto backend"
+        );
     }
 }

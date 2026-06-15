@@ -6,6 +6,7 @@ pub mod drawable;
 pub mod dsl;
 pub mod error;
 pub mod model;
+pub mod preview_surface;
 pub mod render;
 pub mod resource;
 pub mod spatial;
