@@ -1,4 +1,4 @@
-<Graph fps={60} duration="2s" size={[900,420]}>
+<Graph fps={30} duration="2s" size={[900,420]}>
   <Background color="#10141f" />
 
   <Scene id="curve_two_lines_demo">

@@ -54,9 +54,10 @@ use crate::core::waveform;
 use crate::core::waveform::WaveformStatus;
 // Import the engine and renderer
 use gpui_video_renderer::{
-    VIDEO_MAX_LOCAL_MASK_LAYERS, VideoElement, VideoLocalMaskLayer, bgra_cpu_safe_mode_notice,
-    process_bgra_effects,
+    BlurMode, VIDEO_MAX_LOCAL_MASK_LAYERS, VideoElement, VideoLocalMaskLayer,
+    bgra_cpu_safe_mode_notice, process_bgra_effects,
 };
+use motionloom::BlurSharpenMode;
 use video_engine::{Position, Video, VideoOptions};
 
 const PREVIEW_BASE_HEIGHT: f32 = 450.0;
@@ -168,6 +169,7 @@ struct ImageRenderKey {
     saturation: i16,
     lut_mix: i16,
     blur_sigma: i16,
+    blur_mode: BlurSharpenMode,
     tint_hue: i16,
     tint_saturation: i16,
     tint_lightness: i16,
@@ -183,6 +185,7 @@ impl ImageRenderKey {
         saturation: f32,
         lut_mix: f32,
         blur_sigma: f32,
+        blur_mode: BlurSharpenMode,
         tint_hue: f32,
         tint_saturation: f32,
         tint_lightness: f32,
@@ -195,6 +198,7 @@ impl ImageRenderKey {
             saturation: (saturation * COLOR_KEY_SCALE).round() as i16,
             lut_mix: (lut_mix * COLOR_KEY_SCALE).round() as i16,
             blur_sigma: (blur_sigma * COLOR_KEY_SCALE).round() as i16,
+            blur_mode,
             tint_hue: (tint_hue * COLOR_KEY_SCALE).round() as i16,
             tint_saturation: (tint_saturation * COLOR_KEY_SCALE).round() as i16,
             tint_lightness: (tint_lightness * COLOR_KEY_SCALE).round() as i16,
@@ -1779,6 +1783,7 @@ impl VideoPreview {
         saturation: f32,
         lut_mix: f32,
         blur_sigma: f32,
+        blur_mode: BlurSharpenMode,
         tint_hue: f32,
         tint_saturation: f32,
         tint_lightness: f32,
@@ -1798,6 +1803,7 @@ impl VideoPreview {
             saturation,
             lut_mix,
             effective_blur_sigma,
+            blur_mode,
             tint_hue,
             tint_saturation,
             tint_lightness,
@@ -1875,7 +1881,9 @@ impl VideoPreview {
                 let result = cx
                     .background_spawn(async move {
                         let mut data = base_data;
-                        // Try GPU path first — handles blur, color, and tint in one dispatch.
+                        let renderer_blur_mode = Self::to_renderer_blur_mode(blur_mode);
+                        // Try GPU path first — handles blur, color, and tint in one dispatch,
+                        // including horizontal/vertical-only MotionLoom Layer FX blur modes.
                         let gpu_ok = process_bgra_effects(
                             &mut data,
                             width,
@@ -1886,6 +1894,7 @@ impl VideoPreview {
                             lut_mix,
                             0.0,
                             effective_blur_sigma,
+                            renderer_blur_mode,
                             tint_hue,
                             tint_saturation,
                             tint_lightness,
@@ -1985,6 +1994,7 @@ impl VideoPreview {
         saturation: f32,
         lut_mix: f32,
         blur_sigma: f32,
+        blur_mode: BlurSharpenMode,
         tint_hue: f32,
         tint_saturation: f32,
         tint_lightness: f32,
@@ -1999,6 +2009,7 @@ impl VideoPreview {
             saturation,
             lut_mix,
             blur_sigma,
+            blur_mode,
             tint_hue,
             tint_saturation,
             tint_lightness,
@@ -2024,6 +2035,7 @@ impl VideoPreview {
         saturation: f32,
         lut_mix: f32,
         blur_sigma: f32,
+        blur_mode: BlurSharpenMode,
         tint_hue: f32,
         tint_saturation: f32,
         tint_lightness: f32,
@@ -2038,6 +2050,7 @@ impl VideoPreview {
             saturation,
             lut_mix,
             blur_sigma,
+            blur_mode,
             tint_hue,
             tint_saturation,
             tint_lightness,
@@ -2671,6 +2684,21 @@ impl VideoPreview {
             }
         }
         None
+    }
+
+    fn get_clip_blur_mode(gs: &GlobalState, _clip_id: u64) -> BlurSharpenMode {
+        gs.layer_blur_sharpen_mode_at(gs.playhead)
+            .unwrap_or(BlurSharpenMode::Gaussian5tapBlur)
+    }
+
+    fn to_renderer_blur_mode(mode: BlurSharpenMode) -> BlurMode {
+        match mode {
+            BlurSharpenMode::Gaussian5tapBlur => BlurMode::Gaussian5tapBlur,
+            BlurSharpenMode::Gaussian5tapH => BlurMode::Gaussian5tapH,
+            BlurSharpenMode::Gaussian5tapV => BlurMode::Gaussian5tapV,
+            BlurSharpenMode::Box => BlurMode::Box,
+            BlurSharpenMode::Unsharp => BlurMode::Unsharp,
+        }
     }
 
     fn get_clip_lut_mix(gs: &GlobalState, clip_id: u64) -> Option<f32> {
@@ -4326,6 +4354,7 @@ impl Render for VideoPreview {
                 s: f32,
                 opacity: f32,
                 blur_sigma: f32,
+                blur_mode: BlurSharpenMode,
                 lut_mix: f32,
                 bloom_threshold: f32,
                 bloom_intensity: f32,
@@ -4351,6 +4380,7 @@ impl Render for VideoPreview {
                     let (b, c, s) = Self::get_clip_bcs(gs, *clip_id).unwrap_or((0.0, 1.0, 1.0));
                     let opacity = Self::get_clip_opacity(gs, *clip_id).unwrap_or(1.0);
                     let blur_sigma = Self::get_clip_blur_sigma(gs, *clip_id).unwrap_or(0.0);
+                    let blur_mode = Self::get_clip_blur_mode(gs, *clip_id);
                     let lut_mix = Self::get_clip_lut_mix(gs, *clip_id).unwrap_or(0.0);
                     let (bloom_threshold, bloom_intensity, bloom_sigma) =
                         gs.layer_bloom_at(gs.playhead).unwrap_or((1.0, 0.0, 0.0));
@@ -4374,6 +4404,7 @@ impl Render for VideoPreview {
                         s,
                         opacity,
                         blur_sigma,
+                        blur_mode,
                         lut_mix,
                         bloom_threshold,
                         bloom_intensity,
@@ -4405,6 +4436,7 @@ impl Render for VideoPreview {
                 let (b, c, s) = (cd.b, cd.c, cd.s);
                 let opacity = cd.opacity;
                 let blur_sigma = cd.blur_sigma;
+                let blur_mode = cd.blur_mode;
                 let lut_mix = cd.lut_mix;
                 let (bloom_threshold, bloom_intensity, bloom_sigma) =
                     (cd.bloom_threshold, cd.bloom_intensity, cd.bloom_sigma);
@@ -4445,6 +4477,7 @@ impl Render for VideoPreview {
                             s,
                             lut_mix,
                             blur_sigma,
+                            blur_mode,
                             hue,
                             sat,
                             light,
@@ -4474,6 +4507,7 @@ impl Render for VideoPreview {
                             s,
                             lut_mix,
                             blur_sigma,
+                            blur_mode,
                             hue,
                             sat,
                             light,
@@ -4523,6 +4557,7 @@ impl Render for VideoPreview {
                                             (alpha * opacity).clamp(0.0, 1.0),
                                         )
                                         .blur_sigma(blur_sigma)
+                                        .blur_mode(Self::to_renderer_blur_mode(blur_mode))
                                         .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
                                         .rotation_deg(rotation_deg)
                                         .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
@@ -4540,6 +4575,7 @@ impl Render for VideoPreview {
                         s,
                         lut_mix,
                         blur_sigma,
+                        blur_mode,
                         hue,
                         sat,
                         light,
@@ -4589,6 +4625,7 @@ impl Render for VideoPreview {
                                         (alpha * opacity).clamp(0.0, 1.0),
                                     )
                                     .blur_sigma(blur_sigma)
+                                    .blur_mode(Self::to_renderer_blur_mode(blur_mode))
                                     .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
                                     .rotation_deg(rotation_deg)
                                     .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
@@ -4610,6 +4647,7 @@ impl Render for VideoPreview {
                         s,
                         lut_mix,
                         blur_sigma,
+                        blur_mode,
                         hue,
                         sat,
                         light,
@@ -4645,6 +4683,7 @@ impl Render for VideoPreview {
                                 .lut_mix(lut_mix)
                                 .tint_overlay(hue, sat, light, (alpha * opacity).clamp(0.0, 1.0))
                                 .blur_sigma(blur_sigma)
+                                .blur_mode(Self::to_renderer_blur_mode(blur_mode))
                                 .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
                                 .rotation_deg(rotation_deg)
                                 .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)

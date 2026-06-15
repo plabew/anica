@@ -55,7 +55,7 @@ Rules:
   - For fade/motion, encode directly in node expressions (for example `opacity="min(max($time.sec/1.2,0),1)"`).
   - Put total duration on `<Graph duration="...">`; do not rely on `<Present duration_ms=...>`.
 - `anica.motionloom/set_scene_script` performs parser/runtime validation. If tool returns parse/compile error, regenerate valid DSL and retry instead of claiming completion.
-- If user did not specify scene fps/size, default to `fps={60}` and `size={[1920,1080]}`.
+- If user did not specify scene fps/size, default to `fps={30}` and `size={[1920,1080]}`.
 - When user asks "create X seconds video via VFX", default workflow:
   1) `anica.motionloom/set_scene_script` with `apply_now=true`,
   2) `anica.motionloom/render_scene` with `mode="gpu"` unless user explicitly asks CPU or ProRes.

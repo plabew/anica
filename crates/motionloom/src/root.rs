@@ -232,11 +232,11 @@ mod tests {
     #[test]
     fn root_dispatcher_parses_single_process_block_as_process() {
         let script = r#"
-<Graph fps={60} duration="1s" size={[1920,1080]}>
+<Graph fps={30} duration="1s" size={[1920,1080]}>
   <Process id="final_grade">
     <Tex id="src" fmt="rgba16f" size={[1920,1080]} />
     <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
-    <Pass id="fx" kind="compute" effect="gaussian_5tap_h"
+    <Pass id="fx" kind="compute" effect="gaussian_5tap_blur"
           in={["src"]} out={["out"]} params={{ sigma: "10" }} />
   </Process>
   <Present from="final_grade" />
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn root_dispatcher_keeps_scene_process_graph_as_mixed() {
         let script = r##"
-<Graph fps={60} duration="1s" size={[1920,1080]}>
+<Graph fps={30} duration="1s" size={[1920,1080]}>
   <Scene id="title_scene">
     <Timeline>
       <Track id="main" space="screen" z="0">
@@ -269,7 +269,7 @@ mod tests {
   <Process id="final_grade">
     <Tex id="src" fmt="rgba16f" from="scene:title_scene" />
     <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
-    <Pass id="fx" kind="compute" effect="gaussian_5tap_h"
+    <Pass id="fx" kind="compute" effect="gaussian_5tap_blur"
           in={["src"]} out={["out"]} params={{ sigma: "10" }} />
   </Process>
   <Present from="final_grade" />
@@ -286,10 +286,10 @@ mod tests {
     #[test]
     fn root_dispatcher_rejects_legacy_root_process_nodes() {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Tex id="src" fmt="rgba16f" from="input:clip0" />
   <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
-  <Pass id="fx" kind="compute" effect="gaussian_5tap_h"
+  <Pass id="fx" kind="compute" effect="gaussian_5tap_blur"
         in={["src"]} out={["out"]} params={{ sigma: "10" }} />
   <Present from="out" />
 </Graph>
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn root_dispatcher_does_not_treat_text_as_legacy_tex() {
         let script = r##"
-<Graph fps={60} duration="1s" size={[1080,768]}>
+<Graph fps={30} duration="1s" size={[1080,768]}>
   <Background color="#ffffff" />
   <Scene id="text_scene">
     <Timeline>

@@ -1,0 +1,676 @@
+// =========================================
+// crates/motionloom/src/process/wasm_webgpu.rs
+// =========================================
+
+use std::borrow::Cow;
+use std::sync::Arc;
+
+use wasm_bindgen::JsValue;
+use web_sys::HtmlCanvasElement;
+
+use crate::common::gpu_async::{DevicePoller, request_adapter_async, request_device_async};
+use crate::dsl::{PassNode, parse_graph_script};
+use crate::process::pass::normalize_effect_key;
+use crate::process::runtime::{compile_runtime_program, eval_time_expr};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProcessWebGpuRenderError {
+    #[error("invalid RGBA buffer: expected {expected} bytes for {width}x{height}, got {actual}")]
+    InvalidRgbaBuffer {
+        width: u32,
+        height: u32,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("WebGPU adapter request failed: {0}")]
+    Adapter(String),
+    #[error("WebGPU device request failed: {0}")]
+    Device(String),
+    #[error("canvas surface creation failed: {0}")]
+    Surface(String),
+    #[error("canvas surface has no supported texture formats")]
+    SurfaceFormat,
+    #[error("canvas surface frame acquisition failed: {0}")]
+    SurfaceFrame(String),
+    #[error("unsupported WebGPU process effect: {0}")]
+    UnsupportedEffect(String),
+    #[error(transparent)]
+    Parse(#[from] crate::error::GraphParseError),
+    #[error(transparent)]
+    Compile(#[from] crate::error::RuntimeCompileError),
+}
+
+pub async fn render_process_frame_to_canvas_gpu(
+    script: &str,
+    frame: u32,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    canvas: HtmlCanvasElement,
+) -> Result<(), ProcessWebGpuRenderError> {
+    let expected = width as usize * height as usize * 4;
+    if width == 0 || height == 0 || rgba.len() != expected {
+        return Err(ProcessWebGpuRenderError::InvalidRgbaBuffer {
+            width,
+            height,
+            expected,
+            actual: rgba.len(),
+        });
+    }
+
+    let graph = parse_graph_script(script)?;
+    compile_runtime_program(graph.clone())?;
+    let time_sec = frame as f32 / graph.fps.max(1.0);
+    let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / graph.fps.max(1.0));
+    let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
+
+    let renderer = ProcessWebGpuRenderer::new(width, height).await?;
+    renderer.render_to_canvas(&graph.passes, time_norm, time_sec, rgba, canvas)
+}
+
+struct ProcessWebGpuRenderer {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: Arc<wgpu::Device>,
+    queue: wgpu::Queue,
+    _poller: DevicePoller,
+    sampler: wgpu::Sampler,
+    pass_bind_group_layout: wgpu::BindGroupLayout,
+    pass_pipeline: wgpu::RenderPipeline,
+    present_bind_group_layout: wgpu::BindGroupLayout,
+    present_pipeline_layout: wgpu::PipelineLayout,
+    width: u32,
+    height: u32,
+}
+
+impl ProcessWebGpuRenderer {
+    async fn new(width: u32, height: u32) -> Result<Self, ProcessWebGpuRenderError> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = request_adapter_async(
+            &instance,
+            &wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            },
+        )
+        .await
+        .map_err(|err| ProcessWebGpuRenderError::Adapter(err.to_string()))?;
+        let (device, queue) = request_device_async(
+            &adapter,
+            &wgpu::DeviceDescriptor {
+                label: Some("anica-motionloom-process-webgpu-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                    .using_resolution(adapter.limits()),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            },
+        )
+        .await
+        .map_err(|err| ProcessWebGpuRenderError::Device(err.to_string()))?;
+        let device = Arc::new(device);
+        let poller = DevicePoller::start(device.clone());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("anica-motionloom-process-webgpu-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let pass_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("anica-motionloom-process-webgpu-pass-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let pass_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("anica-motionloom-process-webgpu-pass-pipeline-layout"),
+            bind_group_layouts: &[&pass_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let pass_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("anica-motionloom-process-webgpu-pass-shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(PROCESS_PASS_SHADER)),
+        });
+        let pass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("anica-motionloom-process-webgpu-pass-pipeline"),
+            layout: Some(&pass_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &pass_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &pass_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let present_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("anica-motionloom-process-webgpu-present-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+        let present_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("anica-motionloom-process-webgpu-present-pipeline-layout"),
+                bind_group_layouts: &[&present_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        Ok(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+            _poller: poller,
+            sampler,
+            pass_bind_group_layout,
+            pass_pipeline,
+            present_bind_group_layout,
+            present_pipeline_layout,
+            width,
+            height,
+        })
+    }
+
+    fn render_to_canvas(
+        &self,
+        passes: &[PassNode],
+        time_norm: f32,
+        time_sec: f32,
+        rgba: &[u8],
+        canvas: HtmlCanvasElement,
+    ) -> Result<(), ProcessWebGpuRenderError> {
+        let tex_a = self.create_render_texture("anica-motionloom-process-webgpu-tex-a");
+        let tex_b = self.create_render_texture("anica-motionloom-process-webgpu-tex-b");
+        self.write_texture_rgba(&tex_a, rgba);
+
+        let mut current_is_a = true;
+        let mut uniform_buffers = Vec::with_capacity(passes.len().saturating_mul(2));
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-process-webgpu-encoder"),
+            });
+
+        for pass in passes {
+            for effect_id in process_effect_ids(pass)? {
+                let uniform_buffer = self.make_uniform_buffer(pass, effect_id, time_norm, time_sec);
+                let src = if current_is_a { &tex_a } else { &tex_b };
+                let dst = if current_is_a { &tex_b } else { &tex_a };
+                self.encode_process_pass(&mut encoder, src, dst, &uniform_buffer);
+                uniform_buffers.push(uniform_buffer);
+                current_is_a = !current_is_a;
+            }
+        }
+
+        let final_texture = if current_is_a { &tex_a } else { &tex_b };
+        self.present_texture_to_canvas(&mut encoder, final_texture, &canvas)?;
+        self.queue.submit([encoder.finish()]);
+        drop(uniform_buffers);
+        Ok(())
+    }
+
+    fn create_render_texture(&self, label: &'static str) -> wgpu::Texture {
+        self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+    }
+
+    fn write_texture_rgba(&self, texture: &wgpu::Texture, rgba: &[u8]) {
+        let row_bytes = self.width * 4;
+        const ROW_ALIGNMENT: u32 = 256;
+        let padded_row_bytes = row_bytes.div_ceil(ROW_ALIGNMENT) * ROW_ALIGNMENT;
+        let upload: Cow<'_, [u8]> = if padded_row_bytes == row_bytes {
+            Cow::Borrowed(rgba)
+        } else {
+            let mut padded = vec![0u8; padded_row_bytes as usize * self.height as usize];
+            for row in 0..self.height as usize {
+                let src_start = row * row_bytes as usize;
+                let dst_start = row * padded_row_bytes as usize;
+                padded[dst_start..dst_start + row_bytes as usize]
+                    .copy_from_slice(&rgba[src_start..src_start + row_bytes as usize]);
+            }
+            Cow::Owned(padded)
+        };
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &upload,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row_bytes),
+                rows_per_image: Some(self.height),
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    fn make_uniform_buffer(
+        &self,
+        pass: &PassNode,
+        effect_id: u32,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> wgpu::Buffer {
+        let values = [
+            self.width as f32,
+            self.height as f32,
+            effect_id as f32,
+            0.0,
+            process_param_f32(pass, &["hue", "h"], time_norm, time_sec, 0.0),
+            process_param_f32(pass, &["saturation", "sat", "s"], time_norm, time_sec, 0.0),
+            process_param_f32(pass, &["lightness", "lum", "l"], time_norm, time_sec, 0.0),
+            process_param_f32(pass, &["alpha", "a"], time_norm, time_sec, 0.0),
+            process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0),
+            0.0,
+            0.0,
+            0.0,
+        ];
+        let mut bytes = Vec::with_capacity(values.len() * 4);
+        for value in values {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        self.device
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("anica-motionloom-process-webgpu-pass-uniform"),
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: true,
+            })
+            .tap_mapped_write(&bytes)
+    }
+
+    fn encode_process_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::Texture,
+        dst: &wgpu::Texture,
+        uniform_buffer: &wgpu::Buffer,
+    ) {
+        let src_view = src.create_view(&wgpu::TextureViewDescriptor::default());
+        let dst_view = dst.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("anica-motionloom-process-webgpu-pass-bg"),
+            layout: &self.pass_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&src_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("anica-motionloom-process-webgpu-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &dst_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.pass_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    fn present_texture_to_canvas(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        canvas: &HtmlCanvasElement,
+    ) -> Result<(), ProcessWebGpuRenderError> {
+        canvas.set_width(self.width);
+        canvas.set_height(self.height);
+
+        let surface = self
+            .instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+            .map_err(|err| ProcessWebGpuRenderError::Surface(err.to_string()))?;
+        let caps = surface.get_capabilities(&self.adapter);
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|format| {
+                matches!(
+                    format,
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                )
+            })
+            .or_else(|| caps.formats.first().copied())
+            .ok_or(ProcessWebGpuRenderError::SurfaceFormat)?;
+        let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            caps.alpha_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::CompositeAlphaMode::Auto)
+        };
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+            wgpu::PresentMode::Fifo
+        } else {
+            caps.present_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::PresentMode::AutoVsync)
+        };
+        surface.configure(
+            &self.device,
+            &wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width: self.width,
+                height: self.height,
+                present_mode,
+                desired_maximum_frame_latency: 2,
+                alpha_mode,
+                view_formats: vec![],
+            },
+        );
+
+        let frame = surface
+            .get_current_texture()
+            .map_err(|err| ProcessWebGpuRenderError::SurfaceFrame(err.to_string()))?;
+        let target_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let source_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("anica-motionloom-process-webgpu-present-shader"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(PROCESS_PRESENT_SHADER)),
+            });
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("anica-motionloom-process-webgpu-present-pipeline"),
+                layout: Some(&self.present_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("anica-motionloom-process-webgpu-present-bg"),
+            layout: &self.present_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&source_view),
+            }],
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("anica-motionloom-process-webgpu-present-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        frame.present();
+        Ok(())
+    }
+}
+
+trait MappedBufferWrite {
+    fn tap_mapped_write(self, bytes: &[u8]) -> Self;
+}
+
+impl MappedBufferWrite for wgpu::Buffer {
+    fn tap_mapped_write(self, bytes: &[u8]) -> Self {
+        self.slice(..).get_mapped_range_mut().copy_from_slice(bytes);
+        self.unmap();
+        self
+    }
+}
+
+fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderError> {
+    match normalize_effect_key(&pass.effect)
+        .replace(['.', '-'], "_")
+        .as_str()
+    {
+        "hsla_overlay" | "hsla" | "tint_overlay" | "color_tone_hsla_overlay" => Ok(vec![1]),
+        "gaussian_5tap_blur" | "gaussian_blur" | "blur" => Ok(vec![2, 3]),
+        "gaussian_5tap_h" => Ok(vec![2]),
+        "gaussian_5tap_v" => Ok(vec![3]),
+        other => Err(ProcessWebGpuRenderError::UnsupportedEffect(
+            other.to_string(),
+        )),
+    }
+}
+
+fn process_param_f32(
+    pass: &PassNode,
+    keys: &[&str],
+    time_norm: f32,
+    time_sec: f32,
+    fallback: f32,
+) -> f32 {
+    keys.iter()
+        .find_map(|key| {
+            pass.params
+                .iter()
+                .find(|param| param.key == *key)
+                .and_then(|param| eval_time_expr(&param.value, time_norm, time_sec).ok())
+        })
+        .unwrap_or(fallback)
+}
+
+impl From<ProcessWebGpuRenderError> for JsValue {
+    fn from(err: ProcessWebGpuRenderError) -> Self {
+        JsValue::from_str(&err.to_string())
+    }
+}
+
+const PROCESS_PASS_SHADER: &str = concat!(
+    include_str!("kernels/color_tone/color_core.wgsl"),
+    "\n",
+    include_str!("kernels/blur_sharpen_detail/blur_sharpen_detail_gaussian.wgsl"),
+    r#"
+
+struct ProcessParams {
+    width: f32,
+    height: f32,
+    effect_id: f32,
+    _pad0: f32,
+    hue: f32,
+    saturation: f32,
+    lightness: f32,
+    alpha: f32,
+    sigma: f32,
+    _pad1: f32,
+    _pad2: f32,
+    _pad3: f32,
+};
+
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+@group(0) @binding(1) var src_samp: sampler;
+@group(0) @binding(2) var<uniform> params: ProcessParams;
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    let pos = positions[vertex_index];
+    var out: VertexOut;
+    out.position = vec4<f32>(pos, 0.0, 1.0);
+    out.uv = pos * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let uv = clamp(in.uv, vec2<f32>(0.0), vec2<f32>(1.0));
+    let sigma = clamp(params.sigma, 0.0, 64.0);
+    let blur_step = max(sigma, 1.0);
+    let texel = vec2<f32>(
+        blur_step / max(params.width, 1.0),
+        blur_step / max(params.height, 1.0)
+    );
+    let base = textureSampleLevel(src_tex, src_samp, uv, 0.0);
+    var rgb = base.rgb;
+    if params.effect_id < 1.5 {
+        rgb = ml_hsla_overlay(rgb, params.hue, params.saturation, params.lightness, params.alpha);
+    } else if params.effect_id < 2.5 {
+        rgb = ml_blur_sharpen_detail_gaussian_5tap_h(src_tex, src_samp, uv, texel);
+    } else {
+        rgb = ml_blur_sharpen_detail_gaussian_5tap_v(src_tex, src_samp, uv, texel);
+    }
+    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);
+}
+"#
+);
+
+const PROCESS_PRESENT_SHADER: &str = r#"
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    var out: VertexOut;
+    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let dims = textureDimensions(src_tex);
+    let max_px = dims - vec2<u32>(1u, 1u);
+    let px = min(vec2<u32>(u32(in.position.x), u32(in.position.y)), max_px);
+    let color = textureLoad(src_tex, vec2<i32>(px), 0);
+    return vec4<f32>(color.rgb, 1.0);
+}
+"#;

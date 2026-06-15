@@ -1470,7 +1470,7 @@ impl VectorLabPage {
             background_color.trim()
         };
         format!(
-            r##"<Graph fps={{60}} duration="1s" size={{[{width},{height}]}}>
+            r##"<Graph fps={{30}} duration="1s" size={{[{width},{height}]}}>
   <Background color="{background_color}" />
 
   <Scene id="vector_lab_trace">
@@ -4213,7 +4213,7 @@ mod tests {
             export_simplify_epsilon: 0.0,
         }];
         let export = VectorLabPage::vector_group_export("vector_group_01", &paths);
-        let script = r##"<Graph fps={60} duration="1s" size={[1920,1080]}>
+        let script = r##"<Graph fps={30} duration="1s" size={[1920,1080]}>
   <Background color="#ffffff" />
   <Scene id="vector_lab_trace">
     <Timeline>
@@ -4237,7 +4237,7 @@ mod tests {
     #[test]
     fn vector_lab_group_parser_reads_compact_group_brush() {
         let script = r##"
-<Graph fps={60} duration="1s" size={[734,517]}>
+<Graph fps={30} duration="1s" size={[734,517]}>
   <Scene id="vector_lab_trace">
     <Defs>
       <Brush id="vector_eyebrow_brush_01"
@@ -4275,7 +4275,7 @@ mod tests {
     #[test]
     fn vector_lab_group_parser_reads_nested_group_brush_override() {
         let script = r##"
-<Graph fps={60} duration="1s" size={[734,517]}>
+<Graph fps={30} duration="1s" size={[734,517]}>
   <Scene id="vector_lab_trace">
     <Defs>
       <Brush id="outer_brush" stroke="#111111" strokeWidth="1.6" strokeStyle="pencil" />

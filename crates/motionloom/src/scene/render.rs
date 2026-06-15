@@ -36,7 +36,7 @@ use crate::scene::composition::{
     composite_layer_affine, composite_layer_affine_blend, composite_layer_affine_blend_clipped,
     composite_layer_affine_clipped, composite_scene_bloom, composite_transformed_layer,
     composite_transformed_layer_anchored, draw_rgba_image, is_color_key_alpha_effect,
-    pass_param_expr, scene_post_bloom_params, scene_post_blur_params,
+    pass_param_expr, scene_post_bloom_params, scene_post_blur_passes,
 };
 use crate::scene::domain::apply_action_graph_at_time;
 use crate::scene::drawable::{
@@ -304,6 +304,66 @@ impl SceneRenderer {
         validate_scene_graph(graph)?;
         self.inner.render_frame(graph, frame).await
     }
+
+    /// Render a GPU-native scene frame directly into a browser canvas.
+    ///
+    /// This WASM-only path presents the compositor texture to the canvas
+    /// surface and avoids CPU readback. It is intentionally strict for now:
+    /// unsupported scene graphs return a GPU render error instead of falling
+    /// back silently.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn render_frame_to_canvas(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        canvas: web_sys::HtmlCanvasElement,
+    ) -> Result<(), SceneRenderError> {
+        validate_scene_graph(graph)?;
+        self.inner
+            .render_frame_to_canvas(graph, frame, canvas)
+            .await
+    }
+
+    /// Draw a solid WebGPU color into a browser canvas for surface debugging.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn debug_solid_to_canvas(
+        &mut self,
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        color: [f64; 4],
+    ) -> Result<(), SceneRenderError> {
+        self.inner
+            .debug_solid_to_canvas(canvas, width, height, color)
+            .await
+    }
+
+    /// Upload a solid texture and present it to a browser canvas for debugging.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn debug_uploaded_texture_to_canvas(
+        &mut self,
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        color: [u8; 4],
+    ) -> Result<(), SceneRenderError> {
+        self.inner
+            .debug_uploaded_texture_to_canvas(canvas, width, height, color)
+            .await
+    }
+
+    /// Render an empty scene texture with a white clear color and present it.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn debug_empty_scene_texture_to_canvas(
+        &mut self,
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+    ) -> Result<(), SceneRenderError> {
+        self.inner
+            .debug_empty_scene_texture_to_canvas(canvas, width, height)
+            .await
+    }
 }
 
 fn validate_scene_graph(graph: &GraphScript) -> Result<(), MotionLoomSceneRenderError> {
@@ -556,6 +616,172 @@ impl SceneFrameRenderer {
         } else {
             Ok(canvas)
         }
+    }
+
+    /// Present one strict GPU scene-tree frame directly to an HTML canvas.
+    #[cfg(target_arch = "wasm32")]
+    async fn render_frame_to_canvas(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        canvas: web_sys::HtmlCanvasElement,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        if !self.profile.uses_gpu_compositor() {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "canvas rendering requires the GPU profile".to_string(),
+            });
+        }
+
+        let fps = graph.fps.max(1.0);
+        let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / fps);
+        let time_sec = frame as f32 / fps;
+        let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
+        let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
+        let graph = applied_graph.as_ref().unwrap_or(graph);
+
+        self.gradient_defs.clear();
+        self.palette_defs.clear();
+        self.font_defs.clear();
+        self.filter_defs.clear();
+        self.scene_components.clear();
+        self.scene_precompose_defs.clear();
+        self.scene_precomposes.clear();
+        self.scene_masks.clear();
+        collect_graph_gradient_defs(graph, &mut self.gradient_defs);
+        collect_graph_palette_defs(graph, &mut self.palette_defs);
+        collect_graph_font_defs(graph, &mut self.font_defs);
+        collect_graph_filter_defs(graph, &mut self.filter_defs);
+        collect_graph_component_defs(graph, &mut self.scene_components);
+        collect_graph_mask_defs(graph, &mut self.scene_masks);
+        for precompose in collect_graph_precompose_defs(graph) {
+            self.scene_precompose_defs
+                .insert(precompose.id.clone(), precompose);
+        }
+
+        self.render_scene_tree_frame_to_canvas(graph, time_norm, time_sec, canvas)
+            .await
+    }
+
+    /// Draw a solid WebGPU color into a browser canvas for surface debugging.
+    #[cfg(target_arch = "wasm32")]
+    async fn debug_solid_to_canvas(
+        &mut self,
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        color: [f64; 4],
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        if !self.profile.uses_gpu_compositor() {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "debug canvas rendering requires the GPU profile".to_string(),
+            });
+        }
+        self.ensure_gpu_compositor_size(width.max(1), height.max(1))
+            .await?;
+        let compositor =
+            self.gpu_compositor
+                .as_ref()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        compositor.debug_present_solid_to_canvas(&canvas, width, height, color)
+    }
+
+    /// Upload a solid texture and present it to a browser canvas for debugging.
+    #[cfg(target_arch = "wasm32")]
+    async fn debug_uploaded_texture_to_canvas(
+        &mut self,
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        color: [u8; 4],
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        if !self.profile.uses_gpu_compositor() {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "debug texture rendering requires the GPU profile".to_string(),
+            });
+        }
+        self.ensure_gpu_compositor_size(width.max(1), height.max(1))
+            .await?;
+        let compositor =
+            self.gpu_compositor
+                .as_ref()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        compositor.debug_present_uploaded_texture_to_canvas(&canvas, width, height, color)
+    }
+
+    /// Render an empty scene texture with a white clear color and present it.
+    #[cfg(target_arch = "wasm32")]
+    async fn debug_empty_scene_texture_to_canvas(
+        &mut self,
+        canvas: web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        if !self.profile.uses_gpu_compositor() {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "debug empty scene rendering requires the GPU profile".to_string(),
+            });
+        }
+        self.ensure_gpu_compositor_size(width.max(1), height.max(1))
+            .await?;
+        let compositor =
+            self.gpu_compositor
+                .as_mut()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        let texture = compositor.render_scene_content_to_texture(&[], &[], [255, 255, 255, 255])?;
+        compositor.present_texture_to_canvas(&texture, &canvas)
+    }
+
+    /// Render a GPU-native scene tree to a browser canvas surface.
+    #[cfg(target_arch = "wasm32")]
+    async fn render_scene_tree_frame_to_canvas(
+        &mut self,
+        graph: &GraphScript,
+        time_norm: f32,
+        time_sec: f32,
+        canvas: web_sys::HtmlCanvasElement,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        let has_composition = !graph.textures.is_empty()
+            || !graph.passes.is_empty()
+            || !graph.outputs.is_empty()
+            || !graph.layers.is_empty()
+            || !graph.world_sources.is_empty();
+        if has_composition {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message:
+                    "direct WASM canvas GPU rendering does not support Tex/Pass/Output composition yet"
+                        .to_string(),
+            });
+        }
+
+        let Some(nodes) = scene_nodes_for_present(graph) else {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "direct WASM canvas GPU rendering needs a presentable scene tree"
+                    .to_string(),
+            });
+        };
+        let background = graph
+            .backgrounds
+            .last()
+            .map(|background| parse_color(&background.color))
+            .transpose()?
+            .unwrap_or([0, 0, 0, 0]);
+        self.present_gpu_scene_nodes_with_background_to_canvas(
+            nodes,
+            graph_output_size(graph),
+            graph_logical_render_size(graph),
+            render_size_root_transform(graph_output_size(graph), graph_logical_render_size(graph)),
+            time_norm,
+            time_sec,
+            Some(background),
+            canvas,
+        )
+        .await
     }
 
     async fn render_scene_tree_frame(
@@ -955,6 +1181,89 @@ impl SceneFrameRenderer {
         Ok(Some(canvas))
     }
 
+    /// Present GPU-native scene nodes directly to a browser canvas surface.
+    #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::too_many_arguments)]
+    async fn present_gpu_scene_nodes_with_background_to_canvas(
+        &mut self,
+        nodes: &[SceneNode],
+        output_size: (u32, u32),
+        logical_size: (u32, u32),
+        root_transform: Affine2,
+        time_norm: f32,
+        time_sec: f32,
+        background: Option<[u8; 4]>,
+        canvas: web_sys::HtmlCanvasElement,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        let scaled_scene = output_size != logical_size || !affine_is_identity(root_transform);
+        let scene_transform = if scaled_scene {
+            root_transform
+        } else {
+            Affine2::identity()
+        };
+        let scene_canvas_size = if scaled_scene {
+            logical_size
+        } else {
+            output_size
+        };
+
+        self.ensure_gpu_compositor_size(output_size.0.max(1), output_size.1.max(1))
+            .await?;
+        let mut assets = GpuSceneNativeAssets::default();
+        let mut primitives = Vec::<GpuScenePrimitive>::new();
+        let mut texture_layers = Vec::<GpuSceneTextureLayer>::new();
+        let mut text_requests = Vec::<GpuSceneTextRequest>::new();
+        let mut unsupported = false;
+        self.collect_gpu_scene_native_commands(
+            nodes,
+            scene_transform,
+            None,
+            1.0,
+            time_norm,
+            time_sec,
+            scene_canvas_size,
+            &mut assets,
+            &mut primitives,
+            &mut texture_layers,
+            &mut text_requests,
+            &mut unsupported,
+        )
+        .await?;
+        if unsupported {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message:
+                    "direct WASM canvas GPU rendering does not support this scene node set yet"
+                        .to_string(),
+            });
+        }
+
+        for request in text_requests {
+            texture_layers.extend(self.rasterize_text_texture_layers_gpu_effects(
+                &request.node,
+                request.transform,
+                request.opacity,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+            )?);
+        }
+
+        self.ensure_gpu_compositor_size(output_size.0.max(1), output_size.1.max(1))
+            .await?;
+        let compositor =
+            self.gpu_compositor
+                .as_mut()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        let texture = compositor.render_scene_content_to_texture(
+            &primitives,
+            &texture_layers,
+            background.unwrap_or([0, 0, 0, 0]),
+        )?;
+        compositor.present_texture_to_canvas(&texture, &canvas)
+    }
+
     async fn ensure_gpu_compositor_size(
         &mut self,
         width: u32,
@@ -1160,7 +1469,11 @@ impl SceneFrameRenderer {
         let mut output = input;
         for step in filter.steps {
             let kind = step.kind.trim().to_ascii_lowercase();
-            if kind == "blur" || kind == "gaussian_blur" || kind == "gaussian-blur" {
+            if kind == "blur"
+                || kind == "gaussian_blur"
+                || kind == "gaussian-blur"
+                || kind == "gaussian_5tap_blur"
+            {
                 let sigma = step
                     .radius
                     .as_deref()
@@ -2262,7 +2575,7 @@ impl SceneFrameRenderer {
         if effect == "hsla" || effect == "hsla_overlay" || effect == "color.hsla" {
             return apply_hsla_pass(&inputs[0], pass, time_norm, time_sec);
         }
-        if effect == "blur" || effect == "gaussian_blur" {
+        if effect == "blur" || effect == "gaussian_blur" || effect == "gaussian_5tap_blur" {
             let sigma = pass_param_expr(pass, "sigma")
                 .map(|expr| eval_scene_number(expr, time_norm, time_sec))
                 .transpose()?
@@ -2302,7 +2615,7 @@ impl SceneFrameRenderer {
         time_norm: f32,
         time_sec: f32,
     ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
-        if let Some((horizontal, sigma)) = scene_post_blur_params(pass, time_norm, time_sec)?
+        if let Some(blur_passes) = scene_post_blur_passes(pass, time_norm, time_sec)?
             && self.profile.uses_gpu_compositor()
         {
             self.ensure_gpu_compositor_size(input.width().max(1), input.height().max(1))
@@ -2312,9 +2625,7 @@ impl SceneFrameRenderer {
                     message: "GPU compositor was not initialized".to_string(),
                 }
             })?;
-            return compositor
-                .apply_gpu_blur_passes(input, &[(horizontal, sigma)])
-                .await;
+            return compositor.apply_gpu_blur_passes(input, &blur_passes).await;
         }
         if scene_post_bloom_params(pass, time_norm, time_sec)?.is_some() {
             return self
@@ -7428,7 +7739,7 @@ mod tests {
     fn scene_validation_rejects_missing_gradient_refs_before_render() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[64,48]}>
+<Graph fps={30} duration="1s" size={[64,48]}>
   <Background color="#000000" />
   <Rect x="0" y="0" width="64" height="48" fill="url(#bg_glow)" />
   <Present from="scene" />
@@ -8745,7 +9056,7 @@ mod tests {
     fn scene_renderer_applies_action_to_matching_character_part() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[160,120]}>
+<Graph fps={30} duration="1s" size={[160,120]}>
   <Background color="#ffffff" />
 
   <Action id="raise_arm" skeleton="humanoid_front_v1" duration="1s">
@@ -8789,7 +9100,7 @@ mod tests {
         let mut renderer =
             pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Cpu));
         let at_rest = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
-        let raised = pollster::block_on(renderer.render_frame(&graph, 30)).expect("frame 30");
+        let raised = pollster::block_on(renderer.render_frame(&graph, 15)).expect("frame 15");
         assert_ne!(
             at_rest.as_raw(),
             raised.as_raw(),
@@ -8801,7 +9112,7 @@ mod tests {
     fn scene_renderer_applies_skeleton_parent_child_constraints() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[180,180]}>
+<Graph fps={30} duration="1s" size={[180,180]}>
   <Background color="#ffffff" />
 
   <Skeleton id="humanoid_front_v1">
@@ -8847,7 +9158,7 @@ mod tests {
         let mut renderer =
             pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Cpu));
         let at_rest = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
-        let bent = pollster::block_on(renderer.render_frame(&graph, 30)).expect("frame 30");
+        let bent = pollster::block_on(renderer.render_frame(&graph, 15)).expect("frame 15");
         let rest_pixel = at_rest.get_pixel(120, 80);
         let bent_pixel = bent.get_pixel(80, 120);
         assert!(
@@ -8864,7 +9175,7 @@ mod tests {
     fn scene_renderer_draws_scene_group_shapes_and_text() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[220,140]}>
+<Graph fps={30} duration="1s" size={[220,140]}>
   <Background color="[1,1,1,1]" />
 
   <Scene id="scene0">
@@ -8907,7 +9218,7 @@ mod tests {
     fn scene_renderer_fits_render_size_into_output_size() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,100]} renderSize={[200,100]}>
+<Graph fps={30} duration="1s" size={[100,100]} renderSize={[200,100]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -8947,7 +9258,7 @@ mod tests {
     fn scene_renderer_draws_trimmed_polyline_and_path() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[160,90]}>
+<Graph fps={30} duration="1s" size={[160,90]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9004,7 +9315,7 @@ mod tests {
     fn scene_renderer_draws_brush_part_path() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[120,80]}>
+<Graph fps={30} duration="1s" size={[120,80]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9043,7 +9354,7 @@ mod tests {
     fn scene_renderer_draws_character_vector_nodes() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[120,90]}>
+<Graph fps={30} duration="1s" size={[120,90]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9087,7 +9398,7 @@ mod tests {
     fn scene_gpu_renderer_draws_character_overlay() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,80]}>
+<Graph fps={30} duration="1s" size={[100,80]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9130,7 +9441,7 @@ mod tests {
     fn scene_gpu_renderer_draws_filled_path_overlay() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,80]}>
+<Graph fps={30} duration="1s" size={[100,80]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9173,7 +9484,7 @@ mod tests {
     fn scene_gpu_renderer_draws_sketch_stroke_style() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,80]}>
+<Graph fps={30} duration="1s" size={[100,80]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9224,7 +9535,7 @@ mod tests {
     fn scene_renderer_draws_filled_path_and_mask() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[120,90]}>
+<Graph fps={30} duration="1s" size={[120,90]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9272,7 +9583,7 @@ mod tests {
     fn scene_renderer_character_mask_clips_filled_path() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[120,90]}>
+<Graph fps={30} duration="1s" size={[120,90]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9316,7 +9627,7 @@ mod tests {
     fn scene_renderer_camera_centers_world_coordinate() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,80]}>
+<Graph fps={30} duration="1s" size={[100,80]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9354,7 +9665,7 @@ mod tests {
     fn scene_renderer_camera_follow_maps_node_to_anchor() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,80]}>
+<Graph fps={30} duration="1s" size={[100,80]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9392,7 +9703,7 @@ mod tests {
     fn scene_renderer_higher_track_z_paints_later() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[80,80]}>
+<Graph fps={30} duration="1s" size={[80,80]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9432,7 +9743,7 @@ mod tests {
     fn scene_renderer_layer_z_depth_sorts_far_before_near() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,100]}>
+<Graph fps={30} duration="1s" size={[100,100]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9468,7 +9779,7 @@ mod tests {
     fn scene_gpu_renderer_layer_z_depth_sorts_far_before_near() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,100]}>
+<Graph fps={30} duration="1s" size={[100,100]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9512,7 +9823,7 @@ mod tests {
     fn scene_renderer_layer_z_depth_overrides_track_z_depth() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,100]}>
+<Graph fps={30} duration="1s" size={[100,100]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9548,7 +9859,7 @@ mod tests {
     fn scene_renderer_track_z_depth_sorts_world_tracks() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[100,100]}>
+<Graph fps={30} duration="1s" size={[100,100]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -9588,7 +9899,7 @@ mod tests {
     fn scene_renderer_accepts_scene_tex_pass_present_pipeline() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[64,48]}>
+<Graph fps={30} duration="1s" size={[64,48]}>
   <Scene id="scene0">
     <Timeline>
       <Track id="scene_content" space="world" z="0">
@@ -9674,7 +9985,7 @@ mod tests {
     fn scene_gpu_renderer_draws_scene_group_shapes_and_text() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[220,140]}>
+<Graph fps={30} duration="1s" size={[220,140]}>
   <Background color="[1,1,1,1]" />
 
   <Scene id="scene0">
@@ -9790,7 +10101,7 @@ mod tests {
     fn scene_gpu_renderer_draws_screen_blend_rect() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[96,64]}>
+<Graph fps={30} duration="1s" size={[96,64]}>
   <Scene id="scene0">
     <Timeline>
       <Track id="scene_content" space="world" z="0">
@@ -9829,7 +10140,7 @@ mod tests {
     fn scene_gpu_renderer_batches_many_gradient_paths() {
         let mut script = String::from(
             r##"
-<Graph fps={60} duration="1s" size={[240,160]}>
+<Graph fps={30} duration="1s" size={[240,160]}>
   <Background color="#ffffff" />
 
   <Scene id="scene0">
@@ -9910,7 +10221,7 @@ mod tests {
     fn scene_gpu_renderer_applies_scene_blur_post_pass() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[80,40]}>
+<Graph fps={30} duration="1s" size={[80,40]}>
   <Background color="#ffffff" />
 
   <Scene id="scene0">
@@ -10008,7 +10319,7 @@ mod tests {
     fn scene_text_opacity_fades_in_over_time() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="3s" size={[640,360]}>
+<Graph fps={30} duration="3s" size={[640,360]}>
   <Background color="#000000" />
   <Text value="hello world"
         x="center"
@@ -10023,8 +10334,8 @@ mod tests {
         .expect("scene graph parse");
         let mut renderer = pollster::block_on(SceneFrameRenderer::new());
         let at_zero = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
-        let at_half = pollster::block_on(renderer.render_frame(&graph, 30)).expect("frame 30");
-        let at_full = pollster::block_on(renderer.render_frame(&graph, 60)).expect("frame 60");
+        let at_half = pollster::block_on(renderer.render_frame(&graph, 15)).expect("frame 15");
+        let at_full = pollster::block_on(renderer.render_frame(&graph, 30)).expect("frame 30");
 
         assert_eq!(max_rgb(&at_zero), 0);
         assert!(max_rgb(&at_half) > 40);
@@ -10044,7 +10355,7 @@ mod tests {
 
         let graph = parse_graph_script(&format!(
             r##"
-<Graph fps={{60}} duration="1s" size={{[64,48]}}>
+<Graph fps={{30}} duration="1s" size={{[64,48]}}>
   <Background color="#000000" />
   <Image src="{}"
          x="10"
@@ -10082,7 +10393,7 @@ mod tests {
 
         let graph = parse_graph_script(&format!(
             r##"
-<Graph fps={{60}} duration="1s" size={{[64,48]}}>
+<Graph fps={{30}} duration="1s" size={{[64,48]}}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -10135,7 +10446,7 @@ mod tests {
 
         let graph = parse_graph_script(&format!(
             r##"
-<Graph fps={{60}} duration="1s" size={{[64,48]}}>
+<Graph fps={{30}} duration="1s" size={{[64,48]}}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -10195,7 +10506,7 @@ mod tests {
 
         let graph = parse_graph_script(&format!(
             r##"
-<Graph fps={{60}} duration="1s" size={{[64,48]}}>
+<Graph fps={{30}} duration="1s" size={{[64,48]}}>
   <Background color="#000000" />
   <Svg src="{}"
        x="10"
@@ -10225,7 +10536,7 @@ mod tests {
     fn scene_svg_data_uri_utf8_renders() {
         let graph = parse_graph_script(
             r##"
-<Graph fps={60} duration="1s" size={[64,48]}>
+<Graph fps={30} duration="1s" size={[64,48]}>
   <Background color="#000000" />
   <Svg src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='6' viewBox='0 0 8 6'><rect width='8' height='6' fill='%23ff0000'/></svg>"
        x="10"
@@ -10258,7 +10569,7 @@ mod tests {
 
         let graph = parse_graph_script(&format!(
             r##"
-<Graph fps={{60}} duration="1s" size={{[64,48]}}>
+<Graph fps={{30}} duration="1s" size={{[64,48]}}>
   <Background color="#000000" />
   <Image src="{}"
          x="10"
@@ -10303,7 +10614,7 @@ mod tests {
 
         let graph = parse_graph_script(&format!(
             r##"
-<Graph fps={{60}} duration="1s" size={{[64,48]}}>
+<Graph fps={{30}} duration="1s" size={{[64,48]}}>
   <Background color="#000000" />
   <Svg src="{}"
        x="10"
@@ -10349,7 +10660,7 @@ mod tests {
 
         let graph = parse_graph_script(&format!(
             r##"
-<Graph fps={{60}} duration="1s" size={{[64,48]}}>
+<Graph fps={{30}} duration="1s" size={{[64,48]}}>
   <Background color="#000000" />
   <Image src="{}"
          x="10"
@@ -10402,7 +10713,7 @@ mod tests {
 
         let graph = parse_graph_script(&format!(
             r##"
-<Graph fps={{60}} duration="1s" size={{[64,48]}}>
+<Graph fps={{30}} duration="1s" size={{[64,48]}}>
   <Background color="#000000" />
   <Image src="{}" x="4" y="10" scale="1.0" opacity="1.0" />
   <Image src="{}" x="24" y="10" scale="1.0" opacity="1.0" />

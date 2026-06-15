@@ -6,9 +6,13 @@ use wasm_bindgen::prelude::*;
 
 use std::sync::Arc;
 
+use web_sys::HtmlCanvasElement;
+
 use crate::asset::MemoryAssetResolver;
 use crate::dsl::{GraphScript, is_graph_script, parse_graph_script};
 use crate::process::render_process_frame_cpu;
+#[cfg(target_arch = "wasm32")]
+use crate::process::render_process_frame_to_canvas_gpu as render_process_frame_to_canvas_gpu_impl;
 use crate::scene::render::{SceneRenderProfile, SceneRenderer, render_scene_graph_frame};
 use crate::world::{WorldFrameRenderer, is_world_graph_script, parse_world_graph_script};
 
@@ -92,6 +96,80 @@ pub async fn motionloom_render_scene_frame_with_profile(
     ))
 }
 
+/// Render one scene frame directly into an HTML canvas using the WASM WebGPU path.
+///
+/// This is the first no-readback canvas path. It is strict: only GPU-native
+/// scene graphs are accepted, and unsupported nodes return an error instead of
+/// silently falling back to CPU.
+#[wasm_bindgen]
+pub async fn motionloom_render_scene_frame_to_canvas_gpu(
+    script: &str,
+    frame: u32,
+    width: u32,
+    height: u32,
+    canvas: HtmlCanvasElement,
+) -> Result<(), JsValue> {
+    let mut graph = parse_graph_script(script).map_err(|err| js_error(err.to_string()))?;
+    graph.size.0 = width.max(1);
+    graph.size.1 = height.max(1);
+    graph.render_size = Some((width.max(1), height.max(1)));
+    let mut renderer = SceneRenderer::new(SceneRenderProfile::Gpu)
+        .await
+        .map_err(|err| js_error(err.to_string()))?;
+    renderer
+        .render_frame_to_canvas(&graph, frame, canvas)
+        .await
+        .map_err(|err| js_error(err.to_string()))
+}
+
+/// Draw a solid WebGPU color into an HTML canvas for debugging browser surface presentation.
+#[wasm_bindgen]
+pub async fn motionloom_webgpu_debug_solid_to_canvas(
+    canvas: HtmlCanvasElement,
+    width: u32,
+    height: u32,
+) -> Result<(), JsValue> {
+    let mut renderer = SceneRenderer::new(SceneRenderProfile::Gpu)
+        .await
+        .map_err(|err| js_error(err.to_string()))?;
+    renderer
+        .debug_solid_to_canvas(canvas, width, height, [0.1, 0.85, 0.25, 1.0])
+        .await
+        .map_err(|err| js_error(err.to_string()))
+}
+
+/// Upload a blue WebGPU texture and present it to an HTML canvas for debugging.
+#[wasm_bindgen]
+pub async fn motionloom_webgpu_debug_uploaded_texture_to_canvas(
+    canvas: HtmlCanvasElement,
+    width: u32,
+    height: u32,
+) -> Result<(), JsValue> {
+    let mut renderer = SceneRenderer::new(SceneRenderProfile::Gpu)
+        .await
+        .map_err(|err| js_error(err.to_string()))?;
+    renderer
+        .debug_uploaded_texture_to_canvas(canvas, width, height, [32, 96, 255, 255])
+        .await
+        .map_err(|err| js_error(err.to_string()))
+}
+
+/// Render a white empty scene texture and present it to an HTML canvas for debugging.
+#[wasm_bindgen]
+pub async fn motionloom_webgpu_debug_empty_scene_texture_to_canvas(
+    canvas: HtmlCanvasElement,
+    width: u32,
+    height: u32,
+) -> Result<(), JsValue> {
+    let mut renderer = SceneRenderer::new(SceneRenderProfile::Gpu)
+        .await
+        .map_err(|err| js_error(err.to_string()))?;
+    renderer
+        .debug_empty_scene_texture_to_canvas(canvas, width, height)
+        .await
+        .map_err(|err| js_error(err.to_string()))
+}
+
 /// Render one frame of a process graph over an RGBA source buffer.
 #[wasm_bindgen]
 pub fn motionloom_render_process_frame(
@@ -103,6 +181,22 @@ pub fn motionloom_render_process_frame(
 ) -> Result<Vec<u8>, JsValue> {
     render_process_frame_cpu(script, frame, width, height, rgba)
         .map(|image| image.into_raw())
+        .map_err(|err| js_error(err.to_string()))
+}
+
+/// Render one frame of a process graph directly to an HTML canvas with WebGPU.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn motionloom_render_process_frame_to_canvas_gpu(
+    script: &str,
+    frame: u32,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    canvas: HtmlCanvasElement,
+) -> Result<(), JsValue> {
+    render_process_frame_to_canvas_gpu_impl(script, frame, width, height, rgba, canvas)
+        .await
         .map_err(|err| js_error(err.to_string()))
 }
 
@@ -157,6 +251,7 @@ pub struct WasmSceneRenderer {
     graph: GraphScript,
     profile: SceneRenderProfile,
     resolver: Arc<MemoryAssetResolver>,
+    renderer: Option<SceneRenderer>,
 }
 
 #[wasm_bindgen]
@@ -170,6 +265,26 @@ impl WasmSceneRenderer {
             graph,
             profile,
             resolver: Arc::new(MemoryAssetResolver::new()),
+            renderer: None,
+        })
+    }
+
+    /// Asynchronously parse `script` and initialize the persistent renderer.
+    ///
+    /// Browser hosts should prefer this factory for animated GPU preview loops
+    /// because repeated frame renders reuse the same Rust/WGPU renderer.
+    pub async fn create(script: &str, profile: &str) -> Result<WasmSceneRenderer, JsValue> {
+        let graph = parse_graph_script(script).map_err(|err| js_error(err.to_string()))?;
+        let profile = parse_profile(profile)?;
+        let resolver = Arc::new(MemoryAssetResolver::new());
+        let renderer = SceneRenderer::with_resolver(profile, resolver.clone())
+            .await
+            .map_err(|err| js_error(err.to_string()))?;
+        Ok(Self {
+            graph,
+            profile,
+            resolver,
+            renderer: Some(renderer),
         })
     }
 
@@ -188,14 +303,140 @@ impl WasmSceneRenderer {
 
     /// Render `frame` to an RGBA byte buffer.
     pub async fn render_frame(&mut self, frame: u32) -> Result<Vec<u8>, JsValue> {
-        let mut renderer = SceneRenderer::with_resolver(self.profile, self.resolver.clone())
-            .await
-            .map_err(|err| js_error(err.to_string()))?;
+        if self.renderer.is_none() {
+            self.renderer = Some(
+                SceneRenderer::with_resolver(self.profile, self.resolver.clone())
+                    .await
+                    .map_err(|err| js_error(err.to_string()))?,
+            );
+        }
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| js_error("scene renderer was not initialized".to_string()))?;
         let image = renderer
             .render_frame(&self.graph, frame)
             .await
             .map_err(|err| js_error(err.to_string()))?;
         Ok(image.into_raw())
+    }
+
+    /// Render `frame` directly into an HTML canvas using the GPU canvas path.
+    ///
+    /// The renderer profile must be `"gpu"`. CPU profiles continue to use
+    /// `render_frame`, which returns RGBA bytes for Canvas2D/ImageData hosts.
+    pub async fn render_frame_to_canvas(
+        &mut self,
+        frame: u32,
+        canvas: HtmlCanvasElement,
+    ) -> Result<(), JsValue> {
+        if self.profile != SceneRenderProfile::Gpu {
+            return Err(js_error(
+                "render_frame_to_canvas requires a gpu WasmSceneRenderer".to_string(),
+            ));
+        }
+        if self.renderer.is_none() {
+            self.renderer = Some(
+                SceneRenderer::with_resolver(self.profile, self.resolver.clone())
+                    .await
+                    .map_err(|err| js_error(err.to_string()))?,
+            );
+        }
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| js_error("scene renderer was not initialized".to_string()))?;
+        renderer
+            .render_frame_to_canvas(&self.graph, frame, canvas)
+            .await
+            .map_err(|err| js_error(err.to_string()))
+    }
+
+    /// Draw a solid WebGPU color into the canvas using this renderer's GPU device.
+    pub async fn debug_solid_to_canvas(
+        &mut self,
+        canvas: HtmlCanvasElement,
+        width: u32,
+        height: u32,
+    ) -> Result<(), JsValue> {
+        if self.profile != SceneRenderProfile::Gpu {
+            return Err(js_error(
+                "debug_solid_to_canvas requires a gpu WasmSceneRenderer".to_string(),
+            ));
+        }
+        if self.renderer.is_none() {
+            self.renderer = Some(
+                SceneRenderer::with_resolver(self.profile, self.resolver.clone())
+                    .await
+                    .map_err(|err| js_error(err.to_string()))?,
+            );
+        }
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| js_error("scene renderer was not initialized".to_string()))?;
+        renderer
+            .debug_solid_to_canvas(canvas, width, height, [0.1, 0.85, 0.25, 1.0])
+            .await
+            .map_err(|err| js_error(err.to_string()))
+    }
+
+    /// Upload a blue WebGPU texture and present it to the canvas.
+    pub async fn debug_uploaded_texture_to_canvas(
+        &mut self,
+        canvas: HtmlCanvasElement,
+        width: u32,
+        height: u32,
+    ) -> Result<(), JsValue> {
+        if self.profile != SceneRenderProfile::Gpu {
+            return Err(js_error(
+                "debug_uploaded_texture_to_canvas requires a gpu WasmSceneRenderer".to_string(),
+            ));
+        }
+        if self.renderer.is_none() {
+            self.renderer = Some(
+                SceneRenderer::with_resolver(self.profile, self.resolver.clone())
+                    .await
+                    .map_err(|err| js_error(err.to_string()))?,
+            );
+        }
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| js_error("scene renderer was not initialized".to_string()))?;
+        renderer
+            .debug_uploaded_texture_to_canvas(canvas, width, height, [32, 96, 255, 255])
+            .await
+            .map_err(|err| js_error(err.to_string()))
+    }
+
+    /// Render a white empty scene texture and present it to the canvas.
+    pub async fn debug_empty_scene_texture_to_canvas(
+        &mut self,
+        canvas: HtmlCanvasElement,
+        width: u32,
+        height: u32,
+    ) -> Result<(), JsValue> {
+        if self.profile != SceneRenderProfile::Gpu {
+            return Err(js_error(
+                "debug_empty_scene_texture_to_canvas requires a gpu WasmSceneRenderer".to_string(),
+            ));
+        }
+        if self.renderer.is_none() {
+            self.renderer = Some(
+                SceneRenderer::with_resolver(self.profile, self.resolver.clone())
+                    .await
+                    .map_err(|err| js_error(err.to_string()))?,
+            );
+        }
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| js_error("scene renderer was not initialized".to_string()))?;
+        renderer
+            .debug_empty_scene_texture_to_canvas(canvas, width, height)
+            .await
+            .map_err(|err| js_error(err.to_string()))
     }
 
     /// Total number of frames for the graph's duration and fps.

@@ -11,6 +11,8 @@ const LAYER_PROCESS_CLOSE: &str = "  </Process>\n";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerEffectTemplateKind {
     BlurGaussian,
+    BlurGaussianHorizontal,
+    BlurGaussianVertical,
     Sharpen,
     Opacity,
     Lut,
@@ -55,9 +57,9 @@ pub fn scene_template_by_label(label: &str) -> Option<&'static SceneTemplate> {
 fn begin_layer_graph(add_time_parameter: bool) -> String {
     let mut script = String::new();
     if add_time_parameter {
-        script.push_str("<Graph fps={60} apply=\"graph\" duration=\"5s\" size={[1920,1080]}>\n");
+        script.push_str("<Graph fps={30} apply=\"graph\" duration=\"5s\" size={[1920,1080]}>\n");
     } else {
-        script.push_str("<Graph fps={60} size={[1920,1080]}>\n");
+        script.push_str("<Graph fps={30} size={[1920,1080]}>\n");
     }
     script.push_str(&format!("  <Process id=\"{LAYER_PROCESS_ID}\">\n"));
     script.push_str(LAYER_GRAPH_INPUTS);
@@ -77,9 +79,27 @@ fn build_layer_effect_pass(
     add_curve_parameter: bool,
 ) -> String {
     match kind {
-        LayerEffectTemplateKind::BlurGaussian => {
-            blur_gaussian_pass(input_tex, output_tex, add_curve_parameter)
-        }
+        LayerEffectTemplateKind::BlurGaussian => blur_gaussian_pass(
+            input_tex,
+            output_tex,
+            "fx_blur",
+            "gaussian_5tap_blur",
+            add_curve_parameter,
+        ),
+        LayerEffectTemplateKind::BlurGaussianHorizontal => blur_gaussian_pass(
+            input_tex,
+            output_tex,
+            "fx_blur_h",
+            "gaussian_5tap_h",
+            add_curve_parameter,
+        ),
+        LayerEffectTemplateKind::BlurGaussianVertical => blur_gaussian_pass(
+            input_tex,
+            output_tex,
+            "fx_blur_v",
+            "gaussian_5tap_v",
+            add_curve_parameter,
+        ),
         LayerEffectTemplateKind::Sharpen => {
             sharpen_pass(input_tex, output_tex, add_curve_parameter)
         }
@@ -226,7 +246,55 @@ pub fn append_layer_effect_template_script(
                     existing_script,
                     start_idx,
                     end_idx,
-                    &blur_gaussian_pass(&input_tex, &output_tex, add_curve_parameter),
+                    &blur_gaussian_pass(
+                        &input_tex,
+                        &output_tex,
+                        "fx_blur",
+                        "gaussian_5tap_blur",
+                        add_curve_parameter,
+                    ),
+                ));
+            }
+        }
+        LayerEffectTemplateKind::BlurGaussianHorizontal => {
+            if let Some(start_idx) = existing_script.find("    <Pass id=\"fx_blur_h\"") {
+                let rel_end = existing_script[start_idx..].find("/>\n")?;
+                let end_idx = start_idx + rel_end + 3;
+                let block = &existing_script[start_idx..end_idx];
+                let input_tex = extract_attr_value(block, "in={[\"", "\"]}")?;
+                let output_tex = extract_attr_value(block, "out={[\"", "\"]}")?;
+                return Some(replace_range_with(
+                    existing_script,
+                    start_idx,
+                    end_idx,
+                    &blur_gaussian_pass(
+                        &input_tex,
+                        &output_tex,
+                        "fx_blur_h",
+                        "gaussian_5tap_h",
+                        add_curve_parameter,
+                    ),
+                ));
+            }
+        }
+        LayerEffectTemplateKind::BlurGaussianVertical => {
+            if let Some(start_idx) = existing_script.find("    <Pass id=\"fx_blur_v\"") {
+                let rel_end = existing_script[start_idx..].find("/>\n")?;
+                let end_idx = start_idx + rel_end + 3;
+                let block = &existing_script[start_idx..end_idx];
+                let input_tex = extract_attr_value(block, "in={[\"", "\"]}")?;
+                let output_tex = extract_attr_value(block, "out={[\"", "\"]}")?;
+                return Some(replace_range_with(
+                    existing_script,
+                    start_idx,
+                    end_idx,
+                    &blur_gaussian_pass(
+                        &input_tex,
+                        &output_tex,
+                        "fx_blur_v",
+                        "gaussian_5tap_v",
+                        add_curve_parameter,
+                    ),
                 ));
             }
         }
@@ -425,10 +493,16 @@ pub fn append_layer_effect_template_chain_script(
 
 // Build pass blocks against explicit input/output textures so the same pass text
 // can later be reused for stacked effect graphs.
-fn blur_gaussian_pass(input_tex: &str, output_tex: &str, add_curve_parameter: bool) -> String {
+fn blur_gaussian_pass(
+    input_tex: &str,
+    output_tex: &str,
+    pass_id: &str,
+    effect: &str,
+    add_curve_parameter: bool,
+) -> String {
     let mut script = String::new();
-    script.push_str("    <Pass id=\"fx_blur\" kind=\"compute\"\n");
-    script.push_str("        effect=\"gaussian_5tap_h\"\n");
+    script.push_str(&format!("    <Pass id=\"{pass_id}\" kind=\"compute\"\n"));
+    script.push_str(&format!("        effect=\"{effect}\"\n"));
     script.push_str(&format!(
         "        in={{[\"{input_tex}\"]}} out={{[\"{output_tex}\"]}}\n"
     ));
@@ -549,7 +623,7 @@ mod tests {
     #[test]
     fn append_layer_effect_chain_requires_process_wrapper() {
         let legacy = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Input id="clip0" type="video" from="input:clip0" />
   <Tex id="src" fmt="rgba16f" from="clip0" />
   <Tex id="out" fmt="rgba16f" size={[1920,1080]} />

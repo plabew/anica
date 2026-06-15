@@ -1,4 +1,4 @@
-<Graph fps={60} duration="1s" size={[734,441]}>
+<Graph fps={30} duration="1s" size={[734,441]}>
   <Background color="#ffffff" />
 
   <Scene id="vector_lab_trace">

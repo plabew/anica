@@ -1,5 +1,5 @@
 // Pass-level effect values (set on <Pass effect="...">):
-// - gaussian_blur (alias of gaussian_5tap_h)
+// - gaussian_blur / gaussian_5tap_blur (two-pass H+V blur)
 // - sharpen (alias of unsharp)
 // - gaussian_5tap_h
 // - gaussian_5tap_v

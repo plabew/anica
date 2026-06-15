@@ -1,4 +1,4 @@
-<Graph fps={60} duration="1s" size={[2520,860]}>
+<Graph fps={30} duration="1s" size={[2520,860]}>
   <Background color="#f6efe9" />
 
   <Scene id="high_detail_bishoujo_two_eyes_level11">

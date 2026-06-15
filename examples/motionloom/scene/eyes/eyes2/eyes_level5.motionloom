@@ -1,4 +1,4 @@
-<Graph fps={60} duration="3s" size={[1320,768]}>
+<Graph fps={30} duration="3s" size={[1320,768]}>
   <Background color="#ffffff" />
 
   <Scene id="eyes2_single_eye_left_turn_level5">

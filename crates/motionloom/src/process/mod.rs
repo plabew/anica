@@ -10,6 +10,8 @@ pub mod parser;
 pub mod pass;
 pub mod process_catalog;
 pub mod runtime;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_webgpu;
 
 pub use cpu_renderer::*;
 pub use dsl::*;
@@ -20,3 +22,5 @@ pub use model::*;
 pub use pass::*;
 pub use process_catalog::*;
 pub use runtime::*;
+#[cfg(target_arch = "wasm32")]
+pub use wasm_webgpu::*;

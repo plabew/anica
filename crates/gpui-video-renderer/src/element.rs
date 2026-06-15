@@ -60,6 +60,24 @@ use windows::Win32::Graphics::{
 const DEFAULT_FRAME_RAM_CACHE_MB: usize = 512;
 pub const VIDEO_MAX_LOCAL_MASK_LAYERS: usize = 5;
 
+/// Blur kernel orientation used by the GPU effect pipeline.
+/// Mirrors `motionloom::BlurSharpenMode` but lives in the renderer crate
+/// to avoid a dependency on the MotionLoom runtime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BlurMode {
+    /// Full separable Gaussian blur: horizontal pass followed by vertical pass.
+    #[default]
+    Gaussian5tapBlur,
+    /// Horizontal-only Gaussian blur.
+    Gaussian5tapH,
+    /// Vertical-only Gaussian blur.
+    Gaussian5tapV,
+    /// Box blur (falls back to Gaussian5tapBlur in this renderer).
+    Box,
+    /// Unsharp mask (falls back to Gaussian5tapBlur / sharpen in this renderer).
+    Unsharp,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VideoLocalMaskLayer {
     pub enabled: bool,
@@ -895,6 +913,7 @@ impl MetalGaussianBlurContext {
         sigma: f32,
         blur_h: &ComputePipelineStateRef,
         blur_v: &ComputePipelineStateRef,
+        blur_mode: BlurMode,
     ) {
         let radius = ((sigma * 3.0).ceil() as u32).clamp(0, 64);
         let params = MetalBlurParams {
@@ -904,15 +923,32 @@ impl MetalGaussianBlurContext {
             height,
         };
 
-        {
-            let encoder = command_buffer.new_compute_command_encoder();
-            Self::encode_pass(encoder, blur_h, src, tmp, &params);
-            encoder.end_encoding();
-        }
-        {
-            let encoder = command_buffer.new_compute_command_encoder();
-            Self::encode_pass(encoder, blur_v, tmp, dst, &params);
-            encoder.end_encoding();
+        // Dispatch according to the requested orientation; H-only/V-only modes
+        // originate from MotionLoom Layer FX, while Box/Unsharp fall back to
+        // the full separable Gaussian path for now.
+        match blur_mode {
+            BlurMode::Gaussian5tapH => {
+                let encoder = command_buffer.new_compute_command_encoder();
+                Self::encode_pass(encoder, blur_h, src, dst, &params);
+                encoder.end_encoding();
+            }
+            BlurMode::Gaussian5tapV => {
+                let encoder = command_buffer.new_compute_command_encoder();
+                Self::encode_pass(encoder, blur_v, src, dst, &params);
+                encoder.end_encoding();
+            }
+            _ => {
+                {
+                    let encoder = command_buffer.new_compute_command_encoder();
+                    Self::encode_pass(encoder, blur_h, src, tmp, &params);
+                    encoder.end_encoding();
+                }
+                {
+                    let encoder = command_buffer.new_compute_command_encoder();
+                    Self::encode_pass(encoder, blur_v, tmp, dst, &params);
+                    encoder.end_encoding();
+                }
+            }
         }
     }
 
@@ -1023,6 +1059,7 @@ impl MetalGaussianBlurContext {
         &mut self,
         source_surface: &CVPixelBuffer,
         sigma: f32,
+        blur_mode: BlurMode,
         brightness: f32,
         contrast: f32,
         saturation: f32,
@@ -1241,6 +1278,7 @@ impl MetalGaussianBlurContext {
                         stage.sigma,
                         &self.blur_h_r8,
                         &self.blur_v_r8,
+                        BlurMode::Gaussian5tapBlur,
                     );
                     self.encode_blur_two_pass(
                         &command_buffer,
@@ -1252,6 +1290,7 @@ impl MetalGaussianBlurContext {
                         stage.sigma,
                         &self.blur_h_rg8,
                         &self.blur_v_rg8,
+                        BlurMode::Gaussian5tapBlur,
                     );
 
                     let is_last = idx + 1 == sharpen_stages.len();
@@ -1326,6 +1365,7 @@ impl MetalGaussianBlurContext {
                     sigma_abs,
                     &self.blur_h_r8,
                     &self.blur_v_r8,
+                    blur_mode,
                 );
                 self.encode_blur_two_pass(
                     &command_buffer,
@@ -1337,6 +1377,7 @@ impl MetalGaussianBlurContext {
                     sigma_abs,
                     &self.blur_h_rg8,
                     &self.blur_v_rg8,
+                    blur_mode,
                 );
                 stage_output_y = Some(blur_y);
                 stage_output_uv = Some(blur_uv);
@@ -1355,6 +1396,7 @@ impl MetalGaussianBlurContext {
                     sigma_abs,
                     &self.blur_h_r8,
                     &self.blur_v_r8,
+                    blur_mode,
                 );
                 self.encode_blur_two_pass(
                     &command_buffer,
@@ -1366,6 +1408,7 @@ impl MetalGaussianBlurContext {
                     sigma_abs,
                     &self.blur_h_rg8,
                     &self.blur_v_rg8,
+                    blur_mode,
                 );
             }
 
@@ -1485,6 +1528,7 @@ impl MetalGaussianBlurContext {
         &mut self,
         source_surface: &CVPixelBuffer,
         sigma: f32,
+        blur_mode: BlurMode,
         brightness: f32,
         contrast: f32,
         saturation: f32,
@@ -1706,6 +1750,7 @@ impl MetalGaussianBlurContext {
                         stage.sigma,
                         &self.blur_h_r8,
                         &self.blur_v_r8,
+                        BlurMode::Gaussian5tapBlur,
                     );
                     self.encode_blur_two_pass(
                         &command_buffer,
@@ -1717,6 +1762,7 @@ impl MetalGaussianBlurContext {
                         stage.sigma,
                         &self.blur_h_rg8,
                         &self.blur_v_rg8,
+                        BlurMode::Gaussian5tapBlur,
                     );
 
                     let is_last = idx + 1 == sharpen_stages.len();
@@ -1791,6 +1837,7 @@ impl MetalGaussianBlurContext {
                     sigma_abs,
                     &self.blur_h_r8,
                     &self.blur_v_r8,
+                    blur_mode,
                 );
                 self.encode_blur_two_pass(
                     &command_buffer,
@@ -1802,6 +1849,7 @@ impl MetalGaussianBlurContext {
                     sigma_abs,
                     &self.blur_h_rg8,
                     &self.blur_v_rg8,
+                    blur_mode,
                 );
                 stage_output_y = Some(blur_y);
                 stage_output_uv = Some(blur_uv);
@@ -1820,6 +1868,7 @@ impl MetalGaussianBlurContext {
                     sigma_abs,
                     &self.blur_h_r8,
                     &self.blur_v_r8,
+                    blur_mode,
                 );
                 self.encode_blur_two_pass(
                     &command_buffer,
@@ -1831,6 +1880,7 @@ impl MetalGaussianBlurContext {
                     sigma_abs,
                     &self.blur_h_rg8,
                     &self.blur_v_rg8,
+                    blur_mode,
                 );
             }
 
@@ -2369,6 +2419,7 @@ impl WgpuBgraEffectContext {
         tint_lightness: f32,
         tint_alpha: f32,
         blur_sigma: f32,
+        blur_mode: BlurMode,
         bloom_threshold: f32,
         bloom_intensity: f32,
         bloom_sigma: f32,
@@ -2606,29 +2657,64 @@ impl WgpuBgraEffectContext {
 
         let mut current = WgpuTextureSlot::Src;
         if has_global_blur {
-            self.dispatch_pass(
-                &mut encoder,
-                &self.blur_h_pipeline,
-                WgpuTextureSlot::Src,
-                WgpuTextureSlot::Tmp,
-                WgpuTextureSlot::Src,
-                &self.blur_params_global_buffer,
-                &self.color_params_global_buffer,
-                width,
-                height,
-            )?;
-            self.dispatch_pass(
-                &mut encoder,
-                &self.blur_v_pipeline,
-                WgpuTextureSlot::Tmp,
-                WgpuTextureSlot::Dst,
-                WgpuTextureSlot::Tmp,
-                &self.blur_params_global_buffer,
-                &self.color_params_global_buffer,
-                width,
-                height,
-            )?;
-            current = WgpuTextureSlot::Dst;
+            // Dispatch the global blur according to the requested orientation.
+            // Horizontal- or vertical-only modes are used by MotionLoom Layer FX;
+            // Box and Unsharp fall back to the full separable Gaussian path.
+            match blur_mode {
+                BlurMode::Gaussian5tapH => {
+                    self.dispatch_pass(
+                        &mut encoder,
+                        &self.blur_h_pipeline,
+                        WgpuTextureSlot::Src,
+                        WgpuTextureSlot::Tmp,
+                        WgpuTextureSlot::Src,
+                        &self.blur_params_global_buffer,
+                        &self.color_params_global_buffer,
+                        width,
+                        height,
+                    )?;
+                    current = WgpuTextureSlot::Tmp;
+                }
+                BlurMode::Gaussian5tapV => {
+                    self.dispatch_pass(
+                        &mut encoder,
+                        &self.blur_v_pipeline,
+                        WgpuTextureSlot::Src,
+                        WgpuTextureSlot::Tmp,
+                        WgpuTextureSlot::Src,
+                        &self.blur_params_global_buffer,
+                        &self.color_params_global_buffer,
+                        width,
+                        height,
+                    )?;
+                    current = WgpuTextureSlot::Tmp;
+                }
+                _ => {
+                    self.dispatch_pass(
+                        &mut encoder,
+                        &self.blur_h_pipeline,
+                        WgpuTextureSlot::Src,
+                        WgpuTextureSlot::Tmp,
+                        WgpuTextureSlot::Src,
+                        &self.blur_params_global_buffer,
+                        &self.color_params_global_buffer,
+                        width,
+                        height,
+                    )?;
+                    self.dispatch_pass(
+                        &mut encoder,
+                        &self.blur_v_pipeline,
+                        WgpuTextureSlot::Tmp,
+                        WgpuTextureSlot::Dst,
+                        WgpuTextureSlot::Tmp,
+                        &self.blur_params_global_buffer,
+                        &self.color_params_global_buffer,
+                        width,
+                        height,
+                    )?;
+                    current = WgpuTextureSlot::Dst;
+                }
+            }
         }
 
         if has_global_sharpen {
@@ -3121,6 +3207,8 @@ pub struct BgraGpuEffectParams {
     pub tint_alpha: f32,
     /// Signed blur contract: positive = blur, negative = sharpen.
     pub blur_sigma: f32,
+    /// Orientation/kernel selector for the global blur pass.
+    pub blur_mode: BlurMode,
     pub bloom_threshold: f32,
     pub bloom_intensity: f32,
     pub bloom_sigma: f32,
@@ -3145,6 +3233,7 @@ impl Default for BgraGpuEffectParams {
             tint_lightness: 0.0,
             tint_alpha: 0.0,
             blur_sigma: 0.0,
+            blur_mode: BlurMode::Gaussian5tapBlur,
             bloom_threshold: 1.0,
             bloom_intensity: 0.0,
             bloom_sigma: 0.0,
@@ -3213,6 +3302,7 @@ pub fn process_bgra_effects_with_params(
         params.tint_lightness,
         params.tint_alpha,
         params.blur_sigma,
+        params.blur_mode,
         params.bloom_threshold,
         params.bloom_intensity,
         params.bloom_sigma,
@@ -3245,6 +3335,7 @@ pub fn process_bgra_effects(
     lut_mix: f32,
     rotation_deg: f32,
     blur_sigma: f32,
+    blur_mode: BlurMode,
     tint_hue: f32,
     tint_saturation: f32,
     tint_lightness: f32,
@@ -3261,6 +3352,7 @@ pub fn process_bgra_effects(
             lut_mix,
             rotation_deg,
             blur_sigma,
+            blur_mode,
             tint_hue,
             tint_saturation,
             tint_lightness,
@@ -3428,6 +3520,7 @@ struct PixelProcessKey {
     transform_ref_width: u16,
     transform_ref_height: u16,
     blur_fast_mode: bool,
+    blur_mode: BlurMode,
     local_layer_count: u8,
     local_layers_hash: u64,
 }
@@ -3454,6 +3547,7 @@ impl PixelProcessKey {
         transform_ref_width: f32,
         transform_ref_height: f32,
         blur_fast_mode: bool,
+        blur_mode: BlurMode,
         local_layers: &[VideoLocalMaskLayer],
     ) -> Self {
         const SCALE: f32 = 1000.0;
@@ -3508,6 +3602,7 @@ impl PixelProcessKey {
             transform_ref_width: transform_ref_width.round().clamp(0.0, u16::MAX as f32) as u16,
             transform_ref_height: transform_ref_height.round().clamp(0.0, u16::MAX as f32) as u16,
             blur_fast_mode,
+            blur_mode,
             local_layer_count: layer_count,
             local_layers_hash: layer_hash.finish(),
         }
@@ -4074,6 +4169,7 @@ pub struct VideoElement {
     lut_mix: f32,
     opacity: f32,
     blur_sigma: f32,
+    blur_mode: BlurMode,
     bloom_threshold: f32,
     bloom_intensity: f32,
     bloom_sigma: f32,
@@ -4113,6 +4209,7 @@ impl VideoElement {
             lut_mix: 0.0,
             opacity: 1.0,
             blur_sigma: 0.0,
+            blur_mode: BlurMode::Gaussian5tapBlur,
             bloom_threshold: 1.0,
             bloom_intensity: 0.0,
             bloom_sigma: 0.0,
@@ -4170,6 +4267,11 @@ impl VideoElement {
         // > 0 : blur sigma
         // < 0 : sharpen amount
         self.blur_sigma = blur_sigma.clamp(-64.0, 64.0);
+        self
+    }
+
+    pub fn blur_mode(mut self, blur_mode: BlurMode) -> Self {
+        self.blur_mode = blur_mode;
         self
     }
 
@@ -4644,6 +4746,7 @@ impl VideoElement {
                 match ctx.process_nv12_surface_zero_copy(
                     surface,
                     sigma,
+                    self.blur_mode,
                     self.brightness,
                     self.contrast,
                     self.saturation,
@@ -4748,6 +4851,7 @@ impl VideoElement {
                 match ctx.process_nv12_surface_no_wait(
                     surface,
                     sigma,
+                    self.blur_mode,
                     self.brightness,
                     self.contrast,
                     self.saturation,
@@ -4880,6 +4984,7 @@ impl VideoElement {
                     self.tint_lightness,
                     self.tint_alpha,
                     sigma,
+                    self.blur_mode,
                     self.bloom_threshold,
                     self.bloom_intensity,
                     self.bloom_sigma,
@@ -5130,6 +5235,7 @@ impl Element for VideoElement {
             self.transform_ref_width,
             self.transform_ref_height,
             self.blur_fast_mode,
+            self.blur_mode,
             &local_layers,
         );
         let pixel_key_changed = last_pixel_key.read(cx).as_ref().copied() != Some(pixel_key);

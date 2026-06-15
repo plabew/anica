@@ -9,7 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from("motionloom_frame.png"));
 
     let script = r##"
-<Graph fps={60} duration="1s" size={[640,360]}>
+<Graph fps={30} duration="1s" size={[640,360]}>
   <Background color="#101827" />
 
   <Scene id="example_scene">

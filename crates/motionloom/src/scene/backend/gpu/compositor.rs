@@ -28,6 +28,10 @@ struct WgpuImageTexture {
 }
 
 pub(crate) struct WgpuSceneCompositor {
+    #[cfg(target_arch = "wasm32")]
+    instance: wgpu::Instance,
+    #[cfg(target_arch = "wasm32")]
+    adapter: wgpu::Adapter,
     device: Arc<wgpu::Device>,
     queue: wgpu::Queue,
     _poller: DevicePoller,
@@ -392,6 +396,10 @@ impl WgpuSceneCompositor {
         });
 
         Ok(Self {
+            #[cfg(target_arch = "wasm32")]
+            instance,
+            #[cfg(target_arch = "wasm32")]
+            adapter,
             device,
             queue,
             _poller: poller,
@@ -413,6 +421,333 @@ impl WgpuSceneCompositor {
             image_textures: HashMap::new(),
             asset_resolver,
         })
+    }
+
+    /// Present a GPU-rendered scene texture directly into a browser canvas surface.
+    ///
+    /// This path is WASM-only and avoids CPU readback: the compositor samples the
+    /// internal RGBA scene texture into the canvas swapchain texture.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn present_texture_to_canvas(
+        &self,
+        texture: &GpuSceneNativeTexture,
+        canvas: &web_sys::HtmlCanvasElement,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        let width = texture.width.max(1);
+        let height = texture.height.max(1);
+        canvas.set_width(width);
+        canvas.set_height(height);
+
+        let surface = self
+            .instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+            .map_err(|err| MotionLoomSceneRenderError::GpuRender {
+                message: format!("canvas surface creation failed: {err}"),
+            })?;
+        let caps = surface.get_capabilities(&self.adapter);
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|format| {
+                matches!(
+                    format,
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                )
+            })
+            .or_else(|| caps.formats.first().copied())
+            .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                message: "canvas surface has no supported texture formats".to_string(),
+            })?;
+        let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            caps.alpha_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::CompositeAlphaMode::Auto)
+        };
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+            wgpu::PresentMode::Fifo
+        } else {
+            caps.present_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::PresentMode::AutoVsync)
+        };
+
+        surface.configure(
+            &self.device,
+            &wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width,
+                height,
+                present_mode,
+                desired_maximum_frame_latency: 2,
+                alpha_mode,
+                view_formats: vec![],
+            },
+        );
+        let frame =
+            surface
+                .get_current_texture()
+                .map_err(|err| MotionLoomSceneRenderError::GpuRender {
+                    message: format!("canvas surface frame acquisition failed: {err}"),
+                })?;
+        let target_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let source_view = texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("anica-motionloom-scene-canvas-present-shader"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(
+                    r#"
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    var out: VertexOut;
+    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let dims = textureDimensions(src_tex);
+    let max_px = dims - vec2<u32>(1u, 1u);
+    let px = min(vec2<u32>(u32(in.position.x), u32(in.position.y)), max_px);
+    let color = textureLoad(src_tex, vec2<i32>(px), 0);
+    return vec4<f32>(color.rgb, 1.0);
+}
+"#,
+                )),
+            });
+        let bind_group_layout =
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("anica-motionloom-scene-canvas-present-bgl"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    }],
+                });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("anica-motionloom-scene-canvas-present-pipeline-layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("anica-motionloom-scene-canvas-present-pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("anica-motionloom-scene-canvas-present-bg"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&source_view),
+            }],
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-scene-canvas-present-encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("anica-motionloom-scene-canvas-present-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit([encoder.finish()]);
+        frame.present();
+        Ok(())
+    }
+
+    /// Present a solid color directly into a browser canvas surface for debugging.
+    ///
+    /// This does not touch MotionLoom scene textures, so it isolates browser
+    /// surface/presentation failures from renderer-output failures.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn debug_present_solid_to_canvas(
+        &self,
+        canvas: &web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        color: [f64; 4],
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        let width = width.max(1);
+        let height = height.max(1);
+        canvas.set_width(width);
+        canvas.set_height(height);
+
+        let surface = self
+            .instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+            .map_err(|err| MotionLoomSceneRenderError::GpuRender {
+                message: format!("debug canvas surface creation failed: {err}"),
+            })?;
+        let caps = surface.get_capabilities(&self.adapter);
+        let format =
+            caps.formats
+                .first()
+                .copied()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "debug canvas surface has no supported texture formats".to_string(),
+                })?;
+        let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            caps.alpha_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::CompositeAlphaMode::Auto)
+        };
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+            wgpu::PresentMode::Fifo
+        } else {
+            caps.present_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::PresentMode::AutoVsync)
+        };
+        surface.configure(
+            &self.device,
+            &wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width,
+                height,
+                present_mode,
+                desired_maximum_frame_latency: 2,
+                alpha_mode,
+                view_formats: vec![],
+            },
+        );
+        let frame =
+            surface
+                .get_current_texture()
+                .map_err(|err| MotionLoomSceneRenderError::GpuRender {
+                    message: format!("debug canvas surface frame acquisition failed: {err}"),
+                })?;
+        let target_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-scene-debug-solid-encoder"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("anica-motionloom-scene-debug-solid-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: color[0],
+                            g: color[1],
+                            b: color[2],
+                            a: color[3],
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        self.queue.submit([encoder.finish()]);
+        frame.present();
+        Ok(())
+    }
+
+    /// Upload a solid RGBA texture, then present that texture to the canvas.
+    ///
+    /// This isolates texture upload and texture presentation from scene command
+    /// collection and compute-shape passes.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn debug_present_uploaded_texture_to_canvas(
+        &self,
+        canvas: &web_sys::HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        color: [u8; 4],
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        let width = width.max(1);
+        let height = height.max(1);
+        let texture = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
+        let mut rgba = vec![0_u8; width as usize * height as usize * 4];
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&color);
+        }
+        self.write_texture_rgba(&texture, width, height, &rgba)?;
+        let native_texture = GpuSceneNativeTexture {
+            texture,
+            width,
+            height,
+        };
+        self.present_texture_to_canvas(&native_texture, canvas)
     }
 
     pub(crate) fn make_canvas_texture(

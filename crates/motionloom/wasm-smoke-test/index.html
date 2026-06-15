@@ -22,6 +22,7 @@
   <h2>Controls</h2>
   <button id="parse-btn">Parse Summary</button>
   <button id="render-btn">Render Red Frame</button>
+  <button id="render-gpu-canvas-btn">Render Red Frame via WebGPU Canvas</button>
   <button id="render-image-btn">Render With Memory Image</button>
   <pre id="log"></pre>
 
@@ -104,6 +105,19 @@
         log(`rendered ${rgba.length} bytes`);
       } catch (err) {
         log(`render error: ${err}`, true);
+      }
+    });
+
+    document.getElementById("render-gpu-canvas-btn").addEventListener("click", async () => {
+      try {
+        const canvas = document.getElementById("output");
+        canvas.width = 64;
+        canvas.height = 64;
+        const renderer = new WasmSceneRenderer(colorScene, "gpu");
+        await renderer.render_frame_to_canvas(0, canvas);
+        log("rendered directly to canvas through MotionLoom WASM WebGPU");
+      } catch (err) {
+        log(`WebGPU canvas render error: ${err}`, true);
       }
     });
 

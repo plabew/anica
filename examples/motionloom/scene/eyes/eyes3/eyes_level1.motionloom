@@ -1,4 +1,4 @@
-<Graph fps={60} duration="1s" size={[746,336]}>
+<Graph fps={30} duration="1s" size={[746,336]}>
   <Background color="#efe3d2" />
 
   <Scene id="eyes2_reference_rebuild_level4">

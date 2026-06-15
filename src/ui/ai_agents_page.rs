@@ -1957,7 +1957,7 @@ impl AiAgentsPage {
 
         let mut attrs = String::new();
         if !has_fps {
-            attrs.push_str(" fps={60}");
+            attrs.push_str(" fps={30}");
         }
         if !has_size {
             attrs.push_str(" size={[1920,1080]}");
@@ -5416,7 +5416,7 @@ mod tests {
         let out = AiAgentsPage::normalize_motionloom_scene_script(input);
         assert!(out.patched_fps);
         assert!(out.patched_size);
-        assert!(out.script.contains("fps={60}"));
+        assert!(out.script.contains("fps={30}"));
         assert!(out.script.contains("size={[1920,1080]}"));
         parse_graph_script(&out.script).expect("normalized graph should parse");
     }
@@ -5424,7 +5424,7 @@ mod tests {
     #[test]
     fn normalize_motionloom_scene_rewrites_animate_opacity_and_duration_ms() {
         let input = r##"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Background color="#000000" />
   <Text id="title" value="HELLO WORLD" color="#FFFFFF" fontSize={120} x={960} y={540} opacity={0} />
   <Animate target="title.opacity" from={0} to={1} start_ms={0} end_ms={1200} />
@@ -5445,7 +5445,7 @@ mod tests {
     #[test]
     fn normalize_motionloom_scene_rewrites_text_alias_to_value() {
         let input = r##"
-<Graph fps={60} duration="3s" size={[1920,1080]}>
+<Graph fps={30} duration="3s" size={[1920,1080]}>
   <Background color="#000000" />
   <Text id="title" text="HELLO WORLD" color="#FFFFFF" fontSize={120} x="center" y="center" opacity="1" />
   <Present from="scene" />
@@ -5460,7 +5460,7 @@ mod tests {
     #[test]
     fn normalize_motionloom_scene_rewrites_text_body_to_value() {
         let input = r##"
-<Graph fps={60} duration="3s" size={[1920,1080]}>
+<Graph fps={30} duration="3s" size={[1920,1080]}>
   <Background color="#000000" />
   <Text id="title" color="#FFFFFF" fontSize={120} x="center" y="center" opacity="1">HELLO WORLD</Text>
   <Present from="scene" />

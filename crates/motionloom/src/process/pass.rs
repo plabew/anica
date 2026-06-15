@@ -73,7 +73,7 @@ mod tests {
             role: None,
             kernel: Some("my_custom.wgsl".to_string()),
             mode: None,
-            effect: "gaussian_5tap_h".to_string(),
+            effect: "gaussian_5tap_blur".to_string(),
             transition: None,
             transition_fallback: None,
             transition_easing: None,

@@ -94,7 +94,7 @@ pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 11] = [
         display_name: "Blur/Sharpen Operator",
         category: ProcessCategory::BlurSharpenDetail,
         kernel: "blur_sharpen_detail_gaussian.wgsl",
-        summary: "Mode-driven kernel: gaussian_5tap_h | gaussian_5tap_v | box | unsharp.",
+        summary: "Mode-driven kernel: gaussian_5tap_blur | gaussian_5tap_h | gaussian_5tap_v | box | unsharp.",
     },
     ProcessEffectDefinition {
         id: "keying_matte_mask.luma_key",

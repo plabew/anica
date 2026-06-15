@@ -32,6 +32,7 @@ Open <http://localhost:8080> and click the buttons to verify:
 - `motionloom_document_type` detects a scene graph.
 - `motionloom_parse_summary` returns a scene graph summary.
 - `WasmSceneRenderer` with CPU profile renders a red background to RGBA bytes.
+- `WasmSceneRenderer` with GPU profile renders a GPU-native scene directly to a canvas.
 - `motionloom_add_asset` feeds an in-memory PNG into the renderer.
 
 ## Run headless tests

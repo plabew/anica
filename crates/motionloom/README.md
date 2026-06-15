@@ -175,7 +175,7 @@ Diagnoses one actor in an world graph at a specific frame.
 use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_frame};
 
 let script = r##"
-<Graph fps={60} duration="1s" size={[640,360]}>
+<Graph fps={30} duration="1s" size={[640,360]}>
   <Background color="#101827" />
   <Scene id="example_scene">
     <Circle x="320" y="180" radius="96" color="#4cc9f0" />

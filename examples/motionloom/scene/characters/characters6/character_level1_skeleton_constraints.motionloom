@@ -1,4 +1,4 @@
-<Graph fps={60} duration="2s" size={[1200,1200]}>
+<Graph fps={30} duration="2s" size={[1200,1200]}>
   <Background color="#f8fafc" />
 
   <Skeleton id="humanoid_front_v1">

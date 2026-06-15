@@ -1,4 +1,4 @@
-<Graph fps={60} duration="3s" size={[640,360]}>
+<Graph fps={30} duration="3s" size={[640,360]}>
   <Background color="#101827" />
 
   <Scene id="deform_grid_demo">

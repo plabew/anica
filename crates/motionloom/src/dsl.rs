@@ -2682,7 +2682,7 @@ mod tests {
     #[test]
     fn graph_parser_accepts_basic_example() {
         let script = r#"
-<Graph fps={60} duration="2s" size={[256,256]}>
+<Graph fps={30} duration="2s" size={[256,256]}>
   <Tex id="src" fmt="rgba8" from="input:clip0" />
   <Tex id="out" fmt="rgba8" size={[256,256]} />
   <Pass id="invert_pulse" kernel="invert_mix.wgsl" effect="invert_mix"
@@ -2803,7 +2803,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_rejects_present_inside_scene() {
         let script = r#"
-<Graph fps={60} duration="1s" size={[256,256]}>
+<Graph fps={30} duration="1s" size={[256,256]}>
   <Scene id="scene0">
     <Present from="scene0" />
   </Scene>
@@ -2820,7 +2820,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_rejects_nodes_after_root_present() {
         let script = r##"
-<Graph fps={60} duration="1s" size={[256,256]}>
+<Graph fps={30} duration="1s" size={[256,256]}>
   <Background color="#ffffff" />
   <Present from="scene" />
   <Text x="0" y="0" value="late" fontSize="12" color="#111111" />
@@ -2836,7 +2836,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_process_block_with_root_present() {
         let script = r#"
-<Graph fps={60} duration="1s" size={[256,256]}>
+<Graph fps={30} duration="1s" size={[256,256]}>
   <Process id="final_grade">
     <Tex id="src" fmt="rgba8" size={[256,256]} />
     <Tex id="out" fmt="rgba8" size={[256,256]} />
@@ -2860,7 +2860,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_rejects_lowercase_process_tag() {
         let script = r#"
-<Graph fps={60} duration="1s" size={[256,256]}>
+<Graph fps={30} duration="1s" size={[256,256]}>
   <process id="final_grade">
     <Tex id="src" fmt="rgba8" size={[256,256]} />
     <Tex id="out" fmt="rgba8" size={[256,256]} />
@@ -2881,7 +2881,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_render_size() {
         let script = r##"
-<Graph fps={60} duration="1s" size={[734,555]} renderSize={[3840,2160]}>
+<Graph fps={30} duration="1s" size={[734,555]} renderSize={[3840,2160]}>
   <Background color="#ffffff" />
 
   <Scene id="scene0">
@@ -2897,7 +2897,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_rejects_scene_root_visual_nodes() {
         let script = r##"
-<Graph fps={60} duration="1s" size={[80,60]}>
+<Graph fps={30} duration="1s" size={[80,60]}>
   <Scene id="strict_scene">
     <Rect x="0" y="0" width="80" height="60" color="#ffffff" />
   </Scene>
@@ -3110,7 +3110,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_scene_model_profiles() -> Result<(), GraphParseError> {
         let script = r##"
-<Graph fps={60} duration="1s" size={[320,240]}>
+<Graph fps={30} duration="1s" size={[320,240]}>
   <Background color="#ffffff" />
 
   <ModelProfile id="3d_humanoid_glb_v1" kind="3d" model="hero.glb" />
@@ -3186,7 +3186,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_rejects_missing_resource_ref() {
         let script = r#"
-<Graph fps={60} duration="2s" size={[256,256]}>
+<Graph fps={30} duration="2s" size={[256,256]}>
   <Tex id="src" fmt="rgba8" from="input:clip0" />
   <Pass id="invert" kernel="invert_mix.wgsl" effect="invert_mix" in={["src"]} out={["out"]} />
   <Present from="out" />
@@ -3203,7 +3203,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_parses_new_nodes_and_enums() -> Result<(), GraphParseError> {
         let script = r#"
-<Graph id="v2" version="2.0" fps={60} duration="2s" size={[1920,1080]}>
+<Graph id="v2" version="2.0" fps={30} duration="2s" size={[1920,1080]}>
   <Input id="clip0" type="video" from="input:clip0" fmt="rgba8unorm-srgb" colorSpace="srgb" />
   <Buffer id="state" elemType="vec4f" usage={["storage","copy-dst"]} />
   <Tex id="work" fmt="rgba16f" usage={["sampled","storage"]} />
@@ -3240,7 +3240,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_background_text_without_passes() -> Result<(), GraphParseError> {
         let script = r##"
-<Graph fps={60} duration="3s" size={[1920,1080]}>
+<Graph fps={30} duration="3s" size={[1920,1080]}>
   <Background color="#000000" />
   <Text value="hello world"
         x="center"
@@ -3268,7 +3268,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_scene_image_without_passes() -> Result<(), GraphParseError> {
         let script = r##"
-<Graph fps={60} duration="3s" size={[1920,1080]}>
+<Graph fps={30} duration="3s" size={[1920,1080]}>
   <Image src="/tmp/anica-test-image.png"
          x="center"
          y="120"
@@ -3291,7 +3291,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_scene_svg_without_passes() -> Result<(), GraphParseError> {
         let script = r##"
-<Graph fps={60} duration="3s" size={[1920,1080]}>
+<Graph fps={30} duration="3s" size={[1920,1080]}>
   <Svg src="/tmp/anica-test-logo.svg"
        x="center"
        y="25%"
@@ -3315,7 +3315,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_scene_timeline_track_sequence_chain() -> Result<(), GraphParseError> {
         let script = r##"
-<Graph fps={60} duration="3s" size={[320,180]}>
+<Graph fps={30} duration="3s" size={[320,180]}>
   <Scene id="scene0">
     <Timeline>
       <Track id="bars" z="10">
@@ -3365,7 +3365,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_full_text_animator_ast() -> Result<(), GraphParseError> {
         let script = r##"
-<Graph fps={60} duration="6s" size={[1280,720]}>
+<Graph fps={30} duration="6s" size={[1280,720]}>
   <Scene id="scene0">
     <Timeline>
       <Track id="text" space="screen" z="10">
@@ -3656,7 +3656,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_decimal_duration_two_dp() -> Result<(), GraphParseError> {
         let script = r#"
-<Graph fps={60} duration="2.35s" size={[1920,1080]}>
+<Graph fps={30} duration="2.35s" size={[1920,1080]}>
   <Tex id="src" fmt="rgba8" from="input:clip0" />
   <Tex id="out" fmt="rgba8" size={[1920,1080]} />
   <Pass id="copy" kernel="invert_mix.wgsl" effect="invert_mix" in={["src"]} out={["out"]} />
@@ -3672,7 +3672,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_defaults_apply_clip_and_duration_when_omitted() -> Result<(), GraphParseError> {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Tex id="src" fmt="rgba8" from="input:clip0" />
   <Tex id="out" fmt="rgba8" size={[1920,1080]} />
   <Pass id="copy" kernel="invert_mix.wgsl" effect="invert_mix" in={["src"]} out={["out"]} />
@@ -3689,7 +3689,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_accepts_graph_without_scope() -> Result<(), GraphParseError> {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Tex id="src" fmt="rgba8" from="input:clip0" />
   <Tex id="out" fmt="rgba8" size={[1920,1080]} />
   <Pass id="copy" kernel="invert_mix.wgsl" effect="invert_mix" in={["src"]} out={["out"]} />
@@ -3703,7 +3703,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_rejects_removed_scope_attr() {
         let script = r##"
-<Graph scope="scene" fps={60} size={[1920,1080]}>
+<Graph scope="scene" fps={30} size={[1920,1080]}>
   <Background color="#000000" />
 
   <Scene id="scene0">
@@ -3722,7 +3722,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_rejects_missing_pass_effect() {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Tex id="src" fmt="rgba8" from="input:clip0" />
   <Tex id="out" fmt="rgba8" size={[1920,1080]} />
   <Pass id="copy" kernel="invert_mix.wgsl" in={["src"]} out={["out"]} />
@@ -3741,7 +3741,7 @@ Font note: this is not a structured XML comment.
     fn graph_parser_accepts_missing_pass_kernel_when_effect_present() -> Result<(), GraphParseError>
     {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Tex id="src" fmt="rgba8" from="input:clip0" />
   <Tex id="out" fmt="rgba8" size={[1920,1080]} />
   <Pass id="copy" effect="exposure_contrast" in={["src"]} out={["out"]} />
@@ -3757,7 +3757,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_params_support_single_line_multi_key_values() -> Result<(), GraphParseError> {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Input id="under" type="video" from="input:under" />
   <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
   <Pass id="fx_hsla_overlay" effect="hsla_overlay" in={["under"]} out={["out"]}
@@ -3778,7 +3778,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_params_preserve_curve_with_commas() -> Result<(), GraphParseError> {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Input id="under" type="video" from="input:under" />
   <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
   <Pass id="fx_hsla_overlay" effect="hsla_overlay" in={["under"]} out={["out"]}
@@ -3801,7 +3801,7 @@ Font note: this is not a structured XML comment.
     #[test]
     fn graph_parser_parses_pass_transition_fields() -> Result<(), GraphParseError> {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Input id="under" type="video" from="input:under" />
   <Input id="prev" type="video" from="input:prev" />
   <Input id="next" type="video" from="input:next" />

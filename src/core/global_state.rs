@@ -15,8 +15,9 @@ use crate::core::waveform::{
 use gpui::EventEmitter;
 use log::info;
 use motionloom::{
-    LayerEffectClip as MotionLoomLayerEffectClip, RuntimeFrameOutput, RuntimeProgram,
-    compile_runtime_program, is_graph_script, keyframe, parse_process_graph_script, transitions,
+    BlurSharpenMode, LayerEffectClip as MotionLoomLayerEffectClip, RuntimeFrameOutput,
+    RuntimeProgram, compile_runtime_program, is_graph_script, keyframe, parse_process_graph_script,
+    transitions,
 };
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -2757,14 +2758,16 @@ impl GlobalState {
         let mut has_active = false;
         let mut out = LayerColorBlurEffects::default();
         for layer in &self.layer_effect_clips {
-            let Some(mut sampled) = layer.effects_at(timeline_time) else {
+            if layer.effects_at(timeline_time).is_none() {
                 continue;
-            };
-            // Keep backward compatibility with legacy projects where layer effects were global.
-            if !layer.has_any_effect_enabled() && !self.layer_color_blur_effects.is_identity() {
-                sampled = self.layer_color_blur_effects;
             }
-            if let Some(runtime_out) = motionloom_output_for_layer(layer, timeline_time) {
+            has_active = true;
+
+            // When MotionLoom runtime output is available, it owns the blur/color
+            // result and legacy scalar fields are ignored. Legacy scalar fields are
+            // only used as a fallback when there is no MotionLoom script, compile
+            // failure, or for old project compatibility.
+            let sampled = if let Some(runtime_out) = motionloom_output_for_layer(layer, timeline_time) {
                 let mut runtime_signed_sigma = 0.0_f32;
                 if let Some(v) = runtime_out.layer_blur_sigma {
                     runtime_signed_sigma += v.clamp(0.0, 64.0);
@@ -2773,9 +2776,21 @@ impl GlobalState {
                     // Signed blur contract: negative means sharpen amount.
                     runtime_signed_sigma -= v.clamp(0.0, 64.0);
                 }
-                sampled.blur_sigma = runtime_signed_sigma.clamp(-64.0, 64.0);
-            }
-            has_active = true;
+                LayerColorBlurEffects {
+                    brightness: 0.0,
+                    contrast: 1.0,
+                    saturation: 1.0,
+                    blur_sigma: runtime_signed_sigma.clamp(-64.0, 64.0),
+                }
+            } else {
+                let mut sampled = layer.effects_at(timeline_time).unwrap();
+                // Keep backward compatibility with legacy projects where layer effects were global.
+                if !layer.has_any_effect_enabled() && !self.layer_color_blur_effects.is_identity() {
+                    sampled = self.layer_color_blur_effects;
+                }
+                sampled
+            };
+
             out.brightness += sampled.brightness;
             out.contrast *= sampled.contrast;
             out.saturation *= sampled.saturation;
@@ -2786,6 +2801,22 @@ impl GlobalState {
         } else {
             LayerColorBlurEffects::default()
         }
+    }
+
+    pub fn layer_blur_sharpen_mode_at(&self, timeline_time: Duration) -> Option<BlurSharpenMode> {
+        let mut mode = None;
+        for layer in &self.layer_effect_clips {
+            if layer.effects_at(timeline_time).is_none() {
+                continue;
+            }
+            if let Some(runtime_out) = motionloom_output_for_layer(layer, timeline_time)
+                && (runtime_out.layer_blur_sigma.is_some()
+                    || runtime_out.layer_sharpen_sigma.is_some())
+            {
+                mode = runtime_out.blur_sharpen_mode;
+            }
+        }
+        mode
     }
 
     pub fn layer_opacity_factor_at(&self, timeline_time: Duration) -> f32 {
@@ -9957,10 +9988,11 @@ fn round_up_to_step(value: Duration, step: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::motionloom_runtime_for_script;
+    use super::{GlobalState, LayerColorBlurEffects, MotionLoomLayerEffectClip, motionloom_runtime_for_script};
+    use std::time::Duration;
 
     const PROCESS_LAYER_FX_SCRIPT: &str = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Process id="layer_fx">
     <Input id="clip0" type="video" from="input:clip0" />
     <Tex id="src" fmt="rgba16f" from="clip0" />
@@ -9980,7 +10012,7 @@ mod tests {
 "#;
 
     const LEGACY_LAYER_FX_SCRIPT: &str = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Input id="clip0" type="video" from="input:clip0" />
   <Tex id="src" fmt="rgba16f" from="clip0" />
   <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
@@ -10000,5 +10032,122 @@ mod tests {
     #[test]
     fn motionloom_runtime_rejects_legacy_root_level_layer_fx_script() {
         assert!(motionloom_runtime_for_script(LEGACY_LAYER_FX_SCRIPT).is_none());
+    }
+
+    const BLUR_LAYER_FX_SCRIPT: &str = r#"
+<Graph fps={30} size={[1920,1080]}>
+  <Process id="layer_fx">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_blur" kind="compute"
+          effect="gaussian_5tap_blur"
+          in={["src"]} out={["out"]}
+          params={{ sigma: "10.0" }} />
+  </Process>
+  <Present from="layer_fx" />
+</Graph>
+"#;
+
+    const UNSHARP_LAYER_FX_SCRIPT: &str = r#"
+<Graph fps={30} size={[1920,1080]}>
+  <Process id="layer_fx">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_unsharp" kind="compute"
+          effect="unsharp"
+          in={["src"]} out={["out"]}
+          params={{ sigma: "2.0" }} />
+  </Process>
+  <Present from="layer_fx" />
+</Graph>
+"#;
+
+    fn make_test_layer_fx_clip(script: &str) -> MotionLoomLayerEffectClip {
+        MotionLoomLayerEffectClip {
+            id: 1,
+            start: Duration::ZERO,
+            duration: Duration::from_secs(1),
+            track_index: 0,
+            fade_in: Duration::ZERO,
+            fade_out: Duration::ZERO,
+            brightness: 0.5,
+            contrast: 1.5,
+            saturation: 1.5,
+            blur_sigma: 5.0,
+            brightness_enabled: true,
+            contrast_enabled: true,
+            saturation_enabled: true,
+            blur_enabled: true,
+            brightness_keyframes: Vec::new(),
+            contrast_keyframes: Vec::new(),
+            saturation_keyframes: Vec::new(),
+            blur_keyframes: Vec::new(),
+            motionloom_enabled: true,
+            motionloom_script: script.to_string(),
+        }
+    }
+
+    #[test]
+    fn layer_color_blur_effects_ignores_legacy_bcs_when_motionloom_runtime_active() {
+        let mut gs = GlobalState::default();
+        gs.layer_color_blur_effects = LayerColorBlurEffects {
+            brightness: 0.5,
+            contrast: 1.5,
+            saturation: 1.5,
+            blur_sigma: 5.0,
+        };
+        gs.layer_effect_clips.push(make_test_layer_fx_clip(BLUR_LAYER_FX_SCRIPT));
+
+        let effects = gs.layer_color_blur_effects_at(Duration::from_millis(100));
+        assert!(
+            effects.brightness.abs() < 0.001,
+            "brightness should be identity when runtime is active, got {}",
+            effects.brightness
+        );
+        assert!(
+            (effects.contrast - 1.0).abs() < 0.001,
+            "contrast should be identity when runtime is active, got {}",
+            effects.contrast
+        );
+        assert!(
+            (effects.saturation - 1.0).abs() < 0.001,
+            "saturation should be identity when runtime is active, got {}",
+            effects.saturation
+        );
+        assert!(
+            (effects.blur_sigma - 10.0).abs() < 0.001,
+            "blur should come from runtime, got {}",
+            effects.blur_sigma
+        );
+    }
+
+    #[test]
+    fn layer_blur_sharpen_mode_returns_unsharp_for_sharpen_script() {
+        let mut gs = GlobalState::default();
+        gs.layer_effect_clips.push(make_test_layer_fx_clip(UNSHARP_LAYER_FX_SCRIPT));
+
+        let mode = gs
+            .layer_blur_sharpen_mode_at(Duration::from_millis(100))
+            .expect("sharpen script should produce a blur mode");
+        assert_eq!(mode, motionloom::BlurSharpenMode::Unsharp);
+    }
+
+    #[test]
+    fn layer_blur_sharpen_mode_prefers_runtime_blur_mode() {
+        let mut gs = GlobalState::default();
+        gs.layer_color_blur_effects = LayerColorBlurEffects {
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            blur_sigma: 5.0,
+        };
+        gs.layer_effect_clips.push(make_test_layer_fx_clip(BLUR_LAYER_FX_SCRIPT));
+
+        let mode = gs
+            .layer_blur_sharpen_mode_at(Duration::from_millis(100))
+            .expect("blur script should produce a blur mode");
+        assert_eq!(mode, motionloom::BlurSharpenMode::Gaussian5tapBlur);
     }
 }

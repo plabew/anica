@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn scene_live_patch_replaces_whole_braced_curve_attr() {
-        let script = r#"<Graph fps={60} duration="3s" size={[1320,768]}>
+        let script = r#"<Graph fps={30} duration="3s" size={[1320,768]}>
   <Scene id="scene">
     <Group id="iris_turn_left"
            x={curve("0.00:4:ease_in_out, 0.90:-54:ease_in_out, 2.20:-176:ease_in_out")}
@@ -4038,6 +4038,8 @@ impl MotionLoomPage {
     fn template_label(kind: LayerEffectTemplateKind) -> &'static str {
         match kind {
             LayerEffectTemplateKind::BlurGaussian => "Blur Gaussian",
+            LayerEffectTemplateKind::BlurGaussianHorizontal => "Blur Horizontal",
+            LayerEffectTemplateKind::BlurGaussianVertical => "Blur Vertical",
             LayerEffectTemplateKind::Sharpen => "Sharpen",
             LayerEffectTemplateKind::Opacity => "Opacity",
             LayerEffectTemplateKind::Lut => "LUT",
@@ -7610,6 +7612,14 @@ impl MotionLoomPage {
                                     ))
                                     .child(self.render_template_tile(
                                         LayerEffectTemplateKind::BlurGaussian,
+                                        cx,
+                                    ))
+                                    .child(self.render_template_tile(
+                                        LayerEffectTemplateKind::BlurGaussianHorizontal,
+                                        cx,
+                                    ))
+                                    .child(self.render_template_tile(
+                                        LayerEffectTemplateKind::BlurGaussianVertical,
                                         cx,
                                     )),
                             )

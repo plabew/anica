@@ -108,6 +108,10 @@ fn apply_process_pass(
             let alpha = process_param_f32(pass, &["alpha", "a"], time_norm, time_sec, 0.0);
             apply_hsla_overlay(&image, hue, saturation, lightness, alpha)
         }
+        "gaussian_5tap_blur" | "gaussian_blur" | "blur" => {
+            let sigma = process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0);
+            apply_gaussian_blur(&image, sigma.clamp(0.0, 64.0))
+        }
         "gaussian_5tap_h" => {
             let sigma = process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0);
             apply_separable_gaussian_blur(&image, sigma.clamp(0.0, 64.0), true)
@@ -115,10 +119,6 @@ fn apply_process_pass(
         "gaussian_5tap_v" => {
             let sigma = process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0);
             apply_separable_gaussian_blur(&image, sigma.clamp(0.0, 64.0), false)
-        }
-        "gaussian_blur" | "blur" => {
-            let sigma = process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0);
-            apply_gaussian_blur(&image, sigma.clamp(0.0, 64.0))
         }
         _ => image,
     }

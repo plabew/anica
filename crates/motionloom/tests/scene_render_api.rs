@@ -6,7 +6,7 @@ use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_frame};
 fn public_scene_render_api_draws_cpu_frame() {
     let graph = parse_graph_script(
         r##"
-<Graph fps={60} duration="1s" size={[32,24]}>
+<Graph fps={30} duration="1s" size={[32,24]}>
   <Background color="#000000" />
 
   <Scene id="api_scene">

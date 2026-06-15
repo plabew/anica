@@ -1,4 +1,4 @@
-<Graph fps={60} duration="3s" size={[734,441]}>
+<Graph fps={30} duration="3s" size={[734,441]}>
   <Background color="#ffffff" />
 
   <ModelProfile id="2d_humanoid_vector_dynamic_spacing_v1" kind="2d" preset="humanoid_face_outline_dynamic_spacing_v1" />

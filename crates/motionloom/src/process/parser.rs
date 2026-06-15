@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn parses_process_block_graph() {
         let script = r#"
-<Graph fps={60} duration="8s" size={[1920,1080]}>
+<Graph fps={30} duration="8s" size={[1920,1080]}>
   <Process id="final_grade">
     <Input id="clip0" type="video" from="input:clip0" />
     <Tex id="src" fmt="rgba16f" from="clip0" />
@@ -418,11 +418,11 @@ mod tests {
     #[test]
     fn rejects_root_level_process_shorthand() {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Input id="clip0" type="video" from="input:clip0" />
   <Tex id="src" fmt="rgba16f" from="clip0" />
   <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
-  <Pass id="fx" kind="compute" effect="gaussian_5tap_h"
+  <Pass id="fx" kind="compute" effect="gaussian_5tap_blur"
         in={["src"]} out={["out"]} params={{ sigma: "10" }} />
   <Present from="out" />
 </Graph>
@@ -435,15 +435,15 @@ mod tests {
     #[test]
     fn rejects_multiple_process_blocks_for_direct_process_parse() {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Process id="a">
     <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
-    <Pass id="fx_a" kind="compute" effect="gaussian_5tap_h"
+    <Pass id="fx_a" kind="compute" effect="gaussian_5tap_blur"
           in={["out"]} out={["out"]} params={{ sigma: "1" }} />
   </Process>
   <Process id="b">
     <Tex id="out_b" fmt="rgba16f" size={[1920,1080]} />
-    <Pass id="fx_b" kind="compute" effect="gaussian_5tap_h"
+    <Pass id="fx_b" kind="compute" effect="gaussian_5tap_blur"
           in={["out_b"]} out={["out_b"]} params={{ sigma: "1" }} />
   </Process>
   <Present from="b" />
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn rejects_present_inside_process_block() {
         let script = r#"
-<Graph fps={60} size={[1920,1080]}>
+<Graph fps={30} size={[1920,1080]}>
   <Process id="final_grade">
     <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
     <Present from="out" />

@@ -1,4 +1,4 @@
-<Graph fps={60} duration="6s" size={[1920,1080]}>
+<Graph fps={30} duration="6s" size={[1920,1080]}>
   <Background color="#101418" />
 
   <Scene id="scene0">

@@ -1,4 +1,4 @@
-<Graph fps={60} duration="3s"
+<Graph fps={30} duration="3s"
        size={[840,660]}
        renderSize={[840,660]}>
 

@@ -45,7 +45,7 @@ pub(crate) fn apply_scene_post_pass(
             .clamp(0.0, 64.0);
         return Ok(apply_box_blur_pass(input, sigma, false));
     }
-    if effect == "blur" || effect == "gaussian_blur" {
+    if effect == "blur" || effect == "gaussian_blur" || effect == "gaussian_5tap_blur" {
         let sigma = pass_param_expr(pass, "sigma")
             .map(|expr| eval_scene_number(expr, time_norm, time_sec))
             .transpose()?
@@ -223,7 +223,11 @@ pub(crate) fn apply_scene_filter_step(
     time_sec: f32,
 ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
     let kind = step.kind.trim().to_ascii_lowercase();
-    if kind == "blur" || kind == "gaussian_blur" || kind == "gaussian-blur" {
+    if kind == "blur"
+        || kind == "gaussian_blur"
+        || kind == "gaussian-blur"
+        || kind == "gaussian_5tap_blur"
+    {
         let sigma = step
             .radius
             .as_deref()
@@ -422,25 +426,33 @@ fn hue_to_rgb_channel(p: f32, q: f32, mut t: f32) -> f32 {
     p
 }
 
-pub(crate) fn scene_post_blur_params(
+pub(crate) fn scene_post_blur_passes(
     pass: &PassNode,
     time_norm: f32,
     time_sec: f32,
-) -> Result<Option<(bool, f32)>, MotionLoomSceneRenderError> {
+) -> Result<Option<Vec<(bool, f32)>>, MotionLoomSceneRenderError> {
     let effect = pass.effect.to_ascii_lowercase();
-    let horizontal = if effect.contains("gaussian_5tap_h") || effect.contains("gaussian_h") {
-        true
-    } else if effect.contains("gaussian_5tap_v") || effect.contains("gaussian_v") {
-        false
-    } else {
-        return Ok(None);
-    };
+    let directions =
+        if effect == "blur" || effect == "gaussian_blur" || effect == "gaussian_5tap_blur" {
+            vec![true, false]
+        } else if effect.contains("gaussian_5tap_h") || effect.contains("gaussian_h") {
+            vec![true]
+        } else if effect.contains("gaussian_5tap_v") || effect.contains("gaussian_v") {
+            vec![false]
+        } else {
+            return Ok(None);
+        };
     let sigma = pass_param_expr(pass, "sigma")
         .map(|expr| eval_scene_number(expr, time_norm, time_sec))
         .transpose()?
         .unwrap_or(2.0)
         .clamp(0.0, 64.0);
-    Ok(Some((horizontal, sigma)))
+    Ok(Some(
+        directions
+            .into_iter()
+            .map(|horizontal| (horizontal, sigma))
+            .collect(),
+    ))
 }
 
 pub(crate) fn scene_post_bloom_params(

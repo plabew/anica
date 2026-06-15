@@ -1,4 +1,4 @@
-<Graph fps={60} duration="1s" size={[720,960]}>
+<Graph fps={30} duration="1s" size={[720,960]}>
   <Background color="#f7f7f7" />
 
   <Scene id="character5_part_head_neck_front">

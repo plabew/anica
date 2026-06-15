@@ -413,8 +413,8 @@ impl InspectorPanel {
                 value_max: 1.0,
                 default_value: 0.45,
             }),
-            "gaussian_blur" | "gaussian_5tap_h" | "gaussian_5tap_v" | "sharpen" | "unsharp"
-            | "box" => Some(CurveParamSpec {
+            "gaussian_blur" | "gaussian_5tap_blur" | "gaussian_5tap_h" | "gaussian_5tap_v"
+            | "sharpen" | "unsharp" | "box" => Some(CurveParamSpec {
                 key: "sigma",
                 label: "Sigma",
                 value_min: 0.0,
@@ -1160,6 +1160,10 @@ impl InspectorPanel {
     ) -> &'static str {
         match kind {
             motionloom_templates::LayerEffectTemplateKind::BlurGaussian => "Blur Gaussian",
+            motionloom_templates::LayerEffectTemplateKind::BlurGaussianHorizontal => {
+                "Blur Horizontal"
+            }
+            motionloom_templates::LayerEffectTemplateKind::BlurGaussianVertical => "Blur Vertical",
             motionloom_templates::LayerEffectTemplateKind::Sharpen => "Sharpen",
             motionloom_templates::LayerEffectTemplateKind::Opacity => "Opacity",
             motionloom_templates::LayerEffectTemplateKind::Lut => "LUT",
@@ -1518,6 +1522,14 @@ impl InspectorPanel {
                                     ))
                                     .child(self.render_layer_fx_template_tile(
                                         motionloom_templates::LayerEffectTemplateKind::BlurGaussian,
+                                        cx,
+                                    ))
+                                    .child(self.render_layer_fx_template_tile(
+                                        motionloom_templates::LayerEffectTemplateKind::BlurGaussianHorizontal,
+                                        cx,
+                                    ))
+                                    .child(self.render_layer_fx_template_tile(
+                                        motionloom_templates::LayerEffectTemplateKind::BlurGaussianVertical,
                                         cx,
                                     )),
                             )

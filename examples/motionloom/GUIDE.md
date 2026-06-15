@@ -5,7 +5,7 @@ This guide is for AI agents and contributors generating MotionLoom DSL. Prefer s
 ## Core Rules
 
 - Use `<Graph>` for standalone generated scenes and vector illustrations.
-- Write graph attributes in MotionLoom DSL form: `fps={60}`, `duration="3s"`, `size={[1920,1080]}`, not `fps="60"` or `size="[1920,1080]"`.
+- Write graph attributes in MotionLoom DSL form: `fps={30}`, `duration="3s"`, `size={[1920,1080]}`, not `fps="60"` or `size="[1920,1080]"`.
 - Keep `<Present from="..." />` outside `<Scene>`. The `from` value should match the scene id.
 - Use `<Present from="scene0" />` for scene output. Use `scene:scene0` only inside `<Tex from="scene:scene0" />`.
 - Prefer `curve("...")` for world timing instead of long inline arithmetic.
@@ -207,7 +207,7 @@ Wrong: anonymous groups and stringified graph arrays.
 Correct:
 
 ```code
-<Graph fps={60} duration="3s" size={[1920,1080]}>
+<Graph fps={30} duration="3s" size={[1920,1080]}>
   <Scene id="scene0">
     <Group id="main_shape" x="0" y="0" opacity="1">
       <Path id="main_line" d="M 0 0 L 100 100" stroke="#ffffff" fill="none" />
