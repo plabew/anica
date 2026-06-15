@@ -859,12 +859,9 @@ impl MotionLoomPage {
     fn render_image_from_bgra(
         width: u32,
         height: u32,
-        mut bgra: Vec<u8>,
+        bgra: Vec<u8>,
     ) -> Result<Arc<RenderImage>, MotionLoomPageError> {
-        // Convert BGRA back to RGBA so the fallback RenderImage displays correct colors.
-        for px in bgra.chunks_mut(4) {
-            px.swap(0, 2);
-        }
+        // Keep BGRA bytes as-is; the app expects BGRA for all preview paths.
         let image_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, bgra)
             .ok_or(MotionLoomPageError::BuildRuntimePreviewBuffer)?;
         let frames = SmallVec::from_elem(image::Frame::new(image_buffer), 1);

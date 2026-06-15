@@ -24,18 +24,7 @@ impl FfmpegVideoEncoder {
         Self {
             ffmpeg_bin: ffmpeg_bin.to_string(),
             output_path: output_path.to_path_buf(),
-            encoder_args: vec![
-                "-c:v".to_string(),
-                "libx264".to_string(),
-                "-preset".to_string(),
-                "medium".to_string(),
-                "-crf".to_string(),
-                "16".to_string(),
-                "-pix_fmt".to_string(),
-                "yuv420p".to_string(),
-                "-movflags".to_string(),
-                "+faststart".to_string(),
-            ],
+            encoder_args: default_encoder_args(),
             size_arg: None,
             fps_arg: None,
             child: None,
@@ -49,6 +38,50 @@ impl FfmpegVideoEncoder {
         self.encoder_args = args;
         self
     }
+}
+
+#[cfg(target_os = "macos")]
+fn default_encoder_args() -> Vec<String> {
+    vec![
+        "-c:v".to_string(),
+        "h264_videotoolbox".to_string(),
+        "-allow_sw".to_string(),
+        "1".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-b:v".to_string(),
+        "30M".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn default_encoder_args() -> Vec<String> {
+    vec![
+        "-c:v".to_string(),
+        "h264_mf".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-b:v".to_string(),
+        "30M".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+    ]
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn default_encoder_args() -> Vec<String> {
+    vec![
+        "-c:v".to_string(),
+        "libopenh264".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-b:v".to_string(),
+        "30M".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+    ]
 }
 
 impl VideoEncoder for FfmpegVideoEncoder {
@@ -100,7 +133,31 @@ impl VideoEncoder for FfmpegVideoEncoder {
             .stdin
             .as_mut()
             .ok_or(EncodeError::MissingEncoderInput)?;
-        stdin.write_all(rgba).map_err(EncodeError::WriteFrame)?;
+        if let Err(source) = stdin.write_all(rgba) {
+            let stderr = if let Some(stdin) = self.stdin.take() {
+                drop(stdin);
+                if let Some(child) = self.child.take() {
+                    child
+                        .wait_with_output()
+                        .ok()
+                        .map(|output| String::from_utf8_lossy(&output.stderr).trim().to_string())
+                        .filter(|message| !message.is_empty())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let message = if let Some(stderr) = stderr {
+                format!("{source}; encoder stderr: {stderr}")
+            } else {
+                source.to_string()
+            };
+            return Err(EncodeError::WriteFrame(std::io::Error::new(
+                source.kind(),
+                message,
+            )));
+        }
         Ok(())
     }
 

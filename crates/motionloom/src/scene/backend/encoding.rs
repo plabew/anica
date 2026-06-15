@@ -171,17 +171,47 @@ fn gpu_h264_encoder_args() -> Vec<String> {
     ]
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "macos")))]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
 fn gpu_h264_encoder_args() -> Vec<String> {
     vec![
         "-c:v".to_string(),
-        "libx264".to_string(),
-        "-preset".to_string(),
-        "medium".to_string(),
-        "-crf".to_string(),
-        "16".to_string(),
+        "h264_mf".to_string(),
         "-pix_fmt".to_string(),
         "yuv420p".to_string(),
+        "-b:v".to_string(),
+        "30M".to_string(),
+        "-maxrate".to_string(),
+        "45M".to_string(),
+        "-bufsize".to_string(),
+        "90M".to_string(),
+        "-color_primaries".to_string(),
+        "bt709".to_string(),
+        "-color_trc".to_string(),
+        "bt709".to_string(),
+        "-colorspace".to_string(),
+        "bt709".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+    ]
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "macos"),
+    not(target_os = "windows")
+))]
+fn gpu_h264_encoder_args() -> Vec<String> {
+    vec![
+        "-c:v".to_string(),
+        "libopenh264".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-b:v".to_string(),
+        "30M".to_string(),
+        "-maxrate".to_string(),
+        "45M".to_string(),
+        "-bufsize".to_string(),
+        "90M".to_string(),
         "-color_primaries".to_string(),
         "bt709".to_string(),
         "-color_trc".to_string(),
