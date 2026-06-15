@@ -2767,7 +2767,9 @@ impl GlobalState {
             // result and legacy scalar fields are ignored. Legacy scalar fields are
             // only used as a fallback when there is no MotionLoom script, compile
             // failure, or for old project compatibility.
-            let sampled = if let Some(runtime_out) = motionloom_output_for_layer(layer, timeline_time) {
+            let sampled = if let Some(runtime_out) =
+                motionloom_output_for_layer(layer, timeline_time)
+            {
                 let mut runtime_signed_sigma = 0.0_f32;
                 if let Some(v) = runtime_out.layer_blur_sigma {
                     runtime_signed_sigma += v.clamp(0.0, 64.0);
@@ -9988,7 +9990,10 @@ fn round_up_to_step(value: Duration, step: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::{GlobalState, LayerColorBlurEffects, MotionLoomLayerEffectClip, motionloom_runtime_for_script};
+    use super::{
+        GlobalState, LayerColorBlurEffects, MotionLoomLayerEffectClip,
+        motionloom_runtime_for_script,
+    };
     use std::time::Duration;
 
     const PROCESS_LAYER_FX_SCRIPT: &str = r#"
@@ -10098,7 +10103,8 @@ mod tests {
             saturation: 1.5,
             blur_sigma: 5.0,
         };
-        gs.layer_effect_clips.push(make_test_layer_fx_clip(BLUR_LAYER_FX_SCRIPT));
+        gs.layer_effect_clips
+            .push(make_test_layer_fx_clip(BLUR_LAYER_FX_SCRIPT));
 
         let effects = gs.layer_color_blur_effects_at(Duration::from_millis(100));
         assert!(
@@ -10126,7 +10132,8 @@ mod tests {
     #[test]
     fn layer_blur_sharpen_mode_returns_unsharp_for_sharpen_script() {
         let mut gs = GlobalState::default();
-        gs.layer_effect_clips.push(make_test_layer_fx_clip(UNSHARP_LAYER_FX_SCRIPT));
+        gs.layer_effect_clips
+            .push(make_test_layer_fx_clip(UNSHARP_LAYER_FX_SCRIPT));
 
         let mode = gs
             .layer_blur_sharpen_mode_at(Duration::from_millis(100))
@@ -10143,7 +10150,8 @@ mod tests {
             saturation: 1.0,
             blur_sigma: 5.0,
         };
-        gs.layer_effect_clips.push(make_test_layer_fx_clip(BLUR_LAYER_FX_SCRIPT));
+        gs.layer_effect_clips
+            .push(make_test_layer_fx_clip(BLUR_LAYER_FX_SCRIPT));
 
         let mode = gs
             .layer_blur_sharpen_mode_at(Duration::from_millis(100))

@@ -7,7 +7,7 @@ use gpu_effect_export_engine::{
     build_single_clip_opacity_videotoolbox_args,
 };
 use gpui_video_renderer::{
-    BlurMode, BgraGpuEffectParams, VideoLocalMaskLayer, process_bgra_effects_with_params,
+    BgraGpuEffectParams, BlurMode, VideoLocalMaskLayer, process_bgra_effects_with_params,
 };
 use motionloom::{
     GraphApplyScope, PassNode as MotionloomPassNode, PassTransitionEasing, PassTransitionMode,
