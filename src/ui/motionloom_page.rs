@@ -68,7 +68,7 @@ type SceneLivePreviewCacheKey = (u64, u32, SceneLivePreviewQuality, u32, u32);
 
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
-struct SendableCVPixelBuffer(Arc<CVPixelBuffer>);
+struct SendableCVPixelBuffer(CVPixelBuffer);
 
 #[cfg(target_os = "macos")]
 // SAFETY: The worker only transfers a retained CVPixelBuffer handle to the UI
@@ -114,7 +114,7 @@ impl SceneLivePreviewFrame {
                 width,
                 height,
                 surface,
-            } => MotionLoomPage::loaded_preview_from_macos_surface(width, height, surface.0),
+            } => MotionLoomPage::loaded_preview_from_macos_surface(width, height, surface),
             #[cfg(target_os = "windows")]
             Self::WindowsSurface {
                 width,
@@ -284,7 +284,7 @@ struct LoadedPreview {
     bgra: Option<Arc<Vec<u8>>>,
     /// Reusable IOSurface-backed BGRA pixel buffer for `paint_bgra_frame_anica`.
     #[cfg(target_os = "macos")]
-    bgra_surface: Option<Arc<CVPixelBuffer>>,
+    bgra_surface: Option<Arc<SendableCVPixelBuffer>>,
     /// Reusable D3D11 shared texture for `paint_bgra_frame_anica` on Windows.
     #[cfg(target_os = "windows")]
     d3d_surface: Option<motionloom::WindowsD3DSharedSurface>,
@@ -408,7 +408,7 @@ struct FitPreviewImageElement {
     bgra: Option<Arc<Vec<u8>>>,
     /// Cached IOSurface-backed BGRA surface for the extended surface paint path.
     #[cfg(target_os = "macos")]
-    bgra_surface: Option<Arc<CVPixelBuffer>>,
+    bgra_surface: Option<Arc<SendableCVPixelBuffer>>,
     /// Cached D3D11 shared texture for the extended surface paint path on Windows.
     #[cfg(target_os = "windows")]
     d3d_surface: Option<motionloom::WindowsD3DSharedSurface>,
@@ -516,7 +516,7 @@ impl Element for FitPreviewImageElement {
             if let Some(surface) = self.bgra_surface.as_ref() {
                 window.paint_bgra_frame_anica(
                     dest_bounds,
-                    gpui::BgraFrameSurface::CvPixelBuffer((**surface).clone()),
+                    gpui::BgraFrameSurface::CvPixelBuffer(surface.0.clone()),
                     gpui::SurfaceExParams_anica::default(),
                 );
                 return;
@@ -822,14 +822,14 @@ impl MotionLoomPage {
     fn loaded_preview_from_macos_surface(
         width: u32,
         height: u32,
-        surface: Arc<CVPixelBuffer>,
+        surface: SendableCVPixelBuffer,
     ) -> Result<LoadedPreview, MotionLoomPageError> {
         let rgba = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255]));
         let frames = SmallVec::from_elem(image::Frame::new(rgba), 1);
         Ok(LoadedPreview {
             image: Arc::new(RenderImage::new(frames)),
             bgra: None,
-            bgra_surface: Some(surface),
+            bgra_surface: Some(Arc::new(surface)),
             #[cfg(target_os = "windows")]
             d3d_surface: None,
             width,
@@ -898,10 +898,14 @@ impl MotionLoomPage {
     /// Create an IOSurface-backed BGRA CVPixelBuffer and copy BGRA data into it.
     /// Returns `None` if allocation fails so callers can fall back to other paths.
     #[cfg(target_os = "macos")]
-    fn build_bgra_surface(width: u32, height: u32, bgra: &[u8]) -> Option<Arc<CVPixelBuffer>> {
+    fn build_bgra_surface(
+        width: u32,
+        height: u32,
+        bgra: &[u8],
+    ) -> Option<Arc<SendableCVPixelBuffer>> {
         let surface = video_engine::Video::create_bgra_surface(width, height)?;
         if video_engine::Video::copy_bgra_into_surface(&surface, width, height, bgra) {
-            Some(Arc::new(surface))
+            Some(Arc::new(SendableCVPixelBuffer(surface)))
         } else {
             None
         }
@@ -920,7 +924,7 @@ impl MotionLoomPage {
             } => Some(SceneLivePreviewFrame::MacOsSurface {
                 width,
                 height,
-                surface: SendableCVPixelBuffer(Arc::new(surface)),
+                surface: SendableCVPixelBuffer(surface),
             }),
             #[cfg(target_os = "windows")]
             ScenePlatformPreviewSurface::WindowsD3D(surface) => {
