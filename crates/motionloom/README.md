@@ -344,6 +344,27 @@ frame.save("motionloom_world_frame.png")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Live Preview Example
+
+Run the built-in `wgpu_live_preview` example to render a MotionLoom script
+through the GPU preview pipeline and print timing statistics:
+
+```bash
+cargo run --release -p motionloom --example wgpu_live_preview -- --print-stats ../motionloom-example/showcase/s-000005/main.motionloom
+```
+
+This command:
+
+1. Builds the `wgpu_live_preview` example in release mode for fast GPU rendering.
+2. Parses the specified `.motionloom` script.
+3. Renders the scene through `SceneRenderer::new(SceneRenderProfile::Gpu)`.
+4. Prints frame-timing statistics (`--print-stats`) so you can see how long
+each frame takes on the GPU compositor.
+
+Use this example to quickly verify that a script renders correctly on the GPU
+path without writing a full host application. Replace the path with any
+`.motionloom` file you want to test.
+
 ## Notes
 
 Scene graph APIs are for 2D scene/motion graphics/effect graphs. World graph
