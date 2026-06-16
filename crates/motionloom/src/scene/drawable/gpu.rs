@@ -79,6 +79,18 @@ impl GpuSceneTextureSource {
     }
 }
 
+/// Graph-level texture source that can hold either a CPU RGBA image or a
+/// GPU-native texture. This is used by the scene renderer resource pipeline
+/// so that GPU-rendered scene output can be fed directly into GPU process
+/// passes without an intermediate CPU readback.
+#[derive(Debug, Clone)]
+pub(crate) enum GraphTextureSource {
+    Cpu(RgbaImage),
+    Gpu(GpuSceneNativeTexture),
+}
+
+impl GraphTextureSource {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GpuSceneMatteMode {
     None,
@@ -759,6 +771,26 @@ pub(crate) fn post_tint_uniform(
     ])
 }
 
+pub(crate) fn post_hsla_overlay_uniform(
+    canvas_w: u32,
+    canvas_h: u32,
+    hue: f32,
+    saturation: f32,
+    lightness: f32,
+    alpha: f32,
+) -> [u8; 32] {
+    f32_bytes(&[
+        canvas_w as f32,
+        canvas_h as f32,
+        0.0,
+        alpha.clamp(0.0, 1.0),
+        hue,
+        saturation,
+        lightness,
+        4.0,
+    ])
+}
+
 pub(crate) fn post_opacity_uniform(canvas_w: u32, canvas_h: u32, opacity: f32) -> [u8; 32] {
     f32_bytes(&[
         canvas_w as f32,
@@ -769,6 +801,30 @@ pub(crate) fn post_opacity_uniform(canvas_w: u32, canvas_h: u32, opacity: f32) -
         0.0,
         0.0,
         3.0,
+    ])
+}
+
+/// Uniform for the bloom composite compute pass.
+///
+/// Layout matches `BloomParams` in `bloom.wgsl`:
+///   canvas.xy = width, height
+///   threshold = bloom threshold
+///   intensity = bloom intensity
+pub(crate) fn bloom_uniform(
+    canvas_w: u32,
+    canvas_h: u32,
+    threshold: f32,
+    intensity: f32,
+) -> [u8; 32] {
+    f32_bytes(&[
+        canvas_w as f32,
+        canvas_h as f32,
+        threshold.clamp(0.0, 1.0),
+        intensity.clamp(0.0, 8.0),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ])
 }
 

@@ -1,0 +1,126 @@
+// =========================================
+// =========================================
+// crates/motionloom/src/process/effect_kind.rs
+// =========================================
+
+use crate::process::pass::normalize_effect_key;
+
+/// Canonical process effect kinds after alias resolution.
+///
+/// The DSL accepts multiple aliases for the same effect (e.g. `"bloom"` and
+/// `"glow_bloom"` both map to `ProcessEffect::GlowBloom`). This enum provides
+/// a single canonical representation so the renderer and compatibility
+/// inspector do not need to repeat alias matching logic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessEffect {
+    HslaOverlay,
+    GaussianBlur,
+    GaussianBlurHorizontal,
+    GaussianBlurVertical,
+    GlowBloom,
+}
+
+/// Resolve a raw effect string (including aliases) to its canonical
+/// `ProcessEffect`.
+///
+/// Returns `None` for unknown or unsupported effects.
+pub fn resolve_process_effect(effect: &str) -> Option<ProcessEffect> {
+    let normalized = normalize_effect_key(effect).replace(['.', '-'], "_");
+    match normalized.as_str() {
+        "hsla_overlay" | "hsla" | "tint_overlay" | "color_tone_hsla_overlay" => {
+            Some(ProcessEffect::HslaOverlay)
+        }
+        "gaussian_5tap_blur" | "gaussian_blur" | "blur" => Some(ProcessEffect::GaussianBlur),
+        "gaussian_5tap_h" => Some(ProcessEffect::GaussianBlurHorizontal),
+        "gaussian_5tap_v" => Some(ProcessEffect::GaussianBlurVertical),
+        "bloom"
+        | "glow"
+        | "glow_bloom"
+        | "post_bloom"
+        | "post_glow"
+        | "post_glow_bloom"
+        | "light_atmosphere_bloom"
+        | "light_atmosphere_glow"
+        | "light_atmosphere_glow_bloom" => Some(ProcessEffect::GlowBloom),
+        _ => None,
+    }
+}
+
+/// Returns true if the effect is in the bloom family.
+pub fn is_bloom_family(effect: &str) -> bool {
+    resolve_process_effect(effect) == Some(ProcessEffect::GlowBloom)
+}
+
+/// Returns true if the effect is supported by the WASM WebGPU process path.
+///
+/// This list must stay in sync with the WebGPU shader and dispatcher.
+/// `GlowBloom` is recognized as a canonical alias and the shader already
+/// includes `ml_glow_bloom` from `color_core.wgsl`; the dispatch wiring is
+/// completed in P2.
+pub fn is_wasm_webgpu_compatible_effect(effect: &str) -> bool {
+    matches!(
+        resolve_process_effect(effect),
+        Some(
+            ProcessEffect::HslaOverlay
+                | ProcessEffect::GaussianBlur
+                | ProcessEffect::GaussianBlurHorizontal
+                | ProcessEffect::GaussianBlurVertical
+                | ProcessEffect::GlowBloom
+        )
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bloom_alias_maps_to_glow_bloom() {
+        assert_eq!(
+            resolve_process_effect("bloom"),
+            Some(ProcessEffect::GlowBloom)
+        );
+        assert_eq!(
+            resolve_process_effect("glow_bloom"),
+            Some(ProcessEffect::GlowBloom)
+        );
+        assert_eq!(
+            resolve_process_effect("post.bloom"),
+            Some(ProcessEffect::GlowBloom)
+        );
+        assert_eq!(
+            resolve_process_effect("light_atmosphere.glow_bloom"),
+            Some(ProcessEffect::GlowBloom)
+        );
+    }
+
+    #[test]
+    fn non_aliased_effects_resolve_correctly() {
+        assert_eq!(
+            resolve_process_effect("hsla_overlay"),
+            Some(ProcessEffect::HslaOverlay)
+        );
+        assert_eq!(
+            resolve_process_effect("gaussian_5tap_blur"),
+            Some(ProcessEffect::GaussianBlur)
+        );
+    }
+
+    #[test]
+    fn is_bloom_family_detects_bloom_aliases() {
+        assert!(is_bloom_family("bloom"));
+        assert!(is_bloom_family("glow_bloom"));
+        assert!(is_bloom_family("post.bloom"));
+        assert!(!is_bloom_family("hsla_overlay"));
+    }
+
+    #[test]
+    fn wasm_webgpu_compatibility_list() {
+        assert!(is_wasm_webgpu_compatible_effect("hsla_overlay"));
+        assert!(is_wasm_webgpu_compatible_effect("gaussian_5tap_blur"));
+        assert!(is_wasm_webgpu_compatible_effect("blur"));
+        // Bloom alias is now wired to the WASM WebGPU shader (P2).
+        assert!(is_wasm_webgpu_compatible_effect("bloom"));
+        assert!(is_wasm_webgpu_compatible_effect("glow_bloom"));
+    }
+}

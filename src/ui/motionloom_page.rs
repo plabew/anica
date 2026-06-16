@@ -102,6 +102,16 @@ enum SceneLivePreviewFrame {
 }
 
 impl SceneLivePreviewFrame {
+    fn preview_status_label(&self) -> &'static str {
+        match self {
+            Self::Bgra { .. } => "Preview: CPU BGRA",
+            #[cfg(target_os = "macos")]
+            Self::MacOsSurface { .. } => "Preview: macOS BGRA surface",
+            #[cfg(target_os = "windows")]
+            Self::WindowsSurface { .. } => "Preview: Windows D3D BGRA surface",
+        }
+    }
+
     fn into_loaded_preview(self) -> Result<LoadedPreview, MotionLoomPageError> {
         match self {
             Self::Bgra {
@@ -600,6 +610,7 @@ pub struct MotionLoomPage {
     scene_live_parsed_script_hash: Option<u64>,
     scene_live_parsed_graph: Option<GraphScript>,
     scene_live_preview_quality: SceneLivePreviewQuality,
+    scene_live_preview_status: String,
     scene_live_render_defer_until: Option<Instant>,
     scene_live_render_defer_token: u64,
     scene_live_async_render_key: Option<SceneLivePreviewCacheKey>,
@@ -688,6 +699,7 @@ impl MotionLoomPage {
             scene_live_parsed_script_hash: None,
             scene_live_parsed_graph: None,
             scene_live_preview_quality: SceneLivePreviewQuality::P360,
+            scene_live_preview_status: "Preview: idle".to_string(),
             scene_live_render_defer_until: None,
             scene_live_render_defer_token: 0,
             scene_live_async_render_key: None,
@@ -966,6 +978,13 @@ impl MotionLoomPage {
                     // Keep preview responsive by discarding stale queued frames.
                     while let Ok(next_request) = request_rx.try_recv() {
                         request = next_request;
+                    }
+                    if gpu_renderer.is_none() {
+                        gpu_renderer = std::panic::catch_unwind(|| {
+                            pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).ok()
+                        })
+                        .ok()
+                        .flatten();
                     }
                     let graph = request.graph.clone();
                     let frame = request.frame;
@@ -1343,9 +1362,22 @@ impl MotionLoomPage {
         }
 
         let final_size = graph.render_size.unwrap_or(graph.size);
+        let uses_scene_process_composition = !graph.textures.is_empty()
+            || !graph.passes.is_empty()
+            || !graph.outputs.is_empty()
+            || !graph.layers.is_empty()
+            || !graph.world_sources.is_empty();
         let effective_quality = self.scene_live_effective_preview_quality();
-        let preview_size =
-            Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()));
+        let preview_size = if uses_scene_process_composition {
+            // Mixed Scene+Process graphs keep their authored render size for now.
+            // Downscaling via Graph.render_size can make native wgpu reuse an
+            // offscreen scene canvas as both sampled input and storage output in
+            // later process passes. The display element still fits the rendered
+            // frame to the UI preview bounds.
+            final_size
+        } else {
+            Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()))
+        };
         let key = (
             script_hash,
             frame,
@@ -1367,11 +1399,11 @@ impl MotionLoomPage {
         if self.scene_live_async_render_key.is_some() {
             return Ok(self.scene_live_preview_cache_image.clone());
         }
-        if self.preview_playing && self.scene_live_prerendering {
-            if let Some(preview) = self.scene_live_preview_cache_image.as_ref() {
-                return Ok(Some(preview.clone()));
-            }
-            return Ok(None);
+        if self.preview_playing
+            && self.scene_live_prerendering
+            && let Some(preview) = self.scene_live_preview_cache_image.as_ref()
+        {
+            return Ok(Some(preview.clone()));
         }
 
         let mut preview_graph = graph.clone();
@@ -1381,6 +1413,7 @@ impl MotionLoomPage {
 
         if self.scene_live_async_render_key != Some(key) {
             self.scene_live_async_render_key = Some(key);
+            self.scene_live_preview_status = "Preview: rendering...".to_string();
             self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
             let token = self.scene_live_async_render_token;
             let (tx, rx) =
@@ -1410,11 +1443,17 @@ impl MotionLoomPage {
                         match rx.try_recv() {
                             Ok(Ok((frame, warning))) => {
                                 this.scene_live_async_render_key = None;
+                                let preview_status = if warning.is_some() {
+                                    "Preview: CPU fallback".to_string()
+                                } else {
+                                    frame.preview_status_label().to_string()
+                                };
                                 if let Ok(preview) = frame.into_loaded_preview() {
                                     this.scene_live_preview_cache_key = Some(key);
                                     this.scene_live_preview_cache_image = Some(preview.clone());
                                     this.insert_scene_live_preview_frame_cache(key, preview);
                                 }
+                                this.scene_live_preview_status = preview_status;
                                 if let Some(warning) = warning {
                                     this.push_scene_render_log(warning);
                                 }
@@ -1423,6 +1462,7 @@ impl MotionLoomPage {
                             }
                             Ok(Err(err)) => {
                                 this.scene_live_async_render_key = None;
+                                this.scene_live_preview_status = "Preview: error".to_string();
                                 this.status_line = err.clone();
                                 this.push_scene_render_log(format!("LIVE PREVIEW ERROR: {err}"));
                                 done = true;
@@ -1431,6 +1471,8 @@ impl MotionLoomPage {
                             Err(mpsc::TryRecvError::Empty) => {}
                             Err(mpsc::TryRecvError::Disconnected) => {
                                 this.scene_live_async_render_key = None;
+                                this.scene_live_preview_status =
+                                    "Preview: worker disconnected".to_string();
                                 this.push_scene_render_log(
                                     "LIVE PREVIEW ERROR: render worker disconnected.".to_string(),
                                 );
@@ -1488,11 +1530,11 @@ impl MotionLoomPage {
             self.scene_live_preview_cache_image = Some(preview.clone());
             return Ok(Some(preview));
         }
-        if self.preview_playing && self.scene_live_prerendering {
-            if let Some(preview) = self.scene_live_preview_cache_image.as_ref() {
-                return Ok(Some(preview.clone()));
-            }
-            return Ok(None);
+        if self.preview_playing
+            && self.scene_live_prerendering
+            && let Some(preview) = self.scene_live_preview_cache_image.as_ref()
+        {
+            return Ok(Some(preview.clone()));
         }
 
         let mut preview_graph = graph.clone();
@@ -8626,6 +8668,33 @@ impl Render for MotionLoomPage {
                     .child(scene_live_knob_scroll_label),
             )
             .child(scene_live_knob_input_elem);
+        let scene_live_status_is_warning = self.scene_live_preview_status.contains("CPU fallback")
+            || self.scene_live_preview_status.contains("error");
+        let scene_live_preview_status_chip = div()
+            .h(px(26.0))
+            .px_2()
+            .flex_shrink_0()
+            .rounded_md()
+            .border_1()
+            .border_color(if scene_live_status_is_warning {
+                rgba(0xff7a66ff)
+            } else {
+                rgba(0xffffff24)
+            })
+            .bg(if scene_live_status_is_warning {
+                rgba(0x3a1212aa)
+            } else {
+                rgba(0xffffff0c)
+            })
+            .flex()
+            .items_center()
+            .text_xs()
+            .text_color(if scene_live_status_is_warning {
+                rgba(0xffb4aaff)
+            } else {
+                rgba(0xffffffad)
+            })
+            .child(self.scene_live_preview_status.clone());
         let scene_live_controls_row = div()
             .w_full()
             .min_w_0()
@@ -8918,7 +8987,8 @@ impl Render for MotionLoomPage {
                                     ),
                                 )),
                         )
-                    }),
+                    })
+                    .child(scene_live_preview_status_chip),
             )
             .when_some(scene_render_log_panel, |el, panel| el.child(panel));
 

@@ -10,7 +10,6 @@ use web_sys::HtmlCanvasElement;
 
 use crate::common::gpu_async::{DevicePoller, request_adapter_async, request_device_async};
 use crate::dsl::{PassNode, parse_graph_script};
-use crate::process::pass::normalize_effect_key;
 use crate::process::runtime::{compile_runtime_program, eval_time_expr};
 
 #[derive(Debug, thiserror::Error)]
@@ -77,6 +76,8 @@ struct ProcessWebGpuRenderer {
     sampler: wgpu::Sampler,
     pass_bind_group_layout: wgpu::BindGroupLayout,
     pass_pipeline: wgpu::RenderPipeline,
+    composite_bind_group_layout: wgpu::BindGroupLayout,
+    composite_pipeline: wgpu::RenderPipeline,
     present_bind_group_layout: wgpu::BindGroupLayout,
     present_pipeline_layout: wgpu::PipelineLayout,
     width: u32,
@@ -189,6 +190,84 @@ impl ProcessWebGpuRenderer {
             cache: None,
         });
 
+        let composite_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("anica-motionloom-process-webgpu-composite-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let composite_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("anica-motionloom-process-webgpu-composite-pipeline-layout"),
+                bind_group_layouts: &[&composite_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("anica-motionloom-process-webgpu-composite-shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(COMPOSITE_SHADER)),
+        });
+        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("anica-motionloom-process-webgpu-composite-pipeline"),
+            layout: Some(&composite_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &composite_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &composite_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         let present_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("anica-motionloom-process-webgpu-present-bgl"),
@@ -219,6 +298,8 @@ impl ProcessWebGpuRenderer {
             sampler,
             pass_bind_group_layout,
             pass_pipeline,
+            composite_bind_group_layout,
+            composite_pipeline,
             present_bind_group_layout,
             present_pipeline_layout,
             width,
@@ -236,10 +317,11 @@ impl ProcessWebGpuRenderer {
     ) -> Result<(), ProcessWebGpuRenderError> {
         let tex_a = self.create_render_texture("anica-motionloom-process-webgpu-tex-a");
         let tex_b = self.create_render_texture("anica-motionloom-process-webgpu-tex-b");
+        let tex_backup = self.create_render_texture("anica-motionloom-process-webgpu-tex-backup");
         self.write_texture_rgba(&tex_a, rgba);
 
         let mut current_is_a = true;
-        let mut uniform_buffers = Vec::with_capacity(passes.len().saturating_mul(2));
+        let mut uniform_buffers = Vec::with_capacity(passes.len().saturating_mul(4));
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -247,11 +329,30 @@ impl ProcessWebGpuRenderer {
             });
 
         for pass in passes {
-            for effect_id in process_effect_ids(pass)? {
+            let effect_ids = process_effect_ids(pass)?;
+            let is_bloom_pass = effect_ids.contains(&4);
+            if is_bloom_pass {
+                // Preserve the original image before the bloom pipeline mutates it.
+                let src = if current_is_a { &tex_a } else { &tex_b };
+                self.copy_texture_to_texture(&mut encoder, src, &tex_backup);
+            }
+            for effect_id in effect_ids {
                 let uniform_buffer = self.make_uniform_buffer(pass, effect_id, time_norm, time_sec);
                 let src = if current_is_a { &tex_a } else { &tex_b };
                 let dst = if current_is_a { &tex_b } else { &tex_a };
-                self.encode_process_pass(&mut encoder, src, dst, &uniform_buffer);
+                if effect_id == 5 {
+                    // Composite pass: blend the blurred image (src) with the
+                    // preserved original (tex_backup).
+                    self.encode_composite_pass(
+                        &mut encoder,
+                        src,
+                        &tex_backup,
+                        dst,
+                        &uniform_buffer,
+                    );
+                } else {
+                    self.encode_process_pass(&mut encoder, src, dst, &uniform_buffer);
+                }
                 uniform_buffers.push(uniform_buffer);
                 current_is_a = !current_is_a;
             }
@@ -337,9 +438,15 @@ impl ProcessWebGpuRenderer {
             process_param_f32(pass, &["lightness", "lum", "l"], time_norm, time_sec, 0.0),
             process_param_f32(pass, &["alpha", "a"], time_norm, time_sec, 0.0),
             process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0),
-            0.0,
-            0.0,
-            0.0,
+            process_param_f32(pass, &["threshold"], time_norm, time_sec, 0.72),
+            process_param_f32(
+                pass,
+                &["intensity", "strength", "amount"],
+                time_norm,
+                time_sec,
+                1.0,
+            ),
+            process_param_f32(pass, &["sigma", "radius"], time_norm, time_sec, 18.0),
         ];
         let mut bytes = Vec::with_capacity(values.len() * 4);
         for value in values {
@@ -399,6 +506,85 @@ impl ProcessWebGpuRenderer {
         pass.set_pipeline(&self.pass_pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
+    }
+
+    fn encode_composite_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        blurred: &wgpu::Texture,
+        original: &wgpu::Texture,
+        dst: &wgpu::Texture,
+        uniform_buffer: &wgpu::Buffer,
+    ) {
+        let blurred_view = blurred.create_view(&wgpu::TextureViewDescriptor::default());
+        let original_view = original.create_view(&wgpu::TextureViewDescriptor::default());
+        let dst_view = dst.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("anica-motionloom-process-webgpu-composite-bg"),
+            layout: &self.composite_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&blurred_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&original_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("anica-motionloom-process-webgpu-composite-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &dst_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.composite_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    fn copy_texture_to_texture(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        src: &wgpu::Texture,
+        dst: &wgpu::Texture,
+    ) {
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: src,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: dst,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     fn present_texture_to_canvas(
@@ -542,16 +728,15 @@ impl MappedBufferWrite for wgpu::Buffer {
 }
 
 fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderError> {
-    match normalize_effect_key(&pass.effect)
-        .replace(['.', '-'], "_")
-        .as_str()
-    {
-        "hsla_overlay" | "hsla" | "tint_overlay" | "color_tone_hsla_overlay" => Ok(vec![1]),
-        "gaussian_5tap_blur" | "gaussian_blur" | "blur" => Ok(vec![2, 3]),
-        "gaussian_5tap_h" => Ok(vec![2]),
-        "gaussian_5tap_v" => Ok(vec![3]),
-        other => Err(ProcessWebGpuRenderError::UnsupportedEffect(
-            other.to_string(),
+    use crate::process::effect_kind::resolve_process_effect;
+    match resolve_process_effect(&pass.effect) {
+        Some(crate::process::effect_kind::ProcessEffect::HslaOverlay) => Ok(vec![1]),
+        Some(crate::process::effect_kind::ProcessEffect::GaussianBlur) => Ok(vec![2, 3]),
+        Some(crate::process::effect_kind::ProcessEffect::GaussianBlurHorizontal) => Ok(vec![2]),
+        Some(crate::process::effect_kind::ProcessEffect::GaussianBlurVertical) => Ok(vec![3]),
+        Some(crate::process::effect_kind::ProcessEffect::GlowBloom) => Ok(vec![4, 2, 3, 5]),
+        None => Err(ProcessWebGpuRenderError::UnsupportedEffect(
+            pass.effect.clone(),
         )),
     }
 }
@@ -583,6 +768,8 @@ const PROCESS_PASS_SHADER: &str = concat!(
     include_str!("kernels/color_tone/color_core.wgsl"),
     "\n",
     include_str!("kernels/blur_sharpen_detail/blur_sharpen_detail_gaussian.wgsl"),
+    "\n",
+    include_str!("kernels/light_atmosphere/light_atmosphere_bloom_prefilter.wgsl"),
     r#"
 
 struct ProcessParams {
@@ -595,9 +782,9 @@ struct ProcessParams {
     lightness: f32,
     alpha: f32,
     sigma: f32,
-    _pad1: f32,
-    _pad2: f32,
-    _pad3: f32,
+    bloom_threshold: f32,
+    bloom_intensity: f32,
+    bloom_sigma: f32,
 };
 
 @group(0) @binding(0) var src_tex: texture_2d<f32>;
@@ -635,13 +822,73 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let base = textureSampleLevel(src_tex, src_samp, uv, 0.0);
     var rgb = base.rgb;
     if params.effect_id < 1.5 {
+        // HSLA overlay
         rgb = ml_hsla_overlay(rgb, params.hue, params.saturation, params.lightness, params.alpha);
     } else if params.effect_id < 2.5 {
+        // Gaussian blur horizontal
         rgb = ml_blur_sharpen_detail_gaussian_5tap_h(src_tex, src_samp, uv, texel);
-    } else {
+    } else if params.effect_id < 3.5 {
+        // Gaussian blur vertical
         rgb = ml_blur_sharpen_detail_gaussian_5tap_v(src_tex, src_samp, uv, texel);
+    } else if params.effect_id < 4.5 {
+        // Bloom prefilter: extract bright pixels
+        rgb = ml_light_atmosphere_bloom_prefilter(rgb, params.bloom_threshold, 0.5);
     }
     return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);
+}
+"#
+);
+
+const COMPOSITE_SHADER: &str = concat!(
+    include_str!("kernels/color_tone/color_core.wgsl"),
+    r#"
+
+struct ProcessParams {
+    width: f32,
+    height: f32,
+    effect_id: f32,
+    _pad0: f32,
+    hue: f32,
+    saturation: f32,
+    lightness: f32,
+    alpha: f32,
+    sigma: f32,
+    bloom_threshold: f32,
+    bloom_intensity: f32,
+    bloom_sigma: f32,
+};
+
+@group(0) @binding(0) var blurred_tex: texture_2d<f32>;
+@group(0) @binding(1) var src_samp: sampler;
+@group(0) @binding(2) var original_tex: texture_2d<f32>;
+@group(0) @binding(3) var<uniform> params: ProcessParams;
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    let pos = positions[vertex_index];
+    var out: VertexOut;
+    out.position = vec4<f32>(pos, 0.0, 1.0);
+    out.uv = pos * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let uv = clamp(in.uv, vec2<f32>(0.0), vec2<f32>(1.0));
+    let blurred = textureSampleLevel(blurred_tex, src_samp, uv, 0.0);
+    let original = textureSampleLevel(original_tex, src_samp, uv, 0.0);
+    let rgb = ml_glow_bloom(original.rgb, blurred.rgb, params.bloom_threshold, params.bloom_intensity);
+    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), original.a);
 }
 "#
 );

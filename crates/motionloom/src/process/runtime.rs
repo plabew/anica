@@ -632,19 +632,7 @@ fn pass_param_f32(pass: &PassNode, keys: &[&str]) -> Option<f32> {
 }
 
 fn is_bloom_effect(effect: &str) -> bool {
-    let normalized = effect.trim().replace('-', "_");
-    matches!(
-        normalized.as_str(),
-        "bloom"
-            | "glow"
-            | "glow_bloom"
-            | "post.bloom"
-            | "post.glow"
-            | "post.glow_bloom"
-            | "light_atmosphere.bloom"
-            | "light_atmosphere.glow"
-            | "light_atmosphere.glow_bloom"
-    )
+    crate::process::effect_kind::is_bloom_family(effect)
 }
 
 fn normalize_param_expr(value: &str) -> String {

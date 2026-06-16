@@ -6,3 +6,4 @@ pub(crate) const WGPU_MATTE_TEXTURE_SHADER: &str = include_str!("matte_texture.w
 pub(crate) const WGPU_SHAPE_SHADER: &str = include_str!("shape.wgsl");
 pub(crate) const WGPU_BATCH_SHAPE_SHADER: &str = include_str!("batch_shape.wgsl");
 pub(crate) const WGPU_POST_SHADER: &str = include_str!("post.wgsl");
+pub(crate) const WGPU_BLOOM_SHADER: &str = include_str!("bloom.wgsl");

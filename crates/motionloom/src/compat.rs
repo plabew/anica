@@ -67,6 +67,7 @@ pub fn inspect_gpu_compatibility(script: &str) -> Result<GpuCompatibilityReport,
     let mut issues = Vec::<GpuCompatibilityIssue>::new();
 
     inspect_scene_preview_compatibility(&root, &graph, &mut issues);
+    inspect_scene_gpu_feature_compatibility(&graph, &mut issues);
     inspect_wasm_process_compatibility(&root, &graph, &mut issues);
     inspect_wgpu_texture_output_compatibility(&graph, &mut issues);
 
@@ -77,10 +78,15 @@ pub fn inspect_gpu_compatibility(script: &str) -> Result<GpuCompatibilityReport,
         !has_blocking(&issues, GpuCompatibilityTarget::WasmProcessWebGpu);
     let can_use_wgpu_texture_output =
         !has_blocking(&issues, GpuCompatibilityTarget::WgpuTextureOutput);
-    let likely_cpu_fallback = !issues.is_empty()
-        && issues
-            .iter()
-            .any(|issue| issue.severity == GpuCompatibilitySeverity::Blocking);
+    let likely_cpu_fallback = issues.iter().any(|issue| {
+        issue.severity == GpuCompatibilitySeverity::Blocking
+            && matches!(
+                issue.target,
+                GpuCompatibilityTarget::NativeScenePreview
+                    | GpuCompatibilityTarget::WasmSceneCanvas
+                    | GpuCompatibilityTarget::WasmProcessWebGpu
+            )
+    });
 
     let likely_preview_path =
         choose_likely_preview_path(can_use_native_scene_preview, can_use_wgpu_texture_output);
@@ -122,32 +128,48 @@ fn inspect_scene_preview_compatibility(
     issues: &mut Vec<GpuCompatibilityIssue>,
 ) {
     if root.has_scene && root.has_process {
-        push_blocking(
-            issues,
-            GpuCompatibilityTarget::NativeScenePreview,
-            "mixed_scene_process",
-            "Mixed <Scene> + <Process> graphs need scene-to-process composition; current native live GPU preview may use CPU fallback.",
-        );
-        push_blocking(
-            issues,
-            GpuCompatibilityTarget::WasmSceneCanvas,
-            "mixed_scene_process",
-            "Mixed <Scene> + <Process> graphs are not direct WebGPU scene-canvas renders; current WASM path may use CPU fallback.",
-        );
+        let all_process_gpu_native = graph.passes.iter().all(is_wasm_process_webgpu_effect);
+        if all_process_gpu_native {
+            push_info(
+                issues,
+                GpuCompatibilityTarget::NativeScenePreview,
+                "mixed_scene_process",
+                "Mixed <Scene> + <Process> graph with GPU-native process passes; preview will work.",
+            );
+            push_info(
+                issues,
+                GpuCompatibilityTarget::WasmSceneCanvas,
+                "mixed_scene_process",
+                "Mixed <Scene> + <Process> graph with GPU-native process passes; canvas render will work.",
+            );
+        } else {
+            push_blocking(
+                issues,
+                GpuCompatibilityTarget::NativeScenePreview,
+                "mixed_scene_process",
+                "Mixed <Scene> + <Process> graphs need scene-to-process composition; current native live GPU preview may use CPU fallback.",
+            );
+            push_blocking(
+                issues,
+                GpuCompatibilityTarget::WasmSceneCanvas,
+                "mixed_scene_process",
+                "Mixed <Scene> + <Process> graphs are not direct WebGPU scene-canvas renders; current WASM path may use CPU fallback.",
+            );
+        }
     }
 
-    if has_graph_composition(graph) {
+    if has_non_gpu_native_composition(graph) {
         push_blocking(
             issues,
             GpuCompatibilityTarget::NativeScenePreview,
             "tex_pass_output_composition",
-            "Tex/Pass/Output composition is not GPU-native in the scene live preview path yet.",
+            "Tex/Pass/Output composition contains non-GPU-native elements in the scene live preview path.",
         );
         push_blocking(
             issues,
             GpuCompatibilityTarget::WasmSceneCanvas,
             "tex_pass_output_composition",
-            "Tex/Pass/Output composition is not supported by direct WASM scene canvas rendering yet.",
+            "Tex/Pass/Output composition contains non-GPU-native elements for direct WASM scene canvas rendering.",
         );
     }
 
@@ -170,6 +192,201 @@ fn inspect_scene_preview_compatibility(
             "A process texture reads from a scene source; this is outside direct scene canvas rendering.",
         );
     }
+}
+
+fn inspect_scene_gpu_feature_compatibility(
+    graph: &GraphScript,
+    issues: &mut Vec<GpuCompatibilityIssue>,
+) {
+    use crate::scene::drawable::is_gpu_native_blend;
+    use crate::scene::model::SceneNode;
+
+    let mut features = SceneGpuFeatures::default();
+
+    fn scan_nodes(nodes: &[SceneNode], features: &mut SceneGpuFeatures) {
+        for node in nodes {
+            match node {
+                SceneNode::Path(path) => {
+                    features.has_path = true;
+                    if path.trim_start.trim() != "0" && path.trim_start.trim() != "0.0" {
+                        features.has_trim_path = true;
+                    }
+                    if path.trim_end.trim() != "1" && path.trim_end.trim() != "1.0" {
+                        features.has_trim_path = true;
+                    }
+                    if !is_gpu_native_blend(&path.blend) {
+                        features.has_non_gpu_blend = true;
+                    }
+                }
+                SceneNode::Repeat(_) => {
+                    features.has_repeat = true;
+                }
+                SceneNode::Text(text) => {
+                    if text.font_family.is_some()
+                        || (text.render_scale.trim() != "1" && text.render_scale.trim() != "1.0")
+                    {
+                        features.has_advanced_text = true;
+                    }
+                }
+                SceneNode::Rect(rect) => {
+                    if !is_gpu_native_blend(&rect.blend) {
+                        features.has_non_gpu_blend = true;
+                    }
+                }
+                SceneNode::Circle(circle) => {
+                    if !is_gpu_native_blend(&circle.blend) {
+                        features.has_non_gpu_blend = true;
+                    }
+                }
+                SceneNode::Line(line) => {
+                    if !is_gpu_native_blend(&line.blend) {
+                        features.has_non_gpu_blend = true;
+                    }
+                }
+                SceneNode::Polyline(polyline) => {
+                    if !is_gpu_native_blend(&polyline.blend) {
+                        features.has_non_gpu_blend = true;
+                    }
+                }
+                SceneNode::Defs(defs) => {
+                    for _gradient in &defs.gradients {
+                        features.has_gradient = true;
+                    }
+                }
+                SceneNode::Timeline(timeline) => {
+                    scan_nodes(&timeline.children, features);
+                }
+                SceneNode::Track(track) => {
+                    scan_nodes(&track.children, features);
+                }
+                SceneNode::Sequence(sequence) => {
+                    scan_nodes(&sequence.children, features);
+                }
+                SceneNode::Chain(chain) => {
+                    scan_nodes(&chain.children, features);
+                }
+                SceneNode::Group(group) => {
+                    scan_nodes(&group.children, features);
+                }
+                SceneNode::Part(part) => {
+                    scan_nodes(&part.children, features);
+                }
+                SceneNode::Camera(camera) => {
+                    scan_nodes(&camera.children, features);
+                }
+                SceneNode::Character(character) => {
+                    scan_nodes(&character.children, features);
+                }
+                SceneNode::Layer(layer) => {
+                    scan_nodes(&layer.children, features);
+                }
+                SceneNode::Precompose(precompose) => {
+                    scan_nodes(&precompose.children, features);
+                }
+                SceneNode::Mask(mask) => {
+                    scan_nodes(&mask.children, features);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for scene in &graph.scenes {
+        scan_nodes(&scene.children, &mut features);
+    }
+    scan_nodes(&graph.scene_nodes, &mut features);
+
+    // Check expressions for random() and complex math
+    let script_str = graph.raw_script.as_deref().unwrap_or("");
+    if script_str.contains("random(") {
+        features.has_random_expr = true;
+    }
+    if script_str.contains("sin(") || script_str.contains("cos(") || script_str.contains("+ 0.0") {
+        features.has_complex_expr = true;
+    }
+
+    if features.has_path {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "path",
+            "Path nodes present; GPU path supports basic fill/stroke and trim.",
+        );
+    }
+    if features.has_repeat {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "repeat",
+            "Repeat nodes present; GPU path supports repeat with deterministic expressions.",
+        );
+    }
+    if features.has_gradient {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "gradient",
+            "Gradient fill present; GPU path supports LinearGradient and RadialGradient.",
+        );
+    }
+    if features.has_non_gpu_blend {
+        push_blocking(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "non_gpu_blend",
+            "Non-GPU-native blend mode detected; GPU path only supports normal, multiply, screen, add.",
+        );
+        push_blocking(
+            issues,
+            GpuCompatibilityTarget::WasmSceneCanvas,
+            "non_gpu_blend",
+            "Non-GPU-native blend mode detected; GPU path only supports normal, multiply, screen, add.",
+        );
+    }
+    if features.has_random_expr {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "random_expr",
+            "Random expressions present; GPU path evaluates them deterministically at CPU time.",
+        );
+    }
+    if features.has_complex_expr {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "complex_expr",
+            "Complex math expressions present; GPU path evaluates them at CPU time.",
+        );
+    }
+    if features.has_advanced_text {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "advanced_text",
+            "Advanced text features (fontFamily, renderScale) present; GPU path rasterizes text to texture.",
+        );
+    }
+    if features.has_trim_path {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "trim_path",
+            "Path trimStart/trimEnd present; GPU path supports stroke trimming.",
+        );
+    }
+}
+
+#[derive(Default)]
+struct SceneGpuFeatures {
+    has_path: bool,
+    has_repeat: bool,
+    has_gradient: bool,
+    has_non_gpu_blend: bool,
+    has_random_expr: bool,
+    has_complex_expr: bool,
+    has_advanced_text: bool,
+    has_trim_path: bool,
 }
 
 fn inspect_wasm_process_compatibility(
@@ -200,12 +417,12 @@ fn inspect_wgpu_texture_output_compatibility(
     graph: &GraphScript,
     issues: &mut Vec<GpuCompatibilityIssue>,
 ) {
-    if has_graph_composition(graph) {
+    if has_non_gpu_native_composition(graph) {
         push_blocking(
             issues,
             GpuCompatibilityTarget::WgpuTextureOutput,
             "tex_pass_output_composition",
-            "Direct wgpu texture output does not support Tex/Pass/Output composition yet.",
+            "Direct wgpu texture output does not support non-GPU-native Tex/Pass/Output composition yet.",
         );
     }
 
@@ -219,29 +436,26 @@ fn inspect_wgpu_texture_output_compatibility(
     }
 }
 
-fn has_graph_composition(graph: &GraphScript) -> bool {
-    !graph.textures.is_empty()
-        || !graph.passes.is_empty()
-        || !graph.outputs.is_empty()
-        || !graph.layers.is_empty()
+fn has_non_gpu_native_composition(graph: &GraphScript) -> bool {
+    let explicit_outputs = graph
+        .outputs
+        .iter()
+        .filter(|o| !o.is_process_implicit)
+        .count();
+    !graph.layers.is_empty()
         || !graph.world_sources.is_empty()
+        || explicit_outputs > 0
+        || graph
+            .passes
+            .iter()
+            .any(|pass| !is_wasm_process_webgpu_effect(pass))
 }
 
 fn is_wasm_process_webgpu_effect(pass: &PassNode) -> bool {
-    matches!(
-        normalize_effect_key(&pass.effect).as_str(),
-        "hsla_overlay"
-            | "hsla"
-            | "tint_overlay"
-            | "color_tone_hsla_overlay"
-            | "gaussian_5tap_blur"
-            | "gaussian_blur"
-            | "blur"
-            | "gaussian_5tap_h"
-            | "gaussian_5tap_v"
-    )
+    crate::process::effect_kind::is_wasm_webgpu_compatible_effect(&pass.effect)
 }
 
+#[allow(dead_code)]
 fn normalize_effect_key(effect: &str) -> String {
     effect.trim().to_ascii_lowercase().replace(['.', '-'], "_")
 }
@@ -341,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_scene_process_reports_cpu_fallback_reasons() {
+    fn mixed_scene_process_with_gpu_native_passes_is_compatible() {
         let report = inspect_gpu_compatibility(
             r##"
 <Graph fps={30} duration="1s" size={[320,180]}>
@@ -367,16 +581,57 @@ mod tests {
         )
         .expect("compatibility report");
 
-        assert!(report.likely_cpu_fallback);
-        assert!(!report.can_use_wasm_scene_canvas);
-        assert!(!report.can_use_native_scene_preview);
-        assert!(!report.can_use_wasm_process_webgpu);
-        assert_eq!(report.likely_preview_path, ScenePreviewPath::CpuBgra);
+        // P4: GPU-native mixed graphs are no longer blocking.
+        assert!(!report.likely_cpu_fallback);
+        assert!(report.can_use_wasm_scene_canvas);
+        assert!(report.can_use_native_scene_preview);
+        // The glow_bloom effect is now recognized via alias (P1), so the WASM
+        // process path itself is compatible.
+        assert!(report.can_use_wasm_process_webgpu);
         assert!(report.issues.iter().any(|issue| {
-            issue.target == GpuCompatibilityTarget::WasmProcessWebGpu
-                && issue.severity == GpuCompatibilitySeverity::Blocking
-                && issue.code == "unsupported_wasm_process_effect"
+            issue.target == GpuCompatibilityTarget::NativeScenePreview
+                && issue.severity == GpuCompatibilitySeverity::Info
+                && issue.code == "mixed_scene_process"
         }));
+        assert!(report.issues.iter().any(|issue| {
+            issue.target == GpuCompatibilityTarget::WasmSceneCanvas
+                && issue.severity == GpuCompatibilitySeverity::Info
+                && issue.code == "mixed_scene_process"
+        }));
+    }
+
+    #[test]
+    fn scene_plus_bloom_process_is_gpu_compatible() {
+        let report = inspect_gpu_compatibility(
+            r##"
+<Graph fps={30} duration="1s" size={[320,180]}>
+  <Scene id="demo_scene">
+    <Timeline>
+      <Track>
+        <Sequence duration="1s">
+          <Circle x="160" y="90" radius="40" color="#FFFFFF" />
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Process id="post">
+    <Tex id="scene_src" fmt="rgba16f" from="scene:demo_scene" />
+    <Tex id="out" fmt="rgba16f" size={[320,180]} />
+    <Pass id="bloom" kind="compute" effect="bloom"
+          in={["scene_src"]} out={["out"]}
+          params={{ intensity: "1.0" }} />
+  </Process>
+  <Present from="post" />
+</Graph>
+"##,
+        )
+        .expect("compatibility report");
+
+        // The bloom alias is recognized, so WASM process itself is compatible.
+        assert!(report.can_use_wasm_process_webgpu);
+        // P4: Native scene preview is now compatible for GPU-native mixed graphs.
+        assert!(report.can_use_native_scene_preview);
+        assert!(!report.likely_cpu_fallback);
     }
 
     #[test]
@@ -403,5 +658,125 @@ mod tests {
         .expect("compatibility report");
 
         assert!(report.can_use_wasm_process_webgpu);
+    }
+
+    #[test]
+    fn simple_shapes_are_gpu_compatible() {
+        let report = inspect_gpu_compatibility(
+            r##"
+<Graph fps={30} duration="1s" size={[320,180]}>
+  <Scene id="demo">
+    <Timeline>
+      <Track>
+        <Sequence duration="1s">
+          <Rect x="10" y="10" width="100" height="80" color="#FF0000" />
+          <Circle x="160" y="90" radius="40" color="#FFFFFF" />
+          <Text value="Hello" x="50" y="50" fontSize="24" color="#000000" />
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="scene:demo" />
+</Graph>
+"##,
+        )
+        .expect("compatibility report");
+
+        assert!(report.can_use_native_scene_preview);
+        assert!(report.can_use_wasm_scene_canvas);
+        assert!(!report.likely_cpu_fallback);
+    }
+
+    #[test]
+    fn path_with_non_gpu_blend_blocks_gpu() {
+        let report = inspect_gpu_compatibility(
+            r##"
+<Graph fps={30} duration="1s" size={[320,180]}>
+  <Scene id="demo">
+    <Timeline>
+      <Track>
+        <Sequence duration="1s">
+          <Path d="M 0 0 L 100 100" stroke="#FF0000" strokeWidth="2" blend="overlay" />
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="scene:demo" />
+</Graph>
+"##,
+        )
+        .expect("compatibility report");
+
+        assert!(!report.can_use_native_scene_preview);
+        assert!(!report.can_use_wasm_scene_canvas);
+        assert!(report.likely_cpu_fallback);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == "non_gpu_blend" && issue.severity == GpuCompatibilitySeverity::Blocking
+        }));
+    }
+
+    #[test]
+    fn gradient_fill_reports_info() {
+        let report = inspect_gpu_compatibility(
+            r##"
+<Graph fps={30} duration="1s" size={[320,180]}>
+  <Scene id="demo">
+    <Defs>
+      <LinearGradient id="g" x1="0" y1="0" x2="1" y2="1"
+                      stops="0:#FF0000, 1:#00FF00" />
+    </Defs>
+    <Timeline>
+      <Track>
+        <Sequence duration="1s">
+          <Rect x="10" y="10" width="100" height="80" fill="url(#g)" />
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="scene:demo" />
+</Graph>
+"##,
+        )
+        .expect("compatibility report");
+
+        assert!(report.can_use_native_scene_preview);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == "gradient" && issue.severity == GpuCompatibilitySeverity::Info
+        }));
+    }
+
+    #[test]
+    fn mixed_scene_process_with_scene_gpu_blocker_is_not_compatible() {
+        let report = inspect_gpu_compatibility(
+            r##"
+<Graph fps={30} duration="1s" size={[320,180]}>
+  <Scene id="demo">
+    <Timeline>
+      <Track>
+        <Sequence duration="1s">
+          <Path d="M 0 0 L 100 100" stroke="#FF0000" strokeWidth="2" blend="overlay" />
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Process id="post">
+    <Tex id="scene_src" fmt="rgba16f" from="scene:demo" />
+    <Tex id="out" fmt="rgba16f" size={[320,180]} />
+    <Pass id="bloom" kind="compute" effect="bloom"
+          in={["scene_src"]} out={["out"]}
+          params={{ intensity: "1.0" }} />
+  </Process>
+  <Present from="post" />
+</Graph>
+"##,
+        )
+        .expect("compatibility report");
+
+        assert!(!report.can_use_native_scene_preview);
+        assert!(!report.can_use_wasm_scene_canvas);
+        assert!(report.likely_cpu_fallback);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == "non_gpu_blend" && issue.severity == GpuCompatibilitySeverity::Blocking
+        }));
     }
 }

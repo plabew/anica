@@ -314,6 +314,9 @@ pub struct OutputNode {
     pub size: Option<(u32, u32)>,
     pub color_space: Option<ColorSpace>,
     pub alpha: Option<AlphaMode>,
+    /// True when this output was inferred from a `<Process>` block rather than an explicit `<Output>` node.
+    #[serde(default)]
+    pub is_process_implicit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

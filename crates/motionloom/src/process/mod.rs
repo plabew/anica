@@ -3,6 +3,7 @@ pub mod cpu_effects;
 pub mod cpu_renderer;
 pub mod dsl;
 pub mod effect;
+pub mod effect_kind;
 pub mod error;
 pub mod graph;
 pub mod model;

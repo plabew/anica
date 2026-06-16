@@ -9,7 +9,6 @@ use crate::error::{GraphParseError, RuntimeCompileError};
 use crate::process::cpu_effects::{
     apply_gaussian_blur, apply_hsla_overlay, apply_separable_gaussian_blur,
 };
-use crate::process::pass::normalize_effect_key;
 use crate::process::runtime::{RuntimeProgram, compile_runtime_program, eval_time_expr};
 
 #[derive(Debug, thiserror::Error)]
@@ -95,11 +94,9 @@ fn apply_process_pass(
     time_norm: f32,
     time_sec: f32,
 ) -> RgbaImage {
-    match normalize_effect_key(&pass.effect)
-        .replace(['.', '-'], "_")
-        .as_str()
-    {
-        "hsla_overlay" | "hsla" | "tint_overlay" | "color_tone_hsla_overlay" => {
+    use crate::process::effect_kind::{ProcessEffect, resolve_process_effect};
+    match resolve_process_effect(&pass.effect) {
+        Some(ProcessEffect::HslaOverlay) => {
             let hue = process_param_f32(pass, &["hue", "h"], time_norm, time_sec, 0.0);
             let saturation =
                 process_param_f32(pass, &["saturation", "sat", "s"], time_norm, time_sec, 0.0);
@@ -108,19 +105,23 @@ fn apply_process_pass(
             let alpha = process_param_f32(pass, &["alpha", "a"], time_norm, time_sec, 0.0);
             apply_hsla_overlay(&image, hue, saturation, lightness, alpha)
         }
-        "gaussian_5tap_blur" | "gaussian_blur" | "blur" => {
+        Some(ProcessEffect::GaussianBlur) => {
             let sigma = process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0);
             apply_gaussian_blur(&image, sigma.clamp(0.0, 64.0))
         }
-        "gaussian_5tap_h" => {
+        Some(ProcessEffect::GaussianBlurHorizontal) => {
             let sigma = process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0);
             apply_separable_gaussian_blur(&image, sigma.clamp(0.0, 64.0), true)
         }
-        "gaussian_5tap_v" => {
+        Some(ProcessEffect::GaussianBlurVertical) => {
             let sigma = process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0);
             apply_separable_gaussian_blur(&image, sigma.clamp(0.0, 64.0), false)
         }
-        _ => image,
+        Some(ProcessEffect::GlowBloom) => {
+            // CPU renderer does not implement bloom yet; pass through unchanged.
+            image
+        }
+        None => image,
     }
 }
 

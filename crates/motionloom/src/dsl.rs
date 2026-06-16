@@ -1129,6 +1129,7 @@ fn parse_process_resource_alias(
             size: None,
             color_space: None,
             alpha: None,
+            is_process_implicit: true,
         },
         open_end_ix + 1,
     ))
@@ -1591,6 +1592,7 @@ fn parse_output_node(block: &str, line: usize) -> Result<OutputNode, GraphParseE
         size,
         color_space,
         alpha,
+        is_process_implicit: false,
     })
 }
 

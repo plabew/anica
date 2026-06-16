@@ -8,6 +8,42 @@ struct PostParams {
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> params: PostParams;
 
+fn hue_to_rgb_channel(p: f32, q: f32, t_in: f32) -> f32 {
+    var t = t_in;
+    if (t < 0.0) {
+        t = t + 1.0;
+    }
+    if (t > 1.0) {
+        t = t - 1.0;
+    }
+    if (t < 1.0 / 6.0) {
+        return p + (q - p) * 6.0 * t;
+    }
+    if (t < 1.0 / 2.0) {
+        return q;
+    }
+    if (t < 2.0 / 3.0) {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
+    return p;
+}
+
+fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> vec3<f32> {
+    let h = fract(hue / 360.0);
+    let s = clamp(saturation, 0.0, 1.0);
+    let l = clamp(lightness, 0.0, 1.0);
+    if (s <= 0.0001) {
+        return vec3<f32>(l, l, l);
+    }
+    let q = select(l + s - l * s, l * (1.0 + s), l < 0.5);
+    let p = 2.0 * l - q;
+    return vec3<f32>(
+        hue_to_rgb_channel(p, q, h + 1.0 / 3.0),
+        hue_to_rgb_channel(p, q, h),
+        hue_to_rgb_channel(p, q, h - 1.0 / 3.0),
+    );
+}
+
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
@@ -46,6 +82,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let src = textureLoad(base_tex, vec2<i32>(i32(x), i32(y)), 0);
         let opacity = clamp(params.params.x, 0.0, 1.0);
         textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(src.rgb, src.a * opacity));
+        return;
+    }
+
+    if (mode == 4) {
+        let src = textureLoad(base_tex, vec2<i32>(i32(x), i32(y)), 0);
+        let overlay = hsl_to_rgb(params.params.x, params.params.y, params.params.z);
+        let alpha = clamp(params.canvas.w, 0.0, 1.0);
+        let rgb = mix(src.rgb, overlay, alpha);
+        textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
         return;
     }
 
