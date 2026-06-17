@@ -2139,6 +2139,7 @@ where
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 #[cfg_attr(target_arch = "wasm32", allow(unused_mut, unused_variables))]
 pub async fn render_world_graph_to_video_with_progress_and_cancel<F>(
     ffmpeg_bin: &str,

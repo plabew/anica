@@ -142,6 +142,7 @@ where
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn render_motionloom_document_to_video_with_progress_and_cancel<F>(
     ffmpeg_bin: &str,
     script: &str,

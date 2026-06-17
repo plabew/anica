@@ -122,6 +122,12 @@ Run the live preview:
 ```bash
 cargo run --release -p motionloom --example wgpu_live_preview -- ../motionloom-example/showcase/s-000005/main.motionloom
 ```
+or
+
+```bash
+cargo run --release -p motionloom --example wgpu_live_preview -- \
+  https://raw.githubusercontent.com/LOVELYZOMBIEYHO/motionloom-example/refs/heads/main/showcase/s-000007/main.motionloom
+```
 
 ---
 

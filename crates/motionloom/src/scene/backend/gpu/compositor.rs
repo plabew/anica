@@ -14,9 +14,10 @@ use crate::scene::backend::gpu::shaders::{
 };
 use crate::scene::drawable::{
     GpuSceneMatteMode, GpuSceneNativeTexture, GpuScenePrimitive, GpuSceneTextureLayer,
-    GpuSceneTextureSource, batch_shape_storage_bytes, batch_shape_uniform, matte_texture_uniform,
-    post_blur_uniform, post_color_uniform, post_hsla_overlay_uniform, post_light_sweep_uniform,
-    post_opacity_uniform, post_tint_uniform, post_tone_map_uniform, texture_layer_bounds,
+    GpuSceneTextureSource, PostLightSweepUniformParams, batch_shape_storage_bytes,
+    batch_shape_uniform, matte_texture_uniform, post_blur_uniform, post_color_uniform,
+    post_hsla_overlay_uniform, post_light_sweep_uniform, post_opacity_uniform, post_tint_uniform,
+    post_tone_map_uniform, texture_layer_bounds,
 };
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 use crate::scene::resource::{load_rgba_image_source, load_svg_source};
@@ -2009,16 +2010,16 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("anica-motionloom-scene-light-sweep-gpu-encoder"),
             });
-        let uniform = post_light_sweep_uniform(
-            width,
-            height,
+        let uniform = post_light_sweep_uniform(PostLightSweepUniformParams {
+            canvas_w: width,
+            canvas_h: height,
             position,
             angle,
-            width_param,
+            width: width_param,
             softness,
             intensity,
             color,
-        );
+        });
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
         let mut keepalive = WgpuDispatchKeepalive::default();

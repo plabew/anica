@@ -812,25 +812,28 @@ pub(crate) fn post_tone_map_uniform(
     ])
 }
 
-pub(crate) fn post_light_sweep_uniform(
-    canvas_w: u32,
-    canvas_h: u32,
-    position: f32,
-    angle: f32,
-    width: f32,
-    softness: f32,
-    intensity: f32,
-    color: [u8; 4],
-) -> [u8; 48] {
-    let color = rgba_u8_to_unit(color);
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PostLightSweepUniformParams {
+    pub(crate) canvas_w: u32,
+    pub(crate) canvas_h: u32,
+    pub(crate) position: f32,
+    pub(crate) angle: f32,
+    pub(crate) width: f32,
+    pub(crate) softness: f32,
+    pub(crate) intensity: f32,
+    pub(crate) color: [u8; 4],
+}
+
+pub(crate) fn post_light_sweep_uniform(params: PostLightSweepUniformParams) -> [u8; 48] {
+    let color = rgba_u8_to_unit(params.color);
     f32_bytes(&[
-        canvas_w as f32,
-        canvas_h as f32,
-        softness.clamp(0.0001, 2.0),
-        intensity.clamp(0.0, 16.0),
-        position,
-        angle,
-        width.clamp(0.0001, 4.0),
+        params.canvas_w as f32,
+        params.canvas_h as f32,
+        params.softness.clamp(0.0001, 2.0),
+        params.intensity.clamp(0.0, 16.0),
+        params.position,
+        params.angle,
+        params.width.clamp(0.0001, 4.0),
         6.0,
         color[0],
         color[1],

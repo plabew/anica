@@ -2,7 +2,6 @@
 // =========================================
 // crates/motionloom/examples/wgpu_live_preview.rs
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -162,7 +161,7 @@ impl PreviewQuality {
 }
 
 struct LivePreviewApp {
-    script_path: PathBuf,
+    script_source: String,
     base_graph: motionloom::GraphScript,
     graph: Option<motionloom::GraphScript>,
     window: Option<Arc<Window>>,
@@ -197,17 +196,17 @@ struct LivePreviewApp {
 
 impl LivePreviewApp {
     fn new(
-        script_path: PathBuf,
+        script_source: String,
         print_stats_enabled: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let script = std::fs::read_to_string(&script_path)?;
+        let script = load_script_source(&script_source)?;
         let graph = parse_graph_script(&script)?;
         let fps = graph.fps.max(1.0);
         let total_frames =
             (((graph.duration_ms as f32 / 1000.0).max(1.0 / fps) * fps).round() as u32).max(1);
 
         Ok(Self {
-            script_path,
+            script_source,
             base_graph: graph.clone(),
             graph: Some(graph),
             window: None,
@@ -724,7 +723,7 @@ impl LivePreviewApp {
             self.target_height,
             self.surface_format,
             self.quality.label(),
-            self.script_path.display()
+            self.script_source
         ));
     }
 
@@ -829,27 +828,39 @@ fn avg(values: &[f32]) -> f32 {
     values.iter().sum::<f32>() / values.len() as f32
 }
 
+fn is_http_url(value: &str) -> bool {
+    value.starts_with("https://") || value.starts_with("http://")
+}
+
+fn load_script_source(source: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if is_http_url(source) {
+        let response = ureq::get(source).call()?;
+        return Ok(response.into_string()?);
+    }
+    Ok(std::fs::read_to_string(source)?)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut script_path = None;
+    let mut script_source = None;
     let mut print_stats = false;
-    for arg in std::env::args_os().skip(1) {
+    for arg in std::env::args().skip(1) {
         if arg == "--stats" || arg == "--print-stats" {
             print_stats = true;
-        } else if script_path.is_none() {
-            script_path = Some(PathBuf::from(arg));
+        } else if script_source.is_none() {
+            script_source = Some(arg);
         } else {
-            eprintln!("unknown extra argument: {}", PathBuf::from(arg).display());
+            eprintln!("unknown extra argument: {arg}");
             std::process::exit(2);
         }
     }
-    let Some(script_path) = script_path else {
+    let Some(script_source) = script_source else {
         eprintln!(
-            "usage: cargo run -p motionloom --example wgpu_live_preview -- [--stats] path/to/main.motionloom"
+            "usage: cargo run -p motionloom --example wgpu_live_preview -- [--stats] path-or-url/to/main.motionloom"
         );
         std::process::exit(2);
     };
     let event_loop = EventLoop::new()?;
-    let mut app = LivePreviewApp::new(script_path, print_stats)?;
+    let mut app = LivePreviewApp::new(script_source, print_stats)?;
     event_loop.run_app(&mut app)?;
     Ok(())
 }

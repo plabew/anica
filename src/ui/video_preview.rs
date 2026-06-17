@@ -2099,12 +2099,19 @@ impl VideoPreview {
         }
 
         // 5. Background work is in flight. If no previous output exists yet,
-        // return None and let the first completed frame populate the cache.
-        if cache.render_image.is_some() {
-            Some(())
-        } else {
-            None
+        // build a placeholder from base_data so the clip doesn't disappear
+        // while effects are being computed asynchronously.
+        if cache.render_image.is_none() {
+            let data = cache.base_data.clone();
+            let width = cache.width;
+            let height = cache.height;
+            if let Some(image) = Self::build_render_image_from_bgra(data, width, height) {
+                cache.render_image = Some(image);
+                cache.render_width = width;
+                cache.render_height = height;
+            }
         }
+        Some(())
     }
 
     /// Non-blocking BGRA image renderer used by Windows/Linux and macOS Full BGRA mode.
