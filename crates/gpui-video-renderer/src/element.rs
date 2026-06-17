@@ -5550,6 +5550,7 @@ impl VideoElement {
             self.has_bloom_effect()
                 || self.tone_map_enabled
                 || (self.light_sweep_enabled && self.light_sweep_intensity > 0.001)
+                || !self.process_effects.is_empty()
                 || self.local_mask_active()
                 || has_localized_effect
         }
@@ -5868,6 +5869,7 @@ impl Element for VideoElement {
                     || self.tint_alpha.abs() >= 0.001
                     || self.effective_signed_blur_sigma().abs() >= 0.001
                     || self.has_bloom_effect()
+                    || !self.process_effects.is_empty()
                     || self.local_mask_active();
                 let refresh_needed =
                     has_new_frame || last_surface_buffer.read(cx).is_none() || pixel_key_changed;
