@@ -34,7 +34,7 @@ use motionloom::{
     WorldPathStyle, compile_runtime_program, is_graph_script, is_world_graph_script,
     load_glb_mesh_data, next_scene_output_path_for_profile, parse_graph_script,
     parse_motionloom_document, parse_world_graph_script,
-    render_motionloom_document_to_video_with_progress, render_scene_graph_frame,
+    render_motionloom_document_to_video_with_progress_and_cancel, render_scene_graph_frame,
 };
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -622,6 +622,7 @@ pub struct MotionLoomPage {
     scene_live_prerender_progress: Option<(u32, u32)>,
     scene_live_prerender_cancel: Option<Arc<AtomicBool>>,
     scene_render_progress: Option<SceneRenderProgressUi>,
+    scene_render_cancel: Option<Arc<AtomicBool>>,
     scene_render_log: Vec<String>,
     scene_render_log_collapsed: bool,
     scene_live_knob_node_id: String,
@@ -711,6 +712,7 @@ impl MotionLoomPage {
             scene_live_prerender_progress: None,
             scene_live_prerender_cancel: None,
             scene_render_progress: None,
+            scene_render_cancel: None,
             scene_render_log: Vec::new(),
             scene_render_log_collapsed: false,
             scene_live_knob_node_id: DEFAULT_SCENE_LIVE_NODE_ID.to_string(),
@@ -1209,6 +1211,17 @@ impl MotionLoomPage {
         }
     }
 
+    fn scene_live_cached_frame_ready(&self, script_hash: u64, frame: u32) -> bool {
+        let quality = self.scene_live_effective_preview_quality();
+        self.scene_live_preview_cache_key
+            .map(|key| key.0 == script_hash && key.1 == frame && key.2 == quality)
+            .unwrap_or(false)
+            || self
+                .scene_live_preview_frame_cache
+                .keys()
+                .any(|key| key.0 == script_hash && key.1 == frame && key.2 == quality)
+    }
+
     fn has_scene_live_preview_state(&self) -> bool {
         self.scene_live_preview_cache_key.is_some()
             || self.scene_live_preview_cache_image.is_some()
@@ -1230,6 +1243,15 @@ impl MotionLoomPage {
     fn cancel_scene_live_async_render(&mut self) {
         self.scene_live_async_render_key = None;
         self.scene_live_async_render_token = self.scene_live_async_render_token.wrapping_add(1);
+    }
+
+    fn cancel_scene_render_job(&mut self) {
+        if let Some(cancel) = self.scene_render_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+            self.push_scene_render_log("Render cancel requested.".to_string());
+        }
+        self.scene_render_progress = None;
+        self.status_line = "Render cancel requested.".to_string();
     }
 
     fn defer_scene_live_preview_render(&mut self, cx: &mut Context<Self>, delay_ms: u64) {
@@ -1369,11 +1391,6 @@ impl MotionLoomPage {
             || !graph.world_sources.is_empty();
         let effective_quality = self.scene_live_effective_preview_quality();
         let preview_size = if uses_scene_process_composition {
-            // Mixed Scene+Process graphs keep their authored render size for now.
-            // Downscaling via Graph.render_size can make native wgpu reuse an
-            // offscreen scene canvas as both sampled input and storage output in
-            // later process passes. The display element still fits the rendered
-            // frame to the UI preview bounds.
             final_size
         } else {
             Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()))
@@ -2429,13 +2446,34 @@ impl MotionLoomPage {
 
             let fps = this.playback_fps();
             this.preview_frame_accum += dt.as_secs_f32() * fps;
-            let step = this.preview_frame_accum.floor() as u32;
+            let mut step = this.preview_frame_accum.floor() as u32;
             if step > 0 {
-                this.preview_frame_accum -= step as f32;
                 let frame_count = this.playback_frame_count().max(1);
-                let next_frame = this.preview_frame.saturating_add(step);
-                this.preview_frame = next_frame % frame_count;
-                cx.notify();
+                if this.has_scene_playback_graph() && this.scene_live_prerendering {
+                    let script_hash = Self::script_hash(&this.script_text);
+                    let mut advanced = 0;
+                    while step > 0 {
+                        let next_frame = this.preview_frame.saturating_add(1) % frame_count;
+                        if !this.scene_live_cached_frame_ready(script_hash, next_frame) {
+                            break;
+                        }
+                        this.preview_frame = next_frame;
+                        advanced += 1;
+                        step -= 1;
+                    }
+                    if advanced > 0 {
+                        this.preview_frame_accum =
+                            (this.preview_frame_accum - advanced as f32).max(0.0);
+                        cx.notify();
+                    } else {
+                        this.preview_frame_accum = 0.0;
+                    }
+                } else {
+                    this.preview_frame_accum -= step as f32;
+                    let next_frame = this.preview_frame.saturating_add(step);
+                    this.preview_frame = next_frame % frame_count;
+                    cx.notify();
+                }
             }
 
             if this.preview_playing && this.preview_play_token == token {
@@ -2458,9 +2496,17 @@ impl MotionLoomPage {
         }
 
         let final_size = graph.render_size.unwrap_or(graph.size);
+        let uses_scene_process_composition = !graph.textures.is_empty()
+            || !graph.passes.is_empty()
+            || !graph.outputs.is_empty()
+            || !graph.layers.is_empty()
+            || !graph.world_sources.is_empty();
         let effective_quality = self.scene_live_effective_preview_quality();
-        let preview_size =
-            Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()));
+        let preview_size = if uses_scene_process_composition {
+            final_size
+        } else {
+            Self::scene_live_preview_output_size(final_size, Some(effective_quality.max_dim()))
+        };
         let mut preview_graph = graph.clone();
         if preview_size != final_size {
             preview_graph.render_size = Some(preview_size);
@@ -2579,7 +2625,7 @@ impl MotionLoomPage {
             loop {
                 let mut done = false;
                 let mut should_notify = false;
-                let _ = view.update_in(window, |this, window, cx| {
+                let _ = view.update_in(window, |this, _window, cx| {
                     poll_ms = Self::scene_live_poll_ms(this.preview_playing);
                     if this.scene_live_prerender_token != token {
                         done = true;
@@ -2602,8 +2648,7 @@ impl MotionLoomPage {
                                         .insert(key, preview.clone());
                                     this.scene_live_prerender_progress =
                                         Some((frame.saturating_add(1), total_frames));
-                                    if this.preview_playing || this.preview_frame == frame {
-                                        this.preview_frame = frame;
+                                    if this.preview_frame == frame {
                                         this.scene_live_preview_cache_key = Some(key);
                                         this.scene_live_preview_cache_image = Some(preview);
                                     }
@@ -2622,8 +2667,6 @@ impl MotionLoomPage {
                                             this.preview_frame %= frame_count;
                                             this.preview_last_tick = Some(Instant::now());
                                             this.preview_frame_accum = 0.0;
-                                            let play_token = this.preview_play_token;
-                                            this.schedule_preview_playback(play_token, window, cx);
                                             this.status_line = format!(
                                                 "RAM preview cached {} frame(s); loop playback running.",
                                                 frames
@@ -2948,6 +2991,7 @@ impl MotionLoomPage {
         self.status_line = format!("Loop playback started at {} fps.", self.playback_fps());
         if self.has_scene_playback_graph() {
             self.start_scene_live_prerender(window, cx);
+            self.schedule_preview_playback(token, window, cx);
         } else {
             self.schedule_preview_playback(token, window, cx);
         }
@@ -3597,6 +3641,11 @@ impl MotionLoomPage {
             total_frames, fps
         ));
         self.push_scene_render_log(format!("Output: {}", output_path.display()));
+        if let Some(cancel) = self.scene_render_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        let render_cancel = Arc::new(AtomicBool::new(false));
+        self.scene_render_cancel = Some(render_cancel.clone());
         self.scene_render_progress = Some(SceneRenderProgressUi {
             label: mode.label(),
             rendered_frames: 0,
@@ -3612,6 +3661,8 @@ impl MotionLoomPage {
 
         let (tx, rx) = mpsc::channel::<SceneRenderEvent>();
         let output_path_for_thread = output_path.clone();
+        let render_cancel_for_thread = render_cancel.clone();
+        let render_cancel_for_poll = render_cancel.clone();
         std::thread::spawn(move || {
             let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let tx_progress = tx.clone();
@@ -3625,17 +3676,20 @@ impl MotionLoomPage {
                     mode.label(),
                     output_path_for_thread.display()
                 )));
-                pollster::block_on(render_motionloom_document_to_video_with_progress(
-                    &ffmpeg_for_render,
-                    &raw,
-                    &asset_root,
-                    &output_path_for_thread,
-                    profile,
-                    SCENE_RENDER_PROGRESS_EVERY_FRAMES,
-                    move |progress| {
-                        let _ = tx_progress.send(SceneRenderEvent::Progress(progress));
-                    },
-                ))
+                pollster::block_on(
+                    render_motionloom_document_to_video_with_progress_and_cancel(
+                        &ffmpeg_for_render,
+                        &raw,
+                        &asset_root,
+                        &output_path_for_thread,
+                        profile,
+                        SCENE_RENDER_PROGRESS_EVERY_FRAMES,
+                        Some(render_cancel_for_thread),
+                        move |progress| {
+                            let _ = tx_progress.send(SceneRenderEvent::Progress(progress));
+                        },
+                    ),
+                )
                 .map(|_| output_path_for_thread.clone())
                 .map_err(|err| err.to_string())
             }))
@@ -3658,6 +3712,13 @@ impl MotionLoomPage {
                     )));
                 }
                 Err(err) => {
+                    if err.to_ascii_lowercase().contains("cancelled") {
+                        if profile.is_png_sequence() {
+                            let _ = fs::remove_dir_all(&output_path_for_thread);
+                        } else {
+                            let _ = fs::remove_file(&output_path_for_thread);
+                        }
+                    }
                     eprintln!("[motionloom-render] failed mode={}: {err}", mode.label());
                     let _ = tx.send(SceneRenderEvent::Log(format!("ERROR: {err}")));
                 }
@@ -3696,6 +3757,16 @@ impl MotionLoomPage {
 
                 let has_finished = finished.is_some();
                 let _ = view.update_in(window, |this, _window, cx| {
+                    let active_render = this
+                        .scene_render_cancel
+                        .as_ref()
+                        .is_some_and(|cancel| Arc::ptr_eq(cancel, &render_cancel_for_poll));
+                    if !active_render {
+                        if has_finished {
+                            cx.notify();
+                        }
+                        return;
+                    }
                     for message in log_messages {
                         this.push_scene_render_log(message);
                     }
@@ -3725,6 +3796,7 @@ impl MotionLoomPage {
 
                     if let Some(result) = finished {
                         this.scene_render_progress = None;
+                        this.scene_render_cancel = None;
                         match result {
                             Ok(path) => {
                                 let path_str = path.to_string_lossy().to_string();
@@ -8985,7 +9057,32 @@ impl Render for MotionLoomPage {
                                         "{}/{}",
                                         progress.rendered_frames, progress.total_frames
                                     ),
-                                )),
+                                ))
+                                .child(
+                                    div()
+                                        .h(px(22.0))
+                                        .w(px(22.0))
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(rgba(0xff7a6688))
+                                        .bg(rgba(0x3a1212aa))
+                                        .hover(|s| s.bg(rgba(0x5a1818cc)))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_xs()
+                                        .text_color(rgba(0xffc0b8ff))
+                                        .child("×")
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.cancel_scene_render_job();
+                                                cx.notify();
+                                            }),
+                                        ),
+                                ),
                         )
                     })
                     .child(scene_live_preview_status_chip),

@@ -14,6 +14,35 @@ pub(crate) struct SceneBloomParams {
     pub(crate) sigma: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SceneGlowStackParams {
+    pub(crate) threshold: f32,
+    pub(crate) intensity: f32,
+    pub(crate) radius_small: f32,
+    pub(crate) radius_medium: f32,
+    pub(crate) radius_large: f32,
+    pub(crate) tint: [u8; 4],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SceneToneMapParams {
+    pub(crate) exposure: f32,
+    pub(crate) contrast: f32,
+    pub(crate) shoulder: f32,
+    pub(crate) gamma: f32,
+    pub(crate) saturation: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SceneLightSweepParams {
+    pub(crate) position: f32,
+    pub(crate) angle: f32,
+    pub(crate) width: f32,
+    pub(crate) softness: f32,
+    pub(crate) intensity: f32,
+    pub(crate) color: [u8; 4],
+}
+
 pub(crate) fn apply_scene_post_pass(
     input: &RgbaImage,
     pass: &PassNode,
@@ -59,6 +88,15 @@ pub(crate) fn apply_scene_post_pass(
         let blurred_h = apply_box_blur_pass(&prefiltered, params.sigma, true);
         let blurred = apply_box_blur_pass(&blurred_h, params.sigma, false);
         return Ok(composite_scene_bloom(input, &blurred, params.intensity));
+    }
+    if let Some(params) = scene_post_glow_stack_params(pass, time_norm, time_sec)? {
+        return Ok(apply_glow_stack_pass(input, params));
+    }
+    if let Some(params) = scene_post_tone_map_params(pass, time_norm, time_sec)? {
+        return Ok(apply_tone_map_pass(input, params));
+    }
+    if let Some(params) = scene_post_light_sweep_params(pass, time_norm, time_sec)? {
+        return Ok(apply_light_sweep_pass(input, params));
     }
     if is_color_key_alpha_effect(&effect) {
         return apply_color_key_alpha_pass(input, pass, time_norm, time_sec);
@@ -505,6 +543,167 @@ pub(crate) fn scene_post_bloom_params(
     }))
 }
 
+pub(crate) fn scene_post_glow_stack_params(
+    pass: &PassNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Option<SceneGlowStackParams>, MotionLoomSceneRenderError> {
+    let effect = normalized_effect_name(&pass.effect);
+    if !matches!(
+        effect.as_str(),
+        "glow_stack"
+            | "post_glow_stack"
+            | "light_atmosphere.glow_stack"
+            | "light_atmosphere_glow_stack"
+    ) {
+        return Ok(None);
+    }
+    let threshold = pass_param_expr_any(pass, &["threshold", "glowThreshold", "glow_threshold"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.62)
+        .clamp(0.0, 1.0);
+    let intensity = pass_param_expr_any(pass, &["intensity", "glowIntensity", "glow_intensity"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(1.5)
+        .clamp(0.0, 8.0);
+    let radius_small = pass_param_expr_any(pass, &["radiusSmall", "radius_small", "small"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(6.0)
+        .clamp(0.0, 64.0);
+    let radius_medium = pass_param_expr_any(pass, &["radiusMedium", "radius_medium", "medium"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(18.0)
+        .clamp(0.0, 96.0);
+    let radius_large = pass_param_expr_any(pass, &["radiusLarge", "radius_large", "large"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(48.0)
+        .clamp(0.0, 160.0);
+    let tint = pass_param_expr_any(pass, &["tint", "color"])
+        .map(|value| parse_color(value.trim().trim_matches('"').trim_matches('\'')))
+        .transpose()?
+        .unwrap_or([255, 255, 255, 255]);
+    Ok(Some(SceneGlowStackParams {
+        threshold,
+        intensity,
+        radius_small,
+        radius_medium,
+        radius_large,
+        tint,
+    }))
+}
+
+pub(crate) fn scene_post_tone_map_params(
+    pass: &PassNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Option<SceneToneMapParams>, MotionLoomSceneRenderError> {
+    let effect = normalized_effect_name(&pass.effect);
+    if !matches!(
+        effect.as_str(),
+        "tone_map" | "tonemap" | "post_tone_map" | "color_tone.tone_map" | "color_tone_tone_map"
+    ) {
+        return Ok(None);
+    }
+    let exposure = pass_param_expr(pass, "exposure")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.0)
+        .clamp(-8.0, 8.0);
+    let contrast = pass_param_expr(pass, "contrast")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(1.0)
+        .clamp(0.0, 4.0);
+    let shoulder = pass_param_expr(pass, "shoulder")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(1.0)
+        .clamp(0.05, 8.0);
+    let gamma = pass_param_expr(pass, "gamma")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(2.2)
+        .clamp(0.1, 8.0);
+    let saturation = pass_param_expr(pass, "saturation")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(1.0)
+        .clamp(0.0, 4.0);
+    Ok(Some(SceneToneMapParams {
+        exposure,
+        contrast,
+        shoulder,
+        gamma,
+        saturation,
+    }))
+}
+
+pub(crate) fn scene_post_light_sweep_params(
+    pass: &PassNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Option<SceneLightSweepParams>, MotionLoomSceneRenderError> {
+    let effect = normalized_effect_name(&pass.effect);
+    if !matches!(
+        effect.as_str(),
+        "light_sweep"
+            | "post_light_sweep"
+            | "light_atmosphere.light_sweep"
+            | "light_atmosphere_light_sweep"
+    ) {
+        return Ok(None);
+    }
+    let position = pass_param_expr(pass, "position")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.5);
+    let angle = pass_param_expr(pass, "angle")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(-18.0);
+    let width = pass_param_expr(pass, "width")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.16)
+        .clamp(0.0001, 4.0);
+    let softness = pass_param_expr(pass, "softness")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.08)
+        .clamp(0.0001, 2.0);
+    let intensity = pass_param_expr(pass, "intensity")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(1.0)
+        .clamp(0.0, 16.0);
+    let color = pass_param_expr(pass, "color")
+        .map(|value| parse_color(value.trim().trim_matches('"').trim_matches('\'')))
+        .transpose()?
+        .unwrap_or([255, 255, 255, 255]);
+    Ok(Some(SceneLightSweepParams {
+        position,
+        angle,
+        width,
+        softness,
+        intensity,
+        color,
+    }))
+}
+
+fn normalized_effect_name(effect: &str) -> String {
+    effect
+        .trim()
+        .trim_matches('"')
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+}
+
 pub(crate) fn pass_param_expr<'a>(pass: &'a PassNode, key: &str) -> Option<&'a str> {
     pass.params
         .iter()
@@ -770,6 +969,127 @@ pub(crate) fn composite_scene_bloom(
             pixel[channel] = ((base + glow_rgb * intensity).clamp(0.0, 1.0) * 255.0).round() as u8;
         }
         pixel[3] = (base_a.max(glow_a) * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+pub(crate) fn apply_glow_stack_pass(input: &RgbaImage, params: SceneGlowStackParams) -> RgbaImage {
+    let mut current = input.clone();
+    for (threshold, intensity, radius) in [
+        (
+            params.threshold,
+            params.intensity * 0.45,
+            params.radius_small,
+        ),
+        (
+            params.threshold * 0.85,
+            params.intensity * 0.35,
+            params.radius_medium,
+        ),
+        (
+            params.threshold * 0.65,
+            params.intensity * 0.20,
+            params.radius_large,
+        ),
+    ] {
+        let prefiltered = tint_image(
+            &build_scene_bloom_prefilter(&current, threshold),
+            params.tint,
+        );
+        let blurred_h = apply_box_blur_pass(&prefiltered, radius, true);
+        let blurred = apply_box_blur_pass(&blurred_h, radius, false);
+        current = composite_scene_bloom(&current, &blurred, intensity);
+    }
+    current
+}
+
+pub(crate) fn apply_tone_map_pass(input: &RgbaImage, params: SceneToneMapParams) -> RgbaImage {
+    let mut out = input.clone();
+    let exposure_scale = 2.0_f32.powf(params.exposure);
+    let shoulder = params.shoulder.clamp(0.0, 2.0);
+    let gamma = params.gamma.max(0.0001);
+    for pixel in out.pixels_mut() {
+        let a = pixel[3];
+        let mut rgb = [
+            pixel[0] as f32 / 255.0,
+            pixel[1] as f32 / 255.0,
+            pixel[2] as f32 / 255.0,
+        ];
+        for channel in &mut rgb {
+            *channel = aces_fitted_channel(*channel * exposure_scale, shoulder);
+            *channel = (*channel - 0.5) * params.contrast + 0.5;
+        }
+        let luma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+        for channel in 0..3 {
+            rgb[channel] = luma + (rgb[channel] - luma) * params.saturation;
+            rgb[channel] = rgb[channel].max(0.0).powf(1.0 / gamma);
+            pixel[channel] = (rgb[channel].clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        pixel[3] = a;
+    }
+    out
+}
+
+fn aces_fitted_channel(value: f32, shoulder: f32) -> f32 {
+    let value = value.max(0.0);
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59 + shoulder * 0.24;
+    let e = 0.14;
+    ((value * (a * value + b)) / (value * (c * value + d) + e)).clamp(0.0, 1.0)
+}
+
+pub(crate) fn apply_light_sweep_pass(
+    input: &RgbaImage,
+    params: SceneLightSweepParams,
+) -> RgbaImage {
+    let mut out = input.clone();
+    let width = input.width().max(1) as f32;
+    let height = input.height().max(1) as f32;
+    let aspect = width / height.max(1.0);
+    let angle = params.angle.to_radians();
+    let normal = [angle.cos(), angle.sin()];
+    let position = (params.position - 0.5) * (aspect + 1.0);
+    let half_width = (params.width * 0.5).max(0.0001);
+    let softness = params.softness.max(0.0001);
+    let color = [
+        params.color[0] as f32 / 255.0,
+        params.color[1] as f32 / 255.0,
+        params.color[2] as f32 / 255.0,
+        params.color[3] as f32 / 255.0,
+    ];
+    for (x, y, pixel) in out.enumerate_pixels_mut() {
+        let uv_x = (x as f32 + 0.5) / width;
+        let uv_y = (y as f32 + 0.5) / height;
+        let centered = [(uv_x - 0.5) * aspect, uv_y - 0.5];
+        let distance = centered[0] * normal[0] + centered[1] * normal[1] - position;
+        let band = 1.0 - smoothstep(half_width, half_width + softness, distance.abs());
+        let energy = band * params.intensity * color[3];
+        for channel in 0..3 {
+            let base = pixel[channel] as f32 / 255.0;
+            pixel[channel] =
+                ((base + color[channel] * energy).clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+    out
+}
+
+fn tint_image(input: &RgbaImage, tint: [u8; 4]) -> RgbaImage {
+    let mut out = input.clone();
+    let tint = [
+        tint[0] as f32 / 255.0,
+        tint[1] as f32 / 255.0,
+        tint[2] as f32 / 255.0,
+        tint[3] as f32 / 255.0,
+    ];
+    for pixel in out.pixels_mut() {
+        for channel in 0..3 {
+            pixel[channel] = ((pixel[channel] as f32 / 255.0 * tint[channel]).clamp(0.0, 1.0)
+                * 255.0)
+                .round() as u8;
+        }
+        pixel[3] = ((pixel[3] as f32 / 255.0 * tint[3]).clamp(0.0, 1.0) * 255.0).round() as u8;
     }
     out
 }

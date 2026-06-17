@@ -38,6 +38,17 @@ impl FfmpegVideoEncoder {
         self.encoder_args = args;
         self
     }
+
+    /// Stop the encoder immediately without finalizing the output file.
+    pub fn abort(&mut self) {
+        if let Some(stdin) = self.stdin.take() {
+            drop(stdin);
+        }
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

@@ -6,7 +6,10 @@ use std::fs;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::dsl::GraphScript;
 use crate::process::model::PassNode;
@@ -37,7 +40,8 @@ use crate::scene::composition::{
     composite_layer_affine, composite_layer_affine_blend, composite_layer_affine_blend_clipped,
     composite_layer_affine_clipped, composite_scene_bloom, composite_transformed_layer,
     composite_transformed_layer_anchored, draw_rgba_image, is_color_key_alpha_effect,
-    pass_param_expr, scene_post_bloom_params, scene_post_blur_passes,
+    pass_param_expr, scene_post_bloom_params, scene_post_blur_passes, scene_post_glow_stack_params,
+    scene_post_light_sweep_params, scene_post_tone_map_params,
 };
 use crate::scene::domain::apply_action_graph_at_time;
 
@@ -128,6 +132,31 @@ pub async fn render_scene_graph_to_video_with_progress<F>(
     output_path: &Path,
     profile: SceneRenderProfile,
     progress_every_frames: u32,
+    progress_callback: F,
+) -> Result<(), MotionLoomSceneRenderError>
+where
+    F: FnMut(SceneRenderProgress),
+{
+    render_scene_graph_to_video_with_progress_and_cancel(
+        ffmpeg_bin,
+        graph,
+        output_path,
+        profile,
+        progress_every_frames,
+        None,
+        progress_callback,
+    )
+    .await
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(unused_mut, unused_variables))]
+pub async fn render_scene_graph_to_video_with_progress_and_cancel<F>(
+    ffmpeg_bin: &str,
+    graph: &GraphScript,
+    output_path: &Path,
+    profile: SceneRenderProfile,
+    progress_every_frames: u32,
+    cancel: Option<Arc<AtomicBool>>,
     mut progress_callback: F,
 ) -> Result<(), MotionLoomSceneRenderError>
 where
@@ -140,6 +169,7 @@ where
             output_path,
             profile,
             progress_every_frames,
+            cancel,
             progress_callback,
         )
         .await;
@@ -166,16 +196,35 @@ where
             rendered_frames: 0,
             total_frames,
         });
+        if cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        {
+            return Err(MotionLoomSceneRenderError::Cancelled);
+        }
 
         // Render the first frame before starting the encoder. This catches GPU
         // adapter and scene render errors before a long-lived encoder is opened.
         let first_image = renderer.render_frame(graph, 0).await?;
+        if cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        {
+            return Err(MotionLoomSceneRenderError::Cancelled);
+        }
 
         let mut encoder =
             FfmpegVideoEncoder::new(ffmpeg_bin, output_path).with_encoder_args(encoder_args);
         encoder.begin(w, h, fps)?;
 
         for frame in 0..total_frames {
+            if cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+            {
+                encoder.abort();
+                return Err(MotionLoomSceneRenderError::Cancelled);
+            }
             let rendered_image;
             let image = if frame == 0 {
                 &first_image
@@ -204,6 +253,7 @@ async fn render_scene_graph_to_png_sequence_with_progress<F>(
     output_dir: &Path,
     profile: SceneRenderProfile,
     progress_every_frames: u32,
+    cancel: Option<Arc<AtomicBool>>,
     mut progress_callback: F,
 ) -> Result<(), MotionLoomSceneRenderError>
 where
@@ -226,6 +276,12 @@ where
     });
 
     for frame in 0..total_frames {
+        if cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        {
+            return Err(MotionLoomSceneRenderError::Cancelled);
+        }
         let image = renderer.render_frame(graph, frame).await?;
         let path = output_dir.join(format!("frame_{frame:06}.png"));
         image
@@ -362,6 +418,26 @@ impl SceneRenderer {
     ) -> Result<SceneGpuTexture, SceneRenderError> {
         validate_scene_graph(graph)?;
         self.inner.render_frame_to_wgpu_texture(graph, frame).await
+    }
+
+    /// Render a scene frame into a caller-owned wgpu texture.
+    ///
+    /// The target texture must belong to the same `wgpu::Device` used to create
+    /// this renderer, must be `Rgba8Unorm`, and must include `COPY_DST` usage.
+    /// This keeps the frame on GPU and lets hosts reuse their own preview
+    /// texture across frames.
+    pub async fn render_frame_to_wgpu_target_texture(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        target: &wgpu::Texture,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<(), SceneRenderError> {
+        validate_scene_graph(graph)?;
+        self.inner
+            .render_frame_to_wgpu_target_texture(graph, frame, target, target_width, target_height)
+            .await
     }
 
     /// Render a frame to the best preview surface requested by the host.
@@ -791,6 +867,38 @@ impl SceneFrameRenderer {
             height: native_texture.height,
             format: wgpu::TextureFormat::Rgba8Unorm,
         })
+    }
+
+    async fn render_frame_to_wgpu_target_texture(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        target: &wgpu::Texture,
+        target_width: u32,
+        target_height: u32,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        let source = self.render_frame_to_wgpu_texture(graph, frame).await?;
+        if source.width != target_width || source.height != target_height {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: format!(
+                    "wgpu target size {}x{} does not match rendered frame {}x{}",
+                    target_width, target_height, source.width, source.height
+                ),
+            });
+        }
+        let compositor =
+            self.gpu_compositor
+                .as_mut()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        compositor.copy_native_texture_to_target(
+            &source.texture,
+            target,
+            source.width,
+            source.height,
+        );
+        Ok(())
     }
 
     async fn render_frame_to_preview_surface(
@@ -3198,6 +3306,9 @@ impl SceneFrameRenderer {
                 .transpose()?
                 .unwrap_or(2.0)
                 .clamp(0.0, 64.0);
+            if sigma <= 0.05 {
+                return Ok(inputs[0].clone());
+            }
             if self.profile.uses_gpu_compositor() {
                 match &inputs[0] {
                     GraphTextureSource::Gpu(texture) => {
@@ -3241,6 +3352,21 @@ impl SceneFrameRenderer {
                 &blurred, sigma, false,
             )));
         }
+        if scene_post_glow_stack_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_glow_stack_pass(&inputs[0], pass, time_norm, time_sec)
+                .await;
+        }
+        if scene_post_tone_map_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_tone_map_pass(&inputs[0], pass, time_norm, time_sec)
+                .await;
+        }
+        if scene_post_light_sweep_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_light_sweep_pass(&inputs[0], pass, time_norm, time_sec)
+                .await;
+        }
         if scene_post_bloom_params(pass, time_norm, time_sec)?.is_some() {
             return self
                 .apply_scene_bloom_pass(&inputs[0], pass, time_norm, time_sec)
@@ -3260,6 +3386,9 @@ impl SceneFrameRenderer {
         if let Some(blur_passes) = scene_post_blur_passes(pass, time_norm, time_sec)?
             && self.profile.uses_gpu_compositor()
         {
+            if blur_passes.iter().all(|(_, sigma)| *sigma <= 0.05) {
+                return Ok(input.clone());
+            }
             match input {
                 GraphTextureSource::Gpu(texture) => {
                     self.ensure_gpu_compositor_size(texture.width.max(1), texture.height.max(1))
@@ -3292,6 +3421,21 @@ impl SceneFrameRenderer {
         if scene_post_bloom_params(pass, time_norm, time_sec)?.is_some() {
             return self
                 .apply_scene_bloom_pass(input, pass, time_norm, time_sec)
+                .await;
+        }
+        if scene_post_glow_stack_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_glow_stack_pass(input, pass, time_norm, time_sec)
+                .await;
+        }
+        if scene_post_tone_map_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_tone_map_pass(input, pass, time_norm, time_sec)
+                .await;
+        }
+        if scene_post_light_sweep_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_light_sweep_pass(input, pass, time_norm, time_sec)
                 .await;
         }
         let effect = pass.effect.to_ascii_lowercase();
@@ -3353,16 +3497,12 @@ impl SceneFrameRenderer {
                         message: "GPU compositor was not initialized".to_string(),
                     }
                 })?;
-                // Blur the original texture directly (prefilter is baked into the composite shader).
-                let blurred = compositor.apply_gpu_blur_texture(
+                let result = compositor.apply_gpu_bloom_texture_low_res(
                     original,
-                    &[(true, params.sigma), (false, params.sigma)],
-                )?;
-                let result = compositor.apply_gpu_bloom_texture(
-                    original,
-                    &blurred,
                     params.threshold,
                     params.intensity,
+                    params.sigma,
+                    0.25,
                 )?;
                 return Ok(GraphTextureSource::Gpu(result));
             }
@@ -3391,6 +3531,113 @@ impl SceneFrameRenderer {
             &blurred,
             params.intensity,
         )))
+    }
+
+    async fn apply_scene_glow_stack_pass(
+        &mut self,
+        input: &GraphTextureSource,
+        pass: &PassNode,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GraphTextureSource, MotionLoomSceneRenderError> {
+        let Some(params) = scene_post_glow_stack_params(pass, time_norm, time_sec)? else {
+            return Ok(input.clone());
+        };
+        if self.profile.uses_gpu_compositor()
+            && let GraphTextureSource::Gpu(texture) = input
+        {
+            self.ensure_gpu_compositor_size(texture.width.max(1), texture.height.max(1))
+                .await?;
+            let compositor = self.gpu_compositor.as_mut().ok_or_else(|| {
+                MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                }
+            })?;
+            return Ok(GraphTextureSource::Gpu(
+                compositor.apply_gpu_glow_stack_texture(
+                    texture,
+                    params.threshold,
+                    params.intensity,
+                    params.radius_small,
+                    params.radius_medium,
+                    params.radius_large,
+                    params.tint,
+                )?,
+            ));
+        }
+        let image = self.graph_source_to_cpu(input).await?;
+        apply_scene_post_pass(&image, pass, time_norm, time_sec).map(GraphTextureSource::Cpu)
+    }
+
+    async fn apply_scene_tone_map_pass(
+        &mut self,
+        input: &GraphTextureSource,
+        pass: &PassNode,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GraphTextureSource, MotionLoomSceneRenderError> {
+        let Some(params) = scene_post_tone_map_params(pass, time_norm, time_sec)? else {
+            return Ok(input.clone());
+        };
+        if self.profile.uses_gpu_compositor()
+            && let GraphTextureSource::Gpu(texture) = input
+        {
+            self.ensure_gpu_compositor_size(texture.width.max(1), texture.height.max(1))
+                .await?;
+            let compositor = self.gpu_compositor.as_mut().ok_or_else(|| {
+                MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                }
+            })?;
+            return Ok(GraphTextureSource::Gpu(
+                compositor.apply_gpu_tone_map_texture(
+                    texture,
+                    params.exposure,
+                    params.contrast,
+                    params.shoulder,
+                    params.gamma,
+                    params.saturation,
+                )?,
+            ));
+        }
+        let image = self.graph_source_to_cpu(input).await?;
+        apply_scene_post_pass(&image, pass, time_norm, time_sec).map(GraphTextureSource::Cpu)
+    }
+
+    async fn apply_scene_light_sweep_pass(
+        &mut self,
+        input: &GraphTextureSource,
+        pass: &PassNode,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GraphTextureSource, MotionLoomSceneRenderError> {
+        let Some(params) = scene_post_light_sweep_params(pass, time_norm, time_sec)? else {
+            return Ok(input.clone());
+        };
+        if self.profile.uses_gpu_compositor()
+            && let GraphTextureSource::Gpu(texture) = input
+        {
+            self.ensure_gpu_compositor_size(texture.width.max(1), texture.height.max(1))
+                .await?;
+            let compositor = self.gpu_compositor.as_mut().ok_or_else(|| {
+                MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                }
+            })?;
+            return Ok(GraphTextureSource::Gpu(
+                compositor.apply_gpu_light_sweep_texture(
+                    texture,
+                    params.position,
+                    params.angle,
+                    params.width,
+                    params.softness,
+                    params.intensity,
+                    params.color,
+                )?,
+            ));
+        }
+        let image = self.graph_source_to_cpu(input).await?;
+        apply_scene_post_pass(&image, pass, time_norm, time_sec).map(GraphTextureSource::Cpu)
     }
 
     fn draw_scene_nodes(

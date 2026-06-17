@@ -7,13 +7,15 @@ use gpu_effect_export_engine::{
     build_single_clip_opacity_videotoolbox_args,
 };
 use gpui_video_renderer::{
-    BgraGpuEffectParams, BlurMode, VideoLocalMaskLayer, process_bgra_effects_with_params,
+    BgraGpuEffectParams, BgraProcessEffectInstance, BgraProcessParamValue, BlurMode,
+    VideoLocalMaskLayer, process_bgra_effects_with_params,
 };
 use motionloom::{
     GraphApplyScope, PassNode as MotionloomPassNode, PassTransitionEasing, PassTransitionMode,
-    RuntimeFrameOutput, RuntimeProgram, compile_runtime_program, is_graph_script,
-    parse_process_graph_script, resolve_pass_kernel,
+    RuntimeFrameOutput, RuntimeProcessEffectInstance, RuntimeProcessParamValue, RuntimeProgram,
+    compile_runtime_program, is_graph_script, parse_process_graph_script, resolve_pass_kernel,
 };
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Stdio;
 use std::sync::{
@@ -87,7 +89,7 @@ struct LayerScriptExportPlan {
     opacity_factor: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct UnifiedLayerFrameEffects {
     brightness: f32,
     contrast: f32,
@@ -102,6 +104,20 @@ struct UnifiedLayerFrameEffects {
     bloom_threshold: f32,
     bloom_intensity: f32,
     bloom_sigma: f32,
+    tone_map_enabled: bool,
+    tone_map_exposure: f32,
+    tone_map_contrast: f32,
+    tone_map_shoulder: f32,
+    tone_map_gamma: f32,
+    tone_map_saturation: f32,
+    light_sweep_enabled: bool,
+    light_sweep_position: f32,
+    light_sweep_angle: f32,
+    light_sweep_width: f32,
+    light_sweep_softness: f32,
+    light_sweep_intensity: f32,
+    light_sweep_color: [f32; 4],
+    process_effects: Vec<BgraProcessEffectInstance>,
     opacity_factor: f32,
 }
 
@@ -121,8 +137,52 @@ impl Default for UnifiedLayerFrameEffects {
             bloom_threshold: 1.0,
             bloom_intensity: 0.0,
             bloom_sigma: 0.0,
+            tone_map_enabled: false,
+            tone_map_exposure: 0.0,
+            tone_map_contrast: 1.0,
+            tone_map_shoulder: 1.0,
+            tone_map_gamma: 2.2,
+            tone_map_saturation: 1.0,
+            light_sweep_enabled: false,
+            light_sweep_position: 0.5,
+            light_sweep_angle: -18.0,
+            light_sweep_width: 0.16,
+            light_sweep_softness: 0.08,
+            light_sweep_intensity: 0.0,
+            light_sweep_color: [1.0, 1.0, 1.0, 1.0],
+            process_effects: Vec::new(),
             opacity_factor: 1.0,
         }
+    }
+}
+
+fn motionloom_runtime_effect_to_bgra(
+    effect: &RuntimeProcessEffectInstance,
+    strength: f32,
+) -> BgraProcessEffectInstance {
+    let mut params = BTreeMap::new();
+    for (key, value) in &effect.params {
+        let value = match value {
+            RuntimeProcessParamValue::Float(value) => {
+                let value = if matches!(key.as_str(), "alpha" | "intensity") {
+                    (*value * strength).max(0.0)
+                } else {
+                    *value
+                };
+                BgraProcessParamValue::Float(value)
+            }
+            RuntimeProcessParamValue::Color(color) => BgraProcessParamValue::Color([
+                color[0] as f32 / 255.0,
+                color[1] as f32 / 255.0,
+                color[2] as f32 / 255.0,
+                color[3] as f32 / 255.0,
+            ]),
+        };
+        params.insert(key.clone(), value);
+    }
+    BgraProcessEffectInstance {
+        effect_id: effect.effect_id.clone(),
+        params,
     }
 }
 
@@ -1305,6 +1365,7 @@ impl FfmpegExporter {
         let mut best_lut_mix = 0.0_f32;
         let mut best_hsla_weighted_alpha = 0.0_f32;
         let mut best_bloom_weighted_intensity = 0.0_f32;
+        let mut best_light_sweep_weighted_intensity = 0.0_f32;
 
         for layer_clip in layer_effect_clips {
             if layer_clip.local_time(timeline_time).is_none() {
@@ -1350,6 +1411,12 @@ impl FfmpegExporter {
             else {
                 continue;
             };
+            out.process_effects.extend(
+                runtime_out
+                    .process_effects
+                    .iter()
+                    .map(|effect| motionloom_runtime_effect_to_bgra(effect, strength)),
+            );
 
             if let Some(v) = runtime_out.layer_transition_opacity {
                 transition_opacity = transition_opacity.min(v.clamp(0.0, 1.0));
@@ -1383,6 +1450,52 @@ impl FfmpegExporter {
                     out.bloom_threshold = threshold.clamp(0.0, 1.0);
                     out.bloom_intensity = weighted_intensity.clamp(0.0, 8.0);
                     out.bloom_sigma = sigma.clamp(0.0, 64.0);
+                }
+            }
+            if let (Some(exposure), Some(contrast), Some(shoulder), Some(gamma), Some(saturation)) = (
+                runtime_out.layer_tone_map_exposure,
+                runtime_out.layer_tone_map_contrast,
+                runtime_out.layer_tone_map_shoulder,
+                runtime_out.layer_tone_map_gamma,
+                runtime_out.layer_tone_map_saturation,
+            ) {
+                out.tone_map_enabled = true;
+                out.tone_map_exposure = exposure.clamp(-8.0, 8.0);
+                out.tone_map_contrast = contrast.clamp(0.0, 4.0);
+                out.tone_map_shoulder = shoulder.clamp(0.0, 2.0);
+                out.tone_map_gamma = gamma.clamp(0.0001, 8.0);
+                out.tone_map_saturation = saturation.clamp(0.0, 4.0);
+            }
+            if let (
+                Some(position),
+                Some(angle),
+                Some(width),
+                Some(softness),
+                Some(intensity),
+                Some(color),
+            ) = (
+                runtime_out.layer_light_sweep_position,
+                runtime_out.layer_light_sweep_angle,
+                runtime_out.layer_light_sweep_width,
+                runtime_out.layer_light_sweep_softness,
+                runtime_out.layer_light_sweep_intensity,
+                runtime_out.layer_light_sweep_color,
+            ) {
+                let weighted_intensity = (intensity.clamp(0.0, 8.0) * strength).clamp(0.0, 8.0);
+                if weighted_intensity > best_light_sweep_weighted_intensity {
+                    best_light_sweep_weighted_intensity = weighted_intensity;
+                    out.light_sweep_enabled = weighted_intensity > 0.001;
+                    out.light_sweep_position = position.clamp(-2.0, 3.0);
+                    out.light_sweep_angle = angle;
+                    out.light_sweep_width = width.clamp(0.0, 2.0);
+                    out.light_sweep_softness = softness.clamp(0.0, 2.0);
+                    out.light_sweep_intensity = weighted_intensity;
+                    out.light_sweep_color = [
+                        color[0] as f32 / 255.0,
+                        color[1] as f32 / 255.0,
+                        color[2] as f32 / 255.0,
+                        color[3] as f32 / 255.0,
+                    ];
                 }
             }
         }
@@ -2015,7 +2128,7 @@ impl FfmpegExporter {
                     * state.spec.clip.sample_fade_factor(local_t)
                     * state.spec.clip.sample_dissolve_factor(local_t)
                     * layer_fx.opacity_factor;
-                let params = BgraGpuEffectParams {
+                let mut params = BgraGpuEffectParams {
                     brightness: (state.spec.clip.sample_brightness(local_t) + layer_fx.brightness)
                         .clamp(-1.0, 1.0),
                     contrast: (state.spec.clip.sample_contrast(local_t) * layer_fx.contrast)
@@ -2056,7 +2169,27 @@ impl FfmpegExporter {
                     bloom_threshold: layer_fx.bloom_threshold,
                     bloom_intensity: layer_fx.bloom_intensity,
                     bloom_sigma: layer_fx.bloom_sigma,
+                    tone_map_enabled: layer_fx.tone_map_enabled,
+                    tone_map_exposure: layer_fx.tone_map_exposure,
+                    tone_map_contrast: layer_fx.tone_map_contrast,
+                    tone_map_shoulder: layer_fx.tone_map_shoulder,
+                    tone_map_gamma: layer_fx.tone_map_gamma,
+                    tone_map_saturation: layer_fx.tone_map_saturation,
+                    light_sweep_enabled: layer_fx.light_sweep_enabled,
+                    light_sweep_position: layer_fx.light_sweep_position,
+                    light_sweep_angle: layer_fx.light_sweep_angle,
+                    light_sweep_width: layer_fx.light_sweep_width,
+                    light_sweep_softness: layer_fx.light_sweep_softness,
+                    light_sweep_intensity: layer_fx.light_sweep_intensity,
+                    light_sweep_color: layer_fx.light_sweep_color,
                 };
+                let unsupported_effects = params.apply_process_effects(&layer_fx.process_effects);
+                if !unsupported_effects.is_empty() {
+                    log::debug!(
+                        "[Export][LayerFX] skipped unsupported MotionLoom process effects: {}",
+                        unsupported_effects.join(", ")
+                    );
+                }
 
                 Self::rgba_bgra_swap_in_place(&mut frame_rgba);
                 if !process_bgra_effects_with_params(
@@ -6543,6 +6676,49 @@ mod tests {
 </Graph>
 "#;
 
+    const TONE_MAP_LAYER_FX_SCRIPT: &str = r#"
+<Graph fps={30} size={[1920,1080]}>
+  <Process id="layer_fx">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_tone_map" kind="compute"
+          effect="tone_map"
+          in={["src"]} out={["out"]}
+          params={{
+            exposure: "0.35",
+            contrast: "1.35",
+            shoulder: "0.55",
+            gamma: "2.0",
+            saturation: "1.22"
+          }} />
+  </Process>
+  <Present from="layer_fx" />
+</Graph>
+"#;
+
+    const LIGHT_SWEEP_LAYER_FX_SCRIPT: &str = r##"
+<Graph fps={30} size={[1920,1080]}>
+  <Process id="layer_fx">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_light_sweep" kind="compute"
+          effect="light_sweep"
+          in={["src"]} out={["out"]}
+          params={{
+            position: "0.42",
+            angle: "-18.0",
+            width: "0.18",
+            softness: "0.08",
+            intensity: "1.6",
+            color: "#80C7FF"
+          }} />
+  </Process>
+  <Present from="layer_fx" />
+</Graph>
+"##;
+
     #[test]
     fn export_plan_accepts_process_layer_fx_script() {
         let plan = FfmpegExporter::analyze_motionloom_script_for_export(PROCESS_LAYER_FX_SCRIPT)
@@ -6690,6 +6866,70 @@ mod tests {
             fx.brightness.abs() < 0.001,
             "export brightness should be identity when runtime is active, got {}",
             fx.brightness
+        );
+    }
+
+    #[test]
+    fn unified_layer_frame_effects_preserves_tone_map_runtime_fields() {
+        let layer_effects = LayerColorBlurEffects::default();
+        let clip = make_test_layer_effect_clip(TONE_MAP_LAYER_FX_SCRIPT);
+        let mut cache = HashMap::new();
+
+        let fx = FfmpegExporter::unified_layer_frame_effects_at(
+            layer_effects,
+            &[clip],
+            Duration::from_millis(100),
+            &mut cache,
+        );
+
+        assert!(fx.tone_map_enabled);
+        assert_eq!(fx.tone_map_exposure, 0.35);
+        assert_eq!(fx.tone_map_contrast, 1.35);
+        assert_eq!(fx.tone_map_shoulder, 0.55);
+        assert_eq!(fx.tone_map_gamma, 2.0);
+        assert_eq!(fx.tone_map_saturation, 1.22);
+        let effect = fx
+            .process_effects
+            .iter()
+            .find(|effect| effect.effect_id == "tone_map")
+            .expect("generic tone_map effect");
+        assert_eq!(effect.float("exposure"), Some(0.35));
+        assert_eq!(effect.float("contrast"), Some(1.35));
+    }
+
+    #[test]
+    fn unified_layer_frame_effects_preserves_light_sweep_runtime_fields() {
+        let layer_effects = LayerColorBlurEffects::default();
+        let clip = make_test_layer_effect_clip(LIGHT_SWEEP_LAYER_FX_SCRIPT);
+        let mut cache = HashMap::new();
+
+        let fx = FfmpegExporter::unified_layer_frame_effects_at(
+            layer_effects,
+            &[clip],
+            Duration::from_millis(100),
+            &mut cache,
+        );
+
+        assert!(fx.light_sweep_enabled);
+        assert_eq!(fx.light_sweep_position, 0.42);
+        assert_eq!(fx.light_sweep_angle, -18.0);
+        assert_eq!(fx.light_sweep_width, 0.18);
+        assert_eq!(fx.light_sweep_softness, 0.08);
+        assert_eq!(fx.light_sweep_intensity, 1.6);
+        assert_eq!(
+            fx.light_sweep_color,
+            [128.0 / 255.0, 199.0 / 255.0, 1.0, 1.0]
+        );
+        let effect = fx
+            .process_effects
+            .iter()
+            .find(|effect| effect.effect_id == "light_sweep")
+            .expect("generic light_sweep effect");
+        assert_eq!(effect.float("position"), Some(0.42));
+        assert_eq!(effect.float("intensity"), Some(1.6));
+        assert_eq!(
+            effect.color("color"),
+            Some([128.0 / 255.0, 199.0 / 255.0, 1.0, 1.0])
         );
     }
 }

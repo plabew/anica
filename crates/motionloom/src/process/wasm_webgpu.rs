@@ -11,6 +11,7 @@ use web_sys::HtmlCanvasElement;
 use crate::common::gpu_async::{DevicePoller, request_adapter_async, request_device_async};
 use crate::dsl::{PassNode, parse_graph_script};
 use crate::process::runtime::{compile_runtime_program, eval_time_expr};
+use crate::scene::drawable::parse_color;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessWebGpuRenderError {
@@ -428,16 +429,41 @@ impl ProcessWebGpuRenderer {
         time_norm: f32,
         time_sec: f32,
     ) -> wgpu::Buffer {
+        let resolved = crate::process::effect_kind::resolve_process_effect(&pass.effect);
+        let (p0, p1, p2, p3, p4) = match resolved {
+            Some(crate::process::effect_kind::ProcessEffect::ToneMap) => (
+                process_param_f32(pass, &["exposure"], time_norm, time_sec, 0.0),
+                process_param_f32(pass, &["contrast"], time_norm, time_sec, 1.0),
+                process_param_f32(pass, &["shoulder"], time_norm, time_sec, 1.0),
+                process_param_f32(pass, &["gamma"], time_norm, time_sec, 2.2),
+                process_param_f32(pass, &["saturation"], time_norm, time_sec, 1.0),
+            ),
+            Some(crate::process::effect_kind::ProcessEffect::LightSweep) => (
+                process_param_f32(pass, &["position"], time_norm, time_sec, 0.5),
+                process_param_f32(pass, &["angle"], time_norm, time_sec, -18.0),
+                process_param_f32(pass, &["width"], time_norm, time_sec, 0.16),
+                process_param_f32(pass, &["softness"], time_norm, time_sec, 0.08),
+                process_param_f32(pass, &["intensity"], time_norm, time_sec, 1.0),
+            ),
+            _ => (
+                process_param_f32(pass, &["hue", "h"], time_norm, time_sec, 0.0),
+                process_param_f32(pass, &["saturation", "sat", "s"], time_norm, time_sec, 0.0),
+                process_param_f32(pass, &["lightness", "lum", "l"], time_norm, time_sec, 0.0),
+                process_param_f32(pass, &["alpha", "a"], time_norm, time_sec, 0.0),
+                process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0),
+            ),
+        };
+        let color = process_param_color(pass, &["color"], [255, 255, 255, 255]);
         let values = [
             self.width as f32,
             self.height as f32,
             effect_id as f32,
             0.0,
-            process_param_f32(pass, &["hue", "h"], time_norm, time_sec, 0.0),
-            process_param_f32(pass, &["saturation", "sat", "s"], time_norm, time_sec, 0.0),
-            process_param_f32(pass, &["lightness", "lum", "l"], time_norm, time_sec, 0.0),
-            process_param_f32(pass, &["alpha", "a"], time_norm, time_sec, 0.0),
-            process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0),
+            p0,
+            p1,
+            p2,
+            p3,
+            p4,
             process_param_f32(pass, &["threshold"], time_norm, time_sec, 0.72),
             process_param_f32(
                 pass,
@@ -447,6 +473,10 @@ impl ProcessWebGpuRenderer {
                 1.0,
             ),
             process_param_f32(pass, &["sigma", "radius"], time_norm, time_sec, 18.0),
+            color[0],
+            color[1],
+            color[2],
+            color[3],
         ];
         let mut bytes = Vec::with_capacity(values.len() * 4);
         for value in values {
@@ -735,6 +765,9 @@ fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderEr
         Some(crate::process::effect_kind::ProcessEffect::GaussianBlurHorizontal) => Ok(vec![2]),
         Some(crate::process::effect_kind::ProcessEffect::GaussianBlurVertical) => Ok(vec![3]),
         Some(crate::process::effect_kind::ProcessEffect::GlowBloom) => Ok(vec![4, 2, 3, 5]),
+        Some(crate::process::effect_kind::ProcessEffect::GlowStack) => Ok(vec![4, 2, 3, 5]),
+        Some(crate::process::effect_kind::ProcessEffect::ToneMap) => Ok(vec![6]),
+        Some(crate::process::effect_kind::ProcessEffect::LightSweep) => Ok(vec![7]),
         None => Err(ProcessWebGpuRenderError::UnsupportedEffect(
             pass.effect.clone(),
         )),
@@ -752,10 +785,30 @@ fn process_param_f32(
         .find_map(|key| {
             pass.params
                 .iter()
-                .find(|param| param.key == *key)
+                .find(|param| param.key.eq_ignore_ascii_case(key))
                 .and_then(|param| eval_time_expr(&param.value, time_norm, time_sec).ok())
         })
         .unwrap_or(fallback)
+}
+
+fn process_param_color(pass: &PassNode, keys: &[&str], fallback: [u8; 4]) -> [f32; 4] {
+    let color = keys
+        .iter()
+        .find_map(|key| {
+            pass.params
+                .iter()
+                .find(|param| param.key == *key)
+                .and_then(|param| {
+                    parse_color(param.value.trim().trim_matches('"').trim_matches('\'')).ok()
+                })
+        })
+        .unwrap_or(fallback);
+    [
+        color[0] as f32 / 255.0,
+        color[1] as f32 / 255.0,
+        color[2] as f32 / 255.0,
+        color[3] as f32 / 255.0,
+    ]
 }
 
 impl From<ProcessWebGpuRenderError> for JsValue {
@@ -785,6 +838,7 @@ struct ProcessParams {
     bloom_threshold: f32,
     bloom_intensity: f32,
     bloom_sigma: f32,
+    color: vec4<f32>,
 };
 
 @group(0) @binding(0) var src_tex: texture_2d<f32>;
@@ -810,6 +864,15 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
     return out;
 }
 
+fn ml_process_aces_fitted(rgb: vec3<f32>, shoulder: f32) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59 + clamp(shoulder, 0.0, 2.0) * 0.24;
+    let e = 0.14;
+    return clamp((rgb * (a * rgb + vec3<f32>(b))) / (rgb * (c * rgb + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let uv = clamp(in.uv, vec2<f32>(0.0), vec2<f32>(1.0));
@@ -833,6 +896,29 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     } else if params.effect_id < 4.5 {
         // Bloom prefilter: extract bright pixels
         rgb = ml_light_atmosphere_bloom_prefilter(rgb, params.bloom_threshold, 0.5);
+    } else if params.effect_id > 5.5 && params.effect_id < 6.5 {
+        // Tone map: exposure=hue, contrast=saturation, shoulder=lightness, gamma=alpha, saturation=sigma.
+        let exposure_scale = exp2(params.hue);
+        let shoulder = clamp(params.lightness, 0.0, 2.0);
+        let gamma = max(params.alpha, 0.0001);
+        rgb = rgb * exposure_scale;
+        rgb = ml_process_aces_fitted(max(rgb, vec3<f32>(0.0)), shoulder);
+        rgb = (rgb - vec3<f32>(0.5)) * params.saturation + vec3<f32>(0.5);
+        let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        rgb = vec3<f32>(luma) + (rgb - vec3<f32>(luma)) * params.sigma;
+        rgb = pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / gamma));
+    } else if params.effect_id > 6.5 && params.effect_id < 7.5 {
+        // Light sweep: position=hue, angle=saturation, width=lightness, softness=alpha, intensity=sigma.
+        let aspect = params.width / max(params.height, 1.0);
+        let centered = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.5);
+        let angle = radians(params.saturation);
+        let normal = vec2<f32>(cos(angle), sin(angle));
+        let position = (params.hue - 0.5) * (aspect + 1.0);
+        let half_width = max(params.lightness * 0.5, 0.0001);
+        let softness = max(params.alpha, 0.0001);
+        let distance = dot(centered, normal) - position;
+        let band = 1.0 - smoothstep(half_width, half_width + softness, abs(distance));
+        rgb = rgb + params.color.rgb * band * max(params.sigma, 0.0) * params.color.a;
     }
     return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);
 }
@@ -856,6 +942,7 @@ struct ProcessParams {
     bloom_threshold: f32,
     bloom_intensity: f32,
     bloom_sigma: f32,
+    color: vec4<f32>,
 };
 
 @group(0) @binding(0) var blurred_tex: texture_2d<f32>;

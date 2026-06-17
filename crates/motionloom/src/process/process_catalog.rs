@@ -67,7 +67,7 @@ pub const PROCESS_CATEGORIES: [ProcessCategory; 10] = [
     ProcessCategory::Testing,
 ];
 
-pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 11] = [
+pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 14] = [
     ProcessEffectDefinition {
         id: "transform_camera.affine_uv",
         display_name: "Affine UV Transform",
@@ -116,6 +116,27 @@ pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 11] = [
         category: ProcessCategory::LightAtmosphere,
         kernel: "color_core.wgsl",
         summary: "Full-scene post-process glow: bright-pass, blur, then additive composite.",
+    },
+    ProcessEffectDefinition {
+        id: "light_atmosphere.glow_stack",
+        display_name: "Glow Stack",
+        category: ProcessCategory::LightAtmosphere,
+        kernel: "color_core.wgsl",
+        summary: "Cinematic multi-radius glow stack with threshold, tint, and intensity controls.",
+    },
+    ProcessEffectDefinition {
+        id: "color_tone.tone_map",
+        display_name: "Tone Map",
+        category: ProcessCategory::ColorTone,
+        kernel: "color_core.wgsl",
+        summary: "Filmic tone mapping with exposure, contrast, shoulder, gamma, and saturation.",
+    },
+    ProcessEffectDefinition {
+        id: "light_atmosphere.light_sweep",
+        display_name: "Light Sweep",
+        category: ProcessCategory::LightAtmosphere,
+        kernel: "color_core.wgsl",
+        summary: "Animated directional sweep highlight for text, logos, and energy reveals.",
     },
     ProcessEffectDefinition {
         id: "distortion_warp.heat_haze_uv",

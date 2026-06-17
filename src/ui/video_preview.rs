@@ -3,7 +3,7 @@
 // src/ui/video_preview.rs
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::BufReader;
@@ -54,10 +54,11 @@ use crate::core::waveform;
 use crate::core::waveform::WaveformStatus;
 // Import the engine and renderer
 use gpui_video_renderer::{
-    BlurMode, VIDEO_MAX_LOCAL_MASK_LAYERS, VideoElement, VideoLocalMaskLayer,
-    bgra_cpu_safe_mode_notice, process_bgra_effects,
+    BgraGpuEffectParams, BgraProcessEffectInstance, BgraProcessParamValue, BlurMode,
+    VIDEO_MAX_LOCAL_MASK_LAYERS, VideoElement, VideoLocalMaskLayer, bgra_cpu_safe_mode_notice,
+    process_bgra_effects_with_params,
 };
-use motionloom::BlurSharpenMode;
+use motionloom::{BlurSharpenMode, RuntimeProcessEffectInstance, RuntimeProcessParamValue};
 use video_engine::{Position, Video, VideoOptions};
 
 const PREVIEW_BASE_HEIGHT: f32 = 450.0;
@@ -69,6 +70,31 @@ const EDITOR_PANEL_W: f32 = 300.0;
 const TIMELINE_PANEL_H: f32 = 364.0;
 const DEFAULT_VISUAL_PLAYER_CACHE_LIMIT: usize = 16;
 const DEFAULT_AUDIO_PLAYER_CACHE_LIMIT: usize = 16;
+
+type LayerToneMapParams = (f32, f32, f32, f32, f32);
+type LayerLightSweepParams = (f32, f32, f32, f32, f32, [f32; 4]);
+
+fn motionloom_runtime_effect_to_bgra(
+    effect: &RuntimeProcessEffectInstance,
+) -> BgraProcessEffectInstance {
+    let mut params = BTreeMap::new();
+    for (key, value) in &effect.params {
+        let value = match value {
+            RuntimeProcessParamValue::Float(value) => BgraProcessParamValue::Float(*value),
+            RuntimeProcessParamValue::Color(color) => BgraProcessParamValue::Color([
+                color[0] as f32 / 255.0,
+                color[1] as f32 / 255.0,
+                color[2] as f32 / 255.0,
+                color[3] as f32 / 255.0,
+            ]),
+        };
+        params.insert(key.clone(), value);
+    }
+    BgraProcessEffectInstance {
+        effect_id: effect.effect_id.clone(),
+        params,
+    }
+}
 
 fn preview_perf_debug_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -174,6 +200,20 @@ struct ImageRenderKey {
     tint_saturation: i16,
     tint_lightness: i16,
     tint_alpha: i16,
+    tone_map_enabled: bool,
+    tone_map_exposure: i16,
+    tone_map_contrast: i16,
+    tone_map_shoulder: i16,
+    tone_map_gamma: i16,
+    tone_map_saturation: i16,
+    light_sweep_enabled: bool,
+    light_sweep_position: i16,
+    light_sweep_angle: i16,
+    light_sweep_width: i16,
+    light_sweep_softness: i16,
+    light_sweep_intensity: i16,
+    light_sweep_color: [i16; 4],
+    process_effects_key: u64,
     fast_mode: bool,
 }
 
@@ -190,8 +230,32 @@ impl ImageRenderKey {
         tint_saturation: f32,
         tint_lightness: f32,
         tint_alpha: f32,
+        tone_map: Option<LayerToneMapParams>,
+        light_sweep: Option<LayerLightSweepParams>,
+        process_effects_key: u64,
         fast_mode: bool,
     ) -> Self {
+        let (
+            tone_map_enabled,
+            tone_map_exposure,
+            tone_map_contrast,
+            tone_map_shoulder,
+            tone_map_gamma,
+            tone_map_saturation,
+        ) = tone_map
+            .map(|(exposure, contrast, shoulder, gamma, saturation)| {
+                (true, exposure, contrast, shoulder, gamma, saturation)
+            })
+            .unwrap_or((false, 0.0, 1.0, 1.0, 2.2, 1.0));
+        let light_sweep_enabled = light_sweep.is_some();
+        let (
+            light_sweep_position,
+            light_sweep_angle,
+            light_sweep_width,
+            light_sweep_softness,
+            light_sweep_intensity,
+            light_sweep_color,
+        ) = light_sweep.unwrap_or((0.5, -18.0, 0.16, 0.08, 0.0, [1.0, 1.0, 1.0, 1.0]));
         Self {
             brightness: (brightness * COLOR_KEY_SCALE).round() as i16,
             contrast: (contrast * COLOR_KEY_SCALE).round() as i16,
@@ -203,6 +267,25 @@ impl ImageRenderKey {
             tint_saturation: (tint_saturation * COLOR_KEY_SCALE).round() as i16,
             tint_lightness: (tint_lightness * COLOR_KEY_SCALE).round() as i16,
             tint_alpha: (tint_alpha * COLOR_KEY_SCALE).round() as i16,
+            tone_map_enabled,
+            tone_map_exposure: (tone_map_exposure * COLOR_KEY_SCALE).round() as i16,
+            tone_map_contrast: (tone_map_contrast * COLOR_KEY_SCALE).round() as i16,
+            tone_map_shoulder: (tone_map_shoulder * COLOR_KEY_SCALE).round() as i16,
+            tone_map_gamma: (tone_map_gamma * COLOR_KEY_SCALE).round() as i16,
+            tone_map_saturation: (tone_map_saturation * COLOR_KEY_SCALE).round() as i16,
+            light_sweep_enabled: light_sweep_enabled && light_sweep_intensity > 0.001,
+            light_sweep_position: (light_sweep_position * COLOR_KEY_SCALE).round() as i16,
+            light_sweep_angle: (light_sweep_angle * 10.0).round() as i16,
+            light_sweep_width: (light_sweep_width * COLOR_KEY_SCALE).round() as i16,
+            light_sweep_softness: (light_sweep_softness * COLOR_KEY_SCALE).round() as i16,
+            light_sweep_intensity: (light_sweep_intensity * COLOR_KEY_SCALE).round() as i16,
+            light_sweep_color: [
+                (light_sweep_color[0] * COLOR_KEY_SCALE).round() as i16,
+                (light_sweep_color[1] * COLOR_KEY_SCALE).round() as i16,
+                (light_sweep_color[2] * COLOR_KEY_SCALE).round() as i16,
+                (light_sweep_color[3] * COLOR_KEY_SCALE).round() as i16,
+            ],
+            process_effects_key,
             fast_mode,
         }
     }
@@ -1788,6 +1871,9 @@ impl VideoPreview {
         tint_saturation: f32,
         tint_lightness: f32,
         tint_alpha: f32,
+        tone_map: Option<LayerToneMapParams>,
+        light_sweep: Option<LayerLightSweepParams>,
+        process_effects: Vec<BgraProcessEffectInstance>,
         fast_blur_mode: bool,
         #[cfg(target_os = "macos")] require_surface: bool,
         cx: &mut Context<Self>,
@@ -1808,6 +1894,9 @@ impl VideoPreview {
             tint_saturation,
             tint_lightness,
             tint_alpha,
+            tone_map,
+            light_sweep,
+            gpui_video_renderer::bgra_process_effects_cache_key(&process_effects),
             fast_blur_mode,
         );
         #[cfg(target_os = "macos")]
@@ -1837,7 +1926,9 @@ impl VideoPreview {
             && tint_hue.abs() < 0.01
             && tint_saturation.abs() < 0.01
             && tint_lightness.abs() < 0.01
-            && tint_alpha.abs() < 0.01;
+            && tint_alpha.abs() < 0.01
+            && tone_map.is_none()
+            && light_sweep.is_none();
 
         // 3. Fast path: effects are at default — use clean base_data image.
         //    When transitioning from non-default → default (e.g. Layer FX dragged
@@ -1882,23 +1973,54 @@ impl VideoPreview {
                     .background_spawn(async move {
                         let mut data = base_data;
                         let renderer_blur_mode = Self::to_renderer_blur_mode(blur_mode);
-                        // Try GPU path first — handles blur, color, and tint in one dispatch,
-                        // including horizontal/vertical-only MotionLoom Layer FX blur modes.
-                        let gpu_ok = process_bgra_effects(
-                            &mut data,
-                            width,
-                            height,
+                        let mut effect_params = BgraGpuEffectParams {
                             brightness,
                             contrast,
                             saturation,
                             lut_mix,
-                            0.0,
-                            effective_blur_sigma,
-                            renderer_blur_mode,
+                            blur_sigma: effective_blur_sigma,
+                            blur_mode: renderer_blur_mode,
                             tint_hue,
                             tint_saturation,
                             tint_lightness,
                             tint_alpha,
+                            ..BgraGpuEffectParams::default()
+                        };
+                        if let Some((exposure, contrast, shoulder, gamma, saturation)) = tone_map {
+                            effect_params.tone_map_enabled = true;
+                            effect_params.tone_map_exposure = exposure;
+                            effect_params.tone_map_contrast = contrast;
+                            effect_params.tone_map_shoulder = shoulder;
+                            effect_params.tone_map_gamma = gamma;
+                            effect_params.tone_map_saturation = saturation;
+                        }
+                        if let Some((position, angle, width, softness, intensity, color)) =
+                            light_sweep
+                        {
+                            effect_params.light_sweep_enabled = intensity > 0.001;
+                            effect_params.light_sweep_position = position;
+                            effect_params.light_sweep_angle = angle;
+                            effect_params.light_sweep_width = width;
+                            effect_params.light_sweep_softness = softness;
+                            effect_params.light_sweep_intensity = intensity;
+                            effect_params.light_sweep_color = color;
+                        }
+                        let unsupported_effects =
+                            effect_params.apply_process_effects(&process_effects);
+                        if !unsupported_effects.is_empty() {
+                            log::debug!(
+                                "[Preview][ImageLayerFX] skipped unsupported MotionLoom process effects: {}",
+                                unsupported_effects.join(", ")
+                            );
+                        }
+                        // Try GPU path first — handles blur, color, and tint in one dispatch,
+                        // including horizontal/vertical-only MotionLoom Layer FX blur modes.
+                        let gpu_ok = process_bgra_effects_with_params(
+                            &mut data,
+                            width,
+                            height,
+                            effect_params,
+                            &[],
                         );
                         if !gpu_ok {
                             // CPU fallback when GPU is not available.
@@ -1999,6 +2121,9 @@ impl VideoPreview {
         tint_saturation: f32,
         tint_lightness: f32,
         tint_alpha: f32,
+        tone_map: Option<LayerToneMapParams>,
+        light_sweep: Option<LayerLightSweepParams>,
+        process_effects: Vec<BgraProcessEffectInstance>,
         fast_blur_mode: bool,
         cx: &mut Context<Self>,
     ) -> Option<(Arc<RenderImage>, u32, u32)> {
@@ -2014,6 +2139,9 @@ impl VideoPreview {
             tint_saturation,
             tint_lightness,
             tint_alpha,
+            tone_map,
+            light_sweep,
+            process_effects,
             fast_blur_mode,
             #[cfg(target_os = "macos")]
             false,
@@ -2040,6 +2168,9 @@ impl VideoPreview {
         tint_saturation: f32,
         tint_lightness: f32,
         tint_alpha: f32,
+        tone_map: Option<LayerToneMapParams>,
+        light_sweep: Option<LayerLightSweepParams>,
+        process_effects: Vec<BgraProcessEffectInstance>,
         fast_blur_mode: bool,
         cx: &mut Context<Self>,
     ) -> Option<(CVPixelBuffer, u32, u32)> {
@@ -2055,6 +2186,9 @@ impl VideoPreview {
             tint_saturation,
             tint_lightness,
             tint_alpha,
+            tone_map,
+            light_sweep,
+            process_effects,
             fast_blur_mode,
             true,
             cx,
@@ -4359,6 +4493,9 @@ impl Render for VideoPreview {
                 bloom_threshold: f32,
                 bloom_intensity: f32,
                 bloom_sigma: f32,
+                tone_map: Option<LayerToneMapParams>,
+                light_sweep: Option<LayerLightSweepParams>,
+                process_effects: Vec<BgraProcessEffectInstance>,
                 local_mask_layers: Vec<VideoLocalMaskLayer>,
                 local_mask_enabled: bool,
                 local_mask_center_x: f32,
@@ -4384,6 +4521,13 @@ impl Render for VideoPreview {
                     let lut_mix = Self::get_clip_lut_mix(gs, *clip_id).unwrap_or(0.0);
                     let (bloom_threshold, bloom_intensity, bloom_sigma) =
                         gs.layer_bloom_at(gs.playhead).unwrap_or((1.0, 0.0, 0.0));
+                    let tone_map = None;
+                    let light_sweep = None;
+                    let process_effects = gs
+                        .layer_process_effects_at(gs.playhead)
+                        .iter()
+                        .map(motionloom_runtime_effect_to_bgra)
+                        .collect();
                     let local_mask_layers = Self::get_clip_local_mask_layers(gs, *clip_id);
                     let active_layer_idx = active_local_mask_layer
                         .min(local_mask_layers.len().saturating_sub(1))
@@ -4409,6 +4553,9 @@ impl Render for VideoPreview {
                         bloom_threshold,
                         bloom_intensity,
                         bloom_sigma,
+                        tone_map,
+                        light_sweep,
+                        process_effects,
                         local_mask_layers,
                         local_mask_enabled: active_local_layer.enabled,
                         local_mask_center_x: active_local_layer.center_x,
@@ -4440,6 +4587,9 @@ impl Render for VideoPreview {
                 let lut_mix = cd.lut_mix;
                 let (bloom_threshold, bloom_intensity, bloom_sigma) =
                     (cd.bloom_threshold, cd.bloom_intensity, cd.bloom_sigma);
+                let tone_map = cd.tone_map;
+                let light_sweep = cd.light_sweep;
+                let process_effects = cd.process_effects.clone();
                 let local_mask_layers = &cd.local_mask_layers;
                 let local_mask_enabled = cd.local_mask_enabled;
                 let local_mask_center_x = cd.local_mask_center_x;
@@ -4449,6 +4599,22 @@ impl Render for VideoPreview {
                 let (hue, sat, light, alpha) = (cd.hue, cd.sat, cd.light, cd.alpha);
                 let (scale, pos_x, pos_y, rotation_deg) =
                     (cd.scale, cd.pos_x, cd.pos_y, cd.rotation_deg);
+                let apply_tone_map = |element: VideoElement| {
+                    let (enabled, exposure, contrast, shoulder, gamma, saturation) = tone_map
+                        .map(|(exposure, contrast, shoulder, gamma, saturation)| {
+                            (true, exposure, contrast, shoulder, gamma, saturation)
+                        })
+                        .unwrap_or((false, 0.0, 1.0, 1.0, 2.2, 1.0));
+                    element.tone_map(enabled, exposure, contrast, shoulder, gamma, saturation)
+                };
+                let apply_light_sweep = |element: VideoElement| {
+                    let (enabled, position, angle, width, softness, intensity, color) = light_sweep
+                        .map(|(position, angle, width, softness, intensity, color)| {
+                            (true, position, angle, width, softness, intensity, color)
+                        })
+                        .unwrap_or((false, 0.5, -18.0, 0.16, 0.08, 0.0, [1.0, 1.0, 1.0, 1.0]));
+                    element.light_sweep(enabled, position, angle, width, softness, intensity, color)
+                };
 
                 // B. Compute logical size and position.
                 let logical_w = canvas_w * scale;
@@ -4482,6 +4648,9 @@ impl Render for VideoPreview {
                             sat,
                             light,
                             alpha,
+                            tone_map,
+                            light_sweep,
+                            process_effects.clone(),
                             fast_blur_mode,
                             cx,
                         ) {
@@ -4512,6 +4681,9 @@ impl Render for VideoPreview {
                             sat,
                             light,
                             alpha,
+                            tone_map,
+                            light_sweep,
+                            process_effects.clone(),
                             fast_blur_mode,
                             cx,
                         ) {
@@ -4547,23 +4719,28 @@ impl Render for VideoPreview {
                                 .top(px(0.0))
                                 .opacity(styled_opacity)
                                 .child(
-                                    VideoElement::new(video_player.clone())
-                                        .color_balance(b, c, s)
-                                        .lut_mix(lut_mix)
-                                        .tint_overlay(
-                                            hue,
-                                            sat,
-                                            light,
-                                            (alpha * opacity).clamp(0.0, 1.0),
-                                        )
-                                        .blur_sigma(blur_sigma)
-                                        .blur_mode(Self::to_renderer_blur_mode(blur_mode))
-                                        .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
-                                        .rotation_deg(rotation_deg)
-                                        .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
-                                        .opacity(element_opacity)
-                                        .local_mask_layers(local_mask_layers)
-                                        .id(ElementId::Name(format!("vid-{}", clip_id).into())),
+                                    apply_light_sweep(apply_tone_map(
+                                        VideoElement::new(video_player.clone())
+                                            .color_balance(b, c, s)
+                                            .lut_mix(lut_mix)
+                                            .tint_overlay(
+                                                hue,
+                                                sat,
+                                                light,
+                                                (alpha * opacity).clamp(0.0, 1.0),
+                                            )
+                                            .blur_sigma(blur_sigma)
+                                            .blur_mode(Self::to_renderer_blur_mode(blur_mode))
+                                            .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
+                                            .rotation_deg(rotation_deg)
+                                            .preview_transform(
+                                                scale, pos_x, pos_y, canvas_w, canvas_h,
+                                            )
+                                            .opacity(element_opacity)
+                                            .local_mask_layers(local_mask_layers),
+                                    ))
+                                    .process_effects(process_effects.clone())
+                                    .id(ElementId::Name(format!("vid-{}", clip_id).into())),
                                 )
                         } else {
                             continue;
@@ -4580,6 +4757,9 @@ impl Render for VideoPreview {
                         sat,
                         light,
                         alpha,
+                        tone_map,
+                        light_sweep,
+                        process_effects.clone(),
                         fast_blur_mode,
                         cx,
                     ) {
@@ -4615,23 +4795,26 @@ impl Render for VideoPreview {
                             .top(px(0.0))
                             .opacity(styled_opacity)
                             .child(
-                                VideoElement::new(video_player.clone())
-                                    .color_balance(b, c, s)
-                                    .lut_mix(lut_mix)
-                                    .tint_overlay(
-                                        hue,
-                                        sat,
-                                        light,
-                                        (alpha * opacity).clamp(0.0, 1.0),
-                                    )
-                                    .blur_sigma(blur_sigma)
-                                    .blur_mode(Self::to_renderer_blur_mode(blur_mode))
-                                    .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
-                                    .rotation_deg(rotation_deg)
-                                    .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
-                                    .opacity(element_opacity)
-                                    .local_mask_layers(local_mask_layers)
-                                    .id(ElementId::Name(format!("vid-{}", clip_id).into())),
+                                apply_light_sweep(apply_tone_map(
+                                    VideoElement::new(video_player.clone())
+                                        .color_balance(b, c, s)
+                                        .lut_mix(lut_mix)
+                                        .tint_overlay(
+                                            hue,
+                                            sat,
+                                            light,
+                                            (alpha * opacity).clamp(0.0, 1.0),
+                                        )
+                                        .blur_sigma(blur_sigma)
+                                        .blur_mode(Self::to_renderer_blur_mode(blur_mode))
+                                        .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
+                                        .rotation_deg(rotation_deg)
+                                        .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
+                                        .opacity(element_opacity)
+                                        .local_mask_layers(local_mask_layers),
+                                ))
+                                .process_effects(process_effects.clone())
+                                .id(ElementId::Name(format!("vid-{}", clip_id).into())),
                             )
                     } else {
                         continue;
@@ -4652,6 +4835,9 @@ impl Render for VideoPreview {
                         sat,
                         light,
                         alpha,
+                        tone_map,
+                        light_sweep,
+                        process_effects.clone(),
                         fast_blur_mode,
                         cx,
                     ) {
@@ -4678,18 +4864,26 @@ impl Render for VideoPreview {
                         .left(px(0.0))
                         .top(px(0.0))
                         .child(
-                            VideoElement::new(video_player.clone())
-                                .color_balance(b, c, s)
-                                .lut_mix(lut_mix)
-                                .tint_overlay(hue, sat, light, (alpha * opacity).clamp(0.0, 1.0))
-                                .blur_sigma(blur_sigma)
-                                .blur_mode(Self::to_renderer_blur_mode(blur_mode))
-                                .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
-                                .rotation_deg(rotation_deg)
-                                .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
-                                .opacity(opacity)
-                                .local_mask_layers(local_mask_layers)
-                                .id(ElementId::Name(format!("vid-{}", clip_id).into())),
+                            apply_light_sweep(apply_tone_map(
+                                VideoElement::new(video_player.clone())
+                                    .color_balance(b, c, s)
+                                    .lut_mix(lut_mix)
+                                    .tint_overlay(
+                                        hue,
+                                        sat,
+                                        light,
+                                        (alpha * opacity).clamp(0.0, 1.0),
+                                    )
+                                    .blur_sigma(blur_sigma)
+                                    .blur_mode(Self::to_renderer_blur_mode(blur_mode))
+                                    .bloom(bloom_threshold, bloom_intensity, bloom_sigma)
+                                    .rotation_deg(rotation_deg)
+                                    .preview_transform(scale, pos_x, pos_y, canvas_w, canvas_h)
+                                    .opacity(opacity)
+                                    .local_mask_layers(local_mask_layers),
+                            ))
+                            .process_effects(process_effects.clone())
+                            .id(ElementId::Name(format!("vid-{}", clip_id).into())),
                         )
                 } else {
                     continue;

@@ -37,7 +37,7 @@ use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hasher;
 #[cfg(target_os = "macos")]
 use std::mem;
@@ -520,6 +520,22 @@ struct ColorParams {
     tint_alpha: f32,
     bloom_threshold: f32,
     bloom_intensity: f32,
+    tone_map_enabled: u32,
+    light_sweep_enabled: u32,
+    tone_map_exposure: f32,
+    tone_map_contrast: f32,
+    tone_map_shoulder: f32,
+    tone_map_gamma: f32,
+    tone_map_saturation: f32,
+    light_sweep_position: f32,
+    light_sweep_angle: f32,
+    light_sweep_width: f32,
+    light_sweep_softness: f32,
+    light_sweep_intensity: f32,
+    light_sweep_r: f32,
+    light_sweep_g: f32,
+    light_sweep_b: f32,
+    light_sweep_a: f32,
 };
 
 @group(0) @binding(0)
@@ -536,6 +552,41 @@ var orig_tex: texture_2d<f32>;
 
 fn gaussian_weight(i: i32, sigma: f32) -> f32 {
     return exp(-(f32(i * i)) / (2.0 * sigma * sigma));
+}
+
+fn aces_fitted(rgb: vec3<f32>, shoulder: f32) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59 + clamp(shoulder, 0.0, 2.0) * 0.24;
+    let e = 0.14;
+    return clamp((rgb * (a * rgb + vec3<f32>(b))) / (rgb * (c * rgb + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn apply_tone_map(rgb_in: vec3<f32>) -> vec3<f32> {
+    var rgb = rgb_in * exp2(clamp(color_params.tone_map_exposure, -8.0, 8.0));
+    rgb = aces_fitted(max(rgb, vec3<f32>(0.0)), color_params.tone_map_shoulder);
+    rgb = (rgb - vec3<f32>(0.5)) * clamp(color_params.tone_map_contrast, 0.0, 4.0) + vec3<f32>(0.5);
+    let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    rgb = vec3<f32>(luma) + (rgb - vec3<f32>(luma)) * clamp(color_params.tone_map_saturation, 0.0, 4.0);
+    rgb = pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / max(color_params.tone_map_gamma, 0.0001)));
+    return clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn light_sweep_energy(gid: vec3<u32>) -> f32 {
+    let dims = vec2<f32>(max(f32(color_params.width), 1.0), max(f32(color_params.height), 1.0));
+    let aspect = dims.x / dims.y;
+    let uv = vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5) / dims;
+    let centered = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.5);
+    let angle = radians(color_params.light_sweep_angle);
+    let normal = vec2<f32>(cos(angle), sin(angle));
+    let position = (color_params.light_sweep_position - 0.5) * (aspect + 1.0);
+    let half_width = max(color_params.light_sweep_width * 0.5, 0.0001);
+    let softness = max(color_params.light_sweep_softness, 0.0001);
+    let distance = dot(centered, normal) - position;
+    return (1.0 - smoothstep(half_width, half_width + softness, abs(distance)))
+        * max(color_params.light_sweep_intensity, 0.0)
+        * clamp(color_params.light_sweep_a, 0.0, 1.0);
 }
 
 @compute @workgroup_size(16, 16, 1)
@@ -663,6 +714,18 @@ fn color_correct(@builtin(global_invocation_id) gid: vec3<u32>) {
         r = mix(r, warm_r, m);
         g = mix(g, warm_g, m);
         b = mix(b, warm_b, m);
+    }
+    if (color_params.tone_map_enabled != 0u) {
+        let mapped = apply_tone_map(vec3<f32>(r, g, b));
+        r = mapped.r;
+        g = mapped.g;
+        b = mapped.b;
+    }
+    if (color_params.light_sweep_enabled != 0u) {
+        let energy = light_sweep_energy(gid);
+        r = clamp(r + color_params.light_sweep_r * energy, 0.0, 1.0);
+        g = clamp(g + color_params.light_sweep_g * energy, 0.0, 1.0);
+        b = clamp(b + color_params.light_sweep_b * energy, 0.0, 1.0);
     }
     a = clamp(a * color_params.opacity, 0.0, 1.0);
 
@@ -2031,6 +2094,22 @@ struct WgpuColorParams {
     tint_alpha: f32,
     bloom_threshold: f32,
     bloom_intensity: f32,
+    tone_map_enabled: u32,
+    light_sweep_enabled: u32,
+    tone_map_exposure: f32,
+    tone_map_contrast: f32,
+    tone_map_shoulder: f32,
+    tone_map_gamma: f32,
+    tone_map_saturation: f32,
+    light_sweep_position: f32,
+    light_sweep_angle: f32,
+    light_sweep_width: f32,
+    light_sweep_softness: f32,
+    light_sweep_intensity: f32,
+    light_sweep_r: f32,
+    light_sweep_g: f32,
+    light_sweep_b: f32,
+    light_sweep_a: f32,
 }
 
 fn blur_sigma_scale_for_render_size(
@@ -2423,6 +2502,19 @@ impl WgpuBgraEffectContext {
         bloom_threshold: f32,
         bloom_intensity: f32,
         bloom_sigma: f32,
+        tone_map_enabled: bool,
+        tone_map_exposure: f32,
+        tone_map_contrast: f32,
+        tone_map_shoulder: f32,
+        tone_map_gamma: f32,
+        tone_map_saturation: f32,
+        light_sweep_enabled: bool,
+        light_sweep_position: f32,
+        light_sweep_angle: f32,
+        light_sweep_width: f32,
+        light_sweep_softness: f32,
+        light_sweep_intensity: f32,
+        light_sweep_color: [f32; 4],
         local_layers: &[VideoLocalMaskLayer],
     ) -> Result<(), String> {
         if self.device_lost.load(Ordering::Relaxed) {
@@ -2489,6 +2581,8 @@ impl WgpuBgraEffectContext {
         };
         let has_global_blur_or_sharpen = has_global_blur || !sharpen_stages.is_empty();
         let has_bloom = bloom_intensity > 0.001 && bloom_sigma > 0.001;
+        let has_tone_map = tone_map_enabled;
+        let has_light_sweep = light_sweep_enabled && light_sweep_intensity > 0.001;
         let has_global_rotation = rotation_deg.abs() >= 0.001;
         let has_global_transform = (transform_scale - 1.0).abs() >= 0.001
             || transform_pos_x.abs() >= 0.001
@@ -2500,7 +2594,9 @@ impl WgpuBgraEffectContext {
             || (opacity - 1.0).abs() >= 0.001
             || has_global_rotation
             || has_global_transform
-            || tint_alpha.abs() >= 0.001;
+            || tint_alpha.abs() >= 0.001
+            || has_tone_map
+            || has_light_sweep;
         let (tint_r, tint_g, tint_b) = hsla_to_rgb(
             tint_hue,
             tint_saturation.clamp(0.0, 1.0),
@@ -2544,6 +2640,7 @@ impl WgpuBgraEffectContext {
                                  transform_enabled: bool,
                                  tint_rgba: (f32, f32, f32, f32),
                                  bloom: (f32, f32),
+                                 post_effects: bool,
                                  mask: Option<&VideoLocalMaskLayer>|
          -> WgpuColorParams {
             let ref_w = transform_ref_width.max(1.0);
@@ -2609,6 +2706,26 @@ impl WgpuBgraEffectContext {
                 tint_alpha: tint_rgba.3.clamp(0.0, 1.0),
                 bloom_threshold: bloom.0.clamp(0.0, 1.0),
                 bloom_intensity: bloom.1.clamp(0.0, 8.0),
+                tone_map_enabled: if post_effects && has_tone_map { 1 } else { 0 },
+                light_sweep_enabled: if post_effects && has_light_sweep {
+                    1
+                } else {
+                    0
+                },
+                tone_map_exposure: tone_map_exposure.clamp(-8.0, 8.0),
+                tone_map_contrast: tone_map_contrast.clamp(0.0, 4.0),
+                tone_map_shoulder: tone_map_shoulder.clamp(0.0, 2.0),
+                tone_map_gamma: tone_map_gamma.clamp(0.0001, 8.0),
+                tone_map_saturation: tone_map_saturation.clamp(0.0, 4.0),
+                light_sweep_position: light_sweep_position.clamp(-2.0, 3.0),
+                light_sweep_angle,
+                light_sweep_width: light_sweep_width.clamp(0.0, 2.0),
+                light_sweep_softness: light_sweep_softness.clamp(0.0, 2.0),
+                light_sweep_intensity: light_sweep_intensity.clamp(0.0, 8.0),
+                light_sweep_r: light_sweep_color[0].clamp(0.0, 1.0),
+                light_sweep_g: light_sweep_color[1].clamp(0.0, 1.0),
+                light_sweep_b: light_sweep_color[2].clamp(0.0, 1.0),
+                light_sweep_a: light_sweep_color[3].clamp(0.0, 1.0),
             }
         };
         let global_blur_params = make_blur_params(blur_sigma);
@@ -2623,6 +2740,7 @@ impl WgpuBgraEffectContext {
             true,
             (tint_r, tint_g, tint_b, tint_alpha),
             (bloom_threshold, bloom_intensity),
+            true,
             None,
         );
         let color_params_size = std::mem::size_of::<WgpuColorParams>() as u64;
@@ -2732,6 +2850,7 @@ impl WgpuBgraEffectContext {
                     false,
                     (0.0, 0.0, 0.0, 0.0),
                     (0.0, 0.0),
+                    false,
                     None,
                 );
                 let stage_blur_buf =
@@ -2858,6 +2977,7 @@ impl WgpuBgraEffectContext {
                 false,
                 (0.0, 0.0, 0.0, 0.0),
                 (0.0, 0.0),
+                false,
                 None,
             );
             let local_sharpen_params = make_color_params(
@@ -2871,6 +2991,7 @@ impl WgpuBgraEffectContext {
                 false,
                 (0.0, 0.0, 0.0, 0.0),
                 (0.0, 0.0),
+                false,
                 None,
             );
             let blend_color_params = make_color_params(
@@ -2884,6 +3005,7 @@ impl WgpuBgraEffectContext {
                 false,
                 (0.0, 0.0, 0.0, 0.0),
                 (0.0, 0.0),
+                false,
                 Some(layer),
             );
             let blur_params_buffer =
@@ -3018,6 +3140,7 @@ impl WgpuBgraEffectContext {
                 false,
                 (0.0, 0.0, 0.0, 0.0),
                 (bloom_threshold, bloom_intensity),
+                false,
                 None,
             );
             let bloom_blur_buf =
@@ -3212,6 +3335,19 @@ pub struct BgraGpuEffectParams {
     pub bloom_threshold: f32,
     pub bloom_intensity: f32,
     pub bloom_sigma: f32,
+    pub tone_map_enabled: bool,
+    pub tone_map_exposure: f32,
+    pub tone_map_contrast: f32,
+    pub tone_map_shoulder: f32,
+    pub tone_map_gamma: f32,
+    pub tone_map_saturation: f32,
+    pub light_sweep_enabled: bool,
+    pub light_sweep_position: f32,
+    pub light_sweep_angle: f32,
+    pub light_sweep_width: f32,
+    pub light_sweep_softness: f32,
+    pub light_sweep_intensity: f32,
+    pub light_sweep_color: [f32; 4],
 }
 
 impl Default for BgraGpuEffectParams {
@@ -3237,7 +3373,127 @@ impl Default for BgraGpuEffectParams {
             bloom_threshold: 1.0,
             bloom_intensity: 0.0,
             bloom_sigma: 0.0,
+            tone_map_enabled: false,
+            tone_map_exposure: 0.0,
+            tone_map_contrast: 1.0,
+            tone_map_shoulder: 1.0,
+            tone_map_gamma: 2.2,
+            tone_map_saturation: 1.0,
+            light_sweep_enabled: false,
+            light_sweep_position: 0.5,
+            light_sweep_angle: -18.0,
+            light_sweep_width: 0.16,
+            light_sweep_softness: 0.08,
+            light_sweep_intensity: 0.0,
+            light_sweep_color: [1.0, 1.0, 1.0, 1.0],
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BgraProcessParamValue {
+    Float(f32),
+    Color([f32; 4]),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BgraProcessEffectInstance {
+    pub effect_id: String,
+    pub params: BTreeMap<String, BgraProcessParamValue>,
+}
+
+impl BgraProcessEffectInstance {
+    pub fn float(&self, key: &str) -> Option<f32> {
+        match self.params.get(key) {
+            Some(BgraProcessParamValue::Float(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn color(&self, key: &str) -> Option<[f32; 4]> {
+        match self.params.get(key) {
+            Some(BgraProcessParamValue::Color(value)) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+pub fn bgra_process_effects_cache_key(effects: &[BgraProcessEffectInstance]) -> u64 {
+    const SCALE: f32 = 1000.0;
+    let mut hasher = DefaultHasher::new();
+    for effect in effects {
+        std::hash::Hash::hash(&effect.effect_id, &mut hasher);
+        for (key, value) in &effect.params {
+            std::hash::Hash::hash(key, &mut hasher);
+            match value {
+                BgraProcessParamValue::Float(value) => {
+                    std::hash::Hash::hash(&((*value * SCALE).round() as i64), &mut hasher);
+                }
+                BgraProcessParamValue::Color(color) => {
+                    for channel in color {
+                        std::hash::Hash::hash(&((*channel * SCALE).round() as i64), &mut hasher);
+                    }
+                }
+            }
+        }
+    }
+    hasher.finish()
+}
+
+impl BgraGpuEffectParams {
+    pub fn apply_process_effects(&mut self, effects: &[BgraProcessEffectInstance]) -> Vec<String> {
+        let mut unsupported = Vec::new();
+        for effect in effects {
+            match effect.effect_id.as_str() {
+                "hsla_overlay" => {
+                    self.tint_hue = effect.float("hue").unwrap_or(self.tint_hue);
+                    self.tint_saturation =
+                        effect.float("saturation").unwrap_or(self.tint_saturation);
+                    self.tint_lightness = effect.float("lightness").unwrap_or(self.tint_lightness);
+                    self.tint_alpha = effect.float("alpha").unwrap_or(self.tint_alpha);
+                }
+                "bloom" | "glow_bloom" => {
+                    self.bloom_threshold =
+                        effect.float("threshold").unwrap_or(self.bloom_threshold);
+                    self.bloom_intensity =
+                        effect.float("intensity").unwrap_or(self.bloom_intensity);
+                    self.bloom_sigma = effect.float("sigma").unwrap_or(self.bloom_sigma);
+                }
+                "tone_map" => {
+                    self.tone_map_enabled = true;
+                    self.tone_map_exposure =
+                        effect.float("exposure").unwrap_or(self.tone_map_exposure);
+                    self.tone_map_contrast =
+                        effect.float("contrast").unwrap_or(self.tone_map_contrast);
+                    self.tone_map_shoulder =
+                        effect.float("shoulder").unwrap_or(self.tone_map_shoulder);
+                    self.tone_map_gamma = effect.float("gamma").unwrap_or(self.tone_map_gamma);
+                    self.tone_map_saturation = effect
+                        .float("saturation")
+                        .unwrap_or(self.tone_map_saturation);
+                }
+                "light_sweep" => {
+                    self.light_sweep_position = effect
+                        .float("position")
+                        .unwrap_or(self.light_sweep_position);
+                    self.light_sweep_angle =
+                        effect.float("angle").unwrap_or(self.light_sweep_angle);
+                    self.light_sweep_width =
+                        effect.float("width").unwrap_or(self.light_sweep_width);
+                    self.light_sweep_softness = effect
+                        .float("softness")
+                        .unwrap_or(self.light_sweep_softness);
+                    self.light_sweep_intensity = effect
+                        .float("intensity")
+                        .unwrap_or(self.light_sweep_intensity);
+                    self.light_sweep_color =
+                        effect.color("color").unwrap_or(self.light_sweep_color);
+                    self.light_sweep_enabled = self.light_sweep_intensity > 0.001;
+                }
+                other => unsupported.push(other.to_string()),
+            }
+        }
+        unsupported
     }
 }
 
@@ -3306,6 +3562,19 @@ pub fn process_bgra_effects_with_params(
         params.bloom_threshold,
         params.bloom_intensity,
         params.bloom_sigma,
+        params.tone_map_enabled,
+        params.tone_map_exposure,
+        params.tone_map_contrast,
+        params.tone_map_shoulder,
+        params.tone_map_gamma,
+        params.tone_map_saturation,
+        params.light_sweep_enabled,
+        params.light_sweep_position,
+        params.light_sweep_angle,
+        params.light_sweep_width,
+        params.light_sweep_softness,
+        params.light_sweep_intensity,
+        params.light_sweep_color,
         local_layers,
     ) {
         Ok(()) => true,
@@ -3513,6 +3782,20 @@ struct PixelProcessKey {
     bloom_threshold: i16,
     bloom_intensity: i16,
     bloom_sigma: i16,
+    tone_map_enabled: bool,
+    tone_map_exposure: i16,
+    tone_map_contrast: i16,
+    tone_map_shoulder: i16,
+    tone_map_gamma: i16,
+    tone_map_saturation: i16,
+    light_sweep_enabled: bool,
+    light_sweep_position: i16,
+    light_sweep_angle: i16,
+    light_sweep_width: i16,
+    light_sweep_softness: i16,
+    light_sweep_intensity: i16,
+    light_sweep_color: [i16; 4],
+    process_effects_key: u64,
     rotation_deg: i16,
     transform_scale: i16,
     transform_pos_x: i16,
@@ -3540,6 +3823,20 @@ impl PixelProcessKey {
         bloom_threshold: f32,
         bloom_intensity: f32,
         bloom_sigma: f32,
+        tone_map_enabled: bool,
+        tone_map_exposure: f32,
+        tone_map_contrast: f32,
+        tone_map_shoulder: f32,
+        tone_map_gamma: f32,
+        tone_map_saturation: f32,
+        light_sweep_enabled: bool,
+        light_sweep_position: f32,
+        light_sweep_angle: f32,
+        light_sweep_width: f32,
+        light_sweep_softness: f32,
+        light_sweep_intensity: f32,
+        light_sweep_color: [f32; 4],
+        process_effects_key: u64,
         rotation_deg: f32,
         transform_scale: f32,
         transform_pos_x: f32,
@@ -3595,6 +3892,25 @@ impl PixelProcessKey {
             bloom_threshold: (bloom_threshold * SCALE).round() as i16,
             bloom_intensity: (bloom_intensity * SCALE).round() as i16,
             bloom_sigma: (bloom_sigma * BLUR_SCALE).round() as i16,
+            tone_map_enabled,
+            tone_map_exposure: (tone_map_exposure * SCALE).round() as i16,
+            tone_map_contrast: (tone_map_contrast * SCALE).round() as i16,
+            tone_map_shoulder: (tone_map_shoulder * SCALE).round() as i16,
+            tone_map_gamma: (tone_map_gamma * SCALE).round() as i16,
+            tone_map_saturation: (tone_map_saturation * SCALE).round() as i16,
+            light_sweep_enabled,
+            light_sweep_position: (light_sweep_position * SCALE).round() as i16,
+            light_sweep_angle: (light_sweep_angle * ROT_SCALE).round() as i16,
+            light_sweep_width: (light_sweep_width * SCALE).round() as i16,
+            light_sweep_softness: (light_sweep_softness * SCALE).round() as i16,
+            light_sweep_intensity: (light_sweep_intensity * SCALE).round() as i16,
+            light_sweep_color: [
+                (light_sweep_color[0] * SCALE).round() as i16,
+                (light_sweep_color[1] * SCALE).round() as i16,
+                (light_sweep_color[2] * SCALE).round() as i16,
+                (light_sweep_color[3] * SCALE).round() as i16,
+            ],
+            process_effects_key,
             rotation_deg: (rotation_deg * ROT_SCALE).round() as i16,
             transform_scale: (transform_scale * SCALE).round() as i16,
             transform_pos_x: (transform_pos_x * SCALE).round() as i16,
@@ -4173,6 +4489,21 @@ pub struct VideoElement {
     bloom_threshold: f32,
     bloom_intensity: f32,
     bloom_sigma: f32,
+    tone_map_enabled: bool,
+    tone_map_exposure: f32,
+    tone_map_contrast: f32,
+    tone_map_shoulder: f32,
+    tone_map_gamma: f32,
+    tone_map_saturation: f32,
+    light_sweep_enabled: bool,
+    light_sweep_position: f32,
+    light_sweep_angle: f32,
+    light_sweep_width: f32,
+    light_sweep_softness: f32,
+    light_sweep_intensity: f32,
+    light_sweep_color: [f32; 4],
+    process_effects: Vec<BgraProcessEffectInstance>,
+    process_effects_key: u64,
     tint_hue: f32,
     tint_saturation: f32,
     tint_lightness: f32,
@@ -4213,6 +4544,21 @@ impl VideoElement {
             bloom_threshold: 1.0,
             bloom_intensity: 0.0,
             bloom_sigma: 0.0,
+            tone_map_enabled: false,
+            tone_map_exposure: 0.0,
+            tone_map_contrast: 1.0,
+            tone_map_shoulder: 1.0,
+            tone_map_gamma: 2.2,
+            tone_map_saturation: 1.0,
+            light_sweep_enabled: false,
+            light_sweep_position: 0.5,
+            light_sweep_angle: -18.0,
+            light_sweep_width: 0.16,
+            light_sweep_softness: 0.08,
+            light_sweep_intensity: 0.0,
+            light_sweep_color: [1.0, 1.0, 1.0, 1.0],
+            process_effects: Vec::new(),
+            process_effects_key: 0,
             tint_hue: 0.0,
             tint_saturation: 0.0,
             tint_lightness: 0.0,
@@ -4279,6 +4625,55 @@ impl VideoElement {
         self.bloom_threshold = threshold.clamp(0.0, 1.0);
         self.bloom_intensity = intensity.clamp(0.0, 8.0);
         self.bloom_sigma = sigma.clamp(0.0, 64.0);
+        self
+    }
+
+    pub fn tone_map(
+        mut self,
+        enabled: bool,
+        exposure: f32,
+        contrast: f32,
+        shoulder: f32,
+        gamma: f32,
+        saturation: f32,
+    ) -> Self {
+        self.tone_map_enabled = enabled;
+        self.tone_map_exposure = exposure.clamp(-8.0, 8.0);
+        self.tone_map_contrast = contrast.clamp(0.0, 4.0);
+        self.tone_map_shoulder = shoulder.clamp(0.0, 2.0);
+        self.tone_map_gamma = gamma.clamp(0.0001, 8.0);
+        self.tone_map_saturation = saturation.clamp(0.0, 4.0);
+        self
+    }
+
+    pub fn light_sweep(
+        mut self,
+        enabled: bool,
+        position: f32,
+        angle: f32,
+        width: f32,
+        softness: f32,
+        intensity: f32,
+        color: [f32; 4],
+    ) -> Self {
+        self.light_sweep_enabled = enabled;
+        self.light_sweep_position = position.clamp(-2.0, 3.0);
+        self.light_sweep_angle = angle;
+        self.light_sweep_width = width.clamp(0.0, 2.0);
+        self.light_sweep_softness = softness.clamp(0.0, 2.0);
+        self.light_sweep_intensity = intensity.clamp(0.0, 8.0);
+        self.light_sweep_color = [
+            color[0].clamp(0.0, 1.0),
+            color[1].clamp(0.0, 1.0),
+            color[2].clamp(0.0, 1.0),
+            color[3].clamp(0.0, 1.0),
+        ];
+        self
+    }
+
+    pub fn process_effects(mut self, effects: Vec<BgraProcessEffectInstance>) -> Self {
+        self.process_effects_key = bgra_process_effects_cache_key(&effects);
+        self.process_effects = effects;
         self
     }
 
@@ -4660,6 +5055,9 @@ impl VideoElement {
             || self.lut_mix.abs() >= 0.001
             || (self.opacity - 1.0).abs() >= 0.001
             || self.tint_alpha.abs() >= 0.001
+            || self.tone_map_enabled
+            || (self.light_sweep_enabled && self.light_sweep_intensity > 0.001)
+            || !self.process_effects.is_empty()
     }
 
     fn has_bloom_effect(&self) -> bool {
@@ -4948,6 +5346,48 @@ impl VideoElement {
 
         let sigma = self.effective_signed_blur_sigma();
         let local_layers = self.effective_local_mask_layers();
+        let mut params = BgraGpuEffectParams {
+            brightness: self.brightness,
+            contrast: self.contrast,
+            saturation: self.saturation,
+            lut_mix: self.lut_mix,
+            opacity: self.opacity,
+            rotation_deg: self.rotation_deg,
+            transform_scale: self.transform_scale,
+            transform_pos_x: self.transform_pos_x,
+            transform_pos_y: self.transform_pos_y,
+            transform_ref_width: self.transform_ref_width,
+            transform_ref_height: self.transform_ref_height,
+            tint_hue: self.tint_hue,
+            tint_saturation: self.tint_saturation,
+            tint_lightness: self.tint_lightness,
+            tint_alpha: self.tint_alpha,
+            blur_sigma: sigma,
+            blur_mode: self.blur_mode,
+            bloom_threshold: self.bloom_threshold,
+            bloom_intensity: self.bloom_intensity,
+            bloom_sigma: self.bloom_sigma,
+            tone_map_enabled: self.tone_map_enabled,
+            tone_map_exposure: self.tone_map_exposure,
+            tone_map_contrast: self.tone_map_contrast,
+            tone_map_shoulder: self.tone_map_shoulder,
+            tone_map_gamma: self.tone_map_gamma,
+            tone_map_saturation: self.tone_map_saturation,
+            light_sweep_enabled: self.light_sweep_enabled,
+            light_sweep_position: self.light_sweep_position,
+            light_sweep_angle: self.light_sweep_angle,
+            light_sweep_width: self.light_sweep_width,
+            light_sweep_softness: self.light_sweep_softness,
+            light_sweep_intensity: self.light_sweep_intensity,
+            light_sweep_color: self.light_sweep_color,
+        };
+        let unsupported_effects = params.apply_process_effects(&self.process_effects);
+        if !unsupported_effects.is_empty() {
+            log::debug!(
+                "[VideoElement][LayerFX] skipped unsupported MotionLoom process effects: {}",
+                unsupported_effects.join(", ")
+            );
+        }
         let mut applied = false;
         WGPU_BGRA_CONTEXT.with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -4968,26 +5408,39 @@ impl VideoElement {
                     data,
                     width,
                     height,
-                    self.brightness,
-                    self.contrast,
-                    self.saturation,
-                    self.lut_mix,
-                    self.opacity,
-                    self.rotation_deg,
-                    self.transform_scale,
-                    self.transform_pos_x,
-                    self.transform_pos_y,
-                    self.transform_ref_width,
-                    self.transform_ref_height,
-                    self.tint_hue,
-                    self.tint_saturation,
-                    self.tint_lightness,
-                    self.tint_alpha,
-                    sigma,
-                    self.blur_mode,
-                    self.bloom_threshold,
-                    self.bloom_intensity,
-                    self.bloom_sigma,
+                    params.brightness,
+                    params.contrast,
+                    params.saturation,
+                    params.lut_mix,
+                    params.opacity,
+                    params.rotation_deg,
+                    params.transform_scale,
+                    params.transform_pos_x,
+                    params.transform_pos_y,
+                    params.transform_ref_width,
+                    params.transform_ref_height,
+                    params.tint_hue,
+                    params.tint_saturation,
+                    params.tint_lightness,
+                    params.tint_alpha,
+                    params.blur_sigma,
+                    params.blur_mode,
+                    params.bloom_threshold,
+                    params.bloom_intensity,
+                    params.bloom_sigma,
+                    params.tone_map_enabled,
+                    params.tone_map_exposure,
+                    params.tone_map_contrast,
+                    params.tone_map_shoulder,
+                    params.tone_map_gamma,
+                    params.tone_map_saturation,
+                    params.light_sweep_enabled,
+                    params.light_sweep_position,
+                    params.light_sweep_angle,
+                    params.light_sweep_width,
+                    params.light_sweep_softness,
+                    params.light_sweep_intensity,
+                    params.light_sweep_color,
                     &local_layers,
                 ) {
                     Ok(()) => {
@@ -5094,7 +5547,11 @@ impl VideoElement {
         {
             // NV12 Metal path already supports global color/blur/LUT/tint processing.
             // Keep BGRA fallback only for local-mask compositing or effects not covered by NV12.
-            self.has_bloom_effect() || self.local_mask_active() || has_localized_effect
+            self.has_bloom_effect()
+                || self.tone_map_enabled
+                || (self.light_sweep_enabled && self.light_sweep_intensity > 0.001)
+                || self.local_mask_active()
+                || has_localized_effect
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -5228,6 +5685,20 @@ impl Element for VideoElement {
             self.bloom_threshold,
             self.bloom_intensity,
             self.bloom_sigma,
+            self.tone_map_enabled,
+            self.tone_map_exposure,
+            self.tone_map_contrast,
+            self.tone_map_shoulder,
+            self.tone_map_gamma,
+            self.tone_map_saturation,
+            self.light_sweep_enabled,
+            self.light_sweep_position,
+            self.light_sweep_angle,
+            self.light_sweep_width,
+            self.light_sweep_softness,
+            self.light_sweep_intensity,
+            self.light_sweep_color,
+            self.process_effects_key,
             self.rotation_deg,
             self.transform_scale,
             self.transform_pos_x,
@@ -5266,6 +5737,7 @@ impl Element for VideoElement {
                     || self.tint_alpha.abs() >= 0.001
                     || self.effective_signed_blur_sigma().abs() >= 0.001
                     || self.has_bloom_effect()
+                    || !self.process_effects.is_empty()
                     || self.local_mask_active()
                     || localized_effect;
 

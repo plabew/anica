@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::{Arc, atomic::AtomicBool};
 
 use crate::dsl::{
     GraphScript, graph_root_start, parse_graph_script, validate_graph_present_placement,
@@ -7,10 +8,10 @@ use crate::error::GraphParseError;
 use crate::error::MotionLoomError;
 use crate::process::dsl::{is_process_graph_script, parse_process_graph_script};
 use crate::scene_render::{
-    SceneRenderProfile, SceneRenderProgress, render_scene_graph_to_video_with_progress,
+    SceneRenderProfile, SceneRenderProgress, render_scene_graph_to_video_with_progress_and_cancel,
 };
 use crate::world::{WorldGraph, is_world_graph_script, parse_world_graph_script};
-use crate::world::{WorldRenderProgress, render_world_graph_to_video_with_progress};
+use crate::world::{WorldRenderProgress, render_world_graph_to_video_with_progress_and_cancel};
 
 #[derive(Debug, Clone)]
 pub enum MotionLoomDocument {
@@ -123,6 +124,32 @@ pub async fn render_motionloom_document_to_video_with_progress<F>(
     output_path: &Path,
     profile: SceneRenderProfile,
     progress_every_frames: u32,
+    progress_callback: F,
+) -> Result<(), MotionLoomError>
+where
+    F: FnMut(MotionLoomRenderProgress),
+{
+    render_motionloom_document_to_video_with_progress_and_cancel(
+        ffmpeg_bin,
+        script,
+        asset_root,
+        output_path,
+        profile,
+        progress_every_frames,
+        None,
+        progress_callback,
+    )
+    .await
+}
+
+pub async fn render_motionloom_document_to_video_with_progress_and_cancel<F>(
+    ffmpeg_bin: &str,
+    script: &str,
+    asset_root: impl AsRef<Path>,
+    output_path: &Path,
+    profile: SceneRenderProfile,
+    progress_every_frames: u32,
+    cancel: Option<Arc<AtomicBool>>,
     mut progress_callback: F,
 ) -> Result<(), MotionLoomError>
 where
@@ -132,12 +159,13 @@ where
 
     if shell.has_scene || (shell.has_world && shell.has_process) {
         let graph = parse_graph_script(script)?;
-        return render_scene_graph_to_video_with_progress(
+        return render_scene_graph_to_video_with_progress_and_cancel(
             ffmpeg_bin,
             &graph,
             output_path,
             profile,
             progress_every_frames,
+            cancel,
             |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),
         )
         .await
@@ -153,12 +181,13 @@ where
                         .to_string(),
             });
         }
-        return render_scene_graph_to_video_with_progress(
+        return render_scene_graph_to_video_with_progress_and_cancel(
             ffmpeg_bin,
             &graph,
             output_path,
             profile,
             progress_every_frames,
+            cancel,
             |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),
         )
         .await
@@ -167,13 +196,14 @@ where
 
     if shell.has_world || is_world_graph_script(script) {
         let graph = parse_world_graph_script(script)?;
-        return render_world_graph_to_video_with_progress(
+        return render_world_graph_to_video_with_progress_and_cancel(
             ffmpeg_bin,
             &graph,
             asset_root,
             output_path,
             profile,
             progress_every_frames,
+            cancel,
             |progress| progress_callback(MotionLoomRenderProgress::World(progress)),
         )
         .await
@@ -181,12 +211,13 @@ where
     }
 
     let graph = parse_graph_script(script)?;
-    render_scene_graph_to_video_with_progress(
+    render_scene_graph_to_video_with_progress_and_cancel(
         ffmpeg_bin,
         &graph,
         output_path,
         profile,
         progress_every_frames,
+        cancel,
         |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),
     )
     .await

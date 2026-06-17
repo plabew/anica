@@ -147,6 +147,38 @@ match surface {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Standalone WGPU Live Preview Example
+
+`crates/motionloom/examples/wgpu_live_preview.rs` is a native diagnostic viewer
+for testing MotionLoom's direct wgpu preview path without Anica, ffmpeg, video
+encoding, or CPU readback. Use it to measure scene/process GPU render cost,
+surface format behavior, and preview quality tradeoffs.
+
+Run the live preview:
+
+```bash
+cargo run --release -p motionloom --example wgpu_live_preview -- ../motionloom-example/showcase/s-000005/main.motionloom
+```
+
+Print copyable timing stats once per second with `--print-stats` or `--stats`:
+
+```bash
+cargo run --release -p motionloom --example wgpu_live_preview -- --print-stats ../motionloom-example/showcase/s-000005/main.motionloom
+```
+
+Keyboard controls:
+
+- `1` — Full quality, 100% render target.
+- `2` — Balanced quality, 50% render target.
+- `3` — Speed quality, 25% render target.
+- `4` — High Speed quality, 10% render target.
+- `5` — Ultra Speed quality, 5% render target.
+- `Esc` — close the preview window.
+
+The window title reports frame index, render time, blit/present time, tick rate,
+target size, surface format, quality mode, and script path. `--print-stats`
+prints rows such as `quality=... target=... render_ms=...` for benchmark notes.
+
 ## World Rendering
 
 `render_world_frame(graph: &WorldGraph, frame: u32, asset_root)`
@@ -257,6 +289,26 @@ paths. A script can be GPU-compatible in one target and CPU fallback in another.
 Use the per-target booleans and issue list instead of assuming one target's
 result applies to every platform.
 
+## Cinematic Light Process Effects
+
+MotionLoom exposes cinematic lighting as process effects. They use the existing
+`<Pass effect="...">` surface, so host applications can use them by updating the
+MotionLoom crate and rendering the script; no new scene node schema is required.
+
+Supported effect ids:
+
+- `glow_stack` — multi-radius glow stack with threshold, intensity, radii, and
+  tint controls.
+- `tone_map` — exposure, contrast, filmic shoulder, gamma, and saturation.
+- `light_sweep` — animated directional sweep highlight for text, logos, and
+  energy reveals.
+
+Copyable examples live in `motionloom-example/core/process/`:
+
+- `cp-000008` — `glow_stack`
+- `cp-000009` — `tone_map`
+- `cp-000010` — `light_sweep`
+
 ## Process Catalog
 
 `process_effects() -> &'static [ProcessEffectDefinition]`
@@ -343,27 +395,6 @@ let frame = renderer.render_frame(&graph, 0, ".")?;
 frame.save("motionloom_world_frame.png")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
-
-## Live Preview Example
-
-Run the built-in `wgpu_live_preview` example to render a MotionLoom script
-through the GPU preview pipeline and print timing statistics:
-
-```bash
-cargo run --release -p motionloom --example wgpu_live_preview -- --print-stats ../motionloom-example/showcase/s-000005/main.motionloom
-```
-
-This command:
-
-1. Builds the `wgpu_live_preview` example in release mode for fast GPU rendering.
-2. Parses the specified `.motionloom` script.
-3. Renders the scene through `SceneRenderer::new(SceneRenderProfile::Gpu)`.
-4. Prints frame-timing statistics (`--print-stats`) so you can see how long
-each frame takes on the GPU compositor.
-
-Use this example to quickly verify that a script renders correctly on the GPU
-path without writing a full host application. Replace the path with any
-`.motionloom` file you want to test.
 
 ## Notes
 

@@ -16,8 +16,8 @@ use gpui::EventEmitter;
 use log::info;
 use motionloom::{
     BlurSharpenMode, LayerEffectClip as MotionLoomLayerEffectClip, RuntimeFrameOutput,
-    RuntimeProgram, compile_runtime_program, is_graph_script, keyframe, parse_process_graph_script,
-    transitions,
+    RuntimeProcessEffectInstance, RuntimeProcessParamValue, RuntimeProgram,
+    compile_runtime_program, is_graph_script, keyframe, parse_process_graph_script, transitions,
 };
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -2918,6 +2918,33 @@ impl GlobalState {
             }
         }
         best
+    }
+
+    pub fn layer_process_effects_at(
+        &self,
+        timeline_time: Duration,
+    ) -> Vec<RuntimeProcessEffectInstance> {
+        let mut effects = Vec::new();
+        for layer in &self.layer_effect_clips {
+            let end = layer.end();
+            if timeline_time < layer.start || timeline_time >= end {
+                continue;
+            }
+            let strength = layer.envelope_factor_at(timeline_time).clamp(0.0, 1.0);
+            if let Some(runtime_out) = motionloom_output_for_layer(layer, timeline_time) {
+                effects.extend(runtime_out.process_effects.into_iter().map(|mut effect| {
+                    for (key, value) in &mut effect.params {
+                        if matches!(key.as_str(), "alpha" | "intensity")
+                            && let RuntimeProcessParamValue::Float(raw) = value
+                        {
+                            *raw = (*raw * strength).max(0.0);
+                        }
+                    }
+                    effect
+                }));
+            }
+        }
+        effects
     }
 
     pub fn layer_transition_dissolve_mix_at(&self, timeline_time: Duration) -> Option<f32> {

@@ -661,6 +661,46 @@ mod tests {
     }
 
     #[test]
+    fn cinematic_light_effects_are_wasm_process_webgpu_compatible() {
+        let report = inspect_gpu_compatibility(
+            r##"
+<Graph fps={30} duration="1s" size={[320,180]}>
+  <Scene id="demo_scene">
+    <Timeline>
+      <Track>
+        <Sequence duration="1s">
+          <Circle x="160" y="90" radius="40" color="#FFFFFF" />
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Process id="post">
+    <Tex id="scene_src" fmt="rgba16f" from="scene:demo_scene" />
+    <Tex id="glow_src" fmt="rgba16f" size={[320,180]} />
+    <Tex id="sweep_src" fmt="rgba16f" size={[320,180]} />
+    <Tex id="out" fmt="rgba16f" size={[320,180]} />
+    <Pass id="glow" kind="compute" effect="glow_stack"
+          in={["scene_src"]} out={["glow_src"]}
+          params={{ threshold: "0.62", intensity: "1.4", radiusSmall: "6", radiusMedium: "18", radiusLarge: "48", tint: "#A5F3FC" }} />
+    <Pass id="sweep" kind="compute" effect="light_sweep"
+          in={["glow_src"]} out={["sweep_src"]}
+          params={{ position: "0.35", angle: "-18", width: "0.16", softness: "0.08", intensity: "1.2", color: "#FFFFFF" }} />
+    <Pass id="tone" kind="compute" effect="tone_map"
+          in={["sweep_src"]} out={["out"]}
+          params={{ exposure: "0.15", contrast: "1.1", shoulder: "0.85", gamma: "2.2", saturation: "1.04" }} />
+  </Process>
+  <Present from="post" />
+</Graph>
+"##,
+        )
+        .expect("compatibility report");
+
+        assert!(report.can_use_wasm_process_webgpu);
+        assert!(report.can_use_native_scene_preview);
+        assert!(!report.likely_cpu_fallback);
+    }
+
+    #[test]
     fn simple_shapes_are_gpu_compatible() {
         let report = inspect_gpu_compatibility(
             r##"

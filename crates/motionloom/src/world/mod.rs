@@ -22,4 +22,5 @@ pub use render::{
     WorldGpuDiagnostics, WorldRenderError, WorldRenderProgress, diagnose_world_glb_gpu_plan,
     diagnose_world_graph_actor_gpu_frame, render_world_frame,
     render_world_graph_to_video_with_progress,
+    render_world_graph_to_video_with_progress_and_cancel,
 };

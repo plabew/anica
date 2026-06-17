@@ -8,6 +8,7 @@ use crate::process::model::{GraphApplyScope, PassNode, PassTransitionEasing, Pas
 use crate::process::pass::resolve_pass_kernel;
 use crate::process::process_catalog::is_known_process_kernel;
 use exmex::Express;
+use std::collections::BTreeMap;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
@@ -81,12 +82,74 @@ enum RuntimePass {
         intensity_expr: String,
         sigma_expr: String,
     },
+    ColorCoreToneMap {
+        exposure_expr: String,
+        contrast_expr: String,
+        shoulder_expr: String,
+        gamma_expr: String,
+        saturation_expr: String,
+    },
+    LightAtmosphereSweep {
+        position_expr: String,
+        angle_expr: String,
+        width_expr: String,
+        softness_expr: String,
+        intensity_expr: String,
+        color: [u8; 4],
+    },
     GpuOnlyKernel {
         kernel: String,
     },
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeProcessParamValue {
+    Float(f32),
+    Color([u8; 4]),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeProcessEffectInstance {
+    pub effect_id: String,
+    pub params: BTreeMap<String, RuntimeProcessParamValue>,
+}
+
+impl RuntimeProcessEffectInstance {
+    fn new(effect_id: impl Into<String>) -> Self {
+        Self {
+            effect_id: effect_id.into(),
+            params: BTreeMap::new(),
+        }
+    }
+
+    fn with_float(mut self, key: impl Into<String>, value: f32) -> Self {
+        self.params
+            .insert(key.into(), RuntimeProcessParamValue::Float(value));
+        self
+    }
+
+    fn with_color(mut self, key: impl Into<String>, value: [u8; 4]) -> Self {
+        self.params
+            .insert(key.into(), RuntimeProcessParamValue::Color(value));
+        self
+    }
+
+    pub fn float(&self, key: &str) -> Option<f32> {
+        match self.params.get(key) {
+            Some(RuntimeProcessParamValue::Float(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn color(&self, key: &str) -> Option<[u8; 4]> {
+        match self.params.get(key) {
+            Some(RuntimeProcessParamValue::Color(value)) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RuntimeFrameOutput {
     pub frame: u32,
     pub time_sec: f32,
@@ -105,6 +168,18 @@ pub struct RuntimeFrameOutput {
     pub layer_bloom_threshold: Option<f32>,
     pub layer_bloom_intensity: Option<f32>,
     pub layer_bloom_sigma: Option<f32>,
+    pub layer_tone_map_exposure: Option<f32>,
+    pub layer_tone_map_contrast: Option<f32>,
+    pub layer_tone_map_shoulder: Option<f32>,
+    pub layer_tone_map_gamma: Option<f32>,
+    pub layer_tone_map_saturation: Option<f32>,
+    pub layer_light_sweep_position: Option<f32>,
+    pub layer_light_sweep_angle: Option<f32>,
+    pub layer_light_sweep_width: Option<f32>,
+    pub layer_light_sweep_softness: Option<f32>,
+    pub layer_light_sweep_intensity: Option<f32>,
+    pub layer_light_sweep_color: Option<[u8; 4]>,
+    pub process_effects: Vec<RuntimeProcessEffectInstance>,
 }
 
 #[derive(Debug, Clone)]
@@ -299,6 +374,92 @@ impl RuntimeProgram {
                         });
                         continue;
                     }
+                    if is_tone_map_effect(&normalized_effect) {
+                        let exposure_expr = pass_param(pass, "exposure")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "0.0".to_string());
+                        let contrast_expr = pass_param(pass, "contrast")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "1.0".to_string());
+                        let shoulder_expr = pass_param(pass, "shoulder")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "1.0".to_string());
+                        let gamma_expr = pass_param(pass, "gamma")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "2.2".to_string());
+                        let saturation_expr = pass_param(pass, "saturation")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "1.0".to_string());
+
+                        for (name, expr) in [
+                            ("exposure", &exposure_expr),
+                            ("contrast", &contrast_expr),
+                            ("shoulder", &shoulder_expr),
+                            ("gamma", &gamma_expr),
+                            ("saturation", &saturation_expr),
+                        ] {
+                            validate_expr(expr).map_err(|e| RuntimeCompileError {
+                                message: format!(
+                                    "pass {} invalid tone_map {} expression: {}",
+                                    pass.id, name, e
+                                ),
+                            })?;
+                        }
+
+                        passes.push(RuntimePass::ColorCoreToneMap {
+                            exposure_expr,
+                            contrast_expr,
+                            shoulder_expr,
+                            gamma_expr,
+                            saturation_expr,
+                        });
+                        continue;
+                    }
+                    if is_light_sweep_effect(&normalized_effect) {
+                        let position_expr = pass_param(pass, "position")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "0.5".to_string());
+                        let angle_expr = pass_param(pass, "angle")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "-18.0".to_string());
+                        let width_expr = pass_param(pass, "width")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "0.16".to_string());
+                        let softness_expr = pass_param(pass, "softness")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "0.08".to_string());
+                        let intensity_expr = pass_param(pass, "intensity")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "1.0".to_string());
+                        let color = pass_param(pass, "color")
+                            .and_then(parse_runtime_color)
+                            .unwrap_or([255, 255, 255, 255]);
+
+                        for (name, expr) in [
+                            ("position", &position_expr),
+                            ("angle", &angle_expr),
+                            ("width", &width_expr),
+                            ("softness", &softness_expr),
+                            ("intensity", &intensity_expr),
+                        ] {
+                            validate_expr(expr).map_err(|e| RuntimeCompileError {
+                                message: format!(
+                                    "pass {} invalid light_sweep {} expression: {}",
+                                    pass.id, name, e
+                                ),
+                            })?;
+                        }
+
+                        passes.push(RuntimePass::LightAtmosphereSweep {
+                            position_expr,
+                            angle_expr,
+                            width_expr,
+                            softness_expr,
+                            intensity_expr,
+                            color,
+                        });
+                        continue;
+                    }
                     if normalized_effect == "hsla_overlay"
                         || normalized_effect == "hsla"
                         || normalized_effect == "tint_overlay"
@@ -431,6 +592,18 @@ impl RuntimeProgram {
             layer_bloom_threshold: None,
             layer_bloom_intensity: None,
             layer_bloom_sigma: None,
+            layer_tone_map_exposure: None,
+            layer_tone_map_contrast: None,
+            layer_tone_map_shoulder: None,
+            layer_tone_map_gamma: None,
+            layer_tone_map_saturation: None,
+            layer_light_sweep_position: None,
+            layer_light_sweep_angle: None,
+            layer_light_sweep_width: None,
+            layer_light_sweep_softness: None,
+            layer_light_sweep_intensity: None,
+            layer_light_sweep_color: None,
+            process_effects: Vec::new(),
         };
         // apply="graph" only gates when duration is explicitly provided on <Graph>.
         if self.graph.apply == GraphApplyScope::Graph
@@ -569,6 +742,13 @@ impl RuntimeProgram {
                     out.layer_hsla_saturation = Some(saturation.clamp(0.0, 1.0));
                     out.layer_hsla_lightness = Some(lightness.clamp(0.0, 1.0));
                     out.layer_hsla_alpha = Some(alpha.clamp(0.0, 1.0));
+                    out.process_effects.push(
+                        RuntimeProcessEffectInstance::new("hsla_overlay")
+                            .with_float("hue", hue.rem_euclid(360.0))
+                            .with_float("saturation", saturation.clamp(0.0, 1.0))
+                            .with_float("lightness", lightness.clamp(0.0, 1.0))
+                            .with_float("alpha", alpha.clamp(0.0, 1.0)),
+                    );
                 }
                 RuntimePass::ColorCoreBloom {
                     threshold_expr,
@@ -587,6 +767,87 @@ impl RuntimeProgram {
                     out.layer_bloom_threshold = Some(threshold.clamp(0.0, 1.0));
                     out.layer_bloom_intensity = Some(intensity.clamp(0.0, 8.0));
                     out.layer_bloom_sigma = Some(sigma.clamp(0.0, 64.0));
+                    out.process_effects.push(
+                        RuntimeProcessEffectInstance::new("glow_bloom")
+                            .with_float("threshold", threshold.clamp(0.0, 1.0))
+                            .with_float("intensity", intensity.clamp(0.0, 8.0))
+                            .with_float("sigma", sigma.clamp(0.0, 64.0)),
+                    );
+                }
+                RuntimePass::ColorCoreToneMap {
+                    exposure_expr,
+                    contrast_expr,
+                    shoulder_expr,
+                    gamma_expr,
+                    saturation_expr,
+                } => {
+                    let Ok(exposure) = eval_expr(exposure_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(contrast) = eval_expr(contrast_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(shoulder) = eval_expr(shoulder_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(gamma) = eval_expr(gamma_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(saturation) = eval_expr(saturation_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    out.layer_tone_map_exposure = Some(exposure.clamp(-8.0, 8.0));
+                    out.layer_tone_map_contrast = Some(contrast.clamp(0.0, 4.0));
+                    out.layer_tone_map_shoulder = Some(shoulder.clamp(0.0, 2.0));
+                    out.layer_tone_map_gamma = Some(gamma.clamp(0.0001, 8.0));
+                    out.layer_tone_map_saturation = Some(saturation.clamp(0.0, 4.0));
+                    out.process_effects.push(
+                        RuntimeProcessEffectInstance::new("tone_map")
+                            .with_float("exposure", exposure.clamp(-8.0, 8.0))
+                            .with_float("contrast", contrast.clamp(0.0, 4.0))
+                            .with_float("shoulder", shoulder.clamp(0.0, 2.0))
+                            .with_float("gamma", gamma.clamp(0.0001, 8.0))
+                            .with_float("saturation", saturation.clamp(0.0, 4.0)),
+                    );
+                }
+                RuntimePass::LightAtmosphereSweep {
+                    position_expr,
+                    angle_expr,
+                    width_expr,
+                    softness_expr,
+                    intensity_expr,
+                    color,
+                } => {
+                    let Ok(position) = eval_expr(position_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(angle) = eval_expr(angle_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(width) = eval_expr(width_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(softness) = eval_expr(softness_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(intensity) = eval_expr(intensity_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    out.layer_light_sweep_position = Some(position.clamp(-2.0, 3.0));
+                    out.layer_light_sweep_angle = Some(angle);
+                    out.layer_light_sweep_width = Some(width.clamp(0.0, 2.0));
+                    out.layer_light_sweep_softness = Some(softness.clamp(0.0, 2.0));
+                    out.layer_light_sweep_intensity = Some(intensity.clamp(0.0, 8.0));
+                    out.layer_light_sweep_color = Some(*color);
+                    out.process_effects.push(
+                        RuntimeProcessEffectInstance::new("light_sweep")
+                            .with_float("position", position.clamp(-2.0, 3.0))
+                            .with_float("angle", angle)
+                            .with_float("width", width.clamp(0.0, 2.0))
+                            .with_float("softness", softness.clamp(0.0, 2.0))
+                            .with_float("intensity", intensity.clamp(0.0, 8.0))
+                            .with_color("color", *color),
+                    );
                 }
             }
         }
@@ -633,6 +894,24 @@ fn pass_param_f32(pass: &PassNode, keys: &[&str]) -> Option<f32> {
 
 fn is_bloom_effect(effect: &str) -> bool {
     crate::process::effect_kind::is_bloom_family(effect)
+}
+
+fn is_tone_map_effect(effect: &str) -> bool {
+    matches!(
+        crate::process::effect_kind::resolve_process_effect(effect),
+        Some(crate::process::effect_kind::ProcessEffect::ToneMap)
+    )
+}
+
+fn is_light_sweep_effect(effect: &str) -> bool {
+    matches!(
+        crate::process::effect_kind::resolve_process_effect(effect),
+        Some(crate::process::effect_kind::ProcessEffect::LightSweep)
+    )
+}
+
+fn parse_runtime_color(value: &str) -> Option<[u8; 4]> {
+    crate::scene::drawable::parse_color(value.trim().trim_matches('"').trim_matches('\'')).ok()
 }
 
 fn normalize_param_expr(value: &str) -> String {
@@ -1468,7 +1747,7 @@ mod tests {
 
     #[test]
     fn runtime_uses_pass_effect_field_for_blur_sharpen() {
-        let script = r#"
+        let script = r##"
 <Graph fps={30} size={[1920,1080]}>
   <Tex id="src" fmt="rgba8" from="input:clip0" />
   <Tex id="out" fmt="rgba8" size={[1920,1080]} />
@@ -1478,7 +1757,7 @@ mod tests {
         params={{ sigma: "2.0" }} />
   <Present from="out" />
 </Graph>
-"#;
+"##;
         let graph = parse_graph_script(script).expect("graph parse");
         let runtime = compile_runtime_program(graph).expect("runtime compile");
         let out = runtime.evaluate_frame(0);
@@ -1489,7 +1768,7 @@ mod tests {
 
     #[test]
     fn runtime_rejects_invalid_blur_effect() {
-        let script = r#"
+        let script = r##"
 <Graph fps={30} size={[1920,1080]}>
   <Tex id="src" fmt="rgba8" from="input:clip0" />
   <Tex id="out" fmt="rgba8" size={[1920,1080]} />
@@ -1499,7 +1778,7 @@ mod tests {
         params={{ sigma: "2.0" }} />
   <Present from="out" />
 </Graph>
-"#;
+"##;
         let graph = parse_graph_script(script).expect("graph parse");
         let err =
             compile_runtime_program(graph).expect_err("compile should fail on invalid effect");
@@ -1966,6 +2245,87 @@ mod tests {
         assert_eq!(out.layer_bloom_threshold, Some(0.64));
         assert_eq!(out.layer_bloom_intensity, Some(1.75));
         assert_eq!(out.layer_bloom_sigma, Some(22.0));
+    }
+
+    #[test]
+    fn runtime_tone_map_effect_sets_layer_tone_map_fields() {
+        let script = r#"
+<Graph fps={30} size={[1920,1080]}>
+  <Input id="under" type="video" from="input:under" />
+  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+  <Pass id="fx_tone_map" kind="compute" kernel="color_core.wgsl" effect="tone_map"
+        in={["under"]}
+        out={["out"]}
+        params={{
+          exposure: "0.35",
+          contrast: "1.35",
+          shoulder: "0.55",
+          gamma: "2.0",
+          saturation: "1.22"
+        }} />
+  <Present from="out" />
+</Graph>
+"#;
+        let graph = parse_graph_script(script).expect("graph parse");
+        let runtime = compile_runtime_program(graph).expect("runtime compile");
+        let out = runtime.evaluate_frame(0);
+        assert_eq!(out.layer_tone_map_exposure, Some(0.35));
+        assert_eq!(out.layer_tone_map_contrast, Some(1.35));
+        assert_eq!(out.layer_tone_map_shoulder, Some(0.55));
+        assert_eq!(out.layer_tone_map_gamma, Some(2.0));
+        assert_eq!(out.layer_tone_map_saturation, Some(1.22));
+        let effect = out
+            .process_effects
+            .iter()
+            .find(|effect| effect.effect_id == "tone_map")
+            .expect("generic tone_map effect");
+        assert_eq!(effect.float("exposure"), Some(0.35));
+        assert_eq!(effect.float("contrast"), Some(1.35));
+        assert_eq!(effect.float("shoulder"), Some(0.55));
+        assert_eq!(effect.float("gamma"), Some(2.0));
+        assert_eq!(effect.float("saturation"), Some(1.22));
+    }
+
+    #[test]
+    fn runtime_light_sweep_effect_sets_layer_light_sweep_fields() {
+        let script = r##"
+<Graph fps={30} size={[1920,1080]}>
+  <Input id="under" type="video" from="input:under" />
+  <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+  <Pass id="fx_light_sweep" kind="compute" kernel="color_core.wgsl" effect="light_sweep"
+        in={["under"]}
+        out={["out"]}
+        params={{
+          position: "0.42",
+          angle: "-18.0",
+          width: "0.18",
+          softness: "0.08",
+          intensity: "1.6",
+          color: "#80C7FF"
+        }} />
+  <Present from="out" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script).expect("graph parse");
+        let runtime = compile_runtime_program(graph).expect("runtime compile");
+        let out = runtime.evaluate_frame(0);
+        assert_eq!(out.layer_light_sweep_position, Some(0.42));
+        assert_eq!(out.layer_light_sweep_angle, Some(-18.0));
+        assert_eq!(out.layer_light_sweep_width, Some(0.18));
+        assert_eq!(out.layer_light_sweep_softness, Some(0.08));
+        assert_eq!(out.layer_light_sweep_intensity, Some(1.6));
+        assert_eq!(out.layer_light_sweep_color, Some([128, 199, 255, 255]));
+        let effect = out
+            .process_effects
+            .iter()
+            .find(|effect| effect.effect_id == "light_sweep")
+            .expect("generic light_sweep effect");
+        assert_eq!(effect.float("position"), Some(0.42));
+        assert_eq!(effect.float("angle"), Some(-18.0));
+        assert_eq!(effect.float("width"), Some(0.18));
+        assert_eq!(effect.float("softness"), Some(0.08));
+        assert_eq!(effect.float("intensity"), Some(1.6));
+        assert_eq!(effect.color("color"), Some([128, 199, 255, 255]));
     }
 
     #[test]

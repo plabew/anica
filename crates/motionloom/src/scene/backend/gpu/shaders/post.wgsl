@@ -44,6 +44,15 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> vec3<f32> {
     );
 }
 
+fn aces_fitted(rgb: vec3<f32>, shoulder: f32) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59 + shoulder * 0.24;
+    let e = 0.14;
+    return clamp((rgb * (a * rgb + vec3<f32>(b))) / (rgb * (c * rgb + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
@@ -90,6 +99,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let overlay = hsl_to_rgb(params.params.x, params.params.y, params.params.z);
         let alpha = clamp(params.canvas.w, 0.0, 1.0);
         let rgb = mix(src.rgb, overlay, alpha);
+        textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
+        return;
+    }
+
+    if (mode == 5) {
+        let src = textureLoad(base_tex, vec2<i32>(i32(x), i32(y)), 0);
+        let exposure = params.params.x;
+        let contrast = params.params.y;
+        let gamma = max(params.params.z, 0.0001);
+        let shoulder = clamp(params.canvas.z, 0.0, 2.0);
+        let saturation = params.canvas.w;
+        var rgb = src.rgb * exp2(exposure);
+        rgb = aces_fitted(max(rgb, vec3<f32>(0.0)), shoulder);
+        rgb = (rgb - vec3<f32>(0.5)) * contrast + vec3<f32>(0.5);
+        let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        rgb = vec3<f32>(luma) + (rgb - vec3<f32>(luma)) * saturation;
+        rgb = pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / gamma));
         textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
         return;
     }

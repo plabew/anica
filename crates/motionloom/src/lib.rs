@@ -77,12 +77,14 @@ pub use process::process_catalog::{
     process_effects_for_category,
 };
 pub use process::runtime::{
-    BlurSharpenMode, RuntimeFrameOutput, RuntimeProgram, compile_runtime_program, eval_time_expr,
+    BlurSharpenMode, RuntimeFrameOutput, RuntimeProcessEffectInstance, RuntimeProcessParamValue,
+    RuntimeProgram, compile_runtime_program, eval_time_expr,
 };
 pub use root::{
     MotionLoomDocument, MotionLoomRenderProgress, RootGraphDomain, RootGraphShell,
     inspect_root_graph, parse_motionloom_document,
     render_motionloom_document_to_video_with_progress,
+    render_motionloom_document_to_video_with_progress_and_cancel,
 };
 pub use scene::{
     BrushDef, CameraNode, CharacterNode, CircleNode, ComponentNode, DefsNode, FaceJawNode,

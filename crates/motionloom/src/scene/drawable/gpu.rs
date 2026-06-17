@@ -791,6 +791,54 @@ pub(crate) fn post_hsla_overlay_uniform(
     ])
 }
 
+pub(crate) fn post_tone_map_uniform(
+    canvas_w: u32,
+    canvas_h: u32,
+    exposure: f32,
+    contrast: f32,
+    shoulder: f32,
+    gamma: f32,
+    saturation: f32,
+) -> [u8; 32] {
+    f32_bytes(&[
+        canvas_w as f32,
+        canvas_h as f32,
+        shoulder.clamp(0.05, 8.0),
+        saturation.clamp(0.0, 4.0),
+        exposure.clamp(-8.0, 8.0),
+        contrast.clamp(0.0, 4.0),
+        gamma.clamp(0.1, 8.0),
+        5.0,
+    ])
+}
+
+pub(crate) fn post_light_sweep_uniform(
+    canvas_w: u32,
+    canvas_h: u32,
+    position: f32,
+    angle: f32,
+    width: f32,
+    softness: f32,
+    intensity: f32,
+    color: [u8; 4],
+) -> [u8; 48] {
+    let color = rgba_u8_to_unit(color);
+    f32_bytes(&[
+        canvas_w as f32,
+        canvas_h as f32,
+        softness.clamp(0.0001, 2.0),
+        intensity.clamp(0.0, 16.0),
+        position,
+        angle,
+        width.clamp(0.0001, 4.0),
+        6.0,
+        color[0],
+        color[1],
+        color[2],
+        color[3],
+    ])
+}
+
 pub(crate) fn post_opacity_uniform(canvas_w: u32, canvas_h: u32, opacity: f32) -> [u8; 32] {
     f32_bytes(&[
         canvas_w as f32,
@@ -804,27 +852,23 @@ pub(crate) fn post_opacity_uniform(canvas_w: u32, canvas_h: u32, opacity: f32) -
     ])
 }
 
-/// Uniform for the bloom composite compute pass.
-///
-/// Layout matches `BloomParams` in `bloom.wgsl`:
-///   canvas.xy = width, height
-///   threshold = bloom threshold
-///   intensity = bloom intensity
-pub(crate) fn bloom_uniform(
+pub(crate) fn bloom_tint_uniform(
     canvas_w: u32,
     canvas_h: u32,
     threshold: f32,
     intensity: f32,
+    tint: [u8; 4],
 ) -> [u8; 32] {
+    let tint = rgba_u8_to_unit(tint);
     f32_bytes(&[
         canvas_w as f32,
         canvas_h as f32,
         threshold.clamp(0.0, 1.0),
         intensity.clamp(0.0, 8.0),
-        0.0,
-        0.0,
-        0.0,
-        0.0,
+        tint[0],
+        tint[1],
+        tint[2],
+        tint[3],
     ])
 }
 

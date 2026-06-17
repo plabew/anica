@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use image::{Rgba, RgbaImage, imageops};
 use thiserror::Error;
@@ -80,6 +83,8 @@ pub enum WorldRenderError {
     GpuRender { message: String },
     #[error("video export is not available on this platform: {message}")]
     VideoExportNotAvailable { message: String },
+    #[error("world render cancelled")]
+    Cancelled,
 }
 
 impl From<crate::export::EncodeError> for WorldRenderError {
@@ -2116,6 +2121,33 @@ pub async fn render_world_graph_to_video_with_progress<F>(
     output_path: &Path,
     profile: SceneRenderProfile,
     progress_every_frames: u32,
+    progress_callback: F,
+) -> Result<(), WorldRenderError>
+where
+    F: FnMut(WorldRenderProgress),
+{
+    render_world_graph_to_video_with_progress_and_cancel(
+        ffmpeg_bin,
+        graph,
+        asset_root,
+        output_path,
+        profile,
+        progress_every_frames,
+        None,
+        progress_callback,
+    )
+    .await
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(unused_mut, unused_variables))]
+pub async fn render_world_graph_to_video_with_progress_and_cancel<F>(
+    ffmpeg_bin: &str,
+    graph: &WorldGraph,
+    asset_root: impl AsRef<Path>,
+    output_path: &Path,
+    profile: SceneRenderProfile,
+    progress_every_frames: u32,
+    cancel: Option<Arc<AtomicBool>>,
     mut progress_callback: F,
 ) -> Result<(), WorldRenderError>
 where
@@ -2128,6 +2160,7 @@ where
             output_path,
             profile,
             progress_every_frames,
+            cancel,
             progress_callback,
         )
         .await;
@@ -2155,12 +2188,25 @@ where
             rendered_frames: 0,
             total_frames,
         });
+        if cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        {
+            return Err(WorldRenderError::Cancelled);
+        }
 
         let mut encoder =
             FfmpegVideoEncoder::new(ffmpeg_bin, output_path).with_encoder_args(encoder_args);
         encoder.begin(w, h, fps)?;
 
         for frame in 0..total_frames {
+            if cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+            {
+                encoder.abort();
+                return Err(WorldRenderError::Cancelled);
+            }
             let image = if profile.uses_gpu_compositor() {
                 renderer.render_frame_gpu(graph, frame, &asset_root).await?
             } else {
@@ -2188,6 +2234,7 @@ async fn render_world_graph_to_png_sequence_with_progress<F>(
     output_dir: &Path,
     profile: SceneRenderProfile,
     progress_every_frames: u32,
+    cancel: Option<Arc<AtomicBool>>,
     mut progress_callback: F,
 ) -> Result<(), WorldRenderError>
 where
@@ -2209,6 +2256,12 @@ where
     });
 
     for frame in 0..total_frames {
+        if cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        {
+            return Err(WorldRenderError::Cancelled);
+        }
         let image = if profile.uses_gpu_compositor() {
             renderer.render_frame_gpu(graph, frame, &asset_root).await?
         } else {

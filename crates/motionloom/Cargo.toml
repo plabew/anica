@@ -50,3 +50,6 @@ web-sys = { version = "0.3.83", features = ["HtmlCanvasElement"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3.50"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+winit = "0.30"

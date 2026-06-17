@@ -121,6 +121,12 @@ fn apply_process_pass(
             // CPU renderer does not implement bloom yet; pass through unchanged.
             image
         }
+        Some(ProcessEffect::GlowStack)
+        | Some(ProcessEffect::ToneMap)
+        | Some(ProcessEffect::LightSweep) => {
+            // CPU renderer does not implement these effects yet; pass through unchanged.
+            image
+        }
         None => image,
     }
 }

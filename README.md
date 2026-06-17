@@ -113,6 +113,16 @@ MotionLoom provides the foundation for Anica's long-term goal of natural languag
 
 MotionLoom supports WASM, which enables it to run directly in modern web browsers. You can try the demo here: [MotionLoom Demo](https://lovelyzombieyho.github.io/anica-landing-page/motionloom/)
 
+`crates/motionloom/examples/wgpu_live_preview.rs` is a native diagnostic viewer
+for testing MotionLoom's direct wgpu preview path without Anica, allowing you to
+evaluate the best preview-quality trade-offs.
+
+Run the live preview:
+
+```bash
+cargo run --release -p motionloom --example wgpu_live_preview -- ../motionloom-example/showcase/s-000005/main.motionloom
+```
+
 ---
 
 ## Platform Support

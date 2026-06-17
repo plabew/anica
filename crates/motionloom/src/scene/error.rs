@@ -75,6 +75,8 @@ pub enum MotionLoomSceneRenderError {
     WorldSource { message: String },
     #[error("video export is not available on this platform: {message}")]
     VideoExportNotAvailable { message: String },
+    #[error("scene render cancelled")]
+    Cancelled,
 }
 
 impl From<crate::export::EncodeError> for MotionLoomSceneRenderError {
