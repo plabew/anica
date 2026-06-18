@@ -123,7 +123,8 @@ fn apply_process_pass(
         }
         Some(ProcessEffect::GlowStack)
         | Some(ProcessEffect::ToneMap)
-        | Some(ProcessEffect::LightSweep) => {
+        | Some(ProcessEffect::LightSweep)
+        | Some(ProcessEffect::TextureOverlay) => {
             // CPU renderer does not implement these effects yet; pass through unchanged.
             image
         }

@@ -296,6 +296,27 @@ impl WasmSceneRenderer {
         self.resolver.insert(name.to_string(), bytes.to_vec());
     }
 
+    /// Register an in-memory font for this renderer only.
+    ///
+    /// Browser hosts should use this for CJK or brand-specific text because
+    /// WASM cannot discover OS fonts and browser CSS fonts are not visible to
+    /// the Rust text rasterizer.
+    pub async fn add_font(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        if self.renderer.is_none() {
+            self.renderer = Some(
+                SceneRenderer::with_resolver(self.profile, self.resolver.clone())
+                    .await
+                    .map_err(|err| js_error(err.to_string()))?,
+            );
+        }
+        let renderer = self
+            .renderer
+            .as_mut()
+            .ok_or_else(|| js_error("scene renderer was not initialized".to_string()))?;
+        renderer.load_font_data(bytes.to_vec());
+        Ok(())
+    }
+
     /// Clear all assets previously registered on this renderer.
     pub fn clear_assets(&mut self) {
         self.resolver.clear();

@@ -97,6 +97,16 @@ enum RuntimePass {
         intensity_expr: String,
         color: [u8; 4],
     },
+    TextureOverlay {
+        kind_id: f32,
+        scale_expr: String,
+        strength_expr: String,
+        contrast_expr: String,
+        seed_expr: String,
+        brush_angle_expr: String,
+        bump_strength_expr: String,
+        relief_expr: String,
+    },
     GpuOnlyKernel {
         kernel: String,
     },
@@ -457,6 +467,66 @@ impl RuntimeProgram {
                             softness_expr,
                             intensity_expr,
                             color,
+                        });
+                        continue;
+                    }
+                    if is_texture_overlay_effect(&normalized_effect) {
+                        let kind_id = pass_param(pass, "kind")
+                            .or_else(|| pass_param(pass, "texture"))
+                            .map(texture_overlay_kind_id)
+                            .unwrap_or(1.0);
+                        let scale_expr = pass_param(pass, "scale")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "42.0".to_string());
+                        let strength_expr = pass_param(pass, "strength")
+                            .or_else(|| pass_param(pass, "amount"))
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "0.25".to_string());
+                        let contrast_expr = pass_param(pass, "contrast")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "0.5".to_string());
+                        let seed_expr = pass_param(pass, "seed")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "0.0".to_string());
+                        let brush_angle_expr = pass_param(pass, "brush_angle")
+                            .or_else(|| pass_param(pass, "angle"))
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "-8.0".to_string());
+                        let bump_strength_expr = pass_param(pass, "bump_strength")
+                            .or_else(|| pass_param(pass, "bump"))
+                            .or_else(|| pass_param(pass, "impasto_strength"))
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "0.35".to_string());
+                        let relief_expr = pass_param(pass, "relief")
+                            .map(normalize_param_expr)
+                            .unwrap_or_else(|| "0.45".to_string());
+
+                        for (name, expr) in [
+                            ("scale", &scale_expr),
+                            ("strength", &strength_expr),
+                            ("contrast", &contrast_expr),
+                            ("seed", &seed_expr),
+                            ("brush_angle", &brush_angle_expr),
+                            ("bump_strength", &bump_strength_expr),
+                            ("relief", &relief_expr),
+                        ] {
+                            validate_expr(expr).map_err(|e| RuntimeCompileError {
+                                message: format!(
+                                    "pass {} invalid texture_overlay {} expression: {}",
+                                    pass.id, name, e
+                                ),
+                            })?;
+                        }
+
+                        passes.push(RuntimePass::TextureOverlay {
+                            kind_id,
+                            scale_expr,
+                            strength_expr,
+                            contrast_expr,
+                            seed_expr,
+                            brush_angle_expr,
+                            bump_strength_expr,
+                            relief_expr,
                         });
                         continue;
                     }
@@ -849,6 +919,50 @@ impl RuntimeProgram {
                             .with_color("color", *color),
                     );
                 }
+                RuntimePass::TextureOverlay {
+                    kind_id,
+                    scale_expr,
+                    strength_expr,
+                    contrast_expr,
+                    seed_expr,
+                    brush_angle_expr,
+                    bump_strength_expr,
+                    relief_expr,
+                } => {
+                    let Ok(scale) = eval_expr(scale_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(strength) = eval_expr(strength_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(contrast) = eval_expr(contrast_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(seed) = eval_expr(seed_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(brush_angle) = eval_expr(brush_angle_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(bump_strength) = eval_expr(bump_strength_expr, time_norm, time_sec)
+                    else {
+                        continue;
+                    };
+                    let Ok(relief) = eval_expr(relief_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    out.process_effects.push(
+                        RuntimeProcessEffectInstance::new("texture_overlay")
+                            .with_float("kind", *kind_id)
+                            .with_float("scale", scale.clamp(0.001, 4096.0))
+                            .with_float("strength", strength.clamp(0.0, 1.0))
+                            .with_float("contrast", contrast.clamp(0.0, 2.0))
+                            .with_float("seed", seed)
+                            .with_float("brush_angle", brush_angle)
+                            .with_float("bump_strength", bump_strength.clamp(0.0, 2.0))
+                            .with_float("relief", relief.clamp(0.0, 2.0)),
+                    );
+                }
             }
         }
 
@@ -908,6 +1022,32 @@ fn is_light_sweep_effect(effect: &str) -> bool {
         crate::process::effect_kind::resolve_process_effect(effect),
         Some(crate::process::effect_kind::ProcessEffect::LightSweep)
     )
+}
+
+fn is_texture_overlay_effect(effect: &str) -> bool {
+    matches!(
+        crate::process::effect_kind::resolve_process_effect(effect),
+        Some(crate::process::effect_kind::ProcessEffect::TextureOverlay)
+    )
+}
+
+fn texture_overlay_kind_id(value: &str) -> f32 {
+    match value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_ascii_lowercase()
+        .replace(['-', '_'], "")
+        .as_str()
+    {
+        "noise" => 0.0,
+        "film" | "grain" | "filmgrain" => 2.0,
+        "scanline" | "scanlines" => 3.0,
+        "canvas" | "fabric" | "cloth" => 4.0,
+        "impasto" | "thickpaint" | "oilpaint" | "oilpainting" => 5.0,
+        "brushedpaint" | "brushpaint" | "paintbrush" | "brushed" => 6.0,
+        _ => 1.0,
+    }
 }
 
 fn parse_runtime_color(value: &str) -> Option<[u8; 4]> {

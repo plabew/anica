@@ -445,6 +445,13 @@ impl ProcessWebGpuRenderer {
                 process_param_f32(pass, &["softness"], time_norm, time_sec, 0.08),
                 process_param_f32(pass, &["intensity"], time_norm, time_sec, 1.0),
             ),
+            Some(crate::process::effect_kind::ProcessEffect::TextureOverlay) => (
+                texture_kind_id(process_param_string(pass, &["kind", "texture"], "paper")),
+                process_param_f32(pass, &["scale"], time_norm, time_sec, 42.0),
+                process_param_f32(pass, &["strength", "amount"], time_norm, time_sec, 0.25),
+                process_param_f32(pass, &["contrast"], time_norm, time_sec, 0.5),
+                process_param_f32(pass, &["seed"], time_norm, time_sec, 0.0),
+            ),
             _ => (
                 process_param_f32(pass, &["hue", "h"], time_norm, time_sec, 0.0),
                 process_param_f32(pass, &["saturation", "sat", "s"], time_norm, time_sec, 0.0),
@@ -477,6 +484,16 @@ impl ProcessWebGpuRenderer {
             color[1],
             color[2],
             color[3],
+            process_param_f32(pass, &["brush_angle", "angle"], time_norm, time_sec, -8.0),
+            process_param_f32(
+                pass,
+                &["bump_strength", "bump", "impasto_strength"],
+                time_norm,
+                time_sec,
+                0.35,
+            ),
+            process_param_f32(pass, &["relief"], time_norm, time_sec, 0.45),
+            0.0,
         ];
         let mut bytes = Vec::with_capacity(values.len() * 4);
         for value in values {
@@ -768,6 +785,7 @@ fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderEr
         Some(crate::process::effect_kind::ProcessEffect::GlowStack) => Ok(vec![4, 2, 3, 5]),
         Some(crate::process::effect_kind::ProcessEffect::ToneMap) => Ok(vec![6]),
         Some(crate::process::effect_kind::ProcessEffect::LightSweep) => Ok(vec![7]),
+        Some(crate::process::effect_kind::ProcessEffect::TextureOverlay) => Ok(vec![8]),
         None => Err(ProcessWebGpuRenderError::UnsupportedEffect(
             pass.effect.clone(),
         )),
@@ -811,6 +829,35 @@ fn process_param_color(pass: &PassNode, keys: &[&str], fallback: [u8; 4]) -> [f3
     ]
 }
 
+fn process_param_string<'a>(pass: &'a PassNode, keys: &[&str], fallback: &'a str) -> &'a str {
+    keys.iter()
+        .find_map(|key| {
+            pass.params
+                .iter()
+                .find(|param| param.key.eq_ignore_ascii_case(key))
+                .map(|param| param.value.trim().trim_matches('"').trim_matches('\''))
+        })
+        .unwrap_or(fallback)
+}
+
+fn texture_kind_id(kind: &str) -> f32 {
+    match kind
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_'], "")
+        .as_str()
+    {
+        "noise" => 0.0,
+        "paper" | "papergrain" | "papertexture" => 1.0,
+        "film" | "filmgrain" | "grain" => 2.0,
+        "scanline" | "scanlines" => 3.0,
+        "canvas" | "fabric" | "cloth" => 4.0,
+        "impasto" | "thickpaint" | "oilpaint" | "oilpainting" => 5.0,
+        "brushedpaint" | "brushpaint" | "paintbrush" | "brushed" => 6.0,
+        _ => 1.0,
+    }
+}
+
 impl From<ProcessWebGpuRenderError> for JsValue {
     fn from(err: ProcessWebGpuRenderError) -> Self {
         JsValue::from_str(&err.to_string())
@@ -839,6 +886,7 @@ struct ProcessParams {
     bloom_intensity: f32,
     bloom_sigma: f32,
     color: vec4<f32>,
+    extra: vec4<f32>,
 };
 
 @group(0) @binding(0) var src_tex: texture_2d<f32>;
@@ -871,6 +919,34 @@ fn ml_process_aces_fitted(rgb: vec3<f32>, shoulder: f32) -> vec3<f32> {
     let d = 0.59 + clamp(shoulder, 0.0, 2.0) * 0.24;
     let e = 0.14;
     return clamp((rgb * (a * rgb + vec3<f32>(b))) / (rgb * (c * rgb + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn ml_process_hash21(p: vec2<f32>) -> f32 {
+    let h = dot(p, vec2<f32>(127.1, 311.7));
+    return fract(sin(h) * 43758.5453123);
+}
+
+fn ml_process_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (vec2<f32>(3.0) - 2.0 * f);
+    return mix(
+        mix(ml_process_hash21(i), ml_process_hash21(i + vec2<f32>(1.0, 0.0)), u.x),
+        mix(ml_process_hash21(i + vec2<f32>(0.0, 1.0)), ml_process_hash21(i + vec2<f32>(1.0, 1.0)), u.x),
+        u.y
+    );
+}
+
+fn ml_process_fbm(p_in: vec2<f32>) -> f32 {
+    var p = p_in;
+    var amp = 0.5;
+    var sum = 0.0;
+    for (var i = 0; i < 4; i = i + 1) {
+        sum = sum + ml_process_noise(p) * amp;
+        p = p * 2.03 + vec2<f32>(17.1, 9.2);
+        amp = amp * 0.5;
+    }
+    return sum;
 }
 
 @fragment
@@ -919,6 +995,48 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let distance = dot(centered, normal) - position;
         let band = 1.0 - smoothstep(half_width, half_width + softness, abs(distance));
         rgb = rgb + params.color.rgb * band * max(params.sigma, 0.0) * params.color.a;
+    } else if params.effect_id > 7.5 && params.effect_id < 8.5 {
+        // Texture overlay: hue=kind, saturation=scale, lightness=strength, alpha=contrast, sigma=seed.
+        let kind = i32(round(params.hue));
+        let scale = max(params.saturation, 0.001);
+        let strength = clamp(params.lightness, 0.0, 1.0);
+        let contrast = clamp(params.alpha, 0.0, 2.0);
+        let seed = params.sigma;
+        let pixel = vec2<f32>(f32(i32(uv.x * params.width)), f32(i32(uv.y * params.height)));
+        var tex_value = ml_process_fbm(uv * scale + vec2<f32>(seed, seed * 1.73));
+        if kind == 1 {
+            let fibers = 0.5 + 0.5 * sin((uv.y * scale * 8.0 + tex_value * 4.0 + seed) * 6.28318);
+            tex_value = mix(tex_value, fibers, 0.35);
+        } else if kind == 2 {
+            tex_value = ml_process_hash21(pixel + vec2<f32>(seed * 19.17, seed * 7.31));
+        } else if kind == 3 {
+            tex_value = 0.5 + 0.5 * sin((uv.y * params.height * 0.85 + seed) * 6.28318);
+        } else if kind == 4 {
+            let weave_x = 0.5 + 0.5 * sin((uv.x * scale * 10.0 + seed) * 6.28318);
+            let weave_y = 0.5 + 0.5 * sin((uv.y * scale * 12.0 + seed * 1.37) * 6.28318);
+            let ridges = sqrt(max(weave_x * weave_y, 0.0));
+            tex_value = mix(tex_value, ridges, 0.55);
+        } else if kind == 5 || kind == 6 {
+            let brush_angle = radians(params.extra.x);
+            let bump_strength = clamp(params.extra.y, 0.0, 2.0);
+            let relief = clamp(params.extra.z, 0.0, 2.0);
+            let brush_x = uv.x * cos(brush_angle) - uv.y * sin(brush_angle);
+            let brush_y = uv.x * sin(brush_angle) + uv.y * cos(brush_angle);
+            let low = ml_process_fbm(uv * scale * 0.18 + vec2<f32>(seed, seed * 0.61));
+            let ridge = 0.5 + 0.5 * sin((brush_x * scale * 18.0 + low * 6.0 + seed) * 6.28318);
+            let cross = 0.5 + 0.5 * sin((brush_y * scale * 3.0 + tex_value * 2.0 + seed * 0.7) * 6.28318);
+            if kind == 5 {
+                tex_value = ridge * 0.62 + cross * 0.18 + low * 0.20;
+            } else {
+                tex_value = ridge * 0.50 + tex_value * 0.25 + low * 0.25;
+            }
+            tex_value = (tex_value - 0.5) * (1.0 + relief * 0.45 + bump_strength * 0.20) + 0.5;
+        }
+        let centered_tex = (tex_value - 0.5) * (1.0 + contrast) + 0.5;
+        let material_bump = select(0.0, clamp(params.extra.y, 0.0, 2.0), kind >= 4);
+        let bump_shade = 1.0 + (centered_tex - 0.5) * strength * material_bump * 0.55;
+        let texture_rgb = mix(vec3<f32>(1.0), params.color.rgb * (0.55 + centered_tex * 0.9) * bump_shade, strength * params.color.a);
+        rgb = mix(rgb, clamp(rgb * texture_rgb, vec3<f32>(0.0), vec3<f32>(1.0)), strength);
     }
     return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);
 }

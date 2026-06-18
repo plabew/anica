@@ -145,6 +145,7 @@ struct WorldLivePreviewRequest {
 struct SceneLivePreviewRequest {
     graph: GraphScript,
     frame: u32,
+    asset_roots: Vec<PathBuf>,
     response_tx: Sender<Result<(SceneLivePreviewFrame, Option<String>), String>>,
 }
 
@@ -897,6 +898,14 @@ impl MotionLoomPage {
         PathBuf::from("examples/motionloom/world")
     }
 
+    fn scene_live_asset_roots(&self, cx: &Context<Self>) -> Vec<PathBuf> {
+        let gs = self.global.read(cx);
+        gs.motionloom_asset_root
+            .clone()
+            .into_iter()
+            .collect::<Vec<_>>()
+    }
+
     fn rgba_image_to_bgra(rgba: RgbaImage) -> (u32, u32, Vec<u8>) {
         let (w, h) = rgba.dimensions();
         let mut bgra = rgba.into_raw();
@@ -987,6 +996,11 @@ impl MotionLoomPage {
                         })
                         .ok()
                         .flatten();
+                    }
+                    if request.asset_roots.is_empty() {
+                        motionloom::clear_scene_asset_roots();
+                    } else {
+                        motionloom::set_scene_asset_roots(request.asset_roots.clone());
                     }
                     let graph = request.graph.clone();
                     let frame = request.frame;
@@ -1435,9 +1449,11 @@ impl MotionLoomPage {
             let token = self.scene_live_async_render_token;
             let (tx, rx) =
                 mpsc::channel::<Result<(SceneLivePreviewFrame, Option<String>), String>>();
+            let asset_roots = self.scene_live_asset_roots(cx);
             let request = SceneLivePreviewRequest {
                 graph: preview_graph,
                 frame,
+                asset_roots,
                 response_tx: tx,
             };
             if let Err(err) = self.scene_live_preview_tx.send(request) {

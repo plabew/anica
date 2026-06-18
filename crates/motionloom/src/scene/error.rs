@@ -1,3 +1,7 @@
+// =========================================
+// =========================================
+// crates/motionloom/src/scene/error.rs
+
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -67,6 +71,8 @@ pub enum MotionLoomSceneRenderError {
     },
     #[error("failed to render SVG asset ({source_ref}): invalid SVG size")]
     RenderSvg { source_ref: String },
+    #[error("invalid image data URI ({source_ref}): {message}")]
+    InvalidImageDataUri { source_ref: String, message: String },
     #[error("invalid SVG data URI ({source_ref}): {message}")]
     InvalidSvgDataUri { source_ref: String, message: String },
     #[error("GPU scene render failed: {message}")]

@@ -1,6 +1,8 @@
 use std::{env, fs, path::PathBuf};
 
-use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_graph_frame};
+use motionloom::{
+    SceneRenderProfile, parse_graph_script, render_scene_graph_frame, set_scene_asset_roots,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = env::args().nth(1).expect("expected MotionLoom file path");
@@ -21,6 +23,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(SceneRenderProfile::Gpu);
 
     let script = fs::read_to_string(&path)?;
+    if let Some(parent) = PathBuf::from(&path).parent() {
+        set_scene_asset_roots(vec![parent.to_path_buf()]);
+    }
     let graph = parse_graph_script(&script)?;
     let frame = pollster::block_on(render_scene_graph_frame(&graph, frame_index, profile))?;
 

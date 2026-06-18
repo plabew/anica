@@ -67,7 +67,7 @@ pub const PROCESS_CATEGORIES: [ProcessCategory; 10] = [
     ProcessCategory::Testing,
 ];
 
-pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 14] = [
+pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 15] = [
     ProcessEffectDefinition {
         id: "transform_camera.affine_uv",
         display_name: "Affine UV Transform",
@@ -137,6 +137,13 @@ pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 14] = [
         category: ProcessCategory::LightAtmosphere,
         kernel: "color_core.wgsl",
         summary: "Animated directional sweep highlight for text, logos, and energy reveals.",
+    },
+    ProcessEffectDefinition {
+        id: "stylize_look.texture_overlay",
+        display_name: "Texture Overlay",
+        category: ProcessCategory::StylizeLook,
+        kernel: "color_core.wgsl",
+        summary: "Procedural paper, canvas, impasto, brushed paint, grain, noise, and scanline texture overlay for tactile surfaces.",
     },
     ProcessEffectDefinition {
         id: "distortion_warp.heat_haze_uv",

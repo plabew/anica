@@ -144,6 +144,8 @@ pub struct DefsNode {
     pub id: Option<String>,
     pub gradients: Vec<GradientDef>,
     #[serde(default)]
+    pub textures: Vec<TextureDef>,
+    #[serde(default)]
     pub brushes: Vec<BrushDef>,
     #[serde(default)]
     pub masks: Vec<MaskNode>,
@@ -157,6 +159,58 @@ pub struct DefsNode {
     pub fonts: Vec<FontDef>,
     #[serde(default)]
     pub palettes: Vec<PaletteNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextureDef {
+    pub id: String,
+    #[serde(default)]
+    pub src: String,
+    #[serde(default = "default_texture_kind")]
+    pub kind: String,
+    #[serde(default = "default_texture_scale")]
+    pub scale: String,
+    #[serde(default = "default_texture_strength")]
+    pub strength: String,
+    #[serde(default = "default_texture_contrast")]
+    pub contrast: String,
+    #[serde(default = "default_scene_zero")]
+    pub seed: String,
+    #[serde(default = "default_texture_brush_angle")]
+    pub brush_angle: String,
+    #[serde(default = "default_texture_bump_strength")]
+    pub bump_strength: String,
+    #[serde(default = "default_texture_relief")]
+    pub relief: String,
+}
+
+fn default_texture_kind() -> String {
+    "paper".to_string()
+}
+
+fn default_texture_scale() -> String {
+    "42".to_string()
+}
+
+fn default_texture_strength() -> String {
+    "0.25".to_string()
+}
+
+fn default_texture_contrast() -> String {
+    "0.5".to_string()
+}
+
+fn default_texture_brush_angle() -> String {
+    "-8".to_string()
+}
+
+fn default_texture_bump_strength() -> String {
+    "0.35".to_string()
+}
+
+fn default_texture_relief() -> String {
+    "0.45".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -313,6 +367,14 @@ pub struct RectNode {
     pub transform_origin_y: String,
     #[serde(default = "default_scene_blend")]
     pub blend: String,
+    #[serde(default)]
+    pub texture: Option<String>,
+    #[serde(default = "default_scene_one")]
+    pub texture_opacity: String,
+    #[serde(default = "default_scene_one")]
+    pub texture_scale: String,
+    #[serde(default = "default_scene_zero")]
+    pub texture_mask: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -344,6 +406,14 @@ pub struct CircleNode {
     pub transform_origin_y: String,
     #[serde(default = "default_scene_blend")]
     pub blend: String,
+    #[serde(default)]
+    pub texture: Option<String>,
+    #[serde(default = "default_scene_one")]
+    pub texture_opacity: String,
+    #[serde(default = "default_scene_one")]
+    pub texture_scale: String,
+    #[serde(default = "default_scene_zero")]
+    pub texture_mask: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -508,6 +578,14 @@ pub struct PathNode {
     pub stroke_pressure_curve: String,
     #[serde(default = "default_scene_blend")]
     pub blend: String,
+    #[serde(default)]
+    pub texture: Option<String>,
+    #[serde(default = "default_scene_one")]
+    pub texture_opacity: String,
+    #[serde(default = "default_scene_one")]
+    pub texture_scale: String,
+    #[serde(default = "default_scene_zero")]
+    pub texture_mask: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

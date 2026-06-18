@@ -21,6 +21,7 @@ pub enum ProcessEffect {
     GlowStack,
     ToneMap,
     LightSweep,
+    TextureOverlay,
 }
 
 /// Resolve a raw effect string (including aliases) to its canonical
@@ -56,6 +57,16 @@ pub fn resolve_process_effect(effect: &str) -> Option<ProcessEffect> {
         | "post_light_sweep"
         | "light_atmosphere_light_sweep"
         | "light_atmosphere_sweep" => Some(ProcessEffect::LightSweep),
+        "texture_overlay"
+        | "post_texture_overlay"
+        | "paper_texture"
+        | "texture_paper"
+        | "film_grain"
+        | "scanlines"
+        | "canvas_texture"
+        | "impasto_texture"
+        | "brushed_paint"
+        | "stylize_look_texture_overlay" => Some(ProcessEffect::TextureOverlay),
         _ => None,
     }
 }
@@ -86,6 +97,7 @@ pub fn is_wasm_webgpu_compatible_effect(effect: &str) -> bool {
                 | ProcessEffect::GlowStack
                 | ProcessEffect::ToneMap
                 | ProcessEffect::LightSweep
+                | ProcessEffect::TextureOverlay
         )
     )
 }
@@ -136,6 +148,10 @@ mod tests {
             resolve_process_effect("light_sweep"),
             Some(ProcessEffect::LightSweep)
         );
+        assert_eq!(
+            resolve_process_effect("texture_overlay"),
+            Some(ProcessEffect::TextureOverlay)
+        );
     }
 
     #[test]
@@ -158,5 +174,6 @@ mod tests {
         assert!(is_wasm_webgpu_compatible_effect("glow_stack"));
         assert!(is_wasm_webgpu_compatible_effect("tone_map"));
         assert!(is_wasm_webgpu_compatible_effect("light_sweep"));
+        assert!(is_wasm_webgpu_compatible_effect("texture_overlay"));
     }
 }

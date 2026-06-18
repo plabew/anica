@@ -710,7 +710,7 @@ pub(crate) fn post_blur_uniform(
     canvas_h: u32,
     horizontal: bool,
     sigma: f32,
-) -> [u8; 32] {
+) -> [u8; 48] {
     let values = [
         canvas_w as f32,
         canvas_h as f32,
@@ -720,8 +720,12 @@ pub(crate) fn post_blur_uniform(
         sigma.ceil().clamp(0.0, 64.0),
         0.0,
         0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ];
-    let mut uniform = [0u8; 32];
+    let mut uniform = [0u8; 48];
     for (ix, value) in values.iter().enumerate() {
         uniform[ix * 4..ix * 4 + 4].copy_from_slice(&value.to_ne_bytes());
     }
@@ -734,7 +738,7 @@ pub(crate) fn post_color_uniform(
     brightness: f32,
     contrast: f32,
     saturation: f32,
-) -> [u8; 32] {
+) -> [u8; 48] {
     let values = [
         canvas_w as f32,
         canvas_h as f32,
@@ -744,8 +748,12 @@ pub(crate) fn post_color_uniform(
         contrast,
         saturation,
         1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ];
-    let mut uniform = [0u8; 32];
+    let mut uniform = [0u8; 48];
     for (ix, value) in values.iter().enumerate() {
         uniform[ix * 4..ix * 4 + 4].copy_from_slice(&value.to_ne_bytes());
     }
@@ -757,7 +765,7 @@ pub(crate) fn post_tint_uniform(
     canvas_h: u32,
     color: [u8; 4],
     intensity: f32,
-) -> [u8; 32] {
+) -> [u8; 48] {
     let color = rgba_u8_to_unit(color);
     f32_bytes(&[
         canvas_w as f32,
@@ -768,6 +776,10 @@ pub(crate) fn post_tint_uniform(
         color[1],
         color[2],
         2.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ])
 }
 
@@ -778,7 +790,7 @@ pub(crate) fn post_hsla_overlay_uniform(
     saturation: f32,
     lightness: f32,
     alpha: f32,
-) -> [u8; 32] {
+) -> [u8; 48] {
     f32_bytes(&[
         canvas_w as f32,
         canvas_h as f32,
@@ -788,6 +800,10 @@ pub(crate) fn post_hsla_overlay_uniform(
         saturation,
         lightness,
         4.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ])
 }
 
@@ -799,7 +815,7 @@ pub(crate) fn post_tone_map_uniform(
     shoulder: f32,
     gamma: f32,
     saturation: f32,
-) -> [u8; 32] {
+) -> [u8; 48] {
     f32_bytes(&[
         canvas_w as f32,
         canvas_h as f32,
@@ -809,6 +825,10 @@ pub(crate) fn post_tone_map_uniform(
         contrast.clamp(0.0, 4.0),
         gamma.clamp(0.1, 8.0),
         5.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ])
 }
 
@@ -842,7 +862,7 @@ pub(crate) fn post_light_sweep_uniform(params: PostLightSweepUniformParams) -> [
     ])
 }
 
-pub(crate) fn post_opacity_uniform(canvas_w: u32, canvas_h: u32, opacity: f32) -> [u8; 32] {
+pub(crate) fn post_opacity_uniform(canvas_w: u32, canvas_h: u32, opacity: f32) -> [u8; 48] {
     f32_bytes(&[
         canvas_w as f32,
         canvas_h as f32,
@@ -852,6 +872,41 @@ pub(crate) fn post_opacity_uniform(canvas_w: u32, canvas_h: u32, opacity: f32) -
         0.0,
         0.0,
         3.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ])
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PostTextureOverlayUniformParams {
+    pub(crate) canvas_w: u32,
+    pub(crate) canvas_h: u32,
+    pub(crate) kind: f32,
+    pub(crate) scale: f32,
+    pub(crate) strength: f32,
+    pub(crate) contrast: f32,
+    pub(crate) seed: f32,
+    pub(crate) brush_angle: f32,
+    pub(crate) bump_strength: f32,
+    pub(crate) relief: f32,
+}
+
+pub(crate) fn post_texture_overlay_uniform(params: PostTextureOverlayUniformParams) -> [u8; 48] {
+    f32_bytes(&[
+        params.canvas_w as f32,
+        params.canvas_h as f32,
+        params.seed,
+        params.contrast.clamp(0.0, 2.0),
+        params.kind,
+        params.scale.clamp(0.001, 4096.0),
+        params.strength.clamp(0.0, 1.0),
+        7.0,
+        params.brush_angle,
+        params.bump_strength.clamp(0.0, 2.0),
+        params.relief.clamp(0.0, 2.0),
+        0.0,
     ])
 }
 

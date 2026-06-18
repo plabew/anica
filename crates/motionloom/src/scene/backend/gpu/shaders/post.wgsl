@@ -2,6 +2,7 @@
 struct PostParams {
     canvas: vec4<f32>,
     params: vec4<f32>,
+    extra: vec4<f32>,
 };
 
 @group(0) @binding(0) var base_tex: texture_2d<f32>;
@@ -51,6 +52,33 @@ fn aces_fitted(rgb: vec3<f32>, shoulder: f32) -> vec3<f32> {
     let d = 0.59 + shoulder * 0.24;
     let e = 0.14;
     return clamp((rgb * (a * rgb + vec3<f32>(b))) / (rgb * (c * rgb + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn hash21(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
+}
+
+fn noise2(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (vec2<f32>(3.0) - 2.0 * f);
+    return mix(
+        mix(hash21(i), hash21(i + vec2<f32>(1.0, 0.0)), u.x),
+        mix(hash21(i + vec2<f32>(0.0, 1.0)), hash21(i + vec2<f32>(1.0, 1.0)), u.x),
+        u.y
+    );
+}
+
+fn fbm(p_in: vec2<f32>) -> f32 {
+    var p = p_in;
+    var amp = 0.5;
+    var sum = 0.0;
+    for (var i = 0; i < 4; i = i + 1) {
+        sum = sum + noise2(p) * amp;
+        p = p * 2.03 + vec2<f32>(17.1, 9.2);
+        amp = amp * 0.5;
+    }
+    return sum;
 }
 
 @compute @workgroup_size(16, 16, 1)
@@ -117,6 +145,50 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         rgb = vec3<f32>(luma) + (rgb - vec3<f32>(luma)) * saturation;
         rgb = pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / gamma));
         textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
+        return;
+    }
+
+    if (mode == 7) {
+        let src = textureLoad(base_tex, vec2<i32>(i32(x), i32(y)), 0);
+        let uv = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / max(params.canvas.xy, vec2<f32>(1.0));
+        let kind = i32(round(params.params.x));
+        let scale = max(params.params.y, 0.001);
+        let strength = clamp(params.params.z, 0.0, 1.0);
+        let seed = params.canvas.z;
+        let contrast = clamp(params.canvas.w, 0.0, 2.0);
+        var tex_value = fbm(uv * scale + vec2<f32>(seed, seed * 1.73));
+        if (kind == 1) {
+            let fibers = 0.5 + 0.5 * sin((uv.y * scale * 8.0 + tex_value * 4.0 + seed) * 6.28318);
+            tex_value = mix(tex_value, fibers, 0.35);
+        } else if (kind == 2) {
+            tex_value = hash21(vec2<f32>(f32(x), f32(y)) + vec2<f32>(seed * 19.17, seed * 7.31));
+        } else if (kind == 3) {
+            tex_value = 0.5 + 0.5 * sin((uv.y * params.canvas.y * 0.85 + seed) * 6.28318);
+        } else if (kind == 4) {
+            let weave_x = 0.5 + 0.5 * sin((uv.x * scale * 10.0 + seed) * 6.28318);
+            let weave_y = 0.5 + 0.5 * sin((uv.y * scale * 12.0 + seed * 1.37) * 6.28318);
+            let ridges = sqrt(max(weave_x * weave_y, 0.0));
+            tex_value = mix(tex_value, ridges, 0.55);
+        } else if (kind == 5 || kind == 6) {
+            let brush_angle = radians(params.extra.x);
+            let bump_strength = clamp(params.extra.y, 0.0, 2.0);
+            let relief = clamp(params.extra.z, 0.0, 2.0);
+            let brush_x = uv.x * cos(brush_angle) - uv.y * sin(brush_angle);
+            let brush_y = uv.x * sin(brush_angle) + uv.y * cos(brush_angle);
+            let low = fbm(uv * scale * 0.18 + vec2<f32>(seed, seed * 0.61));
+            let ridge = 0.5 + 0.5 * sin((brush_x * scale * 18.0 + low * 6.0 + seed) * 6.28318);
+            let cross = 0.5 + 0.5 * sin((brush_y * scale * 3.0 + tex_value * 2.0 + seed * 0.7) * 6.28318);
+            if (kind == 5) {
+                tex_value = ridge * 0.62 + cross * 0.18 + low * 0.20;
+            } else {
+                tex_value = ridge * 0.50 + tex_value * 0.25 + low * 0.25;
+            }
+            tex_value = (tex_value - 0.5) * (1.0 + relief * 0.45 + bump_strength * 0.20) + 0.5;
+        }
+        let centered = clamp((tex_value - 0.5) * (1.0 + contrast) + 0.5, 0.0, 1.0);
+        let material_bump = select(0.0, clamp(params.extra.y, 0.0, 2.0), kind >= 4);
+        let shade = 1.0 + (centered - 0.5) * strength * (0.9 + material_bump * 0.55);
+        textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(src.rgb * shade, vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
         return;
     }
 

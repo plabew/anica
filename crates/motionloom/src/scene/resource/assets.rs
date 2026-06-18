@@ -1,3 +1,7 @@
+// =========================================
+// =========================================
+// crates/motionloom/src/scene/resource/assets.rs
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -40,6 +44,11 @@ pub(crate) fn load_rgba_image_source(
     src: &str,
     resolver: &dyn AssetResolver,
 ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+    if is_raster_data_uri(src) {
+        let bytes = decode_raster_data_uri(src)?;
+        return decode_image_bytes(src, &bytes);
+    }
+
     if is_remote_image_source(src) {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -57,9 +66,16 @@ pub(crate) fn load_rgba_image_source(
 
     match resolver.resolve(src) {
         Ok(crate::asset::AssetSource::Bytes(bytes)) => decode_image_bytes(src, &bytes),
-        Ok(crate::asset::AssetSource::Path(path)) => image::open(&path)
-            .map_err(|source| MotionLoomSceneRenderError::OpenImage { path, source })
-            .map(|decoded| decoded.to_rgba8()),
+        Ok(crate::asset::AssetSource::Path(path)) => {
+            let path = if path.exists() {
+                path
+            } else {
+                resolve_local_scene_asset_path(src)
+            };
+            image::open(&path)
+                .map_err(|source| MotionLoomSceneRenderError::OpenImage { path, source })
+                .map(|decoded| decoded.to_rgba8())
+        }
         Ok(crate::asset::AssetSource::Url(url)) => Err(MotionLoomSceneRenderError::FetchAsset {
             url,
             message: "URL asset source requires a fetch implementation".to_string(),
@@ -78,6 +94,46 @@ fn decode_image_bytes(src: &str, bytes: &[u8]) -> Result<RgbaImage, MotionLoomSc
             source,
         })
         .map(|decoded| decoded.to_rgba8())
+}
+
+fn is_raster_data_uri(src: &str) -> bool {
+    let lower = src.trim_start().to_ascii_lowercase();
+    lower.starts_with("data:image/")
+        && !lower.starts_with("data:image/svg+xml")
+        && lower.contains(";base64,")
+}
+
+fn decode_raster_data_uri(src: &str) -> Result<Vec<u8>, MotionLoomSceneRenderError> {
+    let trimmed = src.trim_start();
+    let Some(comma_ix) = trimmed.find(',') else {
+        return Err(MotionLoomSceneRenderError::InvalidImageDataUri {
+            source_ref: src.to_string(),
+            message: "missing data payload separator ','".to_string(),
+        });
+    };
+    let (header, payload) = trimmed.split_at(comma_ix);
+    let header_lower = header.to_ascii_lowercase();
+
+    // Raster textures use data URIs so examples can stay self-contained.
+    if !header_lower.starts_with("data:image/") || header_lower.starts_with("data:image/svg+xml") {
+        return Err(MotionLoomSceneRenderError::InvalidImageDataUri {
+            source_ref: src.to_string(),
+            message: "expected raster data:image media type".to_string(),
+        });
+    }
+    if !header_lower.contains(";base64") {
+        return Err(MotionLoomSceneRenderError::InvalidImageDataUri {
+            source_ref: src.to_string(),
+            message: "raster image data URIs must use base64 encoding".to_string(),
+        });
+    }
+
+    base64::engine::general_purpose::STANDARD
+        .decode(&payload[1..])
+        .map_err(|err| MotionLoomSceneRenderError::InvalidImageDataUri {
+            source_ref: src.to_string(),
+            message: format!("base64 decode failed: {err}"),
+        })
 }
 
 pub(crate) fn load_svg_source(

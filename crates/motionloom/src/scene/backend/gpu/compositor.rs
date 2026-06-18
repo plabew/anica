@@ -12,12 +12,13 @@ use crate::scene::backend::gpu::shaders::{
     WGPU_BATCH_SHAPE_SHADER, WGPU_BLOOM_SHADER, WGPU_DOWNSAMPLE_SHADER, WGPU_LIGHT_SWEEP_SHADER,
     WGPU_MATTE_TEXTURE_SHADER, WGPU_POST_SHADER, WGPU_SCENE_SHADER,
 };
+use crate::scene::composition::SceneTextureOverlayParams;
 use crate::scene::drawable::{
     GpuSceneMatteMode, GpuSceneNativeTexture, GpuScenePrimitive, GpuSceneTextureLayer,
-    GpuSceneTextureSource, PostLightSweepUniformParams, batch_shape_storage_bytes,
-    batch_shape_uniform, matte_texture_uniform, post_blur_uniform, post_color_uniform,
-    post_hsla_overlay_uniform, post_light_sweep_uniform, post_opacity_uniform, post_tint_uniform,
-    post_tone_map_uniform, texture_layer_bounds,
+    GpuSceneTextureSource, PostLightSweepUniformParams, PostTextureOverlayUniformParams,
+    batch_shape_storage_bytes, batch_shape_uniform, matte_texture_uniform, post_blur_uniform,
+    post_color_uniform, post_hsla_overlay_uniform, post_light_sweep_uniform, post_opacity_uniform,
+    post_texture_overlay_uniform, post_tint_uniform, post_tone_map_uniform, texture_layer_bounds,
 };
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 use crate::scene::resource::{load_rgba_image_source, load_svg_source};
@@ -1070,7 +1071,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         })
     }
@@ -2024,6 +2027,52 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
         let mut keepalive = WgpuDispatchKeepalive::default();
         self.dispatch_light_sweep_pass(
+            &mut encoder,
+            &input.texture,
+            &dst,
+            &uniform_buffer,
+            width,
+            height,
+            &mut keepalive,
+        );
+        self.submit_encoder(encoder);
+        drop(uniform_buffer);
+        drop(keepalive);
+        Ok(GpuSceneNativeTexture {
+            texture: dst,
+            width,
+            height,
+        })
+    }
+
+    pub(crate) fn apply_gpu_texture_overlay_texture(
+        &mut self,
+        input: &GpuSceneNativeTexture,
+        params: SceneTextureOverlayParams,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let width = input.width.max(1);
+        let height = input.height.max(1);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-scene-texture-overlay-gpu-encoder"),
+            });
+        let uniform = post_texture_overlay_uniform(PostTextureOverlayUniformParams {
+            canvas_w: width,
+            canvas_h: height,
+            kind: params.kind.id(),
+            scale: params.scale,
+            strength: params.strength,
+            contrast: params.contrast,
+            seed: params.seed,
+            brush_angle: params.brush_angle,
+            bump_strength: params.bump_strength,
+            relief: params.relief,
+        });
+        let uniform_buffer = self.make_post_uniform_buffer(&uniform);
+        let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        self.dispatch_post_pass_sized(
             &mut encoder,
             &input.texture,
             &dst,

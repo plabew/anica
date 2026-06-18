@@ -35,13 +35,14 @@ use crate::scene::compile::{
 };
 use crate::scene::composition::{
     apply_alpha_mask, apply_alpha_mask_with_invert, apply_box_blur_pass, apply_deform_grid,
-    apply_hsla_pass, apply_layer_effects, apply_over_pass, apply_scene_filter_step,
-    apply_scene_post_pass, blend_pixel, build_scene_bloom_prefilter, composite_layer,
-    composite_layer_affine, composite_layer_affine_blend, composite_layer_affine_blend_clipped,
-    composite_layer_affine_clipped, composite_scene_bloom, composite_transformed_layer,
-    composite_transformed_layer_anchored, draw_rgba_image, is_color_key_alpha_effect,
-    pass_param_expr, scene_post_bloom_params, scene_post_blur_passes, scene_post_glow_stack_params,
-    scene_post_light_sweep_params, scene_post_tone_map_params,
+    apply_hsla_pass, apply_image_texture_overlay_pass, apply_layer_effects, apply_over_pass,
+    apply_scene_filter_step, apply_scene_post_pass, blend_pixel, build_scene_bloom_prefilter,
+    composite_layer, composite_layer_affine, composite_layer_affine_blend,
+    composite_layer_affine_blend_clipped, composite_layer_affine_clipped, composite_scene_bloom,
+    composite_transformed_layer, composite_transformed_layer_anchored, draw_rgba_image,
+    is_color_key_alpha_effect, pass_param_expr, scene_post_bloom_params, scene_post_blur_passes,
+    scene_post_glow_stack_params, scene_post_light_sweep_params, scene_post_texture_overlay_params,
+    scene_post_tone_map_params,
 };
 use crate::scene::domain::apply_action_graph_at_time;
 
@@ -69,14 +70,14 @@ use crate::scene::dsl::{ImageNode, SvgNode};
 use crate::scene::model::{
     CameraNode, CharacterNode, CircleNode, DefsNode, FaceJawNode, FilterDef, FontDef, GradientDef,
     GroupNode, LineNode, MaskNode, PaletteNode, PartNode, PathNode, PixelGridNode, PolylineNode,
-    PrecomposeNode, RectNode, RepeatNode, SceneLayerNode, SceneNode, UseNode,
+    PrecomposeNode, RectNode, RepeatNode, SceneLayerNode, SceneNode, TextureDef, UseNode,
 };
 pub use crate::scene::resource::{clear_scene_asset_roots, set_scene_asset_roots};
 use crate::scene::resource::{
     collect_graph_component_defs, collect_graph_filter_defs, collect_graph_font_defs,
     collect_graph_gradient_defs, collect_graph_mask_defs, collect_graph_palette_defs,
-    collect_graph_precompose_defs, default_world_asset_root, load_extra_fonts,
-    load_rgba_image_source, load_svg_source, resolve_local_scene_asset_path,
+    collect_graph_precompose_defs, collect_graph_texture_defs, default_world_asset_root,
+    load_extra_fonts, load_rgba_image_source, load_svg_source, resolve_local_scene_asset_path,
 };
 use crate::scene::spatial::{
     Affine2, CameraRect, EvaluatedDeformGrid, active_scene_camera_from_tracks, affine_is_identity,
@@ -406,6 +407,10 @@ impl SceneRenderer {
         self.inner.render_frame(graph, frame).await
     }
 
+    pub fn load_font_data(&mut self, bytes: Vec<u8>) {
+        self.inner.font_system.db_mut().load_font_data(bytes);
+    }
+
     /// Render a scene frame to a GPU texture without CPU readback.
     ///
     /// The returned `SceneGpuTexture` wraps an `Arc<wgpu::Texture>` that is safe
@@ -648,6 +653,30 @@ fn collect_paint_gradient_ref(value: &str, out: &mut Vec<(String, String)>) {
     }
 }
 
+fn motionloom_font_family(family: &str) -> Option<Family<'_>> {
+    let trimmed = family.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "serif" => Some(Family::Serif),
+        "sans" | "sans-serif" | "sans serif" | "system" => Some(Family::SansSerif),
+        "mono" | "monospace" | "monospace-serif" => Some(Family::Monospace),
+        "cursive" => Some(Family::Cursive),
+        "fantasy" => Some(Family::Fantasy),
+        _ => Some(Family::Name(trimmed)),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn motionloom_wasm_loaded_font_family(font_family: Option<&str>, text: &str) -> Family<'static> {
+    if text.chars().any(|ch| !ch.is_ascii()) {
+        return Family::Name("Noto Sans CJK TC");
+    }
+    let _ = font_family;
+    Family::Name("Noto Sans CJK TC")
+}
+
 struct SceneFrameRenderer {
     profile: SceneRenderProfile,
     asset_resolver: Arc<dyn AssetResolver>,
@@ -660,6 +689,7 @@ struct SceneFrameRenderer {
     gradient_defs: HashMap<String, GradientDef>,
     palette_defs: HashMap<String, PaletteNode>,
     font_defs: HashMap<String, FontDef>,
+    texture_defs: HashMap<String, TextureDef>,
     filter_defs: HashMap<String, FilterDef>,
     scene_components: HashMap<String, Vec<SceneNode>>,
     scene_precompose_defs: HashMap<String, PrecomposeNode>,
@@ -713,6 +743,7 @@ impl SceneFrameRenderer {
             gradient_defs: HashMap::new(),
             palette_defs: HashMap::new(),
             font_defs: HashMap::new(),
+            texture_defs: HashMap::new(),
             filter_defs: HashMap::new(),
             scene_components: HashMap::new(),
             scene_precompose_defs: HashMap::new(),
@@ -748,6 +779,7 @@ impl SceneFrameRenderer {
             gradient_defs: HashMap::new(),
             palette_defs: HashMap::new(),
             font_defs: HashMap::new(),
+            texture_defs: HashMap::new(),
             filter_defs: HashMap::new(),
             scene_components: HashMap::new(),
             scene_precompose_defs: HashMap::new(),
@@ -1077,6 +1109,7 @@ impl SceneFrameRenderer {
         self.gradient_defs.clear();
         self.palette_defs.clear();
         self.font_defs.clear();
+        self.texture_defs.clear();
         self.filter_defs.clear();
         self.scene_components.clear();
         self.scene_precompose_defs.clear();
@@ -1085,6 +1118,7 @@ impl SceneFrameRenderer {
         collect_graph_gradient_defs(graph, &mut self.gradient_defs);
         collect_graph_palette_defs(graph, &mut self.palette_defs);
         collect_graph_font_defs(graph, &mut self.font_defs);
+        collect_graph_texture_defs(graph, &mut self.texture_defs);
         collect_graph_filter_defs(graph, &mut self.filter_defs);
         collect_graph_component_defs(graph, &mut self.scene_components);
         collect_graph_mask_defs(graph, &mut self.scene_masks);
@@ -1150,6 +1184,7 @@ impl SceneFrameRenderer {
         self.gradient_defs.clear();
         self.palette_defs.clear();
         self.font_defs.clear();
+        self.texture_defs.clear();
         self.filter_defs.clear();
         self.scene_components.clear();
         self.scene_precompose_defs.clear();
@@ -1158,6 +1193,7 @@ impl SceneFrameRenderer {
         collect_graph_gradient_defs(graph, &mut self.gradient_defs);
         collect_graph_palette_defs(graph, &mut self.palette_defs);
         collect_graph_font_defs(graph, &mut self.font_defs);
+        collect_graph_texture_defs(graph, &mut self.texture_defs);
         collect_graph_filter_defs(graph, &mut self.filter_defs);
         collect_graph_component_defs(graph, &mut self.scene_components);
         collect_graph_mask_defs(graph, &mut self.scene_masks);
@@ -3152,6 +3188,10 @@ impl SceneFrameRenderer {
                         skew_y: "0".to_string(),
                         transform_origin_x: "0".to_string(),
                         transform_origin_y: "0".to_string(),
+                        texture: None,
+                        texture_opacity: "1".to_string(),
+                        texture_scale: "1".to_string(),
+                        texture_mask: "0".to_string(),
                     };
                     push_gpu_path_commands(
                         &path,
@@ -3367,6 +3407,11 @@ impl SceneFrameRenderer {
                 .apply_scene_light_sweep_pass(&inputs[0], pass, time_norm, time_sec)
                 .await;
         }
+        if scene_post_texture_overlay_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_texture_overlay_pass(&inputs[0], pass, time_norm, time_sec)
+                .await;
+        }
         if scene_post_bloom_params(pass, time_norm, time_sec)?.is_some() {
             return self
                 .apply_scene_bloom_pass(&inputs[0], pass, time_norm, time_sec)
@@ -3436,6 +3481,11 @@ impl SceneFrameRenderer {
         if scene_post_light_sweep_params(pass, time_norm, time_sec)?.is_some() {
             return self
                 .apply_scene_light_sweep_pass(input, pass, time_norm, time_sec)
+                .await;
+        }
+        if scene_post_texture_overlay_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_texture_overlay_pass(input, pass, time_norm, time_sec)
                 .await;
         }
         let effect = pass.effect.to_ascii_lowercase();
@@ -3638,6 +3688,88 @@ impl SceneFrameRenderer {
         }
         let image = self.graph_source_to_cpu(input).await?;
         apply_scene_post_pass(&image, pass, time_norm, time_sec).map(GraphTextureSource::Cpu)
+    }
+
+    async fn apply_scene_texture_overlay_pass(
+        &mut self,
+        input: &GraphTextureSource,
+        pass: &PassNode,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GraphTextureSource, MotionLoomSceneRenderError> {
+        let Some(params) = scene_post_texture_overlay_params(pass, time_norm, time_sec)? else {
+            return Ok(input.clone());
+        };
+        let (params, texture_image, height_image) = self.resolve_texture_overlay_assets(params)?;
+        if texture_image.is_some() || height_image.is_some() {
+            let image = self.graph_source_to_cpu(input).await?;
+            return Ok(GraphTextureSource::Cpu(apply_image_texture_overlay_pass(
+                &image,
+                &params,
+                texture_image.as_ref(),
+                height_image.as_ref(),
+            )));
+        }
+        if self.profile.uses_gpu_compositor()
+            && let GraphTextureSource::Gpu(texture) = input
+        {
+            self.ensure_gpu_compositor_size(texture.width.max(1), texture.height.max(1))
+                .await?;
+            let compositor = self.gpu_compositor.as_mut().ok_or_else(|| {
+                MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                }
+            })?;
+            return Ok(GraphTextureSource::Gpu(
+                compositor.apply_gpu_texture_overlay_texture(texture, params)?,
+            ));
+        }
+        let image = self.graph_source_to_cpu(input).await?;
+        apply_scene_post_pass(&image, pass, time_norm, time_sec).map(GraphTextureSource::Cpu)
+    }
+
+    fn resolve_texture_overlay_assets(
+        &mut self,
+        mut params: crate::scene::composition::SceneTextureOverlayParams,
+    ) -> Result<
+        (
+            crate::scene::composition::SceneTextureOverlayParams,
+            Option<RgbaImage>,
+            Option<RgbaImage>,
+        ),
+        MotionLoomSceneRenderError,
+    > {
+        if let Some(texture_ref) = params.texture_ref.as_deref()
+            && let Some(texture_def) = self.texture_defs.get(texture_ref)
+            && !texture_def.src.is_empty()
+        {
+            if texture_def.kind.eq_ignore_ascii_case("height") {
+                params
+                    .height_src
+                    .get_or_insert_with(|| texture_def.src.clone());
+            } else {
+                params
+                    .texture_src
+                    .get_or_insert_with(|| texture_def.src.clone());
+            }
+        }
+        if let Some(height_ref) = params.height_ref.as_deref()
+            && let Some(texture_def) = self.texture_defs.get(height_ref)
+            && !texture_def.src.is_empty()
+        {
+            params
+                .height_src
+                .get_or_insert_with(|| texture_def.src.clone());
+        }
+        let texture_image = match params.texture_src.clone() {
+            Some(src) => Some(self.load_image_asset(&src)?.clone()),
+            None => None,
+        };
+        let height_image = match params.height_src.clone() {
+            Some(src) => Some(self.load_image_asset(&src)?.clone()),
+            None => None,
+        };
+        Ok((params, texture_image, height_image))
     }
 
     fn draw_scene_nodes(
@@ -6175,10 +6307,21 @@ impl SceneFrameRenderer {
             .font_family
             .as_deref()
             .or_else(|| font_def.and_then(|font| font.family.as_deref()));
-        if let Some(family) = font_family
-            && !family.trim().is_empty()
+        #[cfg(target_arch = "wasm32")]
+        let font_family = font_def
+            .and_then(|font| font.fallback.as_deref())
+            .or(font_family);
+        #[cfg(target_arch = "wasm32")]
+        let wasm_loaded_fallback_family = Some(motionloom_wasm_loaded_font_family(
+            font_family,
+            &visible_value,
+        ));
+        #[cfg(not(target_arch = "wasm32"))]
+        let wasm_loaded_fallback_family = None;
+        if let Some(family) =
+            wasm_loaded_fallback_family.or_else(|| font_family.and_then(motionloom_font_family))
         {
-            attrs = attrs.family(Family::Name(family));
+            attrs = attrs.family(family);
         }
         // Browser builds use Basic shaping to avoid native font shaping paths.
         #[cfg(target_arch = "wasm32")]

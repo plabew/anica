@@ -43,6 +43,33 @@ pub(crate) struct SceneLightSweepParams {
     pub(crate) color: [u8; 4],
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SceneTextureOverlayParams {
+    pub(crate) kind: TextureOverlayKind,
+    pub(crate) texture_ref: Option<String>,
+    pub(crate) height_ref: Option<String>,
+    pub(crate) texture_src: Option<String>,
+    pub(crate) height_src: Option<String>,
+    pub(crate) scale: f32,
+    pub(crate) strength: f32,
+    pub(crate) contrast: f32,
+    pub(crate) seed: f32,
+    pub(crate) brush_angle: f32,
+    pub(crate) bump_strength: f32,
+    pub(crate) relief: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TextureOverlayKind {
+    Noise,
+    Paper,
+    FilmGrain,
+    Scanlines,
+    Canvas,
+    Impasto,
+    BrushedPaint,
+}
+
 pub(crate) fn apply_scene_post_pass(
     input: &RgbaImage,
     pass: &PassNode,
@@ -97,6 +124,9 @@ pub(crate) fn apply_scene_post_pass(
     }
     if let Some(params) = scene_post_light_sweep_params(pass, time_norm, time_sec)? {
         return Ok(apply_light_sweep_pass(input, params));
+    }
+    if let Some(params) = scene_post_texture_overlay_params(pass, time_norm, time_sec)? {
+        return Ok(apply_texture_overlay_pass(input, params));
     }
     if is_color_key_alpha_effect(&effect) {
         return apply_color_key_alpha_pass(input, pass, time_norm, time_sec);
@@ -695,6 +725,129 @@ pub(crate) fn scene_post_light_sweep_params(
     }))
 }
 
+pub(crate) fn scene_post_texture_overlay_params(
+    pass: &PassNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Option<SceneTextureOverlayParams>, MotionLoomSceneRenderError> {
+    let effect = normalized_effect_name(&pass.effect);
+    if !matches!(
+        effect.as_str(),
+        "texture_overlay"
+            | "post_texture_overlay"
+            | "paper_texture"
+            | "texture_paper"
+            | "film_grain"
+            | "scanlines"
+            | "canvas_texture"
+            | "impasto_texture"
+            | "brushed_paint"
+            | "stylize_look.texture_overlay"
+            | "stylize_look_texture_overlay"
+    ) {
+        return Ok(None);
+    }
+    let kind = pass_param_expr_any(pass, &["kind", "texture"])
+        .map(TextureOverlayKind::parse)
+        .unwrap_or(TextureOverlayKind::Paper);
+    let scale = pass_param_expr(pass, "scale")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(42.0)
+        .clamp(0.001, 4096.0);
+    let strength = pass_param_expr_any(pass, &["strength", "amount"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.25)
+        .clamp(0.0, 1.0);
+    let contrast = pass_param_expr(pass, "contrast")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.5)
+        .clamp(0.0, 2.0);
+    let seed = pass_param_expr(pass, "seed")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.0);
+    let brush_angle = pass_param_expr_any(pass, &["brush_angle", "angle"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(-8.0);
+    let bump_strength = pass_param_expr_any(pass, &["bump_strength", "bump", "impasto_strength"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.35)
+        .clamp(0.0, 2.0);
+    let relief = pass_param_expr(pass, "relief")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.45)
+        .clamp(0.0, 2.0);
+    Ok(Some(SceneTextureOverlayParams {
+        kind,
+        texture_ref: pass_param_expr_any(pass, &["texture", "canvas", "image", "map"])
+            .map(clean_param_ref)
+            .filter(|value| !value.is_empty()),
+        height_ref: pass_param_expr_any(pass, &["height", "height_map", "heightMap", "bump_map"])
+            .map(clean_param_ref)
+            .filter(|value| !value.is_empty()),
+        texture_src: pass_param_expr_any(pass, &["src", "texture_src", "textureSrc", "image_src"])
+            .map(clean_param_ref)
+            .filter(|value| !value.is_empty()),
+        height_src: pass_param_expr_any(pass, &["height_src", "heightSrc", "bump_src", "bumpSrc"])
+            .map(clean_param_ref)
+            .filter(|value| !value.is_empty()),
+        scale,
+        strength,
+        contrast,
+        seed,
+        brush_angle,
+        bump_strength,
+        relief,
+    }))
+}
+
+fn clean_param_ref(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+impl TextureOverlayKind {
+    pub(crate) fn parse(value: &str) -> Self {
+        match value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_ascii_lowercase()
+            .replace(['-', '_'], "")
+            .as_str()
+        {
+            "noise" => Self::Noise,
+            "film" | "grain" | "filmgrain" => Self::FilmGrain,
+            "scanline" | "scanlines" => Self::Scanlines,
+            "canvas" | "fabric" | "cloth" => Self::Canvas,
+            "impasto" | "thickpaint" | "oilpaint" | "oilpainting" => Self::Impasto,
+            "brushedpaint" | "brushpaint" | "paintbrush" | "brushed" => Self::BrushedPaint,
+            _ => Self::Paper,
+        }
+    }
+
+    pub(crate) fn id(self) -> f32 {
+        match self {
+            Self::Noise => 0.0,
+            Self::Paper => 1.0,
+            Self::FilmGrain => 2.0,
+            Self::Scanlines => 3.0,
+            Self::Canvas => 4.0,
+            Self::Impasto => 5.0,
+            Self::BrushedPaint => 6.0,
+        }
+    }
+}
+
 fn normalized_effect_name(effect: &str) -> String {
     effect
         .trim()
@@ -711,7 +864,7 @@ pub(crate) fn pass_param_expr<'a>(pass: &'a PassNode, key: &str) -> Option<&'a s
         .map(|param| param.value.as_str())
 }
 
-fn pass_param_expr_any<'a>(pass: &'a PassNode, keys: &[&str]) -> Option<&'a str> {
+pub(crate) fn pass_param_expr_any<'a>(pass: &'a PassNode, keys: &[&str]) -> Option<&'a str> {
     keys.iter().find_map(|key| pass_param_expr(pass, key))
 }
 
@@ -1073,6 +1226,211 @@ pub(crate) fn apply_light_sweep_pass(
         }
     }
     out
+}
+
+pub(crate) fn apply_texture_overlay_pass(
+    input: &RgbaImage,
+    params: SceneTextureOverlayParams,
+) -> RgbaImage {
+    let mut out = input.clone();
+    let width = input.width().max(1) as f32;
+    let height = input.height().max(1) as f32;
+    for (x, y, pixel) in out.enumerate_pixels_mut() {
+        let uv_x = (x as f32 + 0.5) / width;
+        let uv_y = (y as f32 + 0.5) / height;
+        let value = texture_overlay_value(params.kind, uv_x, uv_y, x as f32, y as f32, &params);
+        let centered = ((value - 0.5) * (1.0 + params.contrast) + 0.5).clamp(0.0, 1.0);
+        let bump = if matches!(
+            params.kind,
+            TextureOverlayKind::Canvas
+                | TextureOverlayKind::Impasto
+                | TextureOverlayKind::BrushedPaint
+        ) {
+            params.bump_strength
+        } else {
+            0.0
+        };
+        let shade = 1.0 + (centered - 0.5) * params.strength * (0.9 + bump * 0.55);
+        for channel in 0..3 {
+            pixel[channel] =
+                ((pixel[channel] as f32 / 255.0 * shade).clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+    out
+}
+
+pub(crate) fn apply_image_texture_overlay_pass(
+    input: &RgbaImage,
+    params: &SceneTextureOverlayParams,
+    texture: Option<&RgbaImage>,
+    height_map: Option<&RgbaImage>,
+) -> RgbaImage {
+    let mut out = input.clone();
+    let width = input.width().max(1) as f32;
+    let height = input.height().max(1) as f32;
+    for (x, y, pixel) in out.enumerate_pixels_mut() {
+        let uv_x = (x as f32 + 0.5) / width;
+        let uv_y = (y as f32 + 0.5) / height;
+        let procedural = texture_overlay_value(params.kind, uv_x, uv_y, x as f32, y as f32, params);
+        let texture_sample =
+            texture.map(|image| sample_tiled_rgba(image, uv_x, uv_y, params.scale.max(0.001)));
+        let height_sample = height_map
+            .map(|image| sample_tiled_luma(image, uv_x, uv_y, params.scale.max(0.001)))
+            .or_else(|| texture_sample.map(luma_from_rgba))
+            .unwrap_or(procedural);
+        let centered = ((height_sample - 0.5) * (1.0 + params.contrast) + 0.5).clamp(0.0, 1.0);
+        let bump = fake_texture_bump(height_map.or(texture), uv_x, uv_y, params);
+        let shade = 1.0
+            + (centered - 0.5) * params.strength * 1.15
+            + bump * params.bump_strength * params.relief * 0.55;
+        for channel in 0..3 {
+            let base = pixel[channel] as f32 / 255.0;
+            let image_tint = texture_sample
+                .map(|sample| sample[channel] as f32 / 255.0)
+                .unwrap_or(0.5);
+            let tint_shade = 1.0 + (image_tint - 0.5) * params.strength * 1.2;
+            pixel[channel] = ((base * shade * tint_shade).clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+    out
+}
+
+fn sample_tiled_rgba(image: &RgbaImage, uv_x: f32, uv_y: f32, scale: f32) -> [u8; 4] {
+    let (x, y) = tiled_sample_xy(image, uv_x, uv_y, scale);
+    image.get_pixel(x, y).0
+}
+
+fn sample_tiled_luma(image: &RgbaImage, uv_x: f32, uv_y: f32, scale: f32) -> f32 {
+    luma_from_rgba(sample_tiled_rgba(image, uv_x, uv_y, scale))
+}
+
+fn tiled_sample_xy(image: &RgbaImage, uv_x: f32, uv_y: f32, scale: f32) -> (u32, u32) {
+    let width = image.width().max(1);
+    let height = image.height().max(1);
+    let x = ((uv_x * scale).rem_euclid(1.0) * width as f32).floor() as u32;
+    let y = ((uv_y * scale).rem_euclid(1.0) * height as f32).floor() as u32;
+    (x.min(width - 1), y.min(height - 1))
+}
+
+fn luma_from_rgba(sample: [u8; 4]) -> f32 {
+    (sample[0] as f32 * 0.2126 + sample[1] as f32 * 0.7152 + sample[2] as f32 * 0.0722) / 255.0
+}
+
+fn fake_texture_bump(
+    image: Option<&RgbaImage>,
+    uv_x: f32,
+    uv_y: f32,
+    params: &SceneTextureOverlayParams,
+) -> f32 {
+    let Some(image) = image else {
+        return 0.0;
+    };
+    let scale = params.scale.max(0.001);
+    let dx = 1.0 / image.width().max(1) as f32 / scale;
+    let dy = 1.0 / image.height().max(1) as f32 / scale;
+    let left = sample_tiled_luma(image, uv_x - dx, uv_y, scale);
+    let right = sample_tiled_luma(image, uv_x + dx, uv_y, scale);
+    let up = sample_tiled_luma(image, uv_x, uv_y - dy, scale);
+    let down = sample_tiled_luma(image, uv_x, uv_y + dy, scale);
+    let slope_x = right - left;
+    let slope_y = down - up;
+    (-slope_x * 0.55 - slope_y * 0.72).clamp(-1.0, 1.0)
+}
+
+fn texture_overlay_value(
+    kind: TextureOverlayKind,
+    uv_x: f32,
+    uv_y: f32,
+    px: f32,
+    py: f32,
+    params: &SceneTextureOverlayParams,
+) -> f32 {
+    let base = fbm(
+        uv_x * params.scale + params.seed,
+        uv_y * params.scale + params.seed * 1.73,
+    );
+    match kind {
+        TextureOverlayKind::Noise => base,
+        TextureOverlayKind::Paper => {
+            let fibers = 0.5
+                + 0.5
+                    * ((uv_y * params.scale * 8.0 + base * 4.0 + params.seed)
+                        * std::f32::consts::TAU)
+                        .sin();
+            base * 0.65 + fibers * 0.35
+        }
+        TextureOverlayKind::FilmGrain => hash2(px + params.seed * 19.17, py + params.seed * 7.31),
+        TextureOverlayKind::Scanlines => {
+            0.5 + 0.5 * ((uv_y * py.max(1.0) * 0.85 + params.seed) * std::f32::consts::TAU).sin()
+        }
+        TextureOverlayKind::Canvas => {
+            let weave_x = 0.5
+                + 0.5 * ((uv_x * params.scale * 10.0 + params.seed) * std::f32::consts::TAU).sin();
+            let weave_y = 0.5
+                + 0.5
+                    * ((uv_y * params.scale * 12.0 + params.seed * 1.37) * std::f32::consts::TAU)
+                        .sin();
+            let ridges = (weave_x * weave_y).sqrt();
+            base * 0.45 + ridges * 0.55
+        }
+        TextureOverlayKind::Impasto | TextureOverlayKind::BrushedPaint => {
+            let angle = params.brush_angle.to_radians();
+            let brush_x = uv_x * angle.cos() - uv_y * angle.sin();
+            let brush_y = uv_x * angle.sin() + uv_y * angle.cos();
+            let low = fbm(
+                uv_x * params.scale * 0.18 + params.seed,
+                uv_y * params.scale * 0.18,
+            );
+            let ridge = 0.5
+                + 0.5
+                    * ((brush_x * params.scale * 18.0 + low * 6.0 + params.seed)
+                        * std::f32::consts::TAU)
+                        .sin();
+            let cross = 0.5
+                + 0.5
+                    * ((brush_y * params.scale * 3.0 + base * 2.0 + params.seed * 0.7)
+                        * std::f32::consts::TAU)
+                        .sin();
+            let mixed = if matches!(kind, TextureOverlayKind::Impasto) {
+                ridge * 0.62 + cross * 0.18 + low * 0.20
+            } else {
+                ridge * 0.50 + base * 0.25 + low * 0.25
+            };
+            (mixed - 0.5) * (1.0 + params.relief * 0.45) + 0.5
+        }
+    }
+}
+
+fn hash2(x: f32, y: f32) -> f32 {
+    ((x * 127.1 + y * 311.7).sin() * 43_758.547).fract().abs()
+}
+
+fn noise2(x: f32, y: f32) -> f32 {
+    let ix = x.floor();
+    let iy = y.floor();
+    let fx = x - ix;
+    let fy = y - iy;
+    let ux = fx * fx * (3.0 - 2.0 * fx);
+    let uy = fy * fy * (3.0 - 2.0 * fy);
+    let a = hash2(ix, iy);
+    let b = hash2(ix + 1.0, iy);
+    let c = hash2(ix, iy + 1.0);
+    let d = hash2(ix + 1.0, iy + 1.0);
+    let ab = a + (b - a) * ux;
+    let cd = c + (d - c) * ux;
+    ab + (cd - ab) * uy
+}
+
+fn fbm(mut x: f32, mut y: f32) -> f32 {
+    let mut sum = 0.0;
+    let mut amp = 0.5;
+    for _ in 0..4 {
+        sum += noise2(x, y) * amp;
+        x = x * 2.03 + 17.1;
+        y = y * 2.03 + 9.2;
+        amp *= 0.5;
+    }
+    sum
 }
 
 fn tint_image(input: &RgbaImage, tint: [u8; 4]) -> RgbaImage {

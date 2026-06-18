@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::dsl::GraphScript;
 use crate::scene::model::{
-    FilterDef, FontDef, GradientDef, MaskNode, PaletteNode, PrecomposeNode, SceneNode,
+    FilterDef, FontDef, GradientDef, MaskNode, PaletteNode, PrecomposeNode, SceneNode, TextureDef,
 };
 
 pub(crate) fn collect_graph_gradient_defs(
@@ -29,6 +29,16 @@ pub(crate) fn collect_graph_font_defs(graph: &GraphScript, out: &mut HashMap<Str
     collect_scene_font_defs(&graph.scene_nodes, out);
     for scene in &graph.scenes {
         collect_scene_font_defs(&scene.children, out);
+    }
+}
+
+pub(crate) fn collect_graph_texture_defs(
+    graph: &GraphScript,
+    out: &mut HashMap<String, TextureDef>,
+) {
+    collect_scene_texture_defs(&graph.scene_nodes, out);
+    for scene in &graph.scenes {
+        collect_scene_texture_defs(&scene.children, out);
     }
 }
 
@@ -141,6 +151,42 @@ fn collect_scene_palette_defs(nodes: &[SceneNode], out: &mut HashMap<String, Pal
             SceneNode::Layer(layer) => collect_scene_palette_defs(&layer.children, out),
             SceneNode::Camera(camera) => collect_scene_palette_defs(&camera.children, out),
             SceneNode::Character(character) => collect_scene_palette_defs(&character.children, out),
+            _ => {}
+        }
+    }
+}
+
+fn collect_scene_texture_defs(nodes: &[SceneNode], out: &mut HashMap<String, TextureDef>) {
+    for node in nodes {
+        match node {
+            SceneNode::Defs(defs) => {
+                for texture in &defs.textures {
+                    out.insert(texture.id.clone(), texture.clone());
+                }
+                for mask in &defs.masks {
+                    collect_scene_texture_defs(&mask.children, out);
+                }
+                for precompose in &defs.precomposes {
+                    collect_scene_texture_defs(&precompose.children, out);
+                }
+                for component in &defs.components {
+                    collect_scene_texture_defs(&component.children, out);
+                }
+            }
+            SceneNode::Timeline(timeline) => collect_scene_texture_defs(&timeline.children, out),
+            SceneNode::Track(track) => collect_scene_texture_defs(&track.children, out),
+            SceneNode::Sequence(sequence) => collect_scene_texture_defs(&sequence.children, out),
+            SceneNode::Chain(chain) => collect_scene_texture_defs(&chain.children, out),
+            SceneNode::Group(group) => collect_scene_texture_defs(&group.children, out),
+            SceneNode::Part(part) => collect_scene_texture_defs(&part.children, out),
+            SceneNode::Repeat(repeat) => collect_scene_texture_defs(&repeat.children, out),
+            SceneNode::Mask(mask) => collect_scene_texture_defs(&mask.children, out),
+            SceneNode::Precompose(precompose) => {
+                collect_scene_texture_defs(&precompose.children, out)
+            }
+            SceneNode::Layer(layer) => collect_scene_texture_defs(&layer.children, out),
+            SceneNode::Camera(camera) => collect_scene_texture_defs(&camera.children, out),
+            SceneNode::Character(character) => collect_scene_texture_defs(&character.children, out),
             _ => {}
         }
     }

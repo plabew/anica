@@ -128,6 +128,10 @@ pub(crate) fn face_jaw_to_path_node(
         stroke_pressure_min: face_jaw.stroke_pressure_min.clone(),
         stroke_pressure_curve: face_jaw.stroke_pressure_curve.clone(),
         blend: face_jaw.blend.clone(),
+        texture: None,
+        texture_opacity: "1".to_string(),
+        texture_scale: "1".to_string(),
+        texture_mask: "0".to_string(),
     })
 }
 

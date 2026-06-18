@@ -2135,6 +2135,7 @@ pub(crate) fn parse_defs_block(
     let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Defs")?;
     let id = attr_value(&open_tag, "id").map(|v| strip_wrappers(&v).to_string());
     let mut gradients = Vec::<GradientDef>::new();
+    let mut textures = Vec::<TextureDef>::new();
     let mut brushes = Vec::<BrushDef>::new();
     let mut masks = Vec::<MaskNode>::new();
     let mut precomposes = Vec::<PrecomposeNode>::new();
@@ -2163,6 +2164,12 @@ pub(crate) fn parse_defs_block(
         if starts_open_tag(line, "RadialGradient") {
             let (tag, end_ix) = collect_self_closing_block(lines, i)?;
             gradients.push(GradientDef::Radial(parse_radial_gradient_def(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Texture") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            textures.push(parse_texture_def(&tag, i + 1)?);
             i = end_ix + 1;
             continue;
         }
@@ -2213,7 +2220,7 @@ pub(crate) fn parse_defs_block(
         return Err(GraphParseError {
             line: i + 1,
             message: format!(
-                "<Defs> only accepts resource tags: <LinearGradient />, <RadialGradient />, <Brush />, <Mask>, <Precompose>, <Component>, <Filter>, <Font />, or <Palette>, got: {line}"
+                "<Defs> only accepts resource tags: <LinearGradient />, <RadialGradient />, <Texture />, <Brush />, <Mask>, <Precompose>, <Component>, <Filter>, <Font />, or <Palette>, got: {line}"
             ),
         });
     }
@@ -2222,6 +2229,7 @@ pub(crate) fn parse_defs_block(
         DefsNode {
             id,
             gradients,
+            textures,
             brushes,
             masks,
             precomposes,
@@ -2232,6 +2240,30 @@ pub(crate) fn parse_defs_block(
         },
         close_ix,
     ))
+}
+
+fn parse_texture_def(block: &str, line: usize) -> Result<TextureDef, GraphParseError> {
+    let id = strip_wrappers(&required_attr_value(block, "id", line)?).to_string();
+    let kind = attr_value(block, "kind")
+        .or_else(|| attr_value(block, "type"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "paper".to_string());
+    Ok(TextureDef {
+        id,
+        src: scene_attr_or_default(block, &["src", "source", "href"], ""),
+        kind,
+        scale: scene_attr_or_default(block, &["scale"], "42"),
+        strength: scene_attr_or_default(block, &["strength", "amount"], "0.25"),
+        contrast: scene_attr_or_default(block, &["contrast"], "0.5"),
+        seed: scene_attr_or_default(block, &["seed"], "0"),
+        brush_angle: scene_attr_or_default(block, &["brushAngle", "brush_angle", "angle"], "-8"),
+        bump_strength: scene_attr_or_default(
+            block,
+            &["bumpStrength", "bump_strength", "bump", "impastoStrength"],
+            "0.35",
+        ),
+        relief: scene_attr_or_default(block, &["relief"], "0.45"),
+    })
 }
 
 fn parse_component_block(
@@ -2645,6 +2677,10 @@ pub(crate) fn parse_rect_node(block: &str, line: usize) -> Result<RectNode, Grap
         blend: attr_value(block, "blend")
             .map(|v| strip_wrappers(&v).to_string())
             .unwrap_or_else(|| "normal".to_string()),
+        texture: attr_value(block, "texture").map(|v| strip_wrappers(&v).to_string()),
+        texture_opacity: scene_attr_or_default(block, &["textureOpacity", "texture_opacity"], "1"),
+        texture_scale: scene_attr_or_default(block, &["textureScale", "texture_scale"], "1"),
+        texture_mask: scene_attr_or_default(block, &["textureMask", "texture_mask"], "0"),
     })
 }
 
@@ -2697,6 +2733,10 @@ pub(crate) fn parse_circle_node(block: &str, line: usize) -> Result<CircleNode, 
         blend: attr_value(block, "blend")
             .map(|v| strip_wrappers(&v).to_string())
             .unwrap_or_else(|| "normal".to_string()),
+        texture: attr_value(block, "texture").map(|v| strip_wrappers(&v).to_string()),
+        texture_opacity: scene_attr_or_default(block, &["textureOpacity", "texture_opacity"], "1"),
+        texture_scale: scene_attr_or_default(block, &["textureScale", "texture_scale"], "1"),
+        texture_mask: scene_attr_or_default(block, &["textureMask", "texture_mask"], "0"),
     })
 }
 
@@ -3063,6 +3103,10 @@ pub(crate) fn parse_path_node(
             brush.and_then(|brush| brush.blend.as_ref()),
             "normal",
         ),
+        texture: attr_value(block, "texture").map(|v| strip_wrappers(&v).to_string()),
+        texture_opacity: scene_attr_or_default(block, &["textureOpacity", "texture_opacity"], "1"),
+        texture_scale: scene_attr_or_default(block, &["textureScale", "texture_scale"], "1"),
+        texture_mask: scene_attr_or_default(block, &["textureMask", "texture_mask"], "0"),
     })
 }
 

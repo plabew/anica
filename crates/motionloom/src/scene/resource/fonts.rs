@@ -11,9 +11,12 @@ pub(crate) fn load_extra_fonts(font_system: &mut FontSystem) {
 
 fn load_bundled_fallback_font(font_system: &mut FontSystem) {
     // WASM has no system font discovery, so scene text needs an embedded fallback.
+    #[cfg(not(target_arch = "wasm32"))]
     font_system.db_mut().load_font_data(
         include_bytes!("../../../assets/fonts/Popcorn_Mountain--Standard.otf").to_vec(),
     );
+    #[cfg(target_arch = "wasm32")]
+    let _ = font_system;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
