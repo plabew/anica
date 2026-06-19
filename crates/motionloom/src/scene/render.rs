@@ -34,13 +34,14 @@ use crate::scene::compile::{
     scene_nodes_require_cpu_scene_compositing,
 };
 use crate::scene::composition::{
-    apply_alpha_mask, apply_alpha_mask_with_invert, apply_box_blur_pass, apply_deform_grid,
-    apply_hsla_pass, apply_image_texture_overlay_pass, apply_layer_effects, apply_over_pass,
-    apply_scene_filter_step, apply_scene_post_pass, blend_pixel, build_scene_bloom_prefilter,
-    composite_layer, composite_layer_affine, composite_layer_affine_blend,
-    composite_layer_affine_blend_clipped, composite_layer_affine_clipped, composite_scene_bloom,
-    composite_transformed_layer, composite_transformed_layer_anchored, draw_rgba_image,
-    is_color_key_alpha_effect, pass_param_expr, scene_post_bloom_params, scene_post_blur_passes,
+    apply_alpha_mask, apply_alpha_mask_with_invert, apply_box_blur_pass, apply_color_core_pass,
+    apply_deform_grid, apply_hsla_pass, apply_image_texture_overlay_pass, apply_layer_effects,
+    apply_over_pass, apply_scene_filter_step, apply_scene_post_pass, blend_pixel,
+    build_scene_bloom_prefilter, composite_layer, composite_layer_affine,
+    composite_layer_affine_blend, composite_layer_affine_blend_clipped,
+    composite_layer_affine_clipped, composite_scene_bloom, composite_transformed_layer,
+    composite_transformed_layer_anchored, draw_rgba_image, is_color_key_alpha_effect,
+    pass_param_expr, scene_post_bloom_params, scene_post_blur_passes, scene_post_brightness_amount,
     scene_post_glow_stack_params, scene_post_light_sweep_params, scene_post_magnify_lens_params,
     scene_post_texture_overlay_params, scene_post_tone_map_params,
 };
@@ -3450,6 +3451,11 @@ impl SceneFrameRenderer {
                 .apply_scene_texture_overlay_pass(&inputs[0], pass, time_norm, time_sec)
                 .await;
         }
+        if scene_post_brightness_amount(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_brightness_pass(&inputs[0], pass, time_norm, time_sec)
+                .await;
+        }
         if scene_post_bloom_params(pass, time_norm, time_sec)?.is_some() {
             return self
                 .apply_scene_bloom_pass(&inputs[0], pass, time_norm, time_sec)
@@ -3529,6 +3535,11 @@ impl SceneFrameRenderer {
         if scene_post_texture_overlay_params(pass, time_norm, time_sec)?.is_some() {
             return self
                 .apply_scene_texture_overlay_pass(input, pass, time_norm, time_sec)
+                .await;
+        }
+        if scene_post_brightness_amount(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_brightness_pass(input, pass, time_norm, time_sec)
                 .await;
         }
         let effect = pass.effect.to_ascii_lowercase();
@@ -3695,6 +3706,36 @@ impl SceneFrameRenderer {
         }
         let image = self.graph_source_to_cpu(input).await?;
         apply_scene_post_pass(&image, pass, time_norm, time_sec).map(GraphTextureSource::Cpu)
+    }
+
+    async fn apply_scene_brightness_pass(
+        &mut self,
+        input: &GraphTextureSource,
+        pass: &PassNode,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GraphTextureSource, MotionLoomSceneRenderError> {
+        let Some(brightness) = scene_post_brightness_amount(pass, time_norm, time_sec)? else {
+            return Ok(input.clone());
+        };
+        if self.profile.uses_gpu_compositor()
+            && let GraphTextureSource::Gpu(texture) = input
+        {
+            self.ensure_gpu_compositor_size(texture.width.max(1), texture.height.max(1))
+                .await?;
+            let compositor = self.gpu_compositor.as_mut().ok_or_else(|| {
+                MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                }
+            })?;
+            return Ok(GraphTextureSource::Gpu(
+                compositor.apply_gpu_color_texture(texture, brightness, 1.0, 1.0)?,
+            ));
+        }
+        let image = self.graph_source_to_cpu(input).await?;
+        Ok(GraphTextureSource::Cpu(apply_color_core_pass(
+            &image, brightness, 1.0, 1.0,
+        )))
     }
 
     async fn apply_scene_light_sweep_pass(

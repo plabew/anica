@@ -1189,21 +1189,6 @@ impl InspectorPanel {
         }
     }
 
-    pub(super) fn toggle_layer_fx_template_selection(
-        &mut self,
-        kind: motionloom_templates::LayerEffectTemplateKind,
-    ) {
-        if let Some(idx) = self
-            .layer_fx_template_selected
-            .iter()
-            .position(|selected| *selected == kind)
-        {
-            self.layer_fx_template_selected.remove(idx);
-            return;
-        }
-        self.layer_fx_template_selected.push(kind);
-    }
-
     pub(super) fn selected_layer_fx_template_summary(&self) -> String {
         if self.layer_fx_template_selected.is_empty() {
             return "No templates selected.".to_string();
@@ -1268,16 +1253,106 @@ impl InspectorPanel {
         };
     }
 
-    pub(super) fn open_layer_fx_template_modal(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_layer_fx_template_modal(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.layer_fx_template_modal_open = true;
         self.layer_fx_template_selected.clear();
         self.layer_fx_script_status = "Layer FX GitHub template picker opened.".to_string();
+        self.ensure_layer_fx_builtin_template_select(window, cx);
+        self.ensure_layer_fx_remote_template_select(window, cx);
         self.load_layer_fx_remote_template_index_if_needed(cx);
     }
 
     fn layer_fx_remote_template_url(template: &LayerFxRemoteTemplate) -> String {
         let path = template.path.trim().trim_matches('/');
         format!("{MOTIONLOOM_EXAMPLE_RAW_ROOT}/{path}/main.motionloom")
+    }
+
+    fn layer_fx_builtin_template_options() -> SearchableVec<LayerFxBuiltinTemplateOption> {
+        SearchableVec::new(vec![
+            LayerFxBuiltinTemplateOption::new("hsla_overlay", "HSLA Overlay"),
+            LayerFxBuiltinTemplateOption::new("lut", "LUT"),
+            LayerFxBuiltinTemplateOption::new("opacity", "Opacity"),
+            LayerFxBuiltinTemplateOption::new("sharpen", "Sharpen"),
+            LayerFxBuiltinTemplateOption::new("blur_gaussian", "Blur Gaussian"),
+            LayerFxBuiltinTemplateOption::new("blur_horizontal", "Blur Horizontal"),
+            LayerFxBuiltinTemplateOption::new("blur_vertical", "Blur Vertical"),
+            LayerFxBuiltinTemplateOption::new("transition_fade", "Transition Fade In/Out"),
+        ])
+    }
+
+    fn layer_fx_builtin_kind_for_value(
+        value: &str,
+    ) -> Option<motionloom_templates::LayerEffectTemplateKind> {
+        match value {
+            "hsla_overlay" => Some(motionloom_templates::LayerEffectTemplateKind::HslaOverlay),
+            "lut" => Some(motionloom_templates::LayerEffectTemplateKind::Lut),
+            "opacity" => Some(motionloom_templates::LayerEffectTemplateKind::Opacity),
+            "sharpen" => Some(motionloom_templates::LayerEffectTemplateKind::Sharpen),
+            "blur_gaussian" => Some(motionloom_templates::LayerEffectTemplateKind::BlurGaussian),
+            "blur_horizontal" => {
+                Some(motionloom_templates::LayerEffectTemplateKind::BlurGaussianHorizontal)
+            }
+            "blur_vertical" => {
+                Some(motionloom_templates::LayerEffectTemplateKind::BlurGaussianVertical)
+            }
+            "transition_fade" => {
+                Some(motionloom_templates::LayerEffectTemplateKind::TransitionFadeInOut)
+            }
+            _ => None,
+        }
+    }
+
+    fn ensure_layer_fx_builtin_template_select(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.layer_fx_builtin_template_select.is_some() {
+            return;
+        }
+        let select = cx.new(|cx| {
+            SelectState::new(Self::layer_fx_builtin_template_options(), None, window, cx)
+                .searchable(true)
+        });
+        select.update(cx, |select, cx| {
+            select.set_selected_value(&"hsla_overlay".to_string(), window, cx);
+        });
+        self.layer_fx_builtin_template_select = Some(select);
+    }
+
+    fn ensure_layer_fx_remote_template_select(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.layer_fx_remote_template_select.is_some()
+            || self.layer_fx_remote_templates.is_empty()
+        {
+            return;
+        }
+        let default_id = self
+            .layer_fx_remote_templates
+            .first()
+            .map(|template| template.id.clone());
+        let select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(self.layer_fx_remote_templates.clone()),
+                None,
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        if let Some(default_id) = default_id {
+            select.update(cx, |select, cx| {
+                select.set_selected_value(&default_id, window, cx);
+            });
+        }
+        self.layer_fx_remote_template_select = Some(select);
     }
 
     fn parse_layer_fx_remote_templates(
@@ -1391,6 +1466,7 @@ impl InspectorPanel {
                         let count = templates.len();
                         this.layer_fx_remote_templates = templates;
                         this.layer_fx_remote_templates_loaded = true;
+                        this.layer_fx_remote_template_select = None;
                         this.layer_fx_script_status =
                             format!("Loaded {count} GitHub Layer FX templates from {source_url}.");
                     }
@@ -1448,77 +1524,14 @@ impl InspectorPanel {
         .detach();
     }
 
-    pub(super) fn render_layer_fx_template_tile(
-        &self,
-        kind: motionloom_templates::LayerEffectTemplateKind,
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let selected = self.layer_fx_template_selected.contains(&kind);
-        let border = if selected {
-            rgba(0x4f8fffeb)
-        } else {
-            rgba(0xffffff3d)
-        };
-        let bg = if selected {
-            rgba(0x253c62c7)
-        } else {
-            rgba(0xffffff1f)
-        };
-        let label = Self::layer_fx_template_label(kind);
-        div()
-            .h(px(34.0))
-            .w(px(220.0))
-            .px_3()
-            .rounded_sm()
-            .border_1()
-            .border_color(border)
-            .bg(bg)
-            .text_sm()
-            .text_color(white().opacity(0.94))
-            .cursor_pointer()
-            .overflow_hidden()
-            .child(div().w_full().truncate().child(label))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.toggle_layer_fx_template_selection(kind);
-                    cx.notify();
-                }),
-            )
-    }
-
-    pub(super) fn render_layer_fx_remote_template_tile(
-        &self,
-        template: LayerFxRemoteTemplate,
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let label = format!("{}  {}", template.id, template.title);
-        div()
-            .h(px(34.0))
-            .w(px(350.0))
-            .px_3()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgba(0x9acd32aa))
-            .bg(rgba(0x24330fc7))
-            .text_sm()
-            .text_color(white().opacity(0.94))
-            .cursor_pointer()
-            .overflow_hidden()
-            .child(div().w_full().truncate().child(label))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _window, cx| {
-                    this.load_layer_fx_remote_template_script(template.clone(), cx);
-                    cx.notify();
-                }),
-            )
-    }
-
     pub(super) fn render_layer_fx_template_modal_overlay(
         &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        self.ensure_layer_fx_builtin_template_select(window, cx);
+        self.ensure_layer_fx_remote_template_select(window, cx);
+
         let add_time_label = if self.layer_fx_template_add_time_parameter {
             "ADD TIME PARAMETER: ON"
         } else {
@@ -1529,11 +1542,12 @@ impl InspectorPanel {
         } else {
             "ADD CURVE PARAMETER: OFF"
         };
-        let selection_summary = self.selected_layer_fx_template_summary();
         let remote_templates = self.layer_fx_remote_templates.clone();
         let remote_loading = self.layer_fx_remote_templates_loading;
         let remote_loaded = self.layer_fx_remote_templates_loaded;
         let remote_status = self.layer_fx_script_status.clone();
+        let remote_select = self.layer_fx_remote_template_select.clone();
+        let builtin_select = self.layer_fx_builtin_template_select.clone();
 
         div()
             .absolute()
@@ -1616,26 +1630,6 @@ impl InspectorPanel {
                                     .rounded_sm()
                                     .border_1()
                                     .border_color(white().opacity(0.2))
-                                    .bg(rgba(0x253c62c7))
-                                    .text_xs()
-                                    .text_color(white().opacity(0.94))
-                                    .cursor_pointer()
-                                    .child("OK")
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, window, cx| {
-                                            this.apply_selected_layer_fx_templates(window, cx);
-                                            cx.notify();
-                                        }),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .h(px(30.0))
-                                    .px_3()
-                                    .rounded_sm()
-                                    .border_1()
-                                    .border_color(white().opacity(0.2))
                                     .bg(white().opacity(0.08))
                                     .text_xs()
                                     .text_color(white().opacity(0.9))
@@ -1688,7 +1682,7 @@ impl InspectorPanel {
                                 div()
                                     .text_xs()
                                     .text_color(white().opacity(0.68))
-                                    .child(format!("Selection: {selection_summary}")),
+                                    .child("Search a template, then press its Insert button."),
                             )
                             .child(
                                 div()
@@ -1737,7 +1731,7 @@ impl InspectorPanel {
                             .child(
                                 div()
                                     .flex()
-                                    .flex_wrap()
+                                    .items_center()
                                     .gap_2()
                                     .when(remote_loading, |el| {
                                         el.child(
@@ -1763,9 +1757,70 @@ impl InspectorPanel {
                                                 .child("No layer-fx process templates found in dataset/layer-fx-templates.json."),
                                         )
                                     })
-                                    .children(remote_templates.into_iter().map(|template| {
-                                        self.render_layer_fx_remote_template_tile(template, cx)
-                                    })),
+                                    .when_some(remote_select.clone(), |el, select| {
+                                        el.child(
+                                            Select::new(&select)
+                                                .placeholder("Search GitHub Layer FX template")
+                                                .menu_width(px(420.0))
+                                                .w(px(420.0)),
+                                        )
+                                        .child(
+                                            div()
+                                                .h(px(32.0))
+                                                .px_3()
+                                                .rounded_sm()
+                                                .border_1()
+                                                .border_color(rgba(0x9acd32aa))
+                                                .bg(rgba(0x24330fc7))
+                                                .text_xs()
+                                                .text_color(white().opacity(0.94))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .child("Insert GitHub")
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(|this, _, _, cx| {
+                                                        let Some(select) =
+                                                            this.layer_fx_remote_template_select.as_ref()
+                                                        else {
+                                                            this.layer_fx_script_status =
+                                                                "No GitHub Layer FX template selected."
+                                                                    .to_string();
+                                                            cx.notify();
+                                                            return;
+                                                        };
+                                                        let Some(selected_id) =
+                                                            select.read(cx).selected_value().cloned()
+                                                        else {
+                                                            this.layer_fx_script_status =
+                                                                "No GitHub Layer FX template selected."
+                                                                    .to_string();
+                                                            cx.notify();
+                                                            return;
+                                                        };
+                                                        let Some(template) = this
+                                                            .layer_fx_remote_templates
+                                                            .iter()
+                                                            .find(|template| {
+                                                                template.id == selected_id
+                                                            })
+                                                            .cloned()
+                                                        else {
+                                                            this.layer_fx_script_status = format!(
+                                                                "GitHub Layer FX template not found: {selected_id}"
+                                                            );
+                                                            cx.notify();
+                                                            return;
+                                                        };
+                                                        this.load_layer_fx_remote_template_script(
+                                                            template, cx,
+                                                        );
+                                                        cx.notify();
+                                                    }),
+                                                ),
+                                        )
+                                    }),
                             )
                             .child(
                                 div()
@@ -1776,76 +1831,72 @@ impl InspectorPanel {
                             .child(
                                 div()
                                     .flex()
-                                    .flex_wrap()
+                                    .items_center()
                                     .gap_2()
-                                    .child(self.render_layer_fx_template_tile(
-                                        motionloom_templates::LayerEffectTemplateKind::HslaOverlay,
-                                        cx,
-                                    ))
-                                    .child(self.render_layer_fx_template_tile(
-                                        motionloom_templates::LayerEffectTemplateKind::Lut,
-                                        cx,
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(white().opacity(0.72))
-                                    .child("Blend & Opacity"),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .gap_2()
-                                    .child(self.render_layer_fx_template_tile(
-                                        motionloom_templates::LayerEffectTemplateKind::Opacity,
-                                        cx,
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(white().opacity(0.72))
-                                    .child("Detail & Blur"),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .gap_2()
-                                    .child(self.render_layer_fx_template_tile(
-                                        motionloom_templates::LayerEffectTemplateKind::Sharpen,
-                                        cx,
-                                    ))
-                                    .child(self.render_layer_fx_template_tile(
-                                        motionloom_templates::LayerEffectTemplateKind::BlurGaussian,
-                                        cx,
-                                    ))
-                                    .child(self.render_layer_fx_template_tile(
-                                        motionloom_templates::LayerEffectTemplateKind::BlurGaussianHorizontal,
-                                        cx,
-                                    ))
-                                    .child(self.render_layer_fx_template_tile(
-                                        motionloom_templates::LayerEffectTemplateKind::BlurGaussianVertical,
-                                        cx,
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(white().opacity(0.72))
-                                    .child("Transitions"),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .gap_2()
-                                    .child(self.render_layer_fx_template_tile(
-                                        motionloom_templates::LayerEffectTemplateKind::TransitionFadeInOut,
-                                        cx,
-                                    )),
+                                    .when_some(builtin_select.clone(), |el, select| {
+                                        el.child(
+                                            Select::new(&select)
+                                                .placeholder("Search built-in fallback template")
+                                                .menu_width(px(420.0))
+                                                .w(px(420.0)),
+                                        )
+                                        .child(
+                                            div()
+                                                .h(px(32.0))
+                                                .px_3()
+                                                .rounded_sm()
+                                                .border_1()
+                                                .border_color(white().opacity(0.22))
+                                                .bg(rgba(0x253c62c7))
+                                                .text_xs()
+                                                .text_color(white().opacity(0.94))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .child("Insert Built-in")
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(|this, _, window, cx| {
+                                                        let Some(select) = this
+                                                            .layer_fx_builtin_template_select
+                                                            .as_ref()
+                                                        else {
+                                                            this.layer_fx_script_status =
+                                                                "No built-in template selected."
+                                                                    .to_string();
+                                                            cx.notify();
+                                                            return;
+                                                        };
+                                                        let Some(value) =
+                                                            select.read(cx).selected_value().cloned()
+                                                        else {
+                                                            this.layer_fx_script_status =
+                                                                "No built-in template selected."
+                                                                    .to_string();
+                                                            cx.notify();
+                                                            return;
+                                                        };
+                                                        let Some(kind) =
+                                                            Self::layer_fx_builtin_kind_for_value(
+                                                                &value,
+                                                            )
+                                                        else {
+                                                            this.layer_fx_script_status = format!(
+                                                                "Unknown built-in template: {value}"
+                                                            );
+                                                            cx.notify();
+                                                            return;
+                                                        };
+                                                        this.layer_fx_template_selected =
+                                                            vec![kind];
+                                                        this.apply_selected_layer_fx_templates(
+                                                            window, cx,
+                                                        );
+                                                        cx.notify();
+                                                    }),
+                                                ),
+                                        )
+                                    }),
                             ),
                     )
                     .child(
@@ -1871,7 +1922,7 @@ impl InspectorPanel {
             return self.render_semantic_schema_modal_overlay(window, cx);
         }
         if self.layer_fx_template_modal_open {
-            return self.render_layer_fx_template_modal_overlay(cx);
+            return self.render_layer_fx_template_modal_overlay(window, cx);
         }
         if !self.layer_fx_script_modal_open {
             return div();
@@ -1916,8 +1967,8 @@ impl InspectorPanel {
                     .child("Insert Template")
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.open_layer_fx_template_modal(cx);
+                        cx.listener(|this, _, window, cx| {
+                            this.open_layer_fx_template_modal(window, cx);
                             cx.notify();
                         }),
                     ),

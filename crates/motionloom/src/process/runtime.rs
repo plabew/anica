@@ -71,6 +71,9 @@ enum RuntimePass {
     ColorCoreLut {
         mix_expr: String,
     },
+    ColorCoreBrightness {
+        amount_expr: String,
+    },
     ColorCoreHslaOverlay {
         hue_expr: String,
         saturation_expr: String,
@@ -342,6 +345,25 @@ impl RuntimeProgram {
                             message: format!("pass {} invalid LUT mix expression: {}", pass.id, e),
                         })?;
                         passes.push(RuntimePass::ColorCoreLut { mix_expr });
+                        continue;
+                    }
+                    if is_brightness_effect(&normalized_effect) {
+                        let amount_expr = if let Some(amount) = pass_param(pass, "amount") {
+                            normalize_param_expr(amount)
+                        } else {
+                            let value_expr = pass_param(pass, "brightness")
+                                .or_else(|| pass_param(pass, "value"))
+                                .map(normalize_param_expr)
+                                .unwrap_or_else(|| "1.0".to_string());
+                            format!("({value_expr}) - 1.0")
+                        };
+                        validate_expr(&amount_expr).map_err(|e| RuntimeCompileError {
+                            message: format!(
+                                "pass {} invalid brightness expression: {}",
+                                pass.id, e
+                            ),
+                        })?;
+                        passes.push(RuntimePass::ColorCoreBrightness { amount_expr });
                         continue;
                     }
                     if is_bloom_effect(&normalized_effect) {
@@ -790,6 +812,15 @@ impl RuntimeProgram {
                         out.layer_lut_mix = Some(value.clamp(0.0, 1.0));
                     }
                 }
+                RuntimePass::ColorCoreBrightness { amount_expr } => {
+                    let Ok(amount) = eval_expr(amount_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    out.process_effects.push(
+                        RuntimeProcessEffectInstance::new("brightness")
+                            .with_float("amount", amount.clamp(-1.0, 1.0)),
+                    );
+                }
                 RuntimePass::ColorCoreHslaOverlay {
                     hue_expr,
                     saturation_expr,
@@ -1008,6 +1039,13 @@ fn pass_param_f32(pass: &PassNode, keys: &[&str]) -> Option<f32> {
 
 fn is_bloom_effect(effect: &str) -> bool {
     crate::process::effect_kind::is_bloom_family(effect)
+}
+
+fn is_brightness_effect(effect: &str) -> bool {
+    matches!(
+        crate::process::effect_kind::resolve_process_effect(effect),
+        Some(crate::process::effect_kind::ProcessEffect::Brightness)
+    )
 }
 
 fn is_tone_map_effect(effect: &str) -> bool {

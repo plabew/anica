@@ -431,6 +431,15 @@ impl ProcessWebGpuRenderer {
     ) -> wgpu::Buffer {
         let resolved = crate::process::effect_kind::resolve_process_effect(&pass.effect);
         let (p0, p1, p2, p3, p4) = match resolved {
+            Some(crate::process::effect_kind::ProcessEffect::Brightness) => {
+                let amount = if pass_has_param(pass, "amount") {
+                    process_param_f32(pass, &["amount"], time_norm, time_sec, 0.0)
+                } else {
+                    process_param_f32(pass, &["brightness", "value"], time_norm, time_sec, 1.0)
+                        - 1.0
+                };
+                (amount.clamp(-1.0, 1.0), 0.0, 0.0, 0.0, 1.0)
+            }
             Some(crate::process::effect_kind::ProcessEffect::ToneMap) => (
                 process_param_f32(pass, &["exposure"], time_norm, time_sec, 0.0),
                 process_param_f32(pass, &["contrast"], time_norm, time_sec, 1.0),
@@ -818,10 +827,17 @@ fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderEr
         Some(crate::process::effect_kind::ProcessEffect::LightSweep) => Ok(vec![7]),
         Some(crate::process::effect_kind::ProcessEffect::TextureOverlay) => Ok(vec![8]),
         Some(crate::process::effect_kind::ProcessEffect::MagnifyLens) => Ok(vec![9]),
+        Some(crate::process::effect_kind::ProcessEffect::Brightness) => Ok(vec![11]),
         None => Err(ProcessWebGpuRenderError::UnsupportedEffect(
             pass.effect.clone(),
         )),
     }
+}
+
+fn pass_has_param(pass: &PassNode, key: &str) -> bool {
+    pass.params
+        .iter()
+        .any(|param| param.key.eq_ignore_ascii_case(key))
 }
 
 fn process_param_f32(
@@ -1056,6 +1072,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 + vec3<f32>(rim_highlight * 0.22);
             rgb = mix(rgb, lens, influence);
         }
+    } else if params.effect_id > 10.5 && params.effect_id < 11.5 {
+        // Brightness: hue is additive brightness amount. brightness=1.3 maps to +0.3.
+        rgb = clamp(rgb + vec3<f32>(params.hue), vec3<f32>(0.0), vec3<f32>(1.0));
     } else if params.effect_id > 7.5 && params.effect_id < 8.5 {
         // Texture overlay: hue=kind, saturation=scale, lightness=strength, alpha=contrast, sigma=seed.
         let kind = i32(round(params.hue));

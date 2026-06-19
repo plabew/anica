@@ -2091,8 +2091,8 @@ impl Render for InspectorPanel {
                             .child("Insert Template")
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.open_layer_fx_template_modal(cx);
+                                cx.listener(|this, _, window, cx| {
+                                    this.open_layer_fx_template_modal(window, cx);
                                     cx.notify();
                                 }),
                             ),

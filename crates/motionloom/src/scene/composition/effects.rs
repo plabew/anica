@@ -88,6 +88,9 @@ pub(crate) fn apply_scene_post_pass(
     time_sec: f32,
 ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
     let effect = pass.effect.to_ascii_lowercase();
+    if let Some(brightness) = scene_post_brightness_amount(pass, time_norm, time_sec)? {
+        return Ok(apply_color_core_pass(input, brightness, 1.0, 1.0));
+    }
     if effect == "opacity" || effect == "composite.opacity" {
         let opacity = pass_param_expr(pass, "opacity")
             .map(|expr| eval_scene_number(expr, time_norm, time_sec))
@@ -169,6 +172,30 @@ pub(crate) fn apply_scene_post_pass(
         ));
     }
     Ok(input.clone())
+}
+
+pub(crate) fn scene_post_brightness_amount(
+    pass: &PassNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Option<f32>, MotionLoomSceneRenderError> {
+    let effect = normalized_effect_name(&pass.effect);
+    if !matches!(
+        effect.as_str(),
+        "brightness" | "brighten" | "color_tone.brightness" | "color_tone_brightness"
+    ) {
+        return Ok(None);
+    }
+    if let Some(expr) = pass_param_expr(pass, "amount") {
+        return Ok(Some(
+            eval_scene_number(expr, time_norm, time_sec)?.clamp(-1.0, 1.0),
+        ));
+    }
+    let value = pass_param_expr_any(pass, &["brightness", "value"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(1.0);
+    Ok(Some((value - 1.0).clamp(-1.0, 1.0)))
 }
 
 pub(crate) fn is_color_key_alpha_effect(effect: &str) -> bool {

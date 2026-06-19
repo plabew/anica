@@ -121,6 +121,19 @@ fn apply_process_pass(
             // CPU renderer does not implement bloom yet; pass through unchanged.
             image
         }
+        Some(ProcessEffect::Brightness) => {
+            let amount = if pass
+                .params
+                .iter()
+                .any(|param| param.key.eq_ignore_ascii_case("amount"))
+            {
+                process_param_f32(pass, &["amount"], time_norm, time_sec, 0.0)
+            } else {
+                process_param_f32(pass, &["brightness", "value"], time_norm, time_sec, 1.0) - 1.0
+            }
+            .clamp(-1.0, 1.0);
+            apply_brightness(&image, amount)
+        }
         Some(ProcessEffect::GlowStack)
         | Some(ProcessEffect::ToneMap)
         | Some(ProcessEffect::LightSweep)
@@ -131,6 +144,17 @@ fn apply_process_pass(
         }
         None => image,
     }
+}
+
+fn apply_brightness(input: &RgbaImage, amount: f32) -> RgbaImage {
+    let delta = (amount * 255.0).round() as i16;
+    let mut out = input.clone();
+    for pixel in out.pixels_mut() {
+        pixel[0] = (pixel[0] as i16 + delta).clamp(0, 255) as u8;
+        pixel[1] = (pixel[1] as i16 + delta).clamp(0, 255) as u8;
+        pixel[2] = (pixel[2] as i16 + delta).clamp(0, 255) as u8;
+    }
+    out
 }
 
 fn process_param_f32(

@@ -3577,6 +3577,14 @@ impl BgraGpuEffectParams {
                     self.tint_lightness = effect.float("lightness").unwrap_or(self.tint_lightness);
                     self.tint_alpha = effect.float("alpha").unwrap_or(self.tint_alpha);
                 }
+                "brightness" | "brighten" => {
+                    let amount = effect
+                        .float("amount")
+                        .or_else(|| effect.float("brightness").map(|value| value - 1.0))
+                        .or_else(|| effect.float("value").map(|value| value - 1.0))
+                        .unwrap_or(0.0);
+                    self.brightness = (self.brightness + amount).clamp(-1.0, 1.0);
+                }
                 "bloom" | "glow_bloom" => {
                     self.bloom_threshold =
                         effect.float("threshold").unwrap_or(self.bloom_threshold);

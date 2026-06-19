@@ -262,6 +262,8 @@ impl InspectorPanel {
             layer_fx_remote_templates: Vec::new(),
             layer_fx_remote_templates_loaded: false,
             layer_fx_remote_templates_loading: false,
+            layer_fx_remote_template_select: None,
+            layer_fx_builtin_template_select: None,
             layer_fx_curve_editors: Vec::new(),
             layer_fx_curve_drag: None,
             layer_fx_curve_open_menu: None,

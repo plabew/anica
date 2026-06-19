@@ -13,6 +13,7 @@ use crate::process::pass::normalize_effect_key;
 /// inspector do not need to repeat alias matching logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessEffect {
+    Brightness,
     HslaOverlay,
     GaussianBlur,
     GaussianBlurHorizontal,
@@ -32,6 +33,7 @@ pub enum ProcessEffect {
 pub fn resolve_process_effect(effect: &str) -> Option<ProcessEffect> {
     let normalized = normalize_effect_key(effect).replace(['.', '-'], "_");
     match normalized.as_str() {
+        "brightness" | "brighten" | "color_tone_brightness" => Some(ProcessEffect::Brightness),
         "hsla_overlay" | "hsla" | "tint_overlay" | "color_tone_hsla_overlay" => {
             Some(ProcessEffect::HslaOverlay)
         }
@@ -97,6 +99,7 @@ pub fn is_wasm_webgpu_compatible_effect(effect: &str) -> bool {
                 | ProcessEffect::GaussianBlur
                 | ProcessEffect::GaussianBlurHorizontal
                 | ProcessEffect::GaussianBlurVertical
+                | ProcessEffect::Brightness
                 | ProcessEffect::GlowBloom
                 | ProcessEffect::GlowStack
                 | ProcessEffect::ToneMap
@@ -142,6 +145,10 @@ mod tests {
             Some(ProcessEffect::HslaOverlay)
         );
         assert_eq!(
+            resolve_process_effect("brightness"),
+            Some(ProcessEffect::Brightness)
+        );
+        assert_eq!(
             resolve_process_effect("gaussian_5tap_blur"),
             Some(ProcessEffect::GaussianBlur)
         );
@@ -175,6 +182,7 @@ mod tests {
     #[test]
     fn wasm_webgpu_compatibility_list() {
         assert!(is_wasm_webgpu_compatible_effect("hsla_overlay"));
+        assert!(is_wasm_webgpu_compatible_effect("brightness"));
         assert!(is_wasm_webgpu_compatible_effect("gaussian_5tap_blur"));
         assert!(is_wasm_webgpu_compatible_effect("blur"));
         // Bloom alias is now wired to the WASM WebGPU shader (P2).

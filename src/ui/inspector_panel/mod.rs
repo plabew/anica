@@ -139,6 +139,45 @@ struct LayerFxRemoteTemplate {
     path: String,
 }
 
+impl SelectItem for LayerFxRemoteTemplate {
+    type Value = String;
+
+    fn title(&self) -> gpui::SharedString {
+        gpui::SharedString::from(format!("{}  {}", self.id, self.title))
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
+}
+
+#[derive(Clone)]
+struct LayerFxBuiltinTemplateOption {
+    label: String,
+    value: String,
+}
+
+impl LayerFxBuiltinTemplateOption {
+    fn new(value: &str, label: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            value: value.to_string(),
+        }
+    }
+}
+
+impl SelectItem for LayerFxBuiltinTemplateOption {
+    type Value = String;
+
+    fn title(&self) -> gpui::SharedString {
+        gpui::SharedString::from(self.label.clone())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+}
+
 // Tracks state for click-to-edit slider value input
 struct EditingSliderInfo {
     key: String,
@@ -321,6 +360,10 @@ pub struct InspectorPanel {
     layer_fx_remote_templates: Vec<LayerFxRemoteTemplate>,
     layer_fx_remote_templates_loaded: bool,
     layer_fx_remote_templates_loading: bool,
+    layer_fx_remote_template_select:
+        Option<Entity<SelectState<SearchableVec<LayerFxRemoteTemplate>>>>,
+    layer_fx_builtin_template_select:
+        Option<Entity<SelectState<SearchableVec<LayerFxBuiltinTemplateOption>>>>,
     layer_fx_curve_editors: Vec<LayerFxCurveEditor>,
     layer_fx_curve_drag: Option<LayerFxCurveDragState>,
     layer_fx_curve_open_menu: Option<(usize, usize)>,
