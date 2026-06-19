@@ -22,7 +22,7 @@ const MAX_REMOTE_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 
 static SCENE_ASSET_ROOTS: OnceLock<RwLock<Vec<PathBuf>>> = OnceLock::new();
 
-/// Set project-specific asset roots used by scene <Image> and <Svg> nodes.
+/// Set project-specific asset roots used by scene `<Image>` and `<Svg>` nodes.
 ///
 /// Roots are searched before the built-in Anica public/sample asset fallbacks.
 pub fn set_scene_asset_roots(roots: Vec<PathBuf>) {

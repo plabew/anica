@@ -12,12 +12,13 @@ use crate::scene::backend::gpu::shaders::{
     WGPU_BATCH_SHAPE_SHADER, WGPU_BLOOM_SHADER, WGPU_DOWNSAMPLE_SHADER, WGPU_LIGHT_SWEEP_SHADER,
     WGPU_MATTE_TEXTURE_SHADER, WGPU_POST_SHADER, WGPU_SCENE_SHADER,
 };
-use crate::scene::composition::SceneTextureOverlayParams;
+use crate::scene::composition::{SceneMagnifyLensParams, SceneTextureOverlayParams};
 use crate::scene::drawable::{
     GpuSceneMatteMode, GpuSceneNativeTexture, GpuScenePrimitive, GpuSceneTextureLayer,
-    GpuSceneTextureSource, PostLightSweepUniformParams, PostTextureOverlayUniformParams,
-    batch_shape_storage_bytes, batch_shape_uniform, matte_texture_uniform, post_blur_uniform,
-    post_color_uniform, post_hsla_overlay_uniform, post_light_sweep_uniform, post_opacity_uniform,
+    GpuSceneTextureSource, PostLightSweepUniformParams, PostMagnifyLensUniformParams,
+    PostTextureOverlayUniformParams, batch_shape_storage_bytes, batch_shape_uniform,
+    matte_texture_uniform, post_blur_uniform, post_color_uniform, post_hsla_overlay_uniform,
+    post_light_sweep_uniform, post_magnify_lens_uniform, post_opacity_uniform,
     post_texture_overlay_uniform, post_tint_uniform, post_tone_map_uniform, texture_layer_bounds,
 };
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
@@ -62,6 +63,7 @@ pub(crate) struct WgpuSceneCompositor {
     pub(crate) height: u32,
     tex_a: wgpu::Texture,
     tex_b: wgpu::Texture,
+    dummy_post_texture: Arc<wgpu::Texture>,
     readback_buffer: wgpu::Buffer,
     padded_bytes_per_row: u32,
     image_textures: HashMap<String, WgpuImageTexture>,
@@ -444,6 +446,32 @@ impl WgpuSceneCompositor {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
         let downsample_bind_group_layout =
@@ -641,6 +669,39 @@ impl WgpuSceneCompositor {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let dummy_post_texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("anica-motionloom-scene-post-dummy-texture"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        }));
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &dummy_post_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[128, 128, 128, 255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
         let tex_a = Self::make_canvas_texture(&device, width, height);
         let tex_b = Self::make_canvas_texture(&device, width, height);
         let padded_bytes_per_row = align_to_256(width.saturating_mul(4));
@@ -677,6 +738,7 @@ impl WgpuSceneCompositor {
             height,
             tex_a,
             tex_b,
+            dummy_post_texture,
             readback_buffer,
             padded_bytes_per_row,
             image_textures: HashMap::new(),
@@ -2068,6 +2130,133 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             brush_angle: params.brush_angle,
             bump_strength: params.bump_strength,
             relief: params.relief,
+            asset_flags: 0.0,
+        });
+        let uniform_buffer = self.make_post_uniform_buffer(&uniform);
+        let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        self.dispatch_post_pass_sized(
+            &mut encoder,
+            &input.texture,
+            &dst,
+            &uniform_buffer,
+            width,
+            height,
+            &mut keepalive,
+        );
+        self.submit_encoder(encoder);
+        drop(uniform_buffer);
+        drop(keepalive);
+        Ok(GpuSceneNativeTexture {
+            texture: dst,
+            width,
+            height,
+        })
+    }
+
+    pub(crate) fn apply_gpu_image_texture_overlay_texture(
+        &mut self,
+        input: &GpuSceneNativeTexture,
+        params: SceneTextureOverlayParams,
+        texture_image: Option<&RgbaImage>,
+        height_image: Option<&RgbaImage>,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let width = input.width.max(1);
+        let height = input.height.max(1);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-scene-image-texture-overlay-gpu-encoder"),
+            });
+        let texture_source = if let Some(image) = texture_image {
+            Some(self.upload_gpu_rgba_texture(image)?)
+        } else {
+            None
+        };
+        let height_source = if let Some(image) = height_image {
+            Some(self.upload_gpu_rgba_texture(image)?)
+        } else {
+            None
+        };
+        let asset_flags = if height_source.is_some() {
+            2.0
+        } else if texture_source.is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        let uniform = post_texture_overlay_uniform(PostTextureOverlayUniformParams {
+            canvas_w: width,
+            canvas_h: height,
+            kind: params.kind.id(),
+            scale: params.scale,
+            strength: params.strength,
+            contrast: params.contrast,
+            seed: params.seed,
+            brush_angle: params.brush_angle,
+            bump_strength: params.bump_strength,
+            relief: params.relief,
+            asset_flags,
+        });
+        let uniform_buffer = self.make_post_uniform_buffer(&uniform);
+        let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        let overlay_texture = texture_source
+            .as_ref()
+            .map(|texture| texture.texture.as_ref())
+            .unwrap_or(self.dummy_post_texture.as_ref());
+        let height_texture = height_source
+            .as_ref()
+            .map(|texture| texture.texture.as_ref())
+            .or_else(|| {
+                texture_source
+                    .as_ref()
+                    .map(|texture| texture.texture.as_ref())
+            })
+            .unwrap_or(self.dummy_post_texture.as_ref());
+        self.dispatch_post_pass_sized_with_aux(
+            &mut encoder,
+            &input.texture,
+            &dst,
+            &uniform_buffer,
+            width,
+            height,
+            overlay_texture,
+            height_texture,
+            &mut keepalive,
+        );
+        self.submit_encoder(encoder);
+        drop(uniform_buffer);
+        drop(keepalive);
+        Ok(GpuSceneNativeTexture {
+            texture: dst,
+            width,
+            height,
+        })
+    }
+
+    pub(crate) fn apply_gpu_magnify_lens_texture(
+        &mut self,
+        input: &GpuSceneNativeTexture,
+        params: SceneMagnifyLensParams,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let width = input.width.max(1);
+        let height = input.height.max(1);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-scene-magnify-lens-gpu-encoder"),
+            });
+        let uniform = post_magnify_lens_uniform(PostMagnifyLensUniformParams {
+            canvas_w: width,
+            canvas_h: height,
+            x: params.x,
+            y: params.y,
+            radius: params.radius,
+            zoom: params.zoom,
+            distortion: params.distortion,
+            feather: params.feather,
+            glass: params.glass,
         });
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
@@ -2635,8 +2824,36 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         height: u32,
         keepalive: &mut WgpuDispatchKeepalive,
     ) {
+        self.dispatch_post_pass_sized_with_aux(
+            encoder,
+            base_texture,
+            out_texture,
+            uniform_buffer,
+            width,
+            height,
+            self.dummy_post_texture.as_ref(),
+            self.dummy_post_texture.as_ref(),
+            keepalive,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dispatch_post_pass_sized_with_aux(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        base_texture: &wgpu::Texture,
+        out_texture: &wgpu::Texture,
+        uniform_buffer: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        overlay_texture: &wgpu::Texture,
+        height_texture: &wgpu::Texture,
+        keepalive: &mut WgpuDispatchKeepalive,
+    ) {
         let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let out_view = out_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let overlay_view = overlay_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let height_view = height_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("anica-motionloom-scene-post-gpu-bg"),
             layout: &self.post_bind_group_layout,
@@ -2653,6 +2870,18 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                     binding: 2,
                     resource: uniform_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&overlay_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&height_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
             ],
         });
 
@@ -2664,7 +2893,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         pass.set_bind_group(0, &bind_group, &[]);
         pass.dispatch_workgroups(width.div_ceil(16).max(1), height.div_ceil(16).max(1), 1);
         drop(pass);
-        keepalive.texture_views.extend([base_view, out_view]);
+        keepalive
+            .texture_views
+            .extend([base_view, out_view, overlay_view, height_view]);
         keepalive.bind_groups.push(bind_group);
     }
 

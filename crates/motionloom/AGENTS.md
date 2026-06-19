@@ -4,6 +4,19 @@ These instructions apply to MotionLoom parser, renderer, examples, tests, and
 documentation in this crate. They are intended for both Codex and other LLM
 coding agents.
 
+## Documentation Source of Truth
+
+- `README.md` is the user-facing overview for humans and LLMs.
+- `PUBLIC_API.md` defines the intended public API layers and stability policy.
+- `src/lib.rs` and `src/api.rs` provide the docs.rs/rustdoc entry points.
+- This `AGENTS.md` is only for coding-agent workflow rules. Do not duplicate
+  full user documentation here; link or update the source documents above.
+- Keep `motionloom::api` as the recommended stable integration surface.
+- Keep `motionloom::experimental` public for advanced/editor APIs that may
+  change faster than the stable surface.
+- Keep crate-root re-exports for compatibility unless there is an explicit
+  migration plan and all Anica usages are updated.
+
 ## DSL Authoring Rules
 
 - Keep MotionLoom scripts parseable by the current parser. Do not invent syntax

@@ -40,7 +40,7 @@ use smallvec::SmallVec;
 use thiserror::Error;
 
 use crate::core::export::get_media_duration;
-use crate::core::global_state::{GlobalState, MediaPoolUiEvent};
+use crate::core::global_state::{AppPage, GlobalState, MediaPoolUiEvent};
 use crate::core::thumbnail;
 use crate::ui::motionloom_templates;
 use crate::ui::motionloom_templates::LayerEffectTemplateKind;
@@ -63,6 +63,10 @@ const SCENE_LIVE_PRERENDER_POLL_MS: u64 = 16;
 const SCENE_LIVE_IDLE_POLL_MS: u64 = 120;
 const DEFAULT_SCENE_LIVE_NODE_ID: &str = "iris_outer_soft";
 const DEFAULT_SCENE_LIVE_ATTR: &str = "x";
+const MOTIONLOOM_EXAMPLE_RAW_ROOT: &str =
+    "https://raw.githubusercontent.com/LOVELYZOMBIEYHO/motionloom-example/refs/heads/main";
+const DEFAULT_SCENE_TEMPLATE_CATEGORY: &str = "showcase";
+const DEFAULT_SCENE_TEMPLATE_NUMBER: &str = "1";
 
 type SceneLivePreviewCacheKey = (u64, u32, SceneLivePreviewQuality, u32, u32);
 
@@ -648,6 +652,9 @@ pub struct MotionLoomPage {
     asset_context_menu: Option<VfxAssetContextMenu>,
     scene_template_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     scene_template_selected_label: String,
+    scene_template_number: String,
+    scene_template_number_input: Option<Entity<InputState>>,
+    scene_template_number_input_sub: Option<Subscription>,
     scene_template_modal_open: bool,
     scene_render_modal_open: bool,
     pending_non_alpha_scene_render_mode: Option<SceneRenderMode>,
@@ -737,9 +744,10 @@ impl MotionLoomPage {
             asset_selected_idx: None,
             asset_context_menu: None,
             scene_template_select: None,
-            scene_template_selected_label: motionloom_templates::first_scene_template()
-                .map(|template| template.label.to_string())
-                .unwrap_or_default(),
+            scene_template_selected_label: DEFAULT_SCENE_TEMPLATE_CATEGORY.to_string(),
+            scene_template_number: DEFAULT_SCENE_TEMPLATE_NUMBER.to_string(),
+            scene_template_number_input: None,
+            scene_template_number_input_sub: None,
             scene_template_modal_open: false,
             scene_render_modal_open: false,
             pending_non_alpha_scene_render_mode: None,
@@ -1147,6 +1155,26 @@ impl MotionLoomPage {
         } else {
             SCENE_LIVE_IDLE_POLL_MS
         }
+    }
+
+    pub fn suspend_background_rendering(&mut self, cx: &mut Context<Self>) {
+        if self.global.read(cx).active_page == AppPage::MotionLoom {
+            return;
+        }
+
+        let had_preview_work = self.preview_playing
+            || self.scene_live_prerendering
+            || self.scene_live_async_render_key.is_some()
+            || self.scene_live_render_defer_until.is_some();
+        if !had_preview_work {
+            return;
+        }
+
+        self.stop_preview_playback();
+        self.cancel_scene_live_prerender();
+        self.cancel_scene_live_async_render();
+        self.scene_live_render_defer_until = None;
+        self.scene_live_render_defer_token = self.scene_live_render_defer_token.wrapping_add(1);
     }
 
     fn script_hash(script: &str) -> u64 {
@@ -4182,6 +4210,13 @@ impl MotionLoomPage {
         self.sync_script_to_global(cx, false);
     }
 
+    fn set_script_text_deferred_sync(&mut self, text: String, cx: &mut Context<Self>) {
+        self.script_text = text;
+        self.invalidate_scene_live_preview_cache();
+        self.script_input_needs_sync = true;
+        self.sync_script_to_global(cx, false);
+    }
+
     // Update script while keeping the last preview image visible until the next frame finishes.
     fn set_script_text_preserve_preview(
         &mut self,
@@ -4612,12 +4647,13 @@ impl MotionLoomPage {
     }
 
     fn scene_template_items() -> SearchableVec<String> {
-        SearchableVec::new(
-            motionloom_templates::SCENE_TEMPLATES
-                .iter()
-                .map(|template| template.label.to_string())
-                .collect::<Vec<_>>(),
-        )
+        SearchableVec::new(vec![
+            "showcase".to_string(),
+            "process".to_string(),
+            "scene".to_string(),
+            "text".to_string(),
+            "material_and_texture".to_string(),
+        ])
     }
 
     fn ensure_scene_template_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4629,9 +4665,7 @@ impl MotionLoomPage {
             SelectState::new(Self::scene_template_items(), None, window, cx).searchable(false)
         });
         let selected_label = if self.scene_template_selected_label.is_empty() {
-            motionloom_templates::first_scene_template()
-                .map(|template| template.label.to_string())
-                .unwrap_or_default()
+            DEFAULT_SCENE_TEMPLATE_CATEGORY.to_string()
         } else {
             self.scene_template_selected_label.clone()
         };
@@ -4643,20 +4677,109 @@ impl MotionLoomPage {
         self.scene_template_select = Some(state);
     }
 
-    fn load_scene_template_by_label(
+    fn ensure_scene_template_number_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scene_template_number_input.is_some() {
+            return;
+        }
+        let initial = if self.scene_template_number.trim().is_empty() {
+            DEFAULT_SCENE_TEMPLATE_NUMBER.to_string()
+        } else {
+            self.scene_template_number.clone()
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("1"));
+        input.update(cx, |this, cx| {
+            this.set_value(initial.clone(), window, cx);
+        });
+        let sub = cx.subscribe(&input, |this, input, ev, cx| {
+            if matches!(ev, InputEvent::Change | InputEvent::PressEnter { .. }) {
+                this.scene_template_number = input.read(cx).value().to_string();
+                cx.notify();
+            }
+        });
+        self.scene_template_number_input = Some(input);
+        self.scene_template_number_input_sub = Some(sub);
+    }
+
+    fn motionloom_example_config(category: &str) -> (&'static str, &'static str, &'static str) {
+        match category {
+            "process" => ("core/process", "cp", "main_with_scene.motionloom"),
+            "scene" => ("core/scene", "cs", "main.motionloom"),
+            "text" => ("core/text", "ct", "main.motionloom"),
+            "material_and_texture" => ("core/material_and_texture", "cm", "main.motionloom"),
+            _ => ("showcase", "s", "main.motionloom"),
+        }
+    }
+
+    fn motionloom_example_id(category: &str, number: &str) -> Option<String> {
+        let number = number.trim().parse::<u32>().ok()?;
+        if number == 0 {
+            return None;
+        }
+        let (_, prefix, _) = Self::motionloom_example_config(category);
+        Some(format!("{prefix}-{number:06}"))
+    }
+
+    fn motionloom_example_url(category: &str, number: &str) -> Option<(String, String)> {
+        let id = Self::motionloom_example_id(category, number)?;
+        let (folder, _, entry) = Self::motionloom_example_config(category);
+        Some((
+            id.clone(),
+            format!("{MOTIONLOOM_EXAMPLE_RAW_ROOT}/{folder}/{id}/{entry}"),
+        ))
+    }
+
+    fn load_scene_template_from_github(
         &mut self,
-        label: &str,
-        window: &mut Window,
+        category: String,
+        number: String,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(template) = motionloom_templates::scene_template_by_label(label) else {
-            self.status_line = format!("Scene template not found: {label}.");
+        let Some((id, url)) = Self::motionloom_example_url(&category, &number) else {
+            self.status_line = "Enter a valid motionloom-example number.".to_string();
+            cx.notify();
             return;
         };
-        self.scene_template_selected_label = template.label.to_string();
-        self.set_script_text(template.script.to_string(), window, cx);
-        self.status_line = format!("Loaded scene template: {}.", template.label);
+        self.scene_template_selected_label = category.clone();
+        self.scene_template_number = number.trim().to_string();
+        self.status_line = format!("Loading {category}/{id} from GitHub...");
         cx.notify();
+
+        let fallback_script = motionloom_templates::first_scene_template()
+            .map(|template| template.script.to_string())
+            .unwrap_or_default();
+        cx.spawn(async move |view, cx| {
+            let fetch_url = url.clone();
+            let result = cx
+                .background_spawn(async move {
+                    let response = ureq::get(&fetch_url)
+                        .set("User-Agent", "Anica MotionLoom VFX Studio")
+                        .call()
+                        .map_err(|err| err.to_string())?;
+                    response.into_string().map_err(|err| err.to_string())
+                })
+                .await;
+            let _ = view.update(cx, |this, cx| {
+                match result {
+                    Ok(script) => {
+                        this.set_script_text_deferred_sync(script, cx);
+                        this.status_line = format!("Loaded GitHub motionloom-example: {id}.");
+                    }
+                    Err(err) => {
+                        if fallback_script.is_empty() {
+                            this.status_line = format!("Failed to load {id}: {err}");
+                        } else {
+                            this.set_script_text_deferred_sync(fallback_script, cx);
+                            this.status_line =
+                                format!("Failed to load {id}; inserted built-in fallback: {err}");
+                        }
+                    }
+                }
+                this.scene_template_modal_open = false;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn open_scene_template_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4667,6 +4790,7 @@ impl MotionLoomPage {
         self.glb_inspector_modal_open = false;
 
         self.ensure_scene_template_select(window, cx);
+        self.ensure_scene_template_number_input(window, cx);
 
         if self.scene_template_select.is_none() {
             self.status_line = "No scene templates are available.".to_string();
@@ -4675,12 +4799,13 @@ impl MotionLoomPage {
         }
 
         self.scene_template_modal_open = true;
-        self.status_line = "Scene template selector opened.".to_string();
+        self.status_line = "GitHub motionloom-example loader opened.".to_string();
 
         cx.notify();
     }
     fn render_scene_template_modal_overlay(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let select_state = self.scene_template_select.as_ref().cloned();
+        let number_input = self.scene_template_number_input.as_ref().cloned();
 
         div()
             .absolute()
@@ -4728,7 +4853,7 @@ impl MotionLoomPage {
                                 div()
                                     .text_sm()
                                     .text_color(white().opacity(0.96))
-                                    .child("Scene Template"),
+                                    .child("GitHub MotionLoom Example"),
                             )
                             .child(
                                 div()
@@ -4762,17 +4887,58 @@ impl MotionLoomPage {
                             .text_xs()
                             .text_color(white().opacity(0.68))
                             .child(
-                                "Choose a reusable scene graph. Selecting an item imports it into Graph Lab when you press Insert Template.",
+                                "Load examples from LOVELYZOMBIEYHO/motionloom-example, matching the landing page MotionLoom browser.",
                             ),
                     )
-                    .when_some(select_state.clone(), |el, select_state| {
-                        el.child(
-                            Select::new(&select_state)
-                                .placeholder("Please select")
-                                .menu_width(px(560.0))
-                                .w_full(),
-                        )
-                    })
+                    .child(
+                        div()
+                            .grid()
+                            .grid_cols(2)
+                            .gap_3()
+                            .when_some(select_state.clone(), |el, select_state| {
+                                el.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(white().opacity(0.62))
+                                                .child("Category"),
+                                        )
+                                        .child(
+                                            Select::new(&select_state)
+                                                .placeholder("showcase")
+                                                .menu_width(px(280.0))
+                                                .w_full(),
+                                        ),
+                                )
+                            })
+                            .when_some(number_input.clone(), |el, input| {
+                                el.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(white().opacity(0.62))
+                                                .child("Number"),
+                                        )
+                                        .child(Input::new(&input).h(px(32.0)).w_full()),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.54))
+                            .child(
+                                "Examples: showcase 1 -> showcase/s-000001/main.motionloom; process 14 -> core/process/cp-000014/main_with_scene.motionloom.",
+                            ),
+                    )
                     .child(
                         div()
                             .flex()
@@ -4820,33 +4986,32 @@ impl MotionLoomPage {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child("Insert Template")
+                                    .child("Load Example")
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|this, _, window, cx| {
-                                            let label = this
+                                            let category = this
                                                 .scene_template_select
                                                 .as_ref()
                                                 .and_then(|select| {
                                                     select.read(cx).selected_value().cloned()
                                                 })
-                                                .or_else(|| {
-                                                    motionloom_templates::first_scene_template()
-                                                        .map(|template| template.label.to_string())
+                                                .unwrap_or_else(|| {
+                                                    DEFAULT_SCENE_TEMPLATE_CATEGORY.to_string()
+                                                });
+                                            let number = this
+                                                .scene_template_number_input
+                                                .as_ref()
+                                                .map(|input| {
+                                                    input.read(cx).value().to_string()
+                                                })
+                                                .unwrap_or_else(|| {
+                                                    this.scene_template_number.clone()
                                                 });
 
-                                            let Some(label) = label else {
-                                                this.status_line =
-                                                    "No scene template selected.".to_string();
-                                                cx.notify();
-                                                return;
-                                            };
-
-                                            this.load_scene_template_by_label(&label, window, cx);
-                                            this.scene_template_modal_open = false;
-                                            this.status_line =
-                                                format!("Scene template inserted: {label}");
-                                            cx.notify();
+                                            this.load_scene_template_from_github(
+                                                category, number, window, cx,
+                                            );
                                         }),
                                     ),
                             ),
@@ -4866,17 +5031,20 @@ impl MotionLoomPage {
                             .flex_col()
                             .gap_1()
                             .children(
-                                motionloom_templates::SCENE_TEMPLATES
-                                    .iter()
-                                    .map(|template| {
-                                        div()
-                                            .text_xs()
-                                            .text_color(white().opacity(0.58))
-                                            .child(format!(
-                                                "{}: {}",
-                                                template.label, template.description
-                                            ))
-                                    }),
+                                [
+                                    "showcase: full public showcase examples",
+                                    "process: core process examples, loads main_with_scene.motionloom",
+                                    "scene: core scene examples",
+                                    "text: core text examples",
+                                    "material_and_texture: texture/material examples",
+                                ]
+                                .into_iter()
+                                .map(|line| {
+                                    div()
+                                        .text_xs()
+                                        .text_color(white().opacity(0.58))
+                                        .child(line)
+                                }),
                             ),
                     ),
             )
@@ -5210,7 +5378,7 @@ impl MotionLoomPage {
     fn build_model_profile_draft(
         actor_id: &str,
         model: &str,
-        mesh: &motionloom::world::gltf_loader::GlbMeshData,
+        mesh: &motionloom::GlbMeshData,
         maps: &[(String, String)],
         calibrated: bool,
     ) -> String {
@@ -5276,7 +5444,7 @@ impl MotionLoomPage {
     }
 
     fn calibrate_bone_axis_map(
-        mesh: &motionloom::world::gltf_loader::GlbMeshData,
+        mesh: &motionloom::GlbMeshData,
         maps: &[(String, String)],
     ) -> GlbAxisCalibration {
         let bone_to_node = Self::bone_to_node_name(maps);
@@ -5612,7 +5780,7 @@ impl MotionLoomPage {
     }
 
     fn infer_bone_axis_map_lines(
-        mesh: &motionloom::world::gltf_loader::GlbMeshData,
+        mesh: &motionloom::GlbMeshData,
         maps: &[(String, String)],
     ) -> Vec<String> {
         let bone_to_node = Self::bone_to_node_name(maps);
@@ -5818,7 +5986,7 @@ impl MotionLoomPage {
     }
 
     fn infer_rest_pose_correction_lines(
-        mesh: &motionloom::world::gltf_loader::GlbMeshData,
+        mesh: &motionloom::GlbMeshData,
         maps: &[(String, String)],
     ) -> Vec<String> {
         let bone_to_node = Self::bone_to_node_name(maps);
@@ -5874,9 +6042,7 @@ impl MotionLoomPage {
             .collect()
     }
 
-    fn node_name_to_index(
-        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
-    ) -> HashMap<String, usize> {
+    fn node_name_to_index(nodes: &[motionloom::GlbNodeData]) -> HashMap<String, usize> {
         nodes
             .iter()
             .filter_map(|node| node.name.as_ref().map(|name| (name.clone(), node.index)))
@@ -5981,7 +6147,7 @@ impl MotionLoomPage {
         child: Option<&str>,
         fallback_child: Option<&str>,
         target: [f32; 3],
-        _mesh: &motionloom::world::gltf_loader::GlbMeshData,
+        _mesh: &motionloom::GlbMeshData,
         global: &[[f32; 16]],
         positions: &[[f32; 3]],
         bone_to_node: &HashMap<String, String>,
@@ -6024,7 +6190,7 @@ impl MotionLoomPage {
         bone: &str,
         child: Option<&str>,
         parent: Option<&str>,
-        mesh: &motionloom::world::gltf_loader::GlbMeshData,
+        mesh: &motionloom::GlbMeshData,
         global: &[[f32; 16]],
         positions: &[[f32; 3]],
         bone_to_node: &HashMap<String, String>,
@@ -6061,7 +6227,7 @@ impl MotionLoomPage {
     fn infer_twist_binding(
         bone: &str,
         target: &[f32; 3],
-        _mesh: &motionloom::world::gltf_loader::GlbMeshData,
+        _mesh: &motionloom::GlbMeshData,
         global: &[[f32; 16]],
         bone_to_node: &HashMap<String, String>,
         node_name_to_index: &HashMap<String, usize>,
@@ -6119,9 +6285,7 @@ impl MotionLoomPage {
         format!("{axis}:{sign}")
     }
 
-    fn glb_global_node_matrices(
-        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
-    ) -> Vec<[f32; 16]> {
+    fn glb_global_node_matrices(nodes: &[motionloom::GlbNodeData]) -> Vec<[f32; 16]> {
         let local = nodes
             .iter()
             .map(|node| {
@@ -6142,7 +6306,7 @@ impl MotionLoomPage {
 
     fn compute_glb_global_node_matrix(
         index: usize,
-        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::GlbNodeData],
         local: &[[f32; 16]],
         global: &mut [Option<[f32; 16]>],
     ) -> [f32; 16] {
@@ -6443,7 +6607,7 @@ impl MotionLoomPage {
     }
 
     fn glb_joint_tree_lines(
-        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::GlbNodeData],
         joint_node_indices: &HashSet<usize>,
     ) -> Vec<String> {
         let mut lines = Vec::new();
@@ -6469,7 +6633,7 @@ impl MotionLoomPage {
 
     fn joint_subtree_contains_joint(
         index: usize,
-        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::GlbNodeData],
         joint_node_indices: &HashSet<usize>,
     ) -> bool {
         joint_node_indices.contains(&index)
@@ -6483,7 +6647,7 @@ impl MotionLoomPage {
     fn push_glb_joint_tree_line(
         index: usize,
         depth: usize,
-        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::GlbNodeData],
         joint_node_indices: &HashSet<usize>,
         lines: &mut Vec<String>,
     ) {
@@ -8925,7 +9089,7 @@ impl Render for MotionLoomPage {
                             .gap_2()
                             .child(source_button)
                             .child(assets_button)
-                            .child(Self::control_button("Scene Template").on_mouse_down(
+                            .child(Self::control_button("GitHub Example").on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, window, cx| {
                                     this.open_scene_template_dialog(window, cx);

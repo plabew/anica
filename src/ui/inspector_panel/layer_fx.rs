@@ -1,5 +1,16 @@
 use super::*;
 
+const MOTIONLOOM_EXAMPLE_RAW_ROOT: &str =
+    "https://raw.githubusercontent.com/LOVELYZOMBIEYHO/motionloom-example/refs/heads/main";
+const MOTIONLOOM_LAYER_FX_INDEX_URL: &str = concat!(
+    "https://raw.githubusercontent.com/LOVELYZOMBIEYHO/motionloom-example/refs/heads/main",
+    "/dataset/layer-fx-templates.json"
+);
+const MOTIONLOOM_LAYER_FX_FALLBACK_INDEX_URL: &str = concat!(
+    "https://raw.githubusercontent.com/LOVELYZOMBIEYHO/motionloom-example/refs/heads/main",
+    "/dataset/all.json"
+);
+
 impl InspectorPanel {
     pub(super) fn layer_fx_curve_lanes_wrap(&self, cx: &mut Context<Self>) -> gpui::Div {
         let mut lanes = div().flex().flex_col().gap_3();
@@ -1036,19 +1047,23 @@ impl InspectorPanel {
     ) -> Result<(), String> {
         if !is_graph_script(script) {
             return Err(
-                "Layer FX script must be <Graph><Process id=\"...\">...</Process></Graph> DSL."
+                "Layer FX script must be <Graph> MotionLoom DSL with <Process> or <Scene>."
                     .to_string(),
             );
         }
-        let graph = parse_process_graph_script(script)
+        let full_graph = parse_graph_script(script)
             .map_err(|err| format!("Parse error at line {}: {}", err.line, err.message))?;
-        let runtime = compile_runtime_program(graph)
-            .map_err(|err| format!("Runtime compile error: {}", err.message))?;
-        if !runtime.unsupported_kernels().is_empty() {
-            return Err(format!(
-                "Unsupported kernel(s): {}",
-                runtime.unsupported_kernels().join(", ")
-            ));
+        if !full_graph.has_scene_nodes() {
+            let graph = parse_process_graph_script(script)
+                .map_err(|err| format!("Parse error at line {}: {}", err.line, err.message))?;
+            let runtime = compile_runtime_program(graph)
+                .map_err(|err| format!("Runtime compile error: {}", err.message))?;
+            if !runtime.unsupported_kernels().is_empty() {
+                return Err(format!(
+                    "Unsupported kernel(s): {}",
+                    runtime.unsupported_kernels().join(", ")
+                ));
+            }
         }
         let script_owned = script.to_string();
         self.global.update(cx, |gs, cx| {
@@ -1253,10 +1268,184 @@ impl InspectorPanel {
         };
     }
 
-    pub(super) fn open_layer_fx_template_modal(&mut self) {
+    pub(super) fn open_layer_fx_template_modal(&mut self, cx: &mut Context<Self>) {
         self.layer_fx_template_modal_open = true;
         self.layer_fx_template_selected.clear();
-        self.layer_fx_script_status = "Template picker opened.".to_string();
+        self.layer_fx_script_status = "Layer FX GitHub template picker opened.".to_string();
+        self.load_layer_fx_remote_template_index_if_needed(cx);
+    }
+
+    fn layer_fx_remote_template_url(template: &LayerFxRemoteTemplate) -> String {
+        let path = template.path.trim().trim_matches('/');
+        format!("{MOTIONLOOM_EXAMPLE_RAW_ROOT}/{path}/main.motionloom")
+    }
+
+    fn parse_layer_fx_remote_templates(
+        json_text: &str,
+    ) -> Result<Vec<LayerFxRemoteTemplate>, String> {
+        let root: Value = serde_json::from_str(json_text).map_err(|err| err.to_string())?;
+        let items = root
+            .as_array()
+            .or_else(|| root.get("examples").and_then(Value::as_array))
+            .ok_or_else(|| "motionloom-example index has no examples array.".to_string())?;
+
+        let mut templates = Vec::new();
+        for item in items {
+            let Some(id) = item.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if !id.starts_with("cp-") {
+                continue;
+            }
+            let Some(path) = item.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            if !path.starts_with("core/process/") {
+                continue;
+            }
+            let has_features = item.get("features").and_then(Value::as_array).is_some();
+            let has_dsl = item.get("dsl").and_then(Value::as_array).is_some();
+            let has_layer_fx_feature =
+                item.get("features")
+                    .and_then(Value::as_array)
+                    .is_some_and(|features| {
+                        features
+                            .iter()
+                            .any(|feature| feature.as_str() == Some("layer-fx"))
+                    });
+            let has_input_clip = item
+                .get("dsl")
+                .and_then(Value::as_array)
+                .is_some_and(|dsl| dsl.iter().any(|tag| tag.as_str() == Some("Input")));
+            if (has_features || has_dsl) && !has_layer_fx_feature && !has_input_clip {
+                continue;
+            }
+
+            let title = item
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or(id)
+                .to_string();
+            templates.push(LayerFxRemoteTemplate {
+                id: id.to_string(),
+                title,
+                path: path.to_string(),
+            });
+        }
+
+        templates.sort_by(|a, b| a.id.cmp(&b.id));
+        templates.dedup_by(|a, b| a.id == b.id);
+        Ok(templates)
+    }
+
+    fn load_layer_fx_remote_template_index_if_needed(&mut self, cx: &mut Context<Self>) {
+        if self.layer_fx_remote_templates_loaded || self.layer_fx_remote_templates_loading {
+            return;
+        }
+        self.layer_fx_remote_templates_loading = true;
+        self.layer_fx_script_status = "Loading Layer FX templates from GitHub...".to_string();
+
+        cx.spawn(async move |view, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    fn fetch_index(url: &str) -> Result<String, String> {
+                        let response = ureq::get(url)
+                            .set("User-Agent", "Anica Layer FX MotionLoom Template Index")
+                            .call()
+                            .map_err(|err| format!("{url}: {err}"))?;
+                        response
+                            .into_string()
+                            .map_err(|err| format!("{url}: {err}"))
+                    }
+
+                    let primary =
+                        fetch_index(MOTIONLOOM_LAYER_FX_INDEX_URL).and_then(|json_text| {
+                            Self::parse_layer_fx_remote_templates(&json_text)
+                                .map(|templates| (templates, MOTIONLOOM_LAYER_FX_INDEX_URL))
+                        });
+                    match primary {
+                        Ok(ok) => Ok(ok),
+                        Err(primary_err) => {
+                            let fallback = fetch_index(MOTIONLOOM_LAYER_FX_FALLBACK_INDEX_URL)
+                                .and_then(|json_text| {
+                                    Self::parse_layer_fx_remote_templates(&json_text).map(
+                                        |templates| {
+                                            (templates, MOTIONLOOM_LAYER_FX_FALLBACK_INDEX_URL)
+                                        },
+                                    )
+                                });
+                            fallback.map_err(|fallback_err| {
+                                format!(
+                                    "primary failed: {primary_err}; fallback failed: {fallback_err}"
+                                )
+                            })
+                        }
+                    }
+                })
+                .await;
+            let _ = view.update(cx, |this, cx| {
+                this.layer_fx_remote_templates_loading = false;
+                match result {
+                    Ok((templates, source_url)) => {
+                        let count = templates.len();
+                        this.layer_fx_remote_templates = templates;
+                        this.layer_fx_remote_templates_loaded = true;
+                        this.layer_fx_script_status =
+                            format!("Loaded {count} GitHub Layer FX templates from {source_url}.");
+                    }
+                    Err(err) => {
+                        this.layer_fx_script_status =
+                            format!("Failed to load GitHub Layer FX templates: {err}");
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn load_layer_fx_remote_template_script(
+        &mut self,
+        template: LayerFxRemoteTemplate,
+        cx: &mut Context<Self>,
+    ) {
+        let url = Self::layer_fx_remote_template_url(&template);
+        self.layer_fx_script_status = format!("Loading {} from GitHub...", template.id);
+        cx.notify();
+
+        cx.spawn(async move |view, cx| {
+            let fetch_url = url.clone();
+            let result = cx
+                .background_spawn(async move {
+                    let response = ureq::get(&fetch_url)
+                        .set("User-Agent", "Anica Layer FX MotionLoom Template")
+                        .call()
+                        .map_err(|err| err.to_string())?;
+                    response.into_string().map_err(|err| err.to_string())
+                })
+                .await;
+            let _ = view.update(cx, |this, cx| {
+                match result {
+                    Ok(script) => {
+                        this.layer_fx_script_text = script;
+                        this.layer_fx_script_input = None;
+                        this.layer_fx_script_input_sub = None;
+                        this.layer_fx_template_modal_open = false;
+                        this.layer_fx_script_status = format!(
+                            "Inserted GitHub Layer FX template {}: {}.",
+                            template.id, template.title
+                        );
+                    }
+                    Err(err) => {
+                        this.layer_fx_script_status =
+                            format!("Failed to load {} from GitHub: {err}", template.id);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(super) fn render_layer_fx_template_tile(
@@ -1298,6 +1487,34 @@ impl InspectorPanel {
             )
     }
 
+    pub(super) fn render_layer_fx_remote_template_tile(
+        &self,
+        template: LayerFxRemoteTemplate,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let label = format!("{}  {}", template.id, template.title);
+        div()
+            .h(px(34.0))
+            .w(px(350.0))
+            .px_3()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgba(0x9acd32aa))
+            .bg(rgba(0x24330fc7))
+            .text_sm()
+            .text_color(white().opacity(0.94))
+            .cursor_pointer()
+            .overflow_hidden()
+            .child(div().w_full().truncate().child(label))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _window, cx| {
+                    this.load_layer_fx_remote_template_script(template.clone(), cx);
+                    cx.notify();
+                }),
+            )
+    }
+
     pub(super) fn render_layer_fx_template_modal_overlay(
         &mut self,
         cx: &mut Context<Self>,
@@ -1313,6 +1530,10 @@ impl InspectorPanel {
             "ADD CURVE PARAMETER: OFF"
         };
         let selection_summary = self.selected_layer_fx_template_summary();
+        let remote_templates = self.layer_fx_remote_templates.clone();
+        let remote_loading = self.layer_fx_remote_templates_loading;
+        let remote_loaded = self.layer_fx_remote_templates_loaded;
+        let remote_status = self.layer_fx_script_status.clone();
 
         div()
             .absolute()
@@ -1359,7 +1580,7 @@ impl InspectorPanel {
                         div()
                             .text_xs()
                             .text_color(white().opacity(0.65))
-                            .child("Select one or more templates, then press OK to generate one graph."),
+                            .child("GitHub templates load from motionloom-example/core/process/*/main.motionloom. Built-in templates remain as offline fallback."),
                     )
                     .child(
                         div()
@@ -1471,9 +1692,86 @@ impl InspectorPanel {
                             )
                             .child(
                                 div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(white().opacity(0.72))
+                                            .child("GitHub Layer FX Templates"),
+                                    )
+                                    .child(
+                                        div()
+                                            .h(px(24.0))
+                                            .px_2()
+                                            .rounded_sm()
+                                            .border_1()
+                                            .border_color(white().opacity(0.18))
+                                            .bg(white().opacity(0.06))
+                                            .text_xs()
+                                            .text_color(white().opacity(0.84))
+                                            .cursor_pointer()
+                                            .child("Reload")
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.layer_fx_remote_templates.clear();
+                                                    this.layer_fx_remote_templates_loaded = false;
+                                                    this.load_layer_fx_remote_template_index_if_needed(cx);
+                                                    cx.notify();
+                                                }),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if remote_status.starts_with("Failed") {
+                                        rgba(0xfca5a5ff)
+                                    } else {
+                                        rgba(0xffffff94)
+                                    })
+                                    .child(format!("Status: {remote_status}")),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_2()
+                                    .when(remote_loading, |el| {
+                                        el.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(white().opacity(0.62))
+                                                .child("Loading GitHub index..."),
+                                        )
+                                    })
+                                    .when(!remote_loading && !remote_loaded && remote_templates.is_empty(), |el| {
+                                        el.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(white().opacity(0.62))
+                                                .child("GitHub index not loaded yet. Press Reload to retry."),
+                                        )
+                                    })
+                                    .when(!remote_loading && remote_loaded && remote_templates.is_empty(), |el| {
+                                        el.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(white().opacity(0.62))
+                                                .child("No layer-fx process templates found in dataset/layer-fx-templates.json."),
+                                        )
+                                    })
+                                    .children(remote_templates.into_iter().map(|template| {
+                                        self.render_layer_fx_remote_template_tile(template, cx)
+                                    })),
+                            )
+                            .child(
+                                div()
                                     .text_xs()
                                     .text_color(white().opacity(0.72))
-                                    .child("Color Tuning"),
+                                    .child("Built-in Fallback Templates"),
                             )
                             .child(
                                 div()
@@ -1619,7 +1917,7 @@ impl InspectorPanel {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            this.open_layer_fx_template_modal();
+                            this.open_layer_fx_template_modal(cx);
                             cx.notify();
                         }),
                     ),

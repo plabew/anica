@@ -8,12 +8,12 @@ mod effects;
 mod raster;
 
 pub(crate) use effects::{
-    SceneTextureOverlayParams, apply_box_blur_pass, apply_hsla_pass,
+    SceneMagnifyLensParams, SceneTextureOverlayParams, apply_box_blur_pass, apply_hsla_pass,
     apply_image_texture_overlay_pass, apply_layer_effects, apply_over_pass,
     apply_scene_filter_step, apply_scene_post_pass, build_scene_bloom_prefilter,
     composite_scene_bloom, is_color_key_alpha_effect, pass_param_expr, scene_post_bloom_params,
     scene_post_blur_passes, scene_post_glow_stack_params, scene_post_light_sweep_params,
-    scene_post_texture_overlay_params, scene_post_tone_map_params,
+    scene_post_magnify_lens_params, scene_post_texture_overlay_params, scene_post_tone_map_params,
 };
 pub(crate) use raster::{
     apply_alpha_mask, apply_alpha_mask_with_invert, apply_deform_grid, blend_pixel,

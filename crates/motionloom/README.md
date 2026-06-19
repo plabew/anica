@@ -8,6 +8,21 @@ application tools such as `anica.motionloom/render_scene`, while this crate
 provides the lower-level API for parsing, rendering, runtime evaluation, process
 catalog lookup, and GLB inspection.
 
+## Public API
+
+New Rust integrations should start with `motionloom::api` or
+`motionloom::prelude`.
+
+- `motionloom::api` is the recommended stable integration surface.
+- `motionloom::prelude` contains a small convenience import set for common use.
+- `motionloom::experimental` exposes advanced editor, world, GLB, text layout,
+  and timeline helpers. These APIs are public, but their stability is lower than
+  `motionloom::api`.
+- The crate root keeps broader re-exports for short-term compatibility with
+  existing applications. Prefer `motionloom::api` in new code.
+
+See `PUBLIC_API.md` for the curated main API map.
+
 ## Core Functions
 
 ### DSL detection and parsing
@@ -50,13 +65,9 @@ For process graphs, use root-level present from the process id:
 
 ## Scene Rendering
 
-`render_scene_frame(graph: &GraphScript, frame: u32, profile: SceneRenderProfile)`
-
-Renders one scene/composition frame to an `image::RgbaImage`.
-
 `render_scene_graph_frame(graph: &GraphScript, frame: u32, profile: SceneRenderProfile)`
 
-Same frame-rendering entrypoint with the full graph-oriented name.
+Renders one scene/composition graph frame to an `image::RgbaImage`.
 
 `SceneRenderer::new(profile: SceneRenderProfile)`
 
@@ -68,6 +79,13 @@ because internal caches can be reused across frames.
 Renders a full scene/composition graph to a video file through ffmpeg and reports
 progress.
 
+`render_scene_graph_to_png_sequence_with_progress(graph, output_dir, progress_every_frames, callback)`
+
+Renders a scene/composition graph to a PNG image sequence. In this mode
+`output_dir` is treated as an output directory and frames are written as
+`frame_000000.png`, `frame_000001.png`, and so on. FFmpeg is not used for PNG
+sequence export.
+
 `next_scene_output_path(output_dir)` and `next_scene_output_path_for_profile(output_dir, profile)`
 
 Build timestamped output paths for scene renders.
@@ -76,9 +94,30 @@ Build timestamped output paths for scene renders.
 
 Selects the renderer/output path:
 
-- `SceneRenderProfile::Cpu`
-- `SceneRenderProfile::Gpu`
-- `SceneRenderProfile::GpuProRes`
+- `SceneRenderProfile::Cpu` — CPU render, ProRes MOV export through FFmpeg.
+- `SceneRenderProfile::Gpu` — GPU scene compositor, H.264/MP4 export through
+  FFmpeg.
+- `SceneRenderProfile::GpuProRes` — GPU scene compositor, ProRes MOV export
+  through FFmpeg.
+- `SceneRenderProfile::GpuProRes4444` — GPU scene compositor, ProRes 4444 MOV
+  export through FFmpeg.
+- `SceneRenderProfile::GpuPngSequence` — GPU scene compositor, PNG frame
+  sequence export without FFmpeg.
+
+Export support:
+
+| Output | API | FFmpeg required |
+| --- | --- | --- |
+| Single frame PNG/image | `render_scene_graph_frame` then save the returned `RgbaImage` | No |
+| PNG sequence | `render_scene_graph_to_png_sequence_with_progress` | No |
+| MP4/MOV video | `render_scene_graph_to_video_with_progress` with `Cpu`, `Gpu`, `GpuProRes`, or `GpuProRes4444` | Yes |
+| Root document PNG sequence | `render_motionloom_document_to_png_sequence_with_progress` | No |
+| Root document video | `render_motionloom_document_to_video_with_progress` | Yes |
+
+Process graphs that use external timeline inputs such as
+`<Input id="clip0" from="input:clip0" />` are intended for host applications
+such as Layer FX. Standalone MotionLoom export cannot render those process-only
+graphs unless the process wraps a self-contained `<Scene>` or `<World>` source.
 
 Scene `zDepth` uses camera-space depth: negative is closer, positive is farther.
 
@@ -204,6 +243,10 @@ Renders GPU world with a ground grid overlay for viewport/debug use.
 `render_world_graph_to_video_with_progress(ffmpeg_bin, graph, asset_root, output_path, profile, progress_every_frames, callback)`
 
 Renders an world graph to video through ffmpeg and reports progress.
+
+World graphs also support PNG sequence export through
+`render_world_graph_to_png_sequence_with_progress`. In that mode `output_dir`
+is an output directory and FFmpeg is not used.
 
 ## Runtime Evaluation
 
@@ -354,7 +397,7 @@ Diagnoses one actor in an world graph at a specific frame.
 ## Minimal Scene Example
 
 ```rust
-use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_frame};
+use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_graph_frame};
 
 let script = r##"
 <Graph fps={30} duration="1s" size={[640,360]}>
@@ -368,8 +411,8 @@ let script = r##"
 "##;
 
 let graph = parse_graph_script(script)?;
-let frame = pollster::block_on(render_scene_frame(&graph, 0, SceneRenderProfile::Gpu))
-    .or_else(|_| pollster::block_on(render_scene_frame(&graph, 0, SceneRenderProfile::Cpu)))?;
+let frame = pollster::block_on(render_scene_graph_frame(&graph, 0, SceneRenderProfile::Gpu))
+    .or_else(|_| pollster::block_on(render_scene_graph_frame(&graph, 0, SceneRenderProfile::Cpu)))?;
 frame.save("motionloom_frame.png")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -406,3 +449,4 @@ that need robust fallback behavior, try `SceneRenderProfile::Gpu` first and fall
 back to `SceneRenderProfile::Cpu` when GPU initialization fails.
 
 Video rendering functions require an ffmpeg binary path supplied by the caller.
+PNG sequence and single-frame image rendering do not require FFmpeg.

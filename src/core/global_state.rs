@@ -14,10 +14,11 @@ use crate::core::waveform::{
 };
 use gpui::EventEmitter;
 use log::info;
+use motionloom::experimental::{keyframe, transitions};
 use motionloom::{
     BlurSharpenMode, LayerEffectClip as MotionLoomLayerEffectClip, RuntimeFrameOutput,
     RuntimeProcessEffectInstance, RuntimeProcessParamValue, RuntimeProgram,
-    compile_runtime_program, is_graph_script, keyframe, parse_process_graph_script, transitions,
+    compile_runtime_program, is_graph_script, parse_process_graph_script,
 };
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -225,7 +226,7 @@ pub struct SubtitleClip {
     pub group_id: Option<u64>,
 }
 
-pub type ScalarKeyframe = motionloom::keyframe::ScalarKeyframe;
+pub type ScalarKeyframe = motionloom::experimental::keyframe::ScalarKeyframe;
 
 impl SubtitleClip {
     pub fn end(&self) -> Duration {

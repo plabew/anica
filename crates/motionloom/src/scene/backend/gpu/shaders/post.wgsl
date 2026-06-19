@@ -8,6 +8,9 @@ struct PostParams {
 @group(0) @binding(0) var base_tex: texture_2d<f32>;
 @group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> params: PostParams;
+@group(0) @binding(3) var overlay_tex: texture_2d<f32>;
+@group(0) @binding(4) var height_tex: texture_2d<f32>;
+@group(0) @binding(5) var post_sampler: sampler;
 
 fn hue_to_rgb_channel(p: f32, q: f32, t_in: f32) -> f32 {
     var t = t_in;
@@ -148,6 +151,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    if (mode == 8) {
+        let src = textureLoad(base_tex, vec2<i32>(i32(x), i32(y)), 0);
+        let center = params.params.xy;
+        let radius = max(params.params.z, 0.001);
+        let zoom = max(params.extra.x, 0.001);
+        let distortion = params.extra.y;
+        let feather = max(params.canvas.z, 0.0);
+        let glass = clamp(params.canvas.w, 0.0, 1.0);
+        let pixel = vec2<f32>(f32(x) + 0.5, f32(y) + 0.5);
+        let delta = pixel - center;
+        let dist = length(delta);
+        let influence = 1.0 - smoothstep(radius, radius + feather, dist);
+        if (influence <= 0.0) {
+            textureStore(out_tex, vec2<i32>(i32(x), i32(y)), src);
+            return;
+        }
+        let normalized = clamp(dist / radius, 0.0, 1.0);
+        let warp = max(0.001, zoom * (1.0 + distortion * (1.0 - normalized * normalized)));
+        let sample_pixel = center + delta / warp;
+        let sample_xy = vec2<i32>(
+            clamp(i32(sample_pixel.x), 0, i32(params.canvas.x) - 1),
+            clamp(i32(sample_pixel.y), 0, i32(params.canvas.y) - 1)
+        );
+        let lens = textureLoad(base_tex, sample_xy, 0);
+        let lens_pos = delta / radius;
+        let highlight = pow(max(0.0, 1.0 - length(lens_pos - vec2<f32>(-0.38, -0.42))), 5.0);
+        let rim_highlight = (1.0 - clamp(abs(normalized - 0.92) / 0.055, 0.0, 1.0)) * glass;
+        let inner_shadow = (1.0 - clamp(abs(normalized - 0.78) / 0.18, 0.0, 1.0)) * glass;
+        let rim = 1.0 - smoothstep(0.82, 0.98, normalized);
+        let edge_shadow = smoothstep(0.78, 1.0, normalized) * 0.18 * glass;
+        var lens_rgb = lens.rgb + vec3<f32>(highlight * glass * 0.32);
+        lens_rgb = lens_rgb * (1.0 - edge_shadow - inner_shadow * 0.08)
+            + vec3<f32>(0.92, 0.96, 1.0) * (1.0 - rim) * glass * 0.18
+            + vec3<f32>(rim_highlight * 0.22);
+        textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(mix(src.rgb, lens_rgb, influence), vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
+        return;
+    }
+
     if (mode == 7) {
         let src = textureLoad(base_tex, vec2<i32>(i32(x), i32(y)), 0);
         let uv = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / max(params.canvas.xy, vec2<f32>(1.0));
@@ -156,6 +197,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let strength = clamp(params.params.z, 0.0, 1.0);
         let seed = params.canvas.z;
         let contrast = clamp(params.canvas.w, 0.0, 2.0);
+        let asset_flags = params.extra.w;
+        let has_texture = asset_flags >= 0.5;
+        let has_height = asset_flags >= 1.5;
         var tex_value = fbm(uv * scale + vec2<f32>(seed, seed * 1.73));
         if (kind == 1) {
             let fibers = 0.5 + 0.5 * sin((uv.y * scale * 8.0 + tex_value * 4.0 + seed) * 6.28318);
@@ -185,10 +229,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             tex_value = (tex_value - 0.5) * (1.0 + relief * 0.45 + bump_strength * 0.20) + 0.5;
         }
+        let tiled_uv = fract(uv * scale);
+        let texture_sample = textureSampleLevel(overlay_tex, post_sampler, tiled_uv, 0.0);
+        let height_sample = textureSampleLevel(height_tex, post_sampler, tiled_uv, 0.0);
+        let texture_luma = dot(texture_sample.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        let height_luma = dot(height_sample.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        tex_value = select(tex_value, select(texture_luma, height_luma, has_height), has_texture);
         let centered = clamp((tex_value - 0.5) * (1.0 + contrast) + 0.5, 0.0, 1.0);
         let material_bump = select(0.0, clamp(params.extra.y, 0.0, 2.0), kind >= 4);
         let shade = 1.0 + (centered - 0.5) * strength * (0.9 + material_bump * 0.55);
-        textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(src.rgb * shade, vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
+        let tint_shade = select(vec3<f32>(1.0), vec3<f32>(1.0) + (texture_sample.rgb - vec3<f32>(0.5)) * strength * 1.2, has_texture);
+        textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(src.rgb * shade * tint_shade, vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
         return;
     }
 

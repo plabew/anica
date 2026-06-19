@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
@@ -59,6 +59,7 @@ use gpui_video_renderer::{
     process_bgra_effects_with_params,
 };
 use motionloom::{BlurSharpenMode, RuntimeProcessEffectInstance, RuntimeProcessParamValue};
+use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_graph_frame};
 use video_engine::{Position, Video, VideoOptions};
 
 const PREVIEW_BASE_HEIGHT: f32 = 450.0;
@@ -73,6 +74,70 @@ const DEFAULT_AUDIO_PLAYER_CACHE_LIMIT: usize = 16;
 
 type LayerToneMapParams = (f32, f32, f32, f32, f32);
 type LayerLightSweepParams = (f32, f32, f32, f32, f32, [f32; 4]);
+
+#[derive(Clone)]
+struct SceneLayerOverlay {
+    layer_id: u64,
+    script: String,
+    frame: u32,
+    opacity: f32,
+    key: SceneLayerOverlayKey,
+}
+
+#[derive(Clone)]
+struct SceneLayerOverlayCache {
+    key: Option<SceneLayerOverlayKey>,
+    pending_key: Option<SceneLayerOverlayKey>,
+    image: Option<Arc<RenderImage>>,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct SceneLayerOverlayKey {
+    script_hash: u64,
+    frame: u32,
+}
+
+#[derive(Clone, Copy)]
+struct SceneLayerScriptMeta {
+    fps: f32,
+    has_scene: bool,
+}
+
+fn scene_layer_script_meta_cache() -> &'static Mutex<HashMap<u64, Option<SceneLayerScriptMeta>>> {
+    static CACHE: OnceLock<Mutex<HashMap<u64, Option<SceneLayerScriptMeta>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn scene_layer_script_hash(script: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    script.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn scene_layer_script_meta(script: &str) -> Option<(u64, SceneLayerScriptMeta)> {
+    let script = script.trim();
+    if script.is_empty() {
+        return None;
+    }
+    let script_hash = scene_layer_script_hash(script);
+    if let Ok(cache) = scene_layer_script_meta_cache().lock()
+        && let Some(existing) = cache.get(&script_hash)
+    {
+        return existing.map(|meta| (script_hash, meta));
+    }
+    let parsed = parse_graph_script(script)
+        .ok()
+        .map(|graph| SceneLayerScriptMeta {
+            fps: graph.fps.max(1.0),
+            has_scene: graph.has_scene_nodes(),
+        });
+    if let Ok(mut cache) = scene_layer_script_meta_cache().lock() {
+        cache.insert(script_hash, parsed);
+    }
+    parsed.map(|meta| (script_hash, meta))
+}
 
 fn motionloom_runtime_effect_to_bgra(
     effect: &RuntimeProcessEffectInstance,
@@ -709,6 +774,7 @@ pub struct VideoPreview {
     last_pump_instant: Option<Instant>,
     image_cache: HashMap<u64, ImageCache>,
     image_cache_paths: HashMap<u64, String>,
+    scene_layer_cache: HashMap<u64, SceneLayerOverlayCache>,
     #[cfg(target_os = "macos")]
     mac_image_surfaces: HashMap<u64, (ImageRenderKey, CVPixelBuffer)>,
     video_cache_paths: HashMap<u64, String>,
@@ -994,6 +1060,7 @@ impl VideoPreview {
             last_pump_instant: None,
             image_cache: HashMap::new(),
             image_cache_paths: HashMap::new(),
+            scene_layer_cache: HashMap::new(),
             #[cfg(target_os = "macos")]
             mac_image_surfaces: HashMap::new(),
             video_cache_paths: HashMap::new(),
@@ -1230,6 +1297,130 @@ impl VideoPreview {
         let buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, data)?;
         let frames = SmallVec::from_elem(image::Frame::new(buffer), 1);
         Some(Arc::new(RenderImage::new(frames)))
+    }
+
+    fn build_render_image_from_rgba(
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+    ) -> Option<Arc<RenderImage>> {
+        let buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, data)?;
+        let frames = SmallVec::from_elem(image::Frame::new(buffer), 1);
+        Some(Arc::new(RenderImage::new(frames)))
+    }
+
+    fn active_scene_layer_overlays(gs: &GlobalState) -> Vec<SceneLayerOverlay> {
+        let mut overlays = Vec::new();
+        for layer in &gs.layer_effect_clips {
+            let end = layer.end();
+            if gs.playhead < layer.start || gs.playhead >= end || !layer.motionloom_enabled {
+                continue;
+            }
+            let script = layer.motionloom_script.trim();
+            if script.is_empty() {
+                continue;
+            }
+            let Some((script_hash, meta)) = scene_layer_script_meta(script) else {
+                continue;
+            };
+            if !meta.has_scene {
+                continue;
+            }
+            let Some(local) = layer.local_time(gs.playhead) else {
+                continue;
+            };
+            let frame = (local.as_secs_f32() * meta.fps).floor().max(0.0) as u32;
+            let key = SceneLayerOverlayKey { script_hash, frame };
+            overlays.push(SceneLayerOverlay {
+                layer_id: layer.id,
+                script: script.to_string(),
+                frame,
+                opacity: layer.envelope_factor_at(gs.playhead).clamp(0.0, 1.0),
+                key,
+            });
+        }
+        overlays
+    }
+
+    fn scene_layer_overlay_image(
+        &mut self,
+        overlay: &SceneLayerOverlay,
+        cx: &mut Context<Self>,
+    ) -> Option<(Arc<RenderImage>, u32, u32)> {
+        let cache = self
+            .scene_layer_cache
+            .entry(overlay.layer_id)
+            .or_insert_with(|| SceneLayerOverlayCache {
+                key: None,
+                pending_key: None,
+                image: None,
+                width: 0,
+                height: 0,
+            });
+        if cache.key == Some(overlay.key)
+            && let Some(image) = cache.image.as_ref()
+        {
+            return Some((image.clone(), cache.width, cache.height));
+        }
+        if cache.pending_key != Some(overlay.key) {
+            cache.pending_key = Some(overlay.key);
+            let layer_id = overlay.layer_id;
+            let key = overlay.key;
+            let script = overlay.script.clone();
+            let frame = overlay.frame;
+            cx.spawn(async move |view, cx| {
+                let result = cx
+                    .background_spawn(async move {
+                        let graph = parse_graph_script(&script).map_err(|err| {
+                            format!("parse error at line {}: {}", err.line, err.message)
+                        })?;
+                        let rendered =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                pollster::block_on(render_scene_graph_frame(
+                                    &graph,
+                                    frame,
+                                    SceneRenderProfile::Cpu,
+                                ))
+                            }))
+                            .map_err(|_| "CPU renderer panicked".to_string())?
+                            .map_err(|err| err.to_string())?;
+                        let width = rendered.width();
+                        let height = rendered.height();
+                        Ok::<_, String>((rendered.into_raw(), width, height))
+                    })
+                    .await;
+                let _ = view.update(cx, |this, cx| {
+                    let Some(cache) = this.scene_layer_cache.get_mut(&layer_id) else {
+                        return;
+                    };
+                    if cache.pending_key != Some(key) {
+                        return;
+                    }
+                    cache.pending_key = None;
+                    match result {
+                        Ok((data, width, height)) => {
+                            if let Some(image) =
+                                Self::build_render_image_from_rgba(data, width, height)
+                            {
+                                cache.image = Some(image);
+                                cache.width = width;
+                                cache.height = height;
+                                cache.key = Some(key);
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!("[Preview][LayerFXScene] render failed: {err}");
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        cache
+            .image
+            .as_ref()
+            .map(|image| (image.clone(), cache.width, cache.height))
     }
 
     #[cfg(target_os = "macos")]
@@ -3970,6 +4161,25 @@ impl VideoPreview {
         }
     }
 
+    pub fn suspend_background_rendering(&mut self, cx: &mut Context<Self>) {
+        if self.global.read(cx).active_page == AppPage::Editor {
+            return;
+        }
+
+        let should_stop = self.pump_running
+            || self.global.read(cx).is_playing
+            || self.scrub_refresh_until.is_some()
+            || self.blur_interaction_until.is_some();
+        if !should_stop {
+            return;
+        }
+
+        self.global.update(cx, |gs, _cx| {
+            gs.is_playing = false;
+        });
+        self.stop_after_playback_end(cx);
+    }
+
     fn schedule_pump_frame(&mut self, token: u64, window: &mut Window, cx: &mut Context<Self>) {
         // Drive playback from animation frames to avoid timer wake starvation on busy event loops.
         cx.on_next_frame(window, move |this, window, cx| {
@@ -4446,6 +4656,7 @@ impl Render for VideoPreview {
             canvas_w = 920.0;
             canvas_h = 2080.0;
         }
+        let scene_overlays = Self::active_scene_layer_overlays(gs);
 
         // -------------------------------------------------------------
         // [Core] Virtual-canvas rendering flow.
@@ -4582,7 +4793,6 @@ impl Render for VideoPreview {
                 .collect();
 
             let selected_clip_id = gs.selected_clip_id;
-            // Release gs borrow so cx is available for mutable use below.
             let _ = gs;
 
             for cd in &clip_data {
@@ -4955,6 +5165,20 @@ impl Render for VideoPreview {
                 }
 
                 clip_stack = clip_stack.child(clip_content);
+            }
+        }
+
+        for overlay in &scene_overlays {
+            if overlay.opacity <= 0.001 {
+                continue;
+            }
+            if let Some((image, width, height)) = self.scene_layer_overlay_image(overlay, cx) {
+                clip_stack =
+                    clip_stack.child(div().absolute().inset_0().opacity(overlay.opacity).child(
+                        ImageElement::new(image, width, height).id(ElementId::Name(
+                            format!("layer-fx-scene-{}", overlay.layer_id).into(),
+                        )),
+                    ));
             }
         }
 

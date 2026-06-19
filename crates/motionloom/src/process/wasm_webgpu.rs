@@ -452,6 +452,25 @@ impl ProcessWebGpuRenderer {
                 process_param_f32(pass, &["contrast"], time_norm, time_sec, 0.5),
                 process_param_f32(pass, &["seed"], time_norm, time_sec, 0.0),
             ),
+            Some(crate::process::effect_kind::ProcessEffect::MagnifyLens) => (
+                process_param_f32(
+                    pass,
+                    &["x", "center_x", "centerX"],
+                    time_norm,
+                    time_sec,
+                    0.0,
+                ),
+                process_param_f32(
+                    pass,
+                    &["y", "center_y", "centerY"],
+                    time_norm,
+                    time_sec,
+                    0.0,
+                ),
+                process_param_f32(pass, &["radius"], time_norm, time_sec, 180.0),
+                process_param_f32(pass, &["zoom"], time_norm, time_sec, 1.85),
+                process_param_f32(pass, &["distortion"], time_norm, time_sec, 0.18),
+            ),
             _ => (
                 process_param_f32(pass, &["hue", "h"], time_norm, time_sec, 0.0),
                 process_param_f32(pass, &["saturation", "sat", "s"], time_norm, time_sec, 0.0),
@@ -461,6 +480,10 @@ impl ProcessWebGpuRenderer {
             ),
         };
         let color = process_param_color(pass, &["color"], [255, 255, 255, 255]);
+        let is_magnify_lens = matches!(
+            resolved,
+            Some(crate::process::effect_kind::ProcessEffect::MagnifyLens)
+        );
         let values = [
             self.width as f32,
             self.height as f32,
@@ -471,14 +494,22 @@ impl ProcessWebGpuRenderer {
             p2,
             p3,
             p4,
-            process_param_f32(pass, &["threshold"], time_norm, time_sec, 0.72),
-            process_param_f32(
-                pass,
-                &["intensity", "strength", "amount"],
-                time_norm,
-                time_sec,
-                1.0,
-            ),
+            if is_magnify_lens {
+                process_param_f32(pass, &["feather"], time_norm, time_sec, 10.0)
+            } else {
+                process_param_f32(pass, &["threshold"], time_norm, time_sec, 0.72)
+            },
+            if is_magnify_lens {
+                process_param_f32(pass, &["glass"], time_norm, time_sec, 0.32)
+            } else {
+                process_param_f32(
+                    pass,
+                    &["intensity", "strength", "amount"],
+                    time_norm,
+                    time_sec,
+                    1.0,
+                )
+            },
             process_param_f32(pass, &["sigma", "radius"], time_norm, time_sec, 18.0),
             color[0],
             color[1],
@@ -786,6 +817,7 @@ fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderEr
         Some(crate::process::effect_kind::ProcessEffect::ToneMap) => Ok(vec![6]),
         Some(crate::process::effect_kind::ProcessEffect::LightSweep) => Ok(vec![7]),
         Some(crate::process::effect_kind::ProcessEffect::TextureOverlay) => Ok(vec![8]),
+        Some(crate::process::effect_kind::ProcessEffect::MagnifyLens) => Ok(vec![9]),
         None => Err(ProcessWebGpuRenderError::UnsupportedEffect(
             pass.effect.clone(),
         )),
@@ -995,6 +1027,35 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let distance = dot(centered, normal) - position;
         let band = 1.0 - smoothstep(half_width, half_width + softness, abs(distance));
         rgb = rgb + params.color.rgb * band * max(params.sigma, 0.0) * params.color.a;
+    } else if params.effect_id > 8.5 && params.effect_id < 9.5 {
+        // Magnify lens: hue=x, saturation=y, lightness=radius, alpha=zoom, sigma=distortion.
+        let center_px = vec2<f32>(params.hue, params.saturation);
+        let radius = max(params.lightness, 0.001);
+        let zoom = max(params.alpha, 0.001);
+        let distortion = params.sigma;
+        let feather = max(params.bloom_threshold, 0.0);
+        let glass = clamp(params.bloom_intensity, 0.0, 1.0);
+        let pixel = uv * vec2<f32>(params.width, params.height);
+        let delta = pixel - center_px;
+        let dist = length(delta);
+        let influence = 1.0 - smoothstep(radius, radius + feather, dist);
+        if influence > 0.0 {
+            let normalized = clamp(dist / radius, 0.0, 1.0);
+            let warp = max(0.001, zoom * (1.0 + distortion * (1.0 - normalized * normalized)));
+            let sample_uv = clamp((center_px + delta / warp) / vec2<f32>(params.width, params.height), vec2<f32>(0.0), vec2<f32>(1.0));
+            var lens = textureSampleLevel(src_tex, src_samp, sample_uv, 0.0).rgb;
+            let lens_pos = delta / radius;
+            let highlight = pow(max(0.0, 1.0 - length(lens_pos - vec2<f32>(-0.38, -0.42))), 5.0);
+            let rim_highlight = (1.0 - clamp(abs(normalized - 0.92) / 0.055, 0.0, 1.0)) * glass;
+            let inner_shadow = (1.0 - clamp(abs(normalized - 0.78) / 0.18, 0.0, 1.0)) * glass;
+            let rim = 1.0 - smoothstep(0.82, 0.98, normalized);
+            let edge_shadow = smoothstep(0.78, 1.0, normalized) * 0.18 * glass;
+            lens = lens + vec3<f32>(highlight * glass * 0.32);
+            lens = lens * (1.0 - edge_shadow - inner_shadow * 0.08)
+                + vec3<f32>(0.92, 0.96, 1.0) * (1.0 - rim) * glass * 0.18
+                + vec3<f32>(rim_highlight * 0.22);
+            rgb = mix(rgb, lens, influence);
+        }
     } else if params.effect_id > 7.5 && params.effect_id < 8.5 {
         // Texture overlay: hue=kind, saturation=scale, lightness=strength, alpha=contrast, sigma=seed.
         let kind = i32(round(params.hue));

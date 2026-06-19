@@ -2182,6 +2182,14 @@ impl FfmpegExporter {
                     light_sweep_softness: layer_fx.light_sweep_softness,
                     light_sweep_intensity: layer_fx.light_sweep_intensity,
                     light_sweep_color: layer_fx.light_sweep_color,
+                    texture_overlay_enabled: false,
+                    texture_overlay_kind: 1.0,
+                    texture_overlay_scale: 72.0,
+                    texture_overlay_strength: 0.0,
+                    texture_overlay_contrast: 1.0,
+                    texture_overlay_seed: 0.0,
+                    texture_overlay_bump_strength: 0.0,
+                    texture_overlay_relief: 0.0,
                 };
                 let unsupported_effects = params.apply_process_effects(&layer_fx.process_effects);
                 if !unsupported_effects.is_empty() {
@@ -5072,7 +5080,7 @@ impl FfmpegExporter {
 
     fn build_slide_expr(clip: &Clip, time_var: &str) -> (String, String) {
         let (in_dir, out_dir, slide_in_raw, slide_out_raw) = clip.get_slide();
-        motionloom::transitions::build_slide_expr(
+        motionloom::experimental::transitions::build_slide_expr(
             clip.duration,
             in_dir,
             out_dir,
@@ -5084,7 +5092,7 @@ impl FfmpegExporter {
 
     fn build_zoom_expr(clip: &Clip, time_var: &str) -> String {
         let (zoom_in_raw, zoom_out_raw, zoom_amount) = clip.get_zoom();
-        motionloom::transitions::build_zoom_expr(
+        motionloom::experimental::transitions::build_zoom_expr(
             clip.duration,
             zoom_in_raw,
             zoom_out_raw,
@@ -5095,7 +5103,7 @@ impl FfmpegExporter {
 
     fn build_shock_zoom_expr(clip: &Clip, time_var: &str) -> String {
         let (shock_in_raw, shock_out_raw, shock_amount) = clip.get_shock_zoom();
-        motionloom::transitions::build_shock_zoom_expr(
+        motionloom::experimental::transitions::build_shock_zoom_expr(
             clip.duration,
             shock_in_raw,
             shock_out_raw,
@@ -5106,12 +5114,17 @@ impl FfmpegExporter {
 
     fn build_fade_expr(clip: &Clip, time_var: &str) -> Option<String> {
         let (fade_in_raw, fade_out_raw) = clip.get_fade();
-        motionloom::transitions::build_fade_expr(clip.duration, fade_in_raw, fade_out_raw, time_var)
+        motionloom::experimental::transitions::build_fade_expr(
+            clip.duration,
+            fade_in_raw,
+            fade_out_raw,
+            time_var,
+        )
     }
 
     fn build_dissolve_expr(clip: &Clip, time_var: &str) -> Option<String> {
         let (dissolve_in_raw, dissolve_out_raw) = clip.get_dissolve();
-        motionloom::transitions::build_dissolve_expr(
+        motionloom::experimental::transitions::build_dissolve_expr(
             clip.duration,
             dissolve_in_raw,
             dissolve_out_raw,

@@ -2092,7 +2092,7 @@ impl Render for InspectorPanel {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
-                                    this.open_layer_fx_template_modal();
+                                    this.open_layer_fx_template_modal(cx);
                                     cx.notify();
                                 }),
                             ),

@@ -67,7 +67,7 @@ pub const PROCESS_CATEGORIES: [ProcessCategory; 10] = [
     ProcessCategory::Testing,
 ];
 
-pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 15] = [
+pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 16] = [
     ProcessEffectDefinition {
         id: "transform_camera.affine_uv",
         display_name: "Affine UV Transform",
@@ -144,6 +144,13 @@ pub const PROCESS_EFFECTS: [ProcessEffectDefinition; 15] = [
         category: ProcessCategory::StylizeLook,
         kernel: "color_core.wgsl",
         summary: "Procedural paper, canvas, impasto, brushed paint, grain, noise, and scanline texture overlay for tactile surfaces.",
+    },
+    ProcessEffectDefinition {
+        id: "distortion_warp.magnify_lens",
+        display_name: "Magnify Lens",
+        category: ProcessCategory::DistortionWarp,
+        kernel: "color_core.wgsl",
+        summary: "Circular pixel-space lens magnification with distortion, feathering, and glass highlight.",
     },
     ProcessEffectDefinition {
         id: "distortion_warp.heat_haze_uv",

@@ -891,6 +891,7 @@ pub(crate) struct PostTextureOverlayUniformParams {
     pub(crate) brush_angle: f32,
     pub(crate) bump_strength: f32,
     pub(crate) relief: f32,
+    pub(crate) asset_flags: f32,
 }
 
 pub(crate) fn post_texture_overlay_uniform(params: PostTextureOverlayUniformParams) -> [u8; 48] {
@@ -906,6 +907,36 @@ pub(crate) fn post_texture_overlay_uniform(params: PostTextureOverlayUniformPara
         params.brush_angle,
         params.bump_strength.clamp(0.0, 2.0),
         params.relief.clamp(0.0, 2.0),
+        params.asset_flags,
+    ])
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PostMagnifyLensUniformParams {
+    pub(crate) canvas_w: u32,
+    pub(crate) canvas_h: u32,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) radius: f32,
+    pub(crate) zoom: f32,
+    pub(crate) distortion: f32,
+    pub(crate) feather: f32,
+    pub(crate) glass: f32,
+}
+
+pub(crate) fn post_magnify_lens_uniform(params: PostMagnifyLensUniformParams) -> [u8; 48] {
+    f32_bytes(&[
+        params.canvas_w as f32,
+        params.canvas_h as f32,
+        params.feather.clamp(0.0, 512.0),
+        params.glass.clamp(0.0, 1.0),
+        params.x,
+        params.y,
+        params.radius.clamp(0.001, 8192.0),
+        8.0,
+        params.zoom.clamp(0.001, 16.0),
+        params.distortion.clamp(-2.0, 2.0),
+        0.0,
         0.0,
     ])
 }

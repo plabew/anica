@@ -536,6 +536,14 @@ struct ColorParams {
     light_sweep_g: f32,
     light_sweep_b: f32,
     light_sweep_a: f32,
+    texture_overlay_enabled: u32,
+    texture_overlay_kind: f32,
+    texture_overlay_scale: f32,
+    texture_overlay_strength: f32,
+    texture_overlay_contrast: f32,
+    texture_overlay_seed: f32,
+    texture_overlay_bump_strength: f32,
+    texture_overlay_relief: f32,
 };
 
 @group(0) @binding(0)
@@ -587,6 +595,73 @@ fn light_sweep_energy(gid: vec3<u32>) -> f32 {
     return (1.0 - smoothstep(half_width, half_width + softness, abs(distance)))
         * max(color_params.light_sweep_intensity, 0.0)
         * clamp(color_params.light_sweep_a, 0.0, 1.0);
+}
+
+fn hash21(p: vec2<f32>) -> f32 {
+    let q = fract(vec2<f32>(
+        dot(p, vec2<f32>(127.1, 311.7)),
+        dot(p, vec2<f32>(269.5, 183.3))
+    ));
+    return fract(sin(q.x + q.y) * 43758.5453);
+}
+
+fn value_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (vec2<f32>(3.0) - 2.0 * f);
+    let a = hash21(i);
+    let b = hash21(i + vec2<f32>(1.0, 0.0));
+    let c = hash21(i + vec2<f32>(0.0, 1.0));
+    let d = hash21(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+fn fbm(p_in: vec2<f32>) -> f32 {
+    var p = p_in;
+    var amp = 0.5;
+    var total = 0.0;
+    for (var i: i32 = 0; i < 4; i = i + 1) {
+        total = total + value_noise(p) * amp;
+        p = p * 2.03 + vec2<f32>(17.7, 9.2);
+        amp = amp * 0.5;
+    }
+    return total;
+}
+
+fn texture_overlay_value(gid: vec3<u32>, rgb: vec3<f32>) -> vec3<f32> {
+    if (color_params.texture_overlay_enabled == 0u) {
+        return rgb;
+    }
+    let dims = vec2<f32>(max(f32(color_params.width), 1.0), max(f32(color_params.height), 1.0));
+    let uv = (vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5) / dims);
+    let scale = max(color_params.texture_overlay_scale, 1.0);
+    let seed = vec2<f32>(color_params.texture_overlay_seed * 0.37, color_params.texture_overlay_seed * 0.19);
+    let kind = i32(round(color_params.texture_overlay_kind));
+    var n = fbm(uv * scale + seed);
+    if (kind == 1) {
+        let fiber = sin((uv.y * scale * 8.0 + fbm(uv * scale * 0.35 + seed) * 8.0) * 6.2831853);
+        n = mix(n, 0.5 + 0.5 * fiber, 0.28);
+    } else if (kind == 2) {
+        n = hash21(floor(uv * dims * 0.75) + seed);
+    } else if (kind == 3) {
+        n = 0.5 + 0.5 * sin(uv.y * dims.y * 3.14159);
+    } else if (kind == 4) {
+        let weave_x = abs(sin((uv.x * scale * 16.0 + seed.x) * 6.2831853));
+        let weave_y = abs(sin((uv.y * scale * 14.0 + seed.y) * 6.2831853));
+        n = mix(n, weave_x * weave_y, 0.55);
+    } else if (kind == 5) {
+        n = pow(fbm(uv * scale * 1.7 + seed), 1.8);
+    } else if (kind == 6) {
+        let brush = sin((uv.x * scale * 11.0 + uv.y * scale * 1.7 + seed.x) * 6.2831853);
+        n = mix(n, 0.5 + 0.5 * brush, 0.62);
+    }
+    let contrast = clamp(color_params.texture_overlay_contrast, 0.0, 4.0);
+    let relief = clamp(color_params.texture_overlay_relief, 0.0, 4.0);
+    let bump = clamp(color_params.texture_overlay_bump_strength, 0.0, 4.0);
+    let shaped = (n - 0.5) * contrast;
+    let light = shaped * color_params.texture_overlay_strength;
+    let fake_highlight = max(shaped, 0.0) * 0.18 * bump * relief;
+    return clamp(rgb + vec3<f32>(light + fake_highlight), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 @compute @workgroup_size(16, 16, 1)
@@ -727,6 +802,10 @@ fn color_correct(@builtin(global_invocation_id) gid: vec3<u32>) {
         g = clamp(g + color_params.light_sweep_g * energy, 0.0, 1.0);
         b = clamp(b + color_params.light_sweep_b * energy, 0.0, 1.0);
     }
+    let textured = texture_overlay_value(gid, vec3<f32>(r, g, b));
+    r = textured.r;
+    g = textured.g;
+    b = textured.b;
     a = clamp(a * color_params.opacity, 0.0, 1.0);
 
     var out_px = vec4<f32>(b, g, r, a);
@@ -2110,6 +2189,14 @@ struct WgpuColorParams {
     light_sweep_g: f32,
     light_sweep_b: f32,
     light_sweep_a: f32,
+    texture_overlay_enabled: u32,
+    texture_overlay_kind: f32,
+    texture_overlay_scale: f32,
+    texture_overlay_strength: f32,
+    texture_overlay_contrast: f32,
+    texture_overlay_seed: f32,
+    texture_overlay_bump_strength: f32,
+    texture_overlay_relief: f32,
 }
 
 fn blur_sigma_scale_for_render_size(
@@ -2515,6 +2602,14 @@ impl WgpuBgraEffectContext {
         light_sweep_softness: f32,
         light_sweep_intensity: f32,
         light_sweep_color: [f32; 4],
+        texture_overlay_enabled: bool,
+        texture_overlay_kind: f32,
+        texture_overlay_scale: f32,
+        texture_overlay_strength: f32,
+        texture_overlay_contrast: f32,
+        texture_overlay_seed: f32,
+        texture_overlay_bump_strength: f32,
+        texture_overlay_relief: f32,
         local_layers: &[VideoLocalMaskLayer],
     ) -> Result<(), String> {
         if self.device_lost.load(Ordering::Relaxed) {
@@ -2583,6 +2678,7 @@ impl WgpuBgraEffectContext {
         let has_bloom = bloom_intensity > 0.001 && bloom_sigma > 0.001;
         let has_tone_map = tone_map_enabled;
         let has_light_sweep = light_sweep_enabled && light_sweep_intensity > 0.001;
+        let has_texture_overlay = texture_overlay_enabled && texture_overlay_strength.abs() > 0.001;
         let has_global_rotation = rotation_deg.abs() >= 0.001;
         let has_global_transform = (transform_scale - 1.0).abs() >= 0.001
             || transform_pos_x.abs() >= 0.001
@@ -2596,7 +2692,8 @@ impl WgpuBgraEffectContext {
             || has_global_transform
             || tint_alpha.abs() >= 0.001
             || has_tone_map
-            || has_light_sweep;
+            || has_light_sweep
+            || has_texture_overlay;
         let (tint_r, tint_g, tint_b) = hsla_to_rgb(
             tint_hue,
             tint_saturation.clamp(0.0, 1.0),
@@ -2726,6 +2823,18 @@ impl WgpuBgraEffectContext {
                 light_sweep_g: light_sweep_color[1].clamp(0.0, 1.0),
                 light_sweep_b: light_sweep_color[2].clamp(0.0, 1.0),
                 light_sweep_a: light_sweep_color[3].clamp(0.0, 1.0),
+                texture_overlay_enabled: if post_effects && has_texture_overlay {
+                    1
+                } else {
+                    0
+                },
+                texture_overlay_kind: texture_overlay_kind.clamp(0.0, 6.0),
+                texture_overlay_scale: texture_overlay_scale.clamp(1.0, 4096.0),
+                texture_overlay_strength: texture_overlay_strength.clamp(-2.0, 2.0),
+                texture_overlay_contrast: texture_overlay_contrast.clamp(0.0, 4.0),
+                texture_overlay_seed,
+                texture_overlay_bump_strength: texture_overlay_bump_strength.clamp(0.0, 4.0),
+                texture_overlay_relief: texture_overlay_relief.clamp(0.0, 4.0),
             }
         };
         let global_blur_params = make_blur_params(blur_sigma);
@@ -3348,6 +3457,14 @@ pub struct BgraGpuEffectParams {
     pub light_sweep_softness: f32,
     pub light_sweep_intensity: f32,
     pub light_sweep_color: [f32; 4],
+    pub texture_overlay_enabled: bool,
+    pub texture_overlay_kind: f32,
+    pub texture_overlay_scale: f32,
+    pub texture_overlay_strength: f32,
+    pub texture_overlay_contrast: f32,
+    pub texture_overlay_seed: f32,
+    pub texture_overlay_bump_strength: f32,
+    pub texture_overlay_relief: f32,
 }
 
 impl Default for BgraGpuEffectParams {
@@ -3386,6 +3503,14 @@ impl Default for BgraGpuEffectParams {
             light_sweep_softness: 0.08,
             light_sweep_intensity: 0.0,
             light_sweep_color: [1.0, 1.0, 1.0, 1.0],
+            texture_overlay_enabled: false,
+            texture_overlay_kind: 1.0,
+            texture_overlay_scale: 72.0,
+            texture_overlay_strength: 0.0,
+            texture_overlay_contrast: 1.0,
+            texture_overlay_seed: 0.0,
+            texture_overlay_bump_strength: 0.0,
+            texture_overlay_relief: 0.0,
         }
     }
 }
@@ -3490,6 +3615,28 @@ impl BgraGpuEffectParams {
                         effect.color("color").unwrap_or(self.light_sweep_color);
                     self.light_sweep_enabled = self.light_sweep_intensity > 0.001;
                 }
+                "texture_overlay" | "paper_texture" | "texture_paper" | "film_grain"
+                | "scanlines" | "canvas_texture" | "impasto_texture" | "brushed_paint" => {
+                    self.texture_overlay_enabled = true;
+                    self.texture_overlay_kind =
+                        effect.float("kind").unwrap_or(self.texture_overlay_kind);
+                    self.texture_overlay_scale =
+                        effect.float("scale").unwrap_or(self.texture_overlay_scale);
+                    self.texture_overlay_strength = effect
+                        .float("strength")
+                        .unwrap_or(self.texture_overlay_strength);
+                    self.texture_overlay_contrast = effect
+                        .float("contrast")
+                        .unwrap_or(self.texture_overlay_contrast);
+                    self.texture_overlay_seed =
+                        effect.float("seed").unwrap_or(self.texture_overlay_seed);
+                    self.texture_overlay_bump_strength = effect
+                        .float("bump_strength")
+                        .unwrap_or(self.texture_overlay_bump_strength);
+                    self.texture_overlay_relief = effect
+                        .float("relief")
+                        .unwrap_or(self.texture_overlay_relief);
+                }
                 other => unsupported.push(other.to_string()),
             }
         }
@@ -3575,6 +3722,14 @@ pub fn process_bgra_effects_with_params(
         params.light_sweep_softness,
         params.light_sweep_intensity,
         params.light_sweep_color,
+        params.texture_overlay_enabled,
+        params.texture_overlay_kind,
+        params.texture_overlay_scale,
+        params.texture_overlay_strength,
+        params.texture_overlay_contrast,
+        params.texture_overlay_seed,
+        params.texture_overlay_bump_strength,
+        params.texture_overlay_relief,
         local_layers,
     ) {
         Ok(()) => true,
@@ -3630,6 +3785,37 @@ pub fn process_bgra_effects(
         },
         &[],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BgraGpuEffectParams, BgraProcessEffectInstance, BgraProcessParamValue};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn process_texture_overlay_maps_to_bgra_gpu_params() {
+        let mut params = BgraGpuEffectParams::default();
+        let effect = BgraProcessEffectInstance {
+            effect_id: "texture_overlay".to_string(),
+            params: BTreeMap::from([
+                ("kind".to_string(), BgraProcessParamValue::Float(1.0)),
+                ("scale".to_string(), BgraProcessParamValue::Float(86.0)),
+                ("strength".to_string(), BgraProcessParamValue::Float(0.24)),
+                ("contrast".to_string(), BgraProcessParamValue::Float(0.58)),
+                ("seed".to_string(), BgraProcessParamValue::Float(101.0)),
+            ]),
+        };
+
+        let unsupported = params.apply_process_effects(&[effect]);
+
+        assert!(unsupported.is_empty());
+        assert!(params.texture_overlay_enabled);
+        assert_eq!(params.texture_overlay_kind, 1.0);
+        assert_eq!(params.texture_overlay_scale, 86.0);
+        assert_eq!(params.texture_overlay_strength, 0.24);
+        assert_eq!(params.texture_overlay_contrast, 0.58);
+        assert_eq!(params.texture_overlay_seed, 101.0);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -5380,6 +5566,14 @@ impl VideoElement {
             light_sweep_softness: self.light_sweep_softness,
             light_sweep_intensity: self.light_sweep_intensity,
             light_sweep_color: self.light_sweep_color,
+            texture_overlay_enabled: false,
+            texture_overlay_kind: 1.0,
+            texture_overlay_scale: 72.0,
+            texture_overlay_strength: 0.0,
+            texture_overlay_contrast: 1.0,
+            texture_overlay_seed: 0.0,
+            texture_overlay_bump_strength: 0.0,
+            texture_overlay_relief: 0.0,
         };
         let unsupported_effects = params.apply_process_effects(&self.process_effects);
         if !unsupported_effects.is_empty() {
@@ -5441,6 +5635,14 @@ impl VideoElement {
                     params.light_sweep_softness,
                     params.light_sweep_intensity,
                     params.light_sweep_color,
+                    params.texture_overlay_enabled,
+                    params.texture_overlay_kind,
+                    params.texture_overlay_scale,
+                    params.texture_overlay_strength,
+                    params.texture_overlay_contrast,
+                    params.texture_overlay_seed,
+                    params.texture_overlay_bump_strength,
+                    params.texture_overlay_relief,
                     &local_layers,
                 ) {
                     Ok(()) => {

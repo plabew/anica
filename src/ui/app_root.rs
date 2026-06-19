@@ -245,6 +245,19 @@ impl AppRoot {
         cx.notify();
     }
 
+    fn suspend_inactive_page_renderers(&mut self, active_page: AppPage, cx: &mut Context<Self>) {
+        if active_page != AppPage::Editor {
+            self.preview.update(cx, |preview, cx| {
+                preview.suspend_background_rendering(cx);
+            });
+        }
+        if active_page != AppPage::MotionLoom {
+            self.motionloom_page.update(cx, |page, cx| {
+                page.suspend_background_rendering(cx);
+            });
+        }
+    }
+
     fn render_chat_bubble(
         msg: &AiChatMessage,
         bubble_index: usize,
@@ -1751,6 +1764,7 @@ impl Render for AppRoot {
         if !self.ai_chat_widget_open && self.ai_chat_expand_modal_open {
             self.close_ai_chat_expand_modal(cx);
         }
+        self.suspend_inactive_page_renderers(active_page, cx);
         let timeline_low_load_effective = if active_page == AppPage::Editor {
             self.timeline
                 .update(cx, |timeline, cx| timeline.is_low_load_mode_effective(cx))

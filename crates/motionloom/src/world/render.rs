@@ -13,8 +13,8 @@ use crate::asset::{AssetResolver, AssetSource, PathAssetResolver};
 use crate::common::gpu_async::{
     BufferMapAsyncFuture, DevicePoller, request_adapter_async, request_device_async,
 };
-use crate::runtime::eval_time_expr;
-use crate::scene_render::SceneRenderProfile;
+use crate::process::runtime::eval_time_expr;
+use crate::scene::render::SceneRenderProfile;
 use crate::world::gltf_loader::{
     GlbLoadError, GlbMeshData, GlbTextureData, GlbTriangle, load_glb_mesh_data,
     load_glb_mesh_data_from_bytes,
@@ -2155,7 +2155,7 @@ where
     F: FnMut(WorldRenderProgress),
 {
     if profile.is_png_sequence() {
-        return render_world_graph_to_png_sequence_with_progress(
+        return render_world_graph_to_png_sequence_internal(
             graph,
             asset_root,
             output_path,
@@ -2229,7 +2229,51 @@ where
     }
 }
 
-async fn render_world_graph_to_png_sequence_with_progress<F>(
+pub async fn render_world_graph_to_png_sequence_with_progress<F>(
+    graph: &WorldGraph,
+    asset_root: impl AsRef<Path>,
+    output_dir: &Path,
+    progress_every_frames: u32,
+    progress_callback: F,
+) -> Result<(), WorldRenderError>
+where
+    F: FnMut(WorldRenderProgress),
+{
+    render_world_graph_to_png_sequence_with_progress_and_cancel(
+        graph,
+        asset_root,
+        output_dir,
+        progress_every_frames,
+        None,
+        progress_callback,
+    )
+    .await
+}
+
+pub async fn render_world_graph_to_png_sequence_with_progress_and_cancel<F>(
+    graph: &WorldGraph,
+    asset_root: impl AsRef<Path>,
+    output_dir: &Path,
+    progress_every_frames: u32,
+    cancel: Option<Arc<AtomicBool>>,
+    progress_callback: F,
+) -> Result<(), WorldRenderError>
+where
+    F: FnMut(WorldRenderProgress),
+{
+    render_world_graph_to_png_sequence_internal(
+        graph,
+        asset_root,
+        output_dir,
+        SceneRenderProfile::GpuPngSequence,
+        progress_every_frames,
+        cancel,
+        progress_callback,
+    )
+    .await
+}
+
+async fn render_world_graph_to_png_sequence_internal<F>(
     graph: &WorldGraph,
     asset_root: impl AsRef<Path>,
     output_dir: &Path,

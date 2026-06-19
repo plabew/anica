@@ -7,11 +7,16 @@ use crate::dsl::{
 use crate::error::GraphParseError;
 use crate::error::MotionLoomError;
 use crate::process::dsl::{is_process_graph_script, parse_process_graph_script};
-use crate::scene_render::{
-    SceneRenderProfile, SceneRenderProgress, render_scene_graph_to_video_with_progress_and_cancel,
+use crate::scene::render::{
+    SceneRenderProfile, SceneRenderProgress,
+    render_scene_graph_to_png_sequence_with_progress_and_cancel,
+    render_scene_graph_to_video_with_progress_and_cancel,
 };
 use crate::world::{WorldGraph, is_world_graph_script, parse_world_graph_script};
-use crate::world::{WorldRenderProgress, render_world_graph_to_video_with_progress_and_cancel};
+use crate::world::{
+    WorldRenderProgress, render_world_graph_to_png_sequence_with_progress_and_cancel,
+    render_world_graph_to_video_with_progress_and_cancel,
+};
 
 #[derive(Debug, Clone)]
 pub enum MotionLoomDocument {
@@ -217,6 +222,99 @@ where
         &graph,
         output_path,
         profile,
+        progress_every_frames,
+        cancel,
+        |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),
+    )
+    .await
+    .map_err(MotionLoomError::from)
+}
+
+pub async fn render_motionloom_document_to_png_sequence_with_progress<F>(
+    script: &str,
+    asset_root: impl AsRef<Path>,
+    output_dir: &Path,
+    progress_every_frames: u32,
+    progress_callback: F,
+) -> Result<(), MotionLoomError>
+where
+    F: FnMut(MotionLoomRenderProgress),
+{
+    render_motionloom_document_to_png_sequence_with_progress_and_cancel(
+        script,
+        asset_root,
+        output_dir,
+        progress_every_frames,
+        None,
+        progress_callback,
+    )
+    .await
+}
+
+pub async fn render_motionloom_document_to_png_sequence_with_progress_and_cancel<F>(
+    script: &str,
+    asset_root: impl AsRef<Path>,
+    output_dir: &Path,
+    progress_every_frames: u32,
+    cancel: Option<Arc<AtomicBool>>,
+    mut progress_callback: F,
+) -> Result<(), MotionLoomError>
+where
+    F: FnMut(MotionLoomRenderProgress),
+{
+    let shell = inspect_root_graph(script)?;
+
+    if shell.has_scene || (shell.has_world && shell.has_process) {
+        let graph = parse_graph_script(script)?;
+        return render_scene_graph_to_png_sequence_with_progress_and_cancel(
+            &graph,
+            output_dir,
+            progress_every_frames,
+            cancel,
+            |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),
+        )
+        .await
+        .map_err(MotionLoomError::from);
+    }
+
+    if shell.has_process {
+        let graph = parse_process_graph_script(script)?;
+        if process_graph_needs_external_input(&graph) {
+            return Err(MotionLoomError::UnsupportedDocument {
+                message:
+                    "Process-only graphs with input:clip0 need a source clip. Use the timeline Layer FX export path, or wrap the effect around a <Scene>/<World> source for MotionLoom Page render."
+                        .to_string(),
+            });
+        }
+        return render_scene_graph_to_png_sequence_with_progress_and_cancel(
+            &graph,
+            output_dir,
+            progress_every_frames,
+            cancel,
+            |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),
+        )
+        .await
+        .map_err(MotionLoomError::from);
+    }
+
+    if shell.has_world || is_world_graph_script(script) {
+        let graph = parse_world_graph_script(script)?;
+        return render_world_graph_to_png_sequence_with_progress_and_cancel(
+            &graph,
+            asset_root,
+            output_dir,
+            progress_every_frames,
+            cancel,
+            |progress| progress_callback(MotionLoomRenderProgress::World(progress)),
+        )
+        .await
+        .map_err(MotionLoomError::from);
+    }
+
+    let graph = parse_graph_script(script)?;
+    render_scene_graph_to_png_sequence_with_progress_and_cancel(
+        &graph,
+        output_dir,
         progress_every_frames,
         cancel,
         |progress| progress_callback(MotionLoomRenderProgress::Scene(progress)),

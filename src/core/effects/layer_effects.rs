@@ -1,4 +1,4 @@
 // =========================================
 // =========================================
 // src/core/effects/layer_effects.rs
-pub type LayerColorBlurEffects = motionloom::effects::LayerColorBlurEffects;
+pub type LayerColorBlurEffects = motionloom::experimental::effects::LayerColorBlurEffects;

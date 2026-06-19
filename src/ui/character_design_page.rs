@@ -5092,9 +5092,7 @@ impl CharacterDesignPage {
             .into_any_element()
     }
 
-    fn global_node_matrices(
-        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
-    ) -> Vec<[f32; 16]> {
+    fn global_node_matrices(nodes: &[motionloom::GlbNodeData]) -> Vec<[f32; 16]> {
         let local = nodes
             .iter()
             .map(|node| {
@@ -5115,7 +5113,7 @@ impl CharacterDesignPage {
 
     fn compute_global_node_matrix(
         index: usize,
-        nodes: &[motionloom::world::gltf_loader::GlbNodeData],
+        nodes: &[motionloom::GlbNodeData],
         local: &[[f32; 16]],
         global: &mut [Option<[f32; 16]>],
     ) -> [f32; 16] {

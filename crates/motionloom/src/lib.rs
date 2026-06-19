@@ -1,44 +1,93 @@
 // =========================================
 // crates/motionloom/src/lib.rs
 
-pub mod asset;
-pub mod common;
-pub mod compat;
-pub mod dsl;
-pub mod error;
-pub mod export;
-pub mod process;
-pub mod root;
-pub mod scene;
-pub mod world;
+//! MotionLoom is a Rust parser and renderer for MotionLoom graph DSL.
+//!
+//! It supports scene graphs, process/effect graphs, live preview surfaces, PNG
+//! sequence export, and video export through a caller-provided FFmpeg binary.
+//!
+//! Most integrations should import from [`api`] or [`prelude`] instead of
+//! depending on MotionLoom's internal AST layout. The crate root keeps broader
+//! re-exports for short-term compatibility with existing applications.
+//!
+//! # Quick start: render one frame
+//!
+//! ```no_run
+//! use motionloom::api::{SceneRenderProfile, parse_graph_script, render_scene_graph_frame};
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let script = r##"
+//! <Graph fps={30} duration="1s" size={[640,360]}>
+//!   <Background color="#101827" />
+//!   <Scene id="example">
+//!     <Circle x="320" y="180" radius="96" color="#4CC9F0" />
+//!     <Text x="320" y="306" value="MotionLoom" fontSize="34" color="#FFFFFF" />
+//!   </Scene>
+//!   <Present from="example" />
+//! </Graph>
+//! "##;
+//!
+//! let graph = parse_graph_script(script)?;
+//! let frame = render_scene_graph_frame(&graph, 0, SceneRenderProfile::Gpu).await?;
+//! frame.save("frame.png")?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # API stability
+//!
+//! - [`api`] is the recommended stable integration surface.
+//! - [`prelude`] contains a small convenience import set.
+//! - [`experimental`] exposes advanced editor, world, GLB, and timeline helpers
+//!   that are useful but may change before the main API.
+//!
+//! # Export paths
+//!
+//! Use PNG sequence export when FFmpeg is not available. Use video export when
+//! the host application supplies an FFmpeg binary path.
+//!
+//! ```no_run
+//! use std::path::Path;
+//! use motionloom::api::{
+//!     parse_graph_script, render_scene_graph_to_png_sequence_with_progress,
+//! };
+//!
+//! # async fn run(script: &str) -> Result<(), Box<dyn std::error::Error>> {
+//! let graph = parse_graph_script(script)?;
+//! render_scene_graph_to_png_sequence_with_progress(
+//!     &graph,
+//!     Path::new("frames"),
+//!     30,
+//!     |progress| eprintln!("{}/{}", progress.rendered_frames, progress.total_frames),
+//! ).await?;
+//! # Ok(())
+//! # }
+//! ```
+
+mod asset;
+mod common;
+mod compat;
+mod dsl;
+mod error;
+mod export;
+mod process;
+mod root;
+mod scene;
+mod world;
+
+pub mod api;
+pub mod experimental;
+pub mod prelude;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_api;
 
-// Compatibility module aliases. Public API names stay stable while the source
-// tree is split by product domain.
 pub use asset::{AssetResolver, AssetSource, MemoryAssetResolver, PathAssetResolver};
-pub use common::backend;
-pub use common::keyframe;
 pub use compat::{
     GpuCompatibilityIssue, GpuCompatibilityReport, GpuCompatibilitySeverity,
     GpuCompatibilityTarget, ScenePreviewPath, inspect_gpu_compatibility,
 };
 pub use export::{EncodeError, VideoEncoder, VideoFrame, create_encoder};
-pub use process::adapters::clip::curve as eval;
-pub use process::adapters::clip::export_adapter;
-pub use process::adapters::clip::model;
-pub use process::adapters::clip::preview_adapter;
-pub use process::adapters::clip::transitions;
-pub use process::cpu_renderer;
-pub use process::effect as effects;
-pub use process::graph;
-pub use process::pass as effect_kernel_map;
-pub use process::process_catalog;
-pub use process::runtime;
-pub use root as graph_root;
-pub use scene::model as scene_model;
-pub use scene::render as scene_render;
 
 pub use common::keyframe::ScalarKeyframe;
 pub use dsl::{
@@ -48,7 +97,7 @@ pub use dsl::{
     is_graph_script, parse_graph_script,
 };
 pub use error::{GraphParseError, MotionLoomError, RootGraphError, RuntimeCompileError};
-pub use eval::sample_anim_f32;
+pub use process::adapters::clip::curve::sample_anim_f32;
 pub use process::adapters::clip::model::{
     AnimF32, ClipZoomSpec, ColorRgba, LayerEffectClip, LocalMaskLayer, MAX_LOCAL_MASK_LAYERS,
     SlideDirection, TextStyle, VideoEffect, ZoomStyle,
@@ -83,43 +132,51 @@ pub use process::runtime::{
 pub use root::{
     MotionLoomDocument, MotionLoomRenderProgress, RootGraphDomain, RootGraphShell,
     inspect_root_graph, parse_motionloom_document,
+    render_motionloom_document_to_png_sequence_with_progress,
+    render_motionloom_document_to_png_sequence_with_progress_and_cancel,
     render_motionloom_document_to_video_with_progress,
     render_motionloom_document_to_video_with_progress_and_cancel,
 };
-pub use scene::{
+pub use scene::model::{
     BrushDef, CameraNode, CharacterNode, CircleNode, ComponentNode, DefsNode, FaceJawNode,
     FilterDef, FilterStepDef, FontDef, GradientDef, GradientStop, GroupNode, LineNode,
     LinearGradientDef, MaskNode, PaletteColorDef, PaletteNode, PartNode, PathNode, PixelGridNode,
     PolylineNode, PrecomposeNode, RadialGradientDef, RectNode, RepeatNode, SceneChainNode,
     SceneLayerNode, SceneNode, SceneRootNode, SceneSequenceNode, SceneTimelineNode, SceneTrackNode,
-    ShadowNode, TextAlignMode, TextAnimatorNode, TextEffectNode, TextGlowEffectNode,
-    TextLayoutNode, TextNode, TextOverflowMode, TextSelectorKind, TextStyleOverrideNode,
-    TextTransformNode, TextWrapMode, UseNode,
+    ShadowNode, UseNode,
 };
 #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
-pub use scene_render::DmabufPlane;
-pub use scene_render::{
+pub use scene::render::DmabufPlane;
+pub use scene::render::{
     MotionLoomSceneRenderError, SceneGpuTexture, ScenePlatformPreviewSurface, ScenePreviewBackend,
     ScenePreviewPixelFormat, ScenePreviewSurface, ScenePreviewSurfaceOptions, SceneRenderError,
     SceneRenderProfile, SceneRenderProgress, SceneRenderer, clear_scene_asset_roots,
-    next_scene_output_path, next_scene_output_path_for_profile, render_scene_frame,
-    render_scene_graph_frame, render_scene_graph_to_video,
-    render_scene_graph_to_video_with_progress, set_scene_asset_roots,
+    next_scene_output_path, next_scene_output_path_for_profile, render_scene_graph_frame,
+    render_scene_graph_frame_with_resolver, render_scene_graph_to_png_sequence_with_progress,
+    render_scene_graph_to_png_sequence_with_progress_and_cancel, render_scene_graph_to_video,
+    render_scene_graph_to_video_with_progress,
+    render_scene_graph_to_video_with_progress_and_cancel, set_scene_asset_roots,
 };
 #[cfg(target_os = "windows")]
-pub use scene_render::{WindowsD3DSharedHandle, WindowsD3DSharedSurface};
+pub use scene::render::{WindowsD3DSharedHandle, WindowsD3DSharedSurface};
+pub use scene::text::{
+    TextAlignMode, TextAnimatorNode, TextEffectNode, TextGlowEffectNode, TextLayoutNode, TextNode,
+    TextOverflowMode, TextSelectorKind, TextStyleOverrideNode, TextTransformNode, TextWrapMode,
+};
 pub use world::error::{MotionLoomWorldError, WorldAssetError, WorldError, WorldParseError};
 pub use world::{
     CharacterDesignGpuViewport, CharacterDesignViewportFrame, GlbLoadError, GlbMeshData,
-    GlbMetadata, WorldAction, WorldActionBone, WorldActionPose, WorldActor, WorldApplyAction,
-    WorldBackground, WorldBackgroundFit, WorldBoneAxis, WorldBoneAxisMap, WorldCamera,
-    WorldCameraControl, WorldCameraMode, WorldCameraProjection, WorldFrameRenderer,
+    GlbMetadata, GlbNodeData, WorldAction, WorldActionBone, WorldActionPose, WorldActor,
+    WorldApplyAction, WorldBackground, WorldBackgroundFit, WorldBoneAxis, WorldBoneAxisMap,
+    WorldCamera, WorldCameraControl, WorldCameraMode, WorldCameraProjection, WorldFrameRenderer,
     WorldGpuDiagnostics, WorldGraph, WorldMaterial, WorldMaterialStyle, WorldModelProfile,
     WorldNode, WorldPathStyle, WorldPlay, WorldPresent, WorldProfileRetarget, WorldRenderError,
     WorldRenderProgress, WorldRetarget, WorldRetargetMap, WorldSpritePlayback, WorldTime,
     diagnose_world_glb_gpu_plan, diagnose_world_graph_actor_gpu_frame, is_world_graph_script,
     load_glb_mesh_data, load_glb_metadata, parse_glb_mesh_data, parse_glb_metadata,
-    parse_world_graph_script, render_world_frame, render_world_graph_to_video_with_progress,
+    parse_world_graph_script, render_world_frame, render_world_graph_to_png_sequence_with_progress,
+    render_world_graph_to_png_sequence_with_progress_and_cancel,
+    render_world_graph_to_video_with_progress,
 };
 
 /// FrameContext carries the minimum timeline state needed for effect evaluation.

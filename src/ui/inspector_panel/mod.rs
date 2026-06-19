@@ -35,7 +35,8 @@ use media_gen_protocol::{
     VideoResolutionConstraintMap, model_resolution_catalog,
 };
 use motionloom::{
-    GraphApplyScope, compile_runtime_program, is_graph_script, parse_process_graph_script,
+    GraphApplyScope, compile_runtime_program, is_graph_script, parse_graph_script,
+    parse_process_graph_script,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -129,6 +130,13 @@ struct CurveParamSpec {
     value_min: f32,
     value_max: f32,
     default_value: f32,
+}
+
+#[derive(Clone)]
+struct LayerFxRemoteTemplate {
+    id: String,
+    title: String,
+    path: String,
 }
 
 // Tracks state for click-to-edit slider value input
@@ -310,6 +318,9 @@ pub struct InspectorPanel {
     layer_fx_template_add_time_parameter: bool,
     layer_fx_template_add_curve_parameter: bool,
     layer_fx_template_selected: Vec<motionloom_templates::LayerEffectTemplateKind>,
+    layer_fx_remote_templates: Vec<LayerFxRemoteTemplate>,
+    layer_fx_remote_templates_loaded: bool,
+    layer_fx_remote_templates_loading: bool,
     layer_fx_curve_editors: Vec<LayerFxCurveEditor>,
     layer_fx_curve_drag: Option<LayerFxCurveDragState>,
     layer_fx_curve_open_menu: Option<(usize, usize)>,

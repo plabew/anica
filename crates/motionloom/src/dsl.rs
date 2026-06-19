@@ -25,8 +25,8 @@ use crate::scene::dsl::{
     parse_svg_node, parse_text_node, validate_scene_camera_structure,
     validate_scene_model_profile_refs,
 };
+use crate::scene::model::{SceneNode, SceneRootNode};
 pub use crate::scene::text::TextNode;
-use crate::scene::{SceneNode, SceneRootNode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 

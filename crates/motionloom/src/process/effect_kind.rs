@@ -22,6 +22,7 @@ pub enum ProcessEffect {
     ToneMap,
     LightSweep,
     TextureOverlay,
+    MagnifyLens,
 }
 
 /// Resolve a raw effect string (including aliases) to its canonical
@@ -67,6 +68,9 @@ pub fn resolve_process_effect(effect: &str) -> Option<ProcessEffect> {
         | "impasto_texture"
         | "brushed_paint"
         | "stylize_look_texture_overlay" => Some(ProcessEffect::TextureOverlay),
+        "magnify_lens" | "lens_magnify" | "post_magnify_lens" | "distortion_warp_magnify_lens" => {
+            Some(ProcessEffect::MagnifyLens)
+        }
         _ => None,
     }
 }
@@ -98,6 +102,7 @@ pub fn is_wasm_webgpu_compatible_effect(effect: &str) -> bool {
                 | ProcessEffect::ToneMap
                 | ProcessEffect::LightSweep
                 | ProcessEffect::TextureOverlay
+                | ProcessEffect::MagnifyLens
         )
     )
 }
@@ -152,6 +157,10 @@ mod tests {
             resolve_process_effect("texture_overlay"),
             Some(ProcessEffect::TextureOverlay)
         );
+        assert_eq!(
+            resolve_process_effect("magnify_lens"),
+            Some(ProcessEffect::MagnifyLens)
+        );
     }
 
     #[test]
@@ -175,5 +184,6 @@ mod tests {
         assert!(is_wasm_webgpu_compatible_effect("tone_map"));
         assert!(is_wasm_webgpu_compatible_effect("light_sweep"));
         assert!(is_wasm_webgpu_compatible_effect("texture_overlay"));
+        assert!(is_wasm_webgpu_compatible_effect("magnify_lens"));
     }
 }

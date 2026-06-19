@@ -1729,7 +1729,9 @@ fn cubic_bezier_derivative(a: f32, b: f32, t: f32) -> f32 {
 mod tests {
     use crate::dsl::parse_graph_script;
 
-    use super::{BlurSharpenMode, compile_runtime_program, eval_time_expr};
+    use super::{
+        BlurSharpenMode, RuntimeProcessParamValue, compile_runtime_program, eval_time_expr,
+    };
 
     #[test]
     fn runtime_eval_invert_mix_changes_with_time() {
@@ -2571,5 +2573,51 @@ mod tests {
         let runtime = compile_runtime_program(graph).expect("runtime compile");
         assert!(runtime.unsupported_kernels().is_empty());
         assert_eq!(runtime.supported_pass_count(), 1);
+    }
+
+    #[test]
+    fn runtime_texture_overlay_effect_uses_default_color_core_kernel() {
+        let script = r#"
+<Graph fps={30} duration="4s" size={[1920,1080]}>
+  <Process id="paper_post">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="post_paper_texture" kind="compute" effect="texture_overlay"
+          in={["src"]} out={["out"]}
+          params={{ kind: "paper", scale: "86.0", strength: "0.24", contrast: "0.58", seed: "101.0" }} />
+  </Process>
+  <Present from="paper_post" />
+</Graph>
+"#;
+        let graph = parse_graph_script(script).expect("graph parse");
+        let runtime = compile_runtime_program(graph).expect("runtime compile");
+        assert!(runtime.unsupported_kernels().is_empty());
+        let out = runtime.evaluate_frame(0);
+        let texture_overlay = out
+            .process_effects
+            .iter()
+            .find(|effect| effect.effect_id == "texture_overlay")
+            .expect("texture_overlay runtime effect");
+        assert_eq!(
+            texture_overlay.params.get("kind"),
+            Some(&RuntimeProcessParamValue::Float(1.0))
+        );
+        assert_eq!(
+            texture_overlay.params.get("scale"),
+            Some(&RuntimeProcessParamValue::Float(86.0))
+        );
+        assert_eq!(
+            texture_overlay.params.get("strength"),
+            Some(&RuntimeProcessParamValue::Float(0.24))
+        );
+        assert_eq!(
+            texture_overlay.params.get("contrast"),
+            Some(&RuntimeProcessParamValue::Float(0.58))
+        );
+        assert_eq!(
+            texture_overlay.params.get("seed"),
+            Some(&RuntimeProcessParamValue::Float(101.0))
+        );
     }
 }

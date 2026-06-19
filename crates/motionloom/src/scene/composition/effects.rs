@@ -60,6 +60,17 @@ pub(crate) struct SceneTextureOverlayParams {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) struct SceneMagnifyLensParams {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) radius: f32,
+    pub(crate) zoom: f32,
+    pub(crate) distortion: f32,
+    pub(crate) feather: f32,
+    pub(crate) glass: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum TextureOverlayKind {
     Noise,
     Paper,
@@ -124,6 +135,9 @@ pub(crate) fn apply_scene_post_pass(
     }
     if let Some(params) = scene_post_light_sweep_params(pass, time_norm, time_sec)? {
         return Ok(apply_light_sweep_pass(input, params));
+    }
+    if let Some(params) = scene_post_magnify_lens_params(pass, time_norm, time_sec)? {
+        return Ok(apply_magnify_lens_pass(input, params));
     }
     if let Some(params) = scene_post_texture_overlay_params(pass, time_norm, time_sec)? {
         return Ok(apply_texture_overlay_pass(input, params));
@@ -807,6 +821,68 @@ pub(crate) fn scene_post_texture_overlay_params(
     }))
 }
 
+pub(crate) fn scene_post_magnify_lens_params(
+    pass: &PassNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Option<SceneMagnifyLensParams>, MotionLoomSceneRenderError> {
+    let effect = normalized_effect_name(&pass.effect);
+    if !matches!(
+        effect.as_str(),
+        "magnify_lens"
+            | "lens_magnify"
+            | "post_magnify_lens"
+            | "distortion_warp.magnify_lens"
+            | "distortion_warp_magnify_lens"
+    ) {
+        return Ok(None);
+    }
+    let x = pass_param_expr_any(pass, &["x", "center_x", "centerX"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.0)
+        .clamp(-8192.0, 16384.0);
+    let y = pass_param_expr_any(pass, &["y", "center_y", "centerY"])
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.0)
+        .clamp(-8192.0, 16384.0);
+    let radius = pass_param_expr(pass, "radius")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(180.0)
+        .clamp(0.001, 8192.0);
+    let zoom = pass_param_expr(pass, "zoom")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(1.85)
+        .clamp(0.001, 16.0);
+    let distortion = pass_param_expr(pass, "distortion")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.18)
+        .clamp(-2.0, 2.0);
+    let feather = pass_param_expr(pass, "feather")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(10.0)
+        .clamp(0.0, 512.0);
+    let glass = pass_param_expr(pass, "glass")
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()?
+        .unwrap_or(0.32)
+        .clamp(0.0, 1.0);
+    Ok(Some(SceneMagnifyLensParams {
+        x,
+        y,
+        radius,
+        zoom,
+        distortion,
+        feather,
+        glass,
+    }))
+}
+
 fn clean_param_ref(value: &str) -> String {
     value
         .trim()
@@ -1259,6 +1335,56 @@ pub(crate) fn apply_texture_overlay_pass(
     out
 }
 
+pub(crate) fn apply_magnify_lens_pass(
+    input: &RgbaImage,
+    params: SceneMagnifyLensParams,
+) -> RgbaImage {
+    let mut out = input.clone();
+    let width = input.width().max(1) as f32;
+    let height = input.height().max(1) as f32;
+    let radius = params.radius.max(0.001);
+    let feather = params.feather.max(0.0);
+    let zoom = params.zoom.max(0.001);
+    for (x, y, pixel) in out.enumerate_pixels_mut() {
+        let px = x as f32 + 0.5;
+        let py = y as f32 + 0.5;
+        let dx = px - params.x;
+        let dy = py - params.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let influence = 1.0 - smoothstep(radius, radius + feather, dist);
+        if influence <= 0.0 {
+            continue;
+        }
+        let normalized = (dist / radius).clamp(0.0, 1.0);
+        let warp = (zoom * (1.0 + params.distortion * (1.0 - normalized * normalized))).max(0.001);
+        let sample_x = (params.x + dx / warp).clamp(0.0, width - 1.0);
+        let sample_y = (params.y + dy / warp).clamp(0.0, height - 1.0);
+        let sampled = sample_rgba_bilinear(input, sample_x, sample_y);
+        let lens_x = dx / radius;
+        let lens_y = dy / radius;
+        let highlight = (1.0 - ((lens_x + 0.38).powi(2) + (lens_y + 0.42).powi(2)).sqrt())
+            .max(0.0)
+            .powf(5.0);
+        let rim_highlight =
+            (1.0 - ((normalized - 0.92).abs() / 0.055).clamp(0.0, 1.0)) * params.glass;
+        let inner_shadow =
+            (1.0 - ((normalized - 0.78).abs() / 0.18).clamp(0.0, 1.0)) * params.glass;
+        let rim = 1.0 - smoothstep(0.82, 0.98, normalized);
+        let edge_shadow = smoothstep(0.78, 1.0, normalized) * 0.18 * params.glass;
+        for channel in 0..3 {
+            let src = pixel[channel] as f32 / 255.0;
+            let mut lens = sampled[channel] as f32 / 255.0;
+            lens = (lens + highlight * params.glass * 0.32).clamp(0.0, 1.0);
+            lens = lens * (1.0 - edge_shadow - inner_shadow * 0.08)
+                + 0.96 * (1.0 - rim) * params.glass * 0.18
+                + rim_highlight * 0.22;
+            pixel[channel] =
+                ((src + (lens - src) * influence).clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+    out
+}
+
 pub(crate) fn apply_image_texture_overlay_pass(
     input: &RgbaImage,
     params: &SceneTextureOverlayParams,
@@ -1302,6 +1428,30 @@ fn sample_tiled_rgba(image: &RgbaImage, uv_x: f32, uv_y: f32, scale: f32) -> [u8
 
 fn sample_tiled_luma(image: &RgbaImage, uv_x: f32, uv_y: f32, scale: f32) -> f32 {
     luma_from_rgba(sample_tiled_rgba(image, uv_x, uv_y, scale))
+}
+
+fn sample_rgba_bilinear(image: &RgbaImage, x: f32, y: f32) -> [u8; 4] {
+    let max_x = image.width().saturating_sub(1) as f32;
+    let max_y = image.height().saturating_sub(1) as f32;
+    let x = x.clamp(0.0, max_x);
+    let y = y.clamp(0.0, max_y);
+    let x0 = x.floor() as u32;
+    let y0 = y.floor() as u32;
+    let x1 = (x0 + 1).min(image.width().saturating_sub(1));
+    let y1 = (y0 + 1).min(image.height().saturating_sub(1));
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let p00 = image.get_pixel(x0, y0).0;
+    let p10 = image.get_pixel(x1, y0).0;
+    let p01 = image.get_pixel(x0, y1).0;
+    let p11 = image.get_pixel(x1, y1).0;
+    let mut out = [0u8; 4];
+    for channel in 0..4 {
+        let a = p00[channel] as f32 + (p10[channel] as f32 - p00[channel] as f32) * tx;
+        let b = p01[channel] as f32 + (p11[channel] as f32 - p01[channel] as f32) * tx;
+        out[channel] = (a + (b - a) * ty).round().clamp(0.0, 255.0) as u8;
+    }
+    out
 }
 
 fn tiled_sample_xy(image: &RgbaImage, uv_x: f32, uv_y: f32, scale: f32) -> (u32, u32) {

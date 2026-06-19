@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_frame};
+use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_graph_frame};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args_os()
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 "##;
 
     let graph = parse_graph_script(script)?;
-    let frame = pollster::block_on(render_scene_frame(&graph, 0, SceneRenderProfile::Gpu))?;
+    let frame = pollster::block_on(render_scene_graph_frame(&graph, 0, SceneRenderProfile::Gpu))?;
     frame.save(&output)?;
     println!("saved {}", output.display());
     Ok(())

@@ -20,6 +20,7 @@ pub enum LayerEffectTemplateKind {
     TransitionFadeInOut,
 }
 
+#[allow(dead_code)]
 pub struct SceneTemplate {
     pub label: &'static str,
     pub description: &'static str,
@@ -48,6 +49,7 @@ pub fn first_scene_template() -> Option<&'static SceneTemplate> {
     SCENE_TEMPLATES.first()
 }
 
+#[allow(dead_code)]
 pub fn scene_template_by_label(label: &str) -> Option<&'static SceneTemplate> {
     SCENE_TEMPLATES
         .iter()

@@ -269,8 +269,89 @@ impl LivePreviewApp {
                     texture.size = Some(preview_size);
                 }
             }
+            Self::scale_resolution_dependent_pass_params(&mut graph, quality.scale());
         }
         graph
+    }
+
+    fn scale_resolution_dependent_pass_params(graph: &mut motionloom::GraphScript, scale: f32) {
+        for pass in &mut graph.passes {
+            if pass.effect != "magnify_lens" {
+                continue;
+            }
+            for param in &mut pass.params {
+                if matches!(
+                    param.key.as_str(),
+                    "x" | "y" | "radius" | "feather" | "width"
+                ) {
+                    param.value = Self::scale_numeric_or_curve_param(&param.value, scale);
+                }
+            }
+        }
+    }
+
+    fn scale_numeric_or_curve_param(value: &str, scale: f32) -> String {
+        let trimmed = value.trim();
+        let unquoted = trimmed
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .unwrap_or(trimmed);
+        let normalized = unquoted.replace("\\\"", "\"");
+
+        if let Ok(number) = normalized.parse::<f32>() {
+            return Self::format_scaled_number(number, scale);
+        }
+
+        if let Some(inner) = normalized
+            .strip_prefix("curve(\"")
+            .and_then(|v| v.strip_suffix("\")"))
+        {
+            let scaled_points = inner
+                .split(',')
+                .map(|point| Self::scale_curve_point_value(point.trim(), scale))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!("curve(\"{scaled_points}\")");
+        }
+
+        normalized
+    }
+
+    fn scale_curve_point_value(point: &str, scale: f32) -> String {
+        let mut parts = point.splitn(3, ':');
+        let Some(time) = parts.next() else {
+            return point.to_string();
+        };
+        let Some(value) = parts.next() else {
+            return point.to_string();
+        };
+        let Some(ease) = parts.next() else {
+            return point.to_string();
+        };
+        let Ok(number) = value.trim().parse::<f32>() else {
+            return point.to_string();
+        };
+        format!(
+            "{}:{}:{}",
+            time.trim(),
+            Self::format_scaled_number(number, scale),
+            ease.trim()
+        )
+    }
+
+    fn format_scaled_number(value: f32, scale: f32) -> String {
+        let scaled = value * scale;
+        if (scaled.round() - scaled).abs() < 0.001 {
+            return format!("{}", scaled.round() as i32);
+        }
+        let mut text = format!("{scaled:.3}");
+        while text.contains('.') && text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.pop();
+        }
+        text
     }
 
     fn create_target_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
@@ -863,4 +944,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = LivePreviewApp::new(script_source, print_stats)?;
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LivePreviewApp;
+
+    #[test]
+    fn scales_quoted_numeric_lens_param() {
+        assert_eq!(
+            LivePreviewApp::scale_numeric_or_curve_param("\"520\"", 0.25),
+            "130"
+        );
+    }
+
+    #[test]
+    fn scales_quoted_escaped_curve_lens_param() {
+        assert_eq!(
+            LivePreviewApp::scale_numeric_or_curve_param(
+                "\"curve(\\\"0:300:ease_out, 3:650:ease_in_out, 6:560:linear\\\")\"",
+                0.25,
+            ),
+            "curve(\"0:75:ease_out, 3:162.5:ease_in_out, 6:140:linear\")"
+        );
+    }
 }

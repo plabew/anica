@@ -1,0 +1,359 @@
+# MotionLoom Main Public API
+
+This document lists the recommended public API surface for applications and
+open-source users integrating MotionLoom as a standalone Rust crate.
+
+MotionLoom exposes more model structs and compatibility re-exports at the crate
+root than this list. Those lower-level types are useful for advanced tooling and
+for existing applications such as Anica, but new code should start with
+`motionloom::api`.
+
+The crate root is intentionally broader for compatibility. `motionloom::api` is
+the curated stable surface. `motionloom::experimental` is public and usable, but
+may change faster than the main API.
+
+## API Layers
+
+MotionLoom has three useful integration layers:
+
+1. **Stable APIs** are re-exported from `motionloom::api`.
+2. **Easy root-document APIs** accept a full MotionLoom script string and route
+   it internally.
+3. **Typed scene/process APIs** accept already parsed graphs and are better for
+   applications that manage parse/cache/export state themselves.
+
+Use root-document APIs for CLI tools and simple standalone integrations. Use
+typed APIs when the host already knows whether the document is a scene graph,
+process graph, or app-layer effect.
+
+## Core Parsing
+
+### `parse_graph_script`
+
+```rust
+parse_graph_script(script) -> Result<GraphScript, GraphParseError>
+```
+
+Parses the main MotionLoom graph format, including scene graphs and
+scene/process composition graphs.
+
+Use this when the caller expects a scene/composition graph and wants typed
+control over rendering.
+
+### `parse_process_graph_script`
+
+```rust
+parse_process_graph_script(script) -> Result<ProcessGraph, GraphParseError>
+```
+
+Parses process-only graphs used for effects, Layer FX, and effect runtime
+evaluation.
+
+Process-only graphs that reference external inputs such as
+`from="input:clip0"` need a host application to provide the source clip.
+
+### `parse_motionloom_document`
+
+```rust
+parse_motionloom_document(script) -> Result<MotionLoomDocument, GraphParseError>
+```
+
+Parses a root MotionLoom document and classifies it as scene, process, world, or
+mixed graph.
+
+Use this when building tools that accept arbitrary MotionLoom DSL input.
+
+## Single Frame Rendering
+
+### `render_scene_graph_frame`
+
+```rust
+render_scene_graph_frame(&graph, frame, SceneRenderProfile::Gpu)
+```
+
+Renders one scene/composition frame to an `image::RgbaImage`.
+
+This is the simple one-shot API. It creates renderer state internally, so it is
+best for single frame exports, tests, or simple examples.
+
+For multiple frames, prefer `SceneRenderer`.
+
+### `SceneRenderer::new`
+
+```rust
+let mut renderer = SceneRenderer::new(SceneRenderProfile::Gpu).await?;
+```
+
+Creates a reusable scene renderer. Prefer this for preview, playback, PNG
+sequence generation, or any integration that renders many frames.
+
+### `SceneRenderer::render_frame`
+
+```rust
+renderer.render_frame(&graph, frame).await?
+```
+
+Renders one frame using the reusable renderer. This avoids rebuilding internal
+state for every frame.
+
+## Export APIs
+
+### Root Document PNG Sequence
+
+```rust
+render_motionloom_document_to_png_sequence_with_progress(
+    script,
+    asset_root,
+    output_dir,
+    progress_every_frames,
+    callback,
+)
+```
+
+Exports a full MotionLoom script to a PNG frame sequence.
+
+This is the easiest PNG sequence API. It inspects the root document and routes
+to the correct renderer internally. It does not require FFmpeg.
+
+### Root Document Video
+
+```rust
+render_motionloom_document_to_video_with_progress(
+    ffmpeg_bin,
+    script,
+    asset_root,
+    output_path,
+    profile,
+    progress_every_frames,
+    callback,
+)
+```
+
+Exports a full MotionLoom script to video using FFmpeg.
+
+This API is best for CLI tools or applications that accept arbitrary MotionLoom
+documents. The caller supplies the FFmpeg binary path; MotionLoom does not bundle
+FFmpeg.
+
+### Typed Scene PNG Sequence
+
+```rust
+render_scene_graph_to_png_sequence_with_progress(
+    &graph,
+    output_dir,
+    progress_every_frames,
+    callback,
+)
+```
+
+Exports an already parsed scene/composition graph to PNG frames.
+
+Use this when the caller has already parsed a `GraphScript` with
+`parse_graph_script`. It avoids the extra root-document inspect/parse step.
+
+### Typed Scene Video
+
+```rust
+render_scene_graph_to_video_with_progress(
+    ffmpeg_bin,
+    &graph,
+    output_path,
+    profile,
+    progress_every_frames,
+    callback,
+)
+```
+
+Exports an already parsed scene/composition graph to video.
+
+Use this when the caller already knows the graph is scene/composition content.
+
+## Process / Layer FX APIs
+
+### `compile_runtime_program`
+
+```rust
+let runtime = compile_runtime_program(graph)?;
+```
+
+Compiles a process graph into a runtime program for evaluating effect parameters
+over time.
+
+This is the key API for Layer FX-style integrations.
+
+### `RuntimeProgram::evaluate_frame`
+
+```rust
+runtime.evaluate_frame(frame)
+```
+
+Evaluates process effect parameters for one frame.
+
+### `RuntimeProgram::evaluate_at_time_sec`
+
+```rust
+runtime.evaluate_at_time_sec(time_norm, time_sec)
+```
+
+Evaluates process effect parameters at an explicit timeline time.
+
+### `RuntimeProgram::unsupported_kernels`
+
+```rust
+runtime.unsupported_kernels()
+```
+
+Returns kernels that the runtime could not execute natively.
+
+Hosts should report or skip unsupported effects instead of silently pretending
+they ran.
+
+## Process Catalog APIs
+
+### `process_effects`
+
+```rust
+process_effects()
+```
+
+Returns the built-in process effect catalog.
+
+Use this as the source of truth for UI pickers, LLM tooling, and effect
+discovery.
+
+### `process_effect_for_id`
+
+```rust
+process_effect_for_id("tone_map")
+```
+
+Looks up one effect definition.
+
+### `process_effects_for_category`
+
+```rust
+process_effects_for_category(category)
+```
+
+Lists effects by category.
+
+### `kernel_source_by_name`
+
+```rust
+kernel_source_by_name("tone_map.wgsl")
+```
+
+Returns embedded WGSL source for a known kernel.
+
+### `is_known_process_kernel`
+
+```rust
+is_known_process_kernel("tone_map.wgsl")
+```
+
+Checks whether a process kernel is bundled with MotionLoom.
+
+## Preview and GPU Integration
+
+### `SceneRenderer::render_frame_to_wgpu_texture`
+
+```rust
+renderer.render_frame_to_wgpu_texture(&graph, frame).await?
+```
+
+Renders a frame to a MotionLoom-owned `wgpu::Texture`.
+
+Use this when the host wants GPU output without managing the target texture
+itself.
+
+### `SceneRenderer::render_frame_to_wgpu_target_texture`
+
+```rust
+renderer
+    .render_frame_to_wgpu_target_texture(&graph, frame, target, width, height)
+    .await?
+```
+
+Renders a frame into a caller-owned `wgpu::Texture`.
+
+This is the preferred path for high-performance host integration because the
+host controls texture allocation and reuse. The target texture must belong to
+the same `wgpu::Device` used by the renderer.
+
+### `SceneRenderer::render_frame_to_preview_surface`
+
+```rust
+renderer
+    .render_frame_to_preview_surface(&graph, frame, options)
+    .await?
+```
+
+Renders a frame to the best preview surface requested by the host.
+
+This is the higher-level preview abstraction. It can return a GPU texture,
+platform surface, or CPU BGRA fallback depending on platform support and
+options.
+
+## Diagnostics
+
+### `inspect_root_graph`
+
+```rust
+inspect_root_graph(script)
+```
+
+Inspects a root document and reports whether it contains scene, process, world,
+or mixed content.
+
+### `inspect_gpu_compatibility`
+
+```rust
+inspect_gpu_compatibility(script)
+```
+
+Performs a static GPU compatibility inspection. This is useful before choosing a
+preview or export path.
+
+## Experimental / Advanced APIs
+
+The following APIs remain public under `motionloom::experimental`, but should
+not be treated as the main MotionLoom integration path yet:
+
+- `parse_world_graph_script`
+- `render_world_frame`
+- `WorldFrameRenderer`
+- `render_world_graph_to_video_with_progress`
+- `render_world_graph_to_png_sequence_with_progress`
+- GLB metadata and diagnostics helpers
+- Anica/editor-oriented helpers such as `experimental::effects`,
+  `experimental::keyframe`, `experimental::transitions`, and
+  `experimental::clip`
+- Text layout preparation helpers under `experimental::text`
+
+Scene/model AST structs such as `RectNode`, `TexNode`, and `PassNode` remain
+visible through the crate root for compatibility and advanced tooling. They are
+not the recommended starting point for new integrations.
+
+Low-level kernel resolution helpers such as `default_kernel_for_effect` and
+`resolve_pass_kernel` are also kept for compatibility. Prefer the process
+catalog APIs for effect discovery.
+
+World graph APIs are currently experimental and mainly used by Anica internal
+tools and design/debug surfaces.
+
+## Recommended API Choice
+
+| Use case | Recommended API |
+| --- | --- |
+| Parse scene/composition DSL | `parse_graph_script` |
+| Render one PNG/image frame | `render_scene_graph_frame` |
+| Render many frames interactively | `SceneRenderer::new` + `SceneRenderer::render_frame` |
+| Export arbitrary script to PNG sequence | `render_motionloom_document_to_png_sequence_with_progress` |
+| Export arbitrary script to video | `render_motionloom_document_to_video_with_progress` |
+| Export parsed scene graph to PNG sequence | `render_scene_graph_to_png_sequence_with_progress` |
+| Export parsed scene graph to video | `render_scene_graph_to_video_with_progress` |
+| Build Layer FX runtime | `parse_process_graph_script` + `compile_runtime_program` |
+| Discover available process effects | `process_effects` |
+| GPU preview texture | `SceneRenderer::render_frame_to_wgpu_texture` |
+| Host-owned zero-copy target | `SceneRenderer::render_frame_to_wgpu_target_texture` |
+| Cross-platform preview abstraction | `SceneRenderer::render_frame_to_preview_surface` |

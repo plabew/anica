@@ -2,7 +2,7 @@
 // crates/motionloom/src/process/adapters/clip/curve.rs
 // =========================================
 
-use crate::model::AnimF32;
+use super::model::AnimF32;
 
 pub fn sample_anim_f32(anim: &AnimF32, frame: u32) -> f32 {
     match anim {
@@ -53,8 +53,8 @@ pub fn sample_anim_f32(anim: &AnimF32, frame: u32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::AnimF32;
     use super::sample_anim_f32;
-    use crate::model::AnimF32;
 
     #[test]
     fn linear_sampling_works() {

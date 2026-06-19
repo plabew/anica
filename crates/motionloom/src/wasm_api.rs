@@ -10,9 +10,9 @@ use web_sys::HtmlCanvasElement;
 
 use crate::asset::MemoryAssetResolver;
 use crate::dsl::{GraphScript, is_graph_script, parse_graph_script};
-use crate::process::render_process_frame_cpu;
+use crate::process::cpu_renderer::render_process_frame_cpu;
 #[cfg(target_arch = "wasm32")]
-use crate::process::render_process_frame_to_canvas_gpu as render_process_frame_to_canvas_gpu_impl;
+use crate::process::wasm_webgpu::render_process_frame_to_canvas_gpu as render_process_frame_to_canvas_gpu_impl;
 use crate::scene::render::{SceneRenderProfile, SceneRenderer, render_scene_graph_frame};
 use crate::world::{WorldFrameRenderer, is_world_graph_script, parse_world_graph_script};
 

@@ -41,8 +41,8 @@ use crate::scene::composition::{
     composite_layer_affine_blend_clipped, composite_layer_affine_clipped, composite_scene_bloom,
     composite_transformed_layer, composite_transformed_layer_anchored, draw_rgba_image,
     is_color_key_alpha_effect, pass_param_expr, scene_post_bloom_params, scene_post_blur_passes,
-    scene_post_glow_stack_params, scene_post_light_sweep_params, scene_post_texture_overlay_params,
-    scene_post_tone_map_params,
+    scene_post_glow_stack_params, scene_post_light_sweep_params, scene_post_magnify_lens_params,
+    scene_post_texture_overlay_params, scene_post_tone_map_params,
 };
 use crate::scene::domain::apply_action_graph_at_time;
 
@@ -165,7 +165,7 @@ where
 {
     validate_scene_graph(graph)?;
     if profile.is_png_sequence() {
-        return render_scene_graph_to_png_sequence_with_progress(
+        return render_scene_graph_to_png_sequence_internal(
             graph,
             output_path,
             profile,
@@ -249,7 +249,48 @@ where
     }
 }
 
-async fn render_scene_graph_to_png_sequence_with_progress<F>(
+pub async fn render_scene_graph_to_png_sequence_with_progress<F>(
+    graph: &GraphScript,
+    output_dir: &Path,
+    progress_every_frames: u32,
+    progress_callback: F,
+) -> Result<(), MotionLoomSceneRenderError>
+where
+    F: FnMut(SceneRenderProgress),
+{
+    render_scene_graph_to_png_sequence_with_progress_and_cancel(
+        graph,
+        output_dir,
+        progress_every_frames,
+        None,
+        progress_callback,
+    )
+    .await
+}
+
+pub async fn render_scene_graph_to_png_sequence_with_progress_and_cancel<F>(
+    graph: &GraphScript,
+    output_dir: &Path,
+    progress_every_frames: u32,
+    cancel: Option<Arc<AtomicBool>>,
+    progress_callback: F,
+) -> Result<(), MotionLoomSceneRenderError>
+where
+    F: FnMut(SceneRenderProgress),
+{
+    validate_scene_graph(graph)?;
+    render_scene_graph_to_png_sequence_internal(
+        graph,
+        output_dir,
+        SceneRenderProfile::GpuPngSequence,
+        progress_every_frames,
+        cancel,
+        progress_callback,
+    )
+    .await
+}
+
+async fn render_scene_graph_to_png_sequence_internal<F>(
     graph: &GraphScript,
     output_dir: &Path,
     profile: SceneRenderProfile,
@@ -326,14 +367,6 @@ pub async fn render_scene_graph_frame_with_resolver(
     let mut renderer =
         SceneFrameRenderer::new_for_profile_with_resolver(profile, asset_resolver).await;
     renderer.render_frame(graph, frame).await
-}
-
-pub async fn render_scene_frame(
-    graph: &GraphScript,
-    frame: u32,
-    profile: SceneRenderProfile,
-) -> Result<RgbaImage, SceneRenderError> {
-    render_scene_graph_frame(graph, frame, profile).await
 }
 
 pub struct SceneRenderer {
@@ -3407,6 +3440,11 @@ impl SceneFrameRenderer {
                 .apply_scene_light_sweep_pass(&inputs[0], pass, time_norm, time_sec)
                 .await;
         }
+        if scene_post_magnify_lens_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_magnify_lens_pass(&inputs[0], pass, time_norm, time_sec)
+                .await;
+        }
         if scene_post_texture_overlay_params(pass, time_norm, time_sec)?.is_some() {
             return self
                 .apply_scene_texture_overlay_pass(&inputs[0], pass, time_norm, time_sec)
@@ -3481,6 +3519,11 @@ impl SceneFrameRenderer {
         if scene_post_light_sweep_params(pass, time_norm, time_sec)?.is_some() {
             return self
                 .apply_scene_light_sweep_pass(input, pass, time_norm, time_sec)
+                .await;
+        }
+        if scene_post_magnify_lens_params(pass, time_norm, time_sec)?.is_some() {
+            return self
+                .apply_scene_magnify_lens_pass(input, pass, time_norm, time_sec)
                 .await;
         }
         if scene_post_texture_overlay_params(pass, time_norm, time_sec)?.is_some() {
@@ -3701,6 +3744,30 @@ impl SceneFrameRenderer {
             return Ok(input.clone());
         };
         let (params, texture_image, height_image) = self.resolve_texture_overlay_assets(params)?;
+        if self.profile.uses_gpu_compositor()
+            && let GraphTextureSource::Gpu(texture) = input
+        {
+            self.ensure_gpu_compositor_size(texture.width.max(1), texture.height.max(1))
+                .await?;
+            let compositor = self.gpu_compositor.as_mut().ok_or_else(|| {
+                MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                }
+            })?;
+            if texture_image.is_some() || height_image.is_some() {
+                return Ok(GraphTextureSource::Gpu(
+                    compositor.apply_gpu_image_texture_overlay_texture(
+                        texture,
+                        params,
+                        texture_image.as_ref(),
+                        height_image.as_ref(),
+                    )?,
+                ));
+            }
+            return Ok(GraphTextureSource::Gpu(
+                compositor.apply_gpu_texture_overlay_texture(texture, params)?,
+            ));
+        }
         if texture_image.is_some() || height_image.is_some() {
             let image = self.graph_source_to_cpu(input).await?;
             return Ok(GraphTextureSource::Cpu(apply_image_texture_overlay_pass(
@@ -3710,6 +3777,20 @@ impl SceneFrameRenderer {
                 height_image.as_ref(),
             )));
         }
+        let image = self.graph_source_to_cpu(input).await?;
+        apply_scene_post_pass(&image, pass, time_norm, time_sec).map(GraphTextureSource::Cpu)
+    }
+
+    async fn apply_scene_magnify_lens_pass(
+        &mut self,
+        input: &GraphTextureSource,
+        pass: &PassNode,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GraphTextureSource, MotionLoomSceneRenderError> {
+        let Some(params) = scene_post_magnify_lens_params(pass, time_norm, time_sec)? else {
+            return Ok(input.clone());
+        };
         if self.profile.uses_gpu_compositor()
             && let GraphTextureSource::Gpu(texture) = input
         {
@@ -3721,7 +3802,7 @@ impl SceneFrameRenderer {
                 }
             })?;
             return Ok(GraphTextureSource::Gpu(
-                compositor.apply_gpu_texture_overlay_texture(texture, params)?,
+                compositor.apply_gpu_magnify_lens_texture(texture, params)?,
             ));
         }
         let image = self.graph_source_to_cpu(input).await?;
