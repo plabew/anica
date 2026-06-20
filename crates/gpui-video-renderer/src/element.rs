@@ -3543,6 +3543,14 @@ impl BgraProcessEffectInstance {
     }
 }
 
+fn normalize_brightness_param(value: f32) -> f32 {
+    if (-1.0..=1.0).contains(&value) {
+        value
+    } else {
+        value - 1.0
+    }
+}
+
 pub fn bgra_process_effects_cache_key(effects: &[BgraProcessEffectInstance]) -> u64 {
     const SCALE: f32 = 1000.0;
     let mut hasher = DefaultHasher::new();
@@ -3580,17 +3588,21 @@ impl BgraGpuEffectParams {
                 "brightness" | "brighten" => {
                     let amount = effect
                         .float("amount")
-                        .or_else(|| effect.float("brightness").map(|value| value - 1.0))
-                        .or_else(|| effect.float("value").map(|value| value - 1.0))
+                        .or_else(|| effect.float("brightness").map(normalize_brightness_param))
+                        .or_else(|| effect.float("value").map(normalize_brightness_param))
                         .unwrap_or(0.0);
                     self.brightness = (self.brightness + amount).clamp(-1.0, 1.0);
                 }
-                "bloom" | "glow_bloom" => {
+                "bloom" | "glow" | "glow_bloom" | "glow_stack" => {
                     self.bloom_threshold =
                         effect.float("threshold").unwrap_or(self.bloom_threshold);
                     self.bloom_intensity =
                         effect.float("intensity").unwrap_or(self.bloom_intensity);
-                    self.bloom_sigma = effect.float("sigma").unwrap_or(self.bloom_sigma);
+                    self.bloom_sigma = effect
+                        .float("sigma")
+                        .or_else(|| effect.float("radiusMedium"))
+                        .or_else(|| effect.float("radius"))
+                        .unwrap_or(self.bloom_sigma);
                 }
                 "tone_map" => {
                     self.tone_map_enabled = true;
@@ -3823,6 +3835,108 @@ mod tests {
         assert_eq!(params.texture_overlay_strength, 0.24);
         assert_eq!(params.texture_overlay_contrast, 0.58);
         assert_eq!(params.texture_overlay_seed, 101.0);
+    }
+
+    #[test]
+    fn process_glow_stack_maps_to_bloom_params() {
+        let mut params = BgraGpuEffectParams::default();
+        let effect = BgraProcessEffectInstance {
+            effect_id: "glow_stack".to_string(),
+            params: BTreeMap::from([
+                ("threshold".to_string(), BgraProcessParamValue::Float(0.56)),
+                ("intensity".to_string(), BgraProcessParamValue::Float(1.8)),
+                (
+                    "radiusMedium".to_string(),
+                    BgraProcessParamValue::Float(18.0),
+                ),
+            ]),
+        };
+
+        let unsupported = params.apply_process_effects(&[effect]);
+
+        assert!(unsupported.is_empty());
+        assert_eq!(params.bloom_threshold, 0.56);
+        assert_eq!(params.bloom_intensity, 1.8);
+        assert_eq!(params.bloom_sigma, 18.0);
+    }
+
+    #[test]
+    fn process_glow_alias_maps_to_bloom_params() {
+        let mut params = BgraGpuEffectParams::default();
+        let effect = BgraProcessEffectInstance {
+            effect_id: "glow".to_string(),
+            params: BTreeMap::from([
+                ("threshold".to_string(), BgraProcessParamValue::Float(0.72)),
+                ("intensity".to_string(), BgraProcessParamValue::Float(0.9)),
+                ("sigma".to_string(), BgraProcessParamValue::Float(12.0)),
+            ]),
+        };
+
+        let unsupported = params.apply_process_effects(&[effect]);
+
+        assert!(unsupported.is_empty());
+        assert_eq!(params.bloom_threshold, 0.72);
+        assert_eq!(params.bloom_intensity, 0.9);
+        assert_eq!(params.bloom_sigma, 12.0);
+    }
+
+    #[test]
+    fn process_brightness_amount_maps_to_additive_brightness() {
+        let mut params = BgraGpuEffectParams::default();
+        let effect = BgraProcessEffectInstance {
+            effect_id: "brightness".to_string(),
+            params: BTreeMap::from([("amount".to_string(), BgraProcessParamValue::Float(0.3))]),
+        };
+
+        let unsupported = params.apply_process_effects(&[effect]);
+
+        assert!(unsupported.is_empty());
+        assert!((params.brightness - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn process_brightness_multiplier_maps_to_additive_brightness() {
+        let mut params = BgraGpuEffectParams::default();
+        let effect = BgraProcessEffectInstance {
+            effect_id: "brightness".to_string(),
+            params: BTreeMap::from([("brightness".to_string(), BgraProcessParamValue::Float(1.3))]),
+        };
+
+        let unsupported = params.apply_process_effects(&[effect]);
+
+        assert!(unsupported.is_empty());
+        assert!((params.brightness - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn process_brightness_small_numeric_value_maps_to_additive_brightness() {
+        let mut params = BgraGpuEffectParams::default();
+        let effect = BgraProcessEffectInstance {
+            effect_id: "brightness".to_string(),
+            params: BTreeMap::from([("brightness".to_string(), BgraProcessParamValue::Float(0.3))]),
+        };
+
+        let unsupported = params.apply_process_effects(&[effect]);
+
+        assert!(unsupported.is_empty());
+        assert!((params.brightness - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn process_brightness_negative_numeric_value_maps_to_additive_brightness() {
+        let mut params = BgraGpuEffectParams::default();
+        let effect = BgraProcessEffectInstance {
+            effect_id: "brightness".to_string(),
+            params: BTreeMap::from([(
+                "brightness".to_string(),
+                BgraProcessParamValue::Float(-0.3),
+            )]),
+        };
+
+        let unsupported = params.apply_process_effects(&[effect]);
+
+        assert!(unsupported.is_empty());
+        assert!((params.brightness + 0.3).abs() < 1e-6);
     }
 }
 

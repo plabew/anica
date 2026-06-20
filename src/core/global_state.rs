@@ -10019,7 +10019,7 @@ fn round_up_to_step(value: Duration, step: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{
-        GlobalState, LayerColorBlurEffects, MotionLoomLayerEffectClip,
+        GlobalState, LayerColorBlurEffects, MotionLoomLayerEffectClip, RuntimeProcessParamValue,
         motionloom_runtime_for_script,
     };
     use std::time::Duration;
@@ -10096,6 +10096,36 @@ mod tests {
   <Present from="layer_fx" />
 </Graph>
 "#;
+
+    const BRIGHTNESS_LAYER_FX_SCRIPT: &str = r##"
+<Graph fps={30} duration="3s" size={[800,450]} renderSize={[800,450]}>
+  <Background color="#FFFFFF" />
+  <Process id="BrightnessProcess">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[800,450]} />
+    <Pass id="fx_brightness" kind="compute" effect="brightness"
+          in={["src"]} out={["out"]}
+          params={{ brightness: "0.3" }} />
+  </Process>
+  <Present from="BrightnessProcess" />
+</Graph>
+"##;
+
+    const BRIGHTNESS_NEGATIVE_LAYER_FX_SCRIPT: &str = r##"
+<Graph fps={30} duration="3s" size={[800,450]} renderSize={[800,450]}>
+  <Background color="#FFFFFF" />
+  <Process id="BrightnessProcess">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[800,450]} />
+    <Pass id="fx_brightness" kind="compute" effect="brightness"
+          in={["src"]} out={["out"]}
+          params={{ brightness: "-0.1" }} />
+  </Process>
+  <Present from="BrightnessProcess" />
+</Graph>
+"##;
 
     fn make_test_layer_fx_clip(script: &str) -> MotionLoomLayerEffectClip {
         MotionLoomLayerEffectClip {
@@ -10185,5 +10215,43 @@ mod tests {
             .layer_blur_sharpen_mode_at(Duration::from_millis(100))
             .expect("blur script should produce a blur mode");
         assert_eq!(mode, motionloom::BlurSharpenMode::Gaussian5tapBlur);
+    }
+
+    #[test]
+    fn layer_process_effects_emit_brightness_amount_for_full_graph_script() {
+        let mut gs = GlobalState::default();
+        gs.layer_effect_clips
+            .push(make_test_layer_fx_clip(BRIGHTNESS_LAYER_FX_SCRIPT));
+
+        let effects = gs.layer_process_effects_at(Duration::from_millis(100));
+        let brightness = effects
+            .iter()
+            .find(|effect| effect.effect_id == "brightness")
+            .expect("brightness process effect");
+        let Some(RuntimeProcessParamValue::Float(amount)) = brightness.params.get("amount") else {
+            panic!("brightness should be normalized to additive amount");
+        };
+        assert!((*amount - 0.3).abs() < 1e-6, "unexpected amount: {amount}");
+        assert!(
+            !brightness.params.contains_key("brightness"),
+            "renderer should receive amount, not raw brightness"
+        );
+    }
+
+    #[test]
+    fn layer_process_effects_emit_negative_brightness_amount_for_full_graph_script() {
+        let mut gs = GlobalState::default();
+        gs.layer_effect_clips
+            .push(make_test_layer_fx_clip(BRIGHTNESS_NEGATIVE_LAYER_FX_SCRIPT));
+
+        let effects = gs.layer_process_effects_at(Duration::from_millis(100));
+        let brightness = effects
+            .iter()
+            .find(|effect| effect.effect_id == "brightness")
+            .expect("brightness process effect");
+        let Some(RuntimeProcessParamValue::Float(amount)) = brightness.params.get("amount") else {
+            panic!("brightness should be normalized to additive amount");
+        };
+        assert!((*amount + 0.1).abs() < 1e-6, "unexpected amount: {amount}");
     }
 }

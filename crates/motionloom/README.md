@@ -8,6 +8,20 @@ application tools such as `anica.motionloom/render_scene`, while this crate
 provides the lower-level API for parsing, rendering, runtime evaluation, process
 catalog lookup, and GLB inspection.
 
+## Install
+
+```toml
+[dependencies]
+motionloom = "0.1"
+```
+
+MotionLoom requires Rust 1.85 or newer. WebGPU/wgpu is part of the core
+renderer path, so the crate intentionally depends on `wgpu` by default.
+
+Video export requires an FFmpeg binary path supplied by the caller. MotionLoom
+does not bundle FFmpeg. Single-frame rendering and PNG sequence export do not
+require FFmpeg.
+
 ## Public API
 
 New Rust integrations should start with `motionloom::api` or
@@ -22,6 +36,10 @@ New Rust integrations should start with `motionloom::api` or
   existing applications. Prefer `motionloom::api` in new code.
 
 See `PUBLIC_API.md` for the curated main API map.
+
+## Release Notes
+
+See `CHANGELOG.md` for crate release history.
 
 ## Core Functions
 

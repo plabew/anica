@@ -13,9 +13,11 @@ use gpui_video_renderer::{
 use motionloom::{
     GraphApplyScope, PassNode as MotionloomPassNode, PassTransitionEasing, PassTransitionMode,
     RuntimeFrameOutput, RuntimeProcessEffectInstance, RuntimeProcessParamValue, RuntimeProgram,
-    compile_runtime_program, is_graph_script, parse_process_graph_script, resolve_pass_kernel,
+    SceneRenderProfile, compile_runtime_program, is_graph_script, parse_graph_script,
+    parse_process_graph_script, render_scene_graph_frame, resolve_pass_kernel,
 };
 use std::collections::BTreeMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::Stdio;
 use std::sync::{
@@ -884,6 +886,15 @@ pub struct ExportProgress {
 pub struct FfmpegExporter;
 pub const EXPORT_CANCELLED_ERR: &str = "__ANICA_EXPORT_CANCELLED__";
 
+struct SceneLayerExportState {
+    layer_id: u64,
+    script_hash: u64,
+    graph: motionloom::GraphScript,
+    fps: f32,
+    last_frame: Option<u32>,
+    last_rgba: Vec<u8>,
+}
+
 #[derive(Debug, Error)]
 pub enum ExportError {
     #[error("Keep Source (Copy) is unavailable for current timeline/output setup.")]
@@ -1547,6 +1558,155 @@ impl FfmpegExporter {
         }
     }
 
+    fn key_near_black_to_alpha_rgba(frame: &mut [u8]) {
+        for px in frame.chunks_exact_mut(4) {
+            if px[3] == 0 {
+                continue;
+            }
+            let r = px[0];
+            let g = px[1];
+            let b = px[2];
+            if r <= 18 && g <= 18 && b <= 18 {
+                px[0] = 0;
+                px[1] = 0;
+                px[2] = 0;
+                px[3] = 0;
+            }
+        }
+    }
+
+    fn multiply_alpha_rgba(frame: &mut [u8], opacity: f32) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        if opacity >= 0.999 {
+            return;
+        }
+        for px in frame.chunks_exact_mut(4) {
+            px[3] = ((px[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+
+    fn scene_layer_script_hash(script: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        script.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn prepare_scene_layer_export_states(
+        layer_effect_clips: &[LayerEffectClip],
+    ) -> Vec<SceneLayerExportState> {
+        let mut states = Vec::new();
+        for layer in layer_effect_clips {
+            if !layer.motionloom_enabled {
+                continue;
+            }
+            let script = layer.motionloom_script.trim();
+            if script.is_empty() || !is_graph_script(script) {
+                continue;
+            }
+            let Ok(graph) = parse_graph_script(script) else {
+                continue;
+            };
+            if !graph.has_scene_nodes() {
+                continue;
+            }
+            states.push(SceneLayerExportState {
+                layer_id: layer.id,
+                script_hash: Self::scene_layer_script_hash(script),
+                fps: graph.fps.max(1.0),
+                graph,
+                last_frame: None,
+                last_rgba: Vec::new(),
+            });
+        }
+        states
+    }
+
+    fn scene_layer_state_mut<'a>(
+        states: &'a mut [SceneLayerExportState],
+        layer: &LayerEffectClip,
+    ) -> Option<&'a mut SceneLayerExportState> {
+        let script_hash = Self::scene_layer_script_hash(layer.motionloom_script.trim());
+        states
+            .iter_mut()
+            .find(|state| state.layer_id == layer.id && state.script_hash == script_hash)
+    }
+
+    fn render_scene_layer_overlay_rgba(
+        state: &mut SceneLayerExportState,
+        frame: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<&[u8], ExportError> {
+        if state.last_frame == Some(frame) && !state.last_rgba.is_empty() {
+            return Ok(&state.last_rgba);
+        }
+
+        let rendered = pollster::block_on(render_scene_graph_frame(
+            &state.graph,
+            frame,
+            SceneRenderProfile::Cpu,
+        ))
+        .map_err(|err| ExportError::GpuOpacityPathUnavailable {
+            reason: format!("Layer FX scene render failed: {err}"),
+        })?;
+        let rendered_w = rendered.width();
+        let rendered_h = rendered.height();
+        let rgba = if rendered_w == width && rendered_h == height {
+            rendered.into_raw()
+        } else {
+            let resized = image::imageops::resize(
+                &rendered,
+                width,
+                height,
+                image::imageops::FilterType::Lanczos3,
+            );
+            resized.into_raw()
+        };
+        state.last_frame = Some(frame);
+        state.last_rgba = rgba;
+        Ok(&state.last_rgba)
+    }
+
+    fn composite_scene_layer_effects_rgba(
+        dst: &mut [u8],
+        states: &mut [SceneLayerExportState],
+        layer_effect_clips: &[LayerEffectClip],
+        t: Duration,
+        width: u32,
+        height: u32,
+    ) -> Result<(), ExportError> {
+        if states.is_empty() {
+            return Ok(());
+        }
+
+        for layer in layer_effect_clips {
+            if !layer.motionloom_enabled {
+                continue;
+            }
+            let Some(local) = layer.local_time(t) else {
+                continue;
+            };
+            let opacity = layer.envelope_factor_at(t).clamp(0.0, 1.0);
+            if opacity <= 0.001 {
+                continue;
+            }
+            let Some(state) = Self::scene_layer_state_mut(states, layer) else {
+                continue;
+            };
+            let frame = (local.as_secs_f32() * state.fps).floor().max(0.0) as u32;
+            let overlay = Self::render_scene_layer_overlay_rgba(state, frame, width, height)?;
+            if opacity >= 0.999 {
+                Self::alpha_over_rgba(dst, overlay);
+            } else {
+                let mut overlay = overlay.to_vec();
+                Self::multiply_alpha_rgba(&mut overlay, opacity);
+                Self::alpha_over_rgba(dst, &overlay);
+            }
+        }
+
+        Ok(())
+    }
+
     fn load_unified_subtitle_overlays(
         subtitle_overlays: &[RenderedSubtitle],
         width: u32,
@@ -1603,11 +1763,40 @@ impl FfmpegExporter {
                 image::imageops::FilterType::Lanczos3,
             )
         };
-        let mut canvas = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+        let mut canvas = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 0]));
         let x = ((width.saturating_sub(scaled_w)) / 2) as i64;
         let y = ((height.saturating_sub(scaled_h)) / 2) as i64;
         image::imageops::overlay(&mut canvas, &resized, x, y);
         Ok(canvas.into_raw())
+    }
+
+    fn is_motionloom_scene_generated_path(path: &str) -> bool {
+        let normalized = path.replace('\\', "/").to_ascii_lowercase();
+        normalized.contains("/motionloom_generated/motionloom_scene_")
+            && (normalized.ends_with(".mp4") || normalized.ends_with(".mov"))
+    }
+
+    fn build_clip_decode_rgba_filter(
+        width: u32,
+        height: u32,
+        fps: u32,
+        preserve_black_as_alpha: bool,
+    ) -> String {
+        if preserve_black_as_alpha {
+            return format!(
+                "fps={fps},setsar=1,scale=w={w}:h={h}:force_original_aspect_ratio=decrease:eval=frame,format=rgba,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black@0,colorkey=0x000000:0.025:0.0,format=rgba",
+                fps = fps,
+                w = width,
+                h = height
+            );
+        }
+
+        format!(
+            "fps={fps},setsar=1,scale=w={w}:h={h}:force_original_aspect_ratio=decrease:eval=frame,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,format=rgba",
+            fps = fps,
+            w = width,
+            h = height
+        )
     }
 
     fn build_clip_decode_rgba_args(
@@ -1617,13 +1806,10 @@ impl FfmpegExporter {
         width: u32,
         height: u32,
         fps: u32,
+        preserve_black_as_alpha: bool,
     ) -> Vec<String> {
-        let decode_filter = format!(
-            "fps={fps},setsar=1,scale=w={w}:h={h}:force_original_aspect_ratio=decrease:eval=frame,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,format=rgba",
-            fps = fps,
-            w = width,
-            h = height
-        );
+        let decode_filter =
+            Self::build_clip_decode_rgba_filter(width, height, fps, preserve_black_as_alpha);
 
         let mut args = vec![
             "-hide_banner".to_string(),
@@ -1971,6 +2157,8 @@ impl FfmpegExporter {
             .collect();
         let mut motionloom_runtime_cache: std::collections::HashMap<u64, Option<RuntimeProgram>> =
             std::collections::HashMap::new();
+        let mut scene_layer_export_states =
+            Self::prepare_scene_layer_export_states(layer_effect_clips);
 
         let mut frame_rgba = vec![0u8; frame_bytes];
         let mut composed_rgba = vec![0u8; frame_bytes];
@@ -2012,6 +2200,7 @@ impl FfmpegExporter {
                 if t < state.spec.active_start || t >= state.spec.active_end {
                     if t >= state.spec.active_end && !state.ended {
                         if let Some(mut d) = state.decoder.take() {
+                            let _ = d.child.kill();
                             let _ = d.child.wait();
                             let _ = d.stderr_join.join();
                         }
@@ -2022,6 +2211,10 @@ impl FfmpegExporter {
 
                 if !state.started {
                     if is_image_ext(&state.spec.clip.file_path) {
+                        println!(
+                            "[Export][Unified GPU] Load still RGBA: {}",
+                            state.spec.clip.file_path
+                        );
                         match Self::load_unified_still_frame_rgba(
                             &state.spec.clip.file_path,
                             width,
@@ -2045,6 +2238,7 @@ impl FfmpegExporter {
                             width,
                             height,
                             fps,
+                            Self::is_motionloom_scene_generated_path(&state.spec.clip.file_path),
                         );
                         println!(
                             "[Export][Unified GPU] Decode ffmpeg: {} {:?}",
@@ -2118,6 +2312,11 @@ impl FfmpegExporter {
                         });
                         break;
                     }
+                }
+                let key_motionloom_black =
+                    Self::is_motionloom_scene_generated_path(&state.spec.clip.file_path);
+                if key_motionloom_black {
+                    Self::key_near_black_to_alpha_rgba(&mut frame_rgba);
                 }
 
                 let local_t = t.saturating_sub(state.spec.clip.start);
@@ -2213,10 +2412,25 @@ impl FfmpegExporter {
                     break;
                 }
                 Self::rgba_bgra_swap_in_place(&mut frame_rgba);
+                if key_motionloom_black {
+                    Self::key_near_black_to_alpha_rgba(&mut frame_rgba);
+                }
                 Self::alpha_over_rgba(&mut composed_rgba, &frame_rgba);
             }
 
             if loop_err.is_some() {
+                break;
+            }
+
+            if let Err(err) = Self::composite_scene_layer_effects_rgba(
+                &mut composed_rgba,
+                &mut scene_layer_export_states,
+                layer_effect_clips,
+                t,
+                width,
+                height,
+            ) {
+                loop_err = Some(err);
                 break;
             }
 
@@ -2267,26 +2481,9 @@ impl FfmpegExporter {
 
         for state in &mut layer_states {
             if let Some(mut d) = state.decoder.take() {
-                let decode_status =
-                    d.child
-                        .wait()
-                        .map_err(|source| ExportError::WaitStageFfmpegProcess {
-                            stage: "decode",
-                            source,
-                        })?;
-                let decode_stderr = d.stderr_join.join().unwrap_or_default();
-                if !decode_status.success() {
-                    let msg = decode_stderr.trim();
-                    return Err(ExportError::StageFfmpegFailed {
-                        stage: "decode",
-                        status: decode_status.to_string(),
-                        stderr: if msg.is_empty() {
-                            "empty stderr".to_string()
-                        } else {
-                            msg.to_string()
-                        },
-                    });
-                }
+                let _ = d.child.kill();
+                let _ = d.child.wait();
+                let _ = d.stderr_join.join();
             }
         }
 
@@ -2535,6 +2732,7 @@ impl FfmpegExporter {
                 if t < state.spec.active_start || t >= state.spec.active_end {
                     if t >= state.spec.active_end && !state.ended {
                         if let Some(mut d) = state.decoder.take() {
+                            let _ = d.child.kill();
                             let _ = d.child.wait();
                             let _ = d.stderr_join.join();
                         }
@@ -2555,6 +2753,7 @@ impl FfmpegExporter {
                         width,
                         height,
                         fps,
+                        Self::is_motionloom_scene_generated_path(&state.spec.clip.file_path),
                     );
                     println!(
                         "[Export][GPU Effect] Decode ffmpeg (phase2): {} {:?}",
@@ -2625,10 +2824,18 @@ impl FfmpegExporter {
                     break;
                 }
 
+                let key_motionloom_black =
+                    Self::is_motionloom_scene_generated_path(&state.spec.clip.file_path);
+                if key_motionloom_black {
+                    Self::key_near_black_to_alpha_rgba(&mut frame_rgba);
+                }
                 let local_t = t.saturating_sub(state.spec.clip.start);
                 let opacity = state.spec.clip.sample_opacity(local_t).clamp(0.0, 1.0);
                 match opacity_processor.process_rgba_frame(&frame_rgba, opacity) {
-                    Ok(layer_frame) => {
+                    Ok(mut layer_frame) => {
+                        if key_motionloom_black {
+                            Self::key_near_black_to_alpha_rgba(&mut layer_frame);
+                        }
                         Self::alpha_over_rgba(&mut composed_rgba, &layer_frame);
                     }
                     Err(err) => {
@@ -2683,29 +2890,9 @@ impl FfmpegExporter {
 
         for state in &mut layer_states {
             if let Some(mut d) = state.decoder.take() {
-                let decode_status =
-                    d.child
-                        .wait()
-                        .map_err(|source| ExportError::WaitStageFfmpegProcess {
-                            stage: "decode",
-                            source,
-                        })?;
-                let decode_stderr = d.stderr_join.join().unwrap_or_default();
-                if !decode_status.success() {
-                    let msg = decode_stderr.trim();
-                    if msg.is_empty() {
-                        return Err(ExportError::StageFfmpegFailed {
-                            stage: "decode",
-                            status: decode_status.to_string(),
-                            stderr: "empty stderr".to_string(),
-                        });
-                    }
-                    return Err(ExportError::StageFfmpegFailed {
-                        stage: "decode",
-                        status: decode_status.to_string(),
-                        stderr: msg.to_string(),
-                    });
-                }
+                let _ = d.child.kill();
+                let _ = d.child.wait();
+                let _ = d.stderr_join.join();
             }
         }
 
@@ -6640,6 +6827,81 @@ mod tests {
     use motionloom::LayerEffectClip;
     use std::collections::HashMap;
     use std::time::Duration;
+
+    #[test]
+    fn motionloom_scene_generated_path_is_detected_for_overlay_alpha_decode() {
+        assert!(FfmpegExporter::is_motionloom_scene_generated_path(
+            "/Users/example/Documents/AnicaProjects/motionloom_generated/motionloom_scene_gpu_123.mp4"
+        ));
+        assert!(FfmpegExporter::is_motionloom_scene_generated_path(
+            "C:\\AnicaProjects\\motionloom_generated\\motionloom_scene_cpu_456.mov"
+        ));
+        assert!(!FfmpegExporter::is_motionloom_scene_generated_path(
+            "/Users/example/Videos/normal_black_background.mp4"
+        ));
+    }
+
+    #[test]
+    fn alpha_preserving_decode_filter_uses_transparent_pad_and_black_key() {
+        let filter = FfmpegExporter::build_clip_decode_rgba_filter(1920, 1080, 24, true);
+        assert!(filter.contains("pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black@0"));
+        assert!(filter.contains("colorkey=0x000000:0.025:0.0"));
+        assert!(filter.ends_with("format=rgba"));
+    }
+
+    #[test]
+    fn normal_decode_filter_keeps_opaque_black_pad() {
+        let filter = FfmpegExporter::build_clip_decode_rgba_filter(1920, 1080, 24, false);
+        assert!(filter.contains("pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black"));
+        assert!(!filter.contains("black@0"));
+        assert!(!filter.contains("colorkey="));
+    }
+
+    #[test]
+    fn key_near_black_to_alpha_preserves_non_black_pixels() {
+        let mut frame = vec![
+            0, 0, 0, 255, // pure black background
+            12, 10, 9, 255, // near-black compressed background
+            220, 64, 44, 255, // red button
+            255, 255, 255, 255, // white text
+        ];
+        FfmpegExporter::key_near_black_to_alpha_rgba(&mut frame);
+        assert_eq!(&frame[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&frame[4..8], &[0, 0, 0, 0]);
+        assert_eq!(&frame[8..12], &[220, 64, 44, 255]);
+        assert_eq!(&frame[12..16], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn unified_still_frame_padding_preserves_alpha() {
+        let mut src = image::RgbaImage::new(1, 1);
+        src.put_pixel(0, 0, image::Rgba([240, 40, 30, 255]));
+        let path = std::env::temp_dir().join(format!(
+            "anica_still_alpha_padding_{}_{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        src.save(&path).unwrap();
+
+        let frame =
+            FfmpegExporter::load_unified_still_frame_rgba(path.to_str().unwrap(), 4, 2).unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(&frame[3..4], &[0], "left padding must stay transparent");
+        assert_eq!(
+            &frame[(1 * 4)..(1 * 4 + 4)],
+            &[240, 40, 30, 255],
+            "scaled still content must stay opaque"
+        );
+        assert_eq!(
+            &frame[(3 * 4 + 3)..(3 * 4 + 4)],
+            &[0],
+            "right padding must stay transparent"
+        );
+    }
 
     const PROCESS_LAYER_FX_SCRIPT: &str = r#"
 <Graph fps={30} size={[1920,1080]}>

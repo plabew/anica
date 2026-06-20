@@ -355,7 +355,15 @@ impl RuntimeProgram {
                                 .or_else(|| pass_param(pass, "value"))
                                 .map(normalize_param_expr)
                                 .unwrap_or_else(|| "1.0".to_string());
-                            format!("({value_expr}) - 1.0")
+                            if let Ok(value) = value_expr.parse::<f32>() {
+                                if (-1.0..=1.0).contains(&value) {
+                                    value_expr
+                                } else {
+                                    format!("({value_expr}) - 1.0")
+                                }
+                            } else {
+                                format!("({value_expr}) - 1.0")
+                            }
                         };
                         validate_expr(&amount_expr).map_err(|e| RuntimeCompileError {
                             message: format!(
@@ -2657,5 +2665,92 @@ mod tests {
             texture_overlay.params.get("seed"),
             Some(&RuntimeProcessParamValue::Float(101.0))
         );
+    }
+
+    #[test]
+    fn runtime_brightness_multiplier_emits_additive_amount() {
+        let script = r#"
+<Graph fps={30} size={[1920,1080]}>
+  <Process id="brightness_post">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_brightness" kind="compute" effect="brightness"
+          in={["src"]} out={["out"]}
+          params={{ brightness: "1.3" }} />
+  </Process>
+  <Present from="brightness_post" />
+</Graph>
+"#;
+        let graph = parse_graph_script(script).expect("graph parse");
+        let runtime = compile_runtime_program(graph).expect("runtime compile");
+        let out = runtime.evaluate_frame(0);
+        let brightness = out
+            .process_effects
+            .iter()
+            .find(|effect| effect.effect_id == "brightness")
+            .expect("brightness runtime effect");
+        let Some(RuntimeProcessParamValue::Float(amount)) = brightness.params.get("amount") else {
+            panic!("brightness runtime effect did not expose amount");
+        };
+        assert!((*amount - 0.3).abs() < 1e-5, "unexpected amount: {amount}");
+    }
+
+    #[test]
+    fn runtime_brightness_small_numeric_value_is_additive_amount() {
+        let script = r#"
+<Graph fps={30} size={[1920,1080]}>
+  <Process id="brightness_post">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_brightness" kind="compute" effect="brightness"
+          in={["src"]} out={["out"]}
+          params={{ brightness: "0.3" }} />
+  </Process>
+  <Present from="brightness_post" />
+</Graph>
+"#;
+        let graph = parse_graph_script(script).expect("graph parse");
+        let runtime = compile_runtime_program(graph).expect("runtime compile");
+        let out = runtime.evaluate_frame(0);
+        let brightness = out
+            .process_effects
+            .iter()
+            .find(|effect| effect.effect_id == "brightness")
+            .expect("brightness runtime effect");
+        let Some(RuntimeProcessParamValue::Float(amount)) = brightness.params.get("amount") else {
+            panic!("brightness runtime effect did not expose amount");
+        };
+        assert!((*amount - 0.3).abs() < 1e-5, "unexpected amount: {amount}");
+    }
+
+    #[test]
+    fn runtime_brightness_negative_numeric_value_is_additive_amount() {
+        let script = r#"
+<Graph fps={30} size={[1920,1080]}>
+  <Process id="brightness_post">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
+    <Pass id="fx_brightness" kind="compute" effect="brightness"
+          in={["src"]} out={["out"]}
+          params={{ brightness: "-0.1" }} />
+  </Process>
+  <Present from="brightness_post" />
+</Graph>
+"#;
+        let graph = parse_graph_script(script).expect("graph parse");
+        let runtime = compile_runtime_program(graph).expect("runtime compile");
+        let out = runtime.evaluate_frame(0);
+        let brightness = out
+            .process_effects
+            .iter()
+            .find(|effect| effect.effect_id == "brightness")
+            .expect("brightness runtime effect");
+        let Some(RuntimeProcessParamValue::Float(amount)) = brightness.params.get("amount") else {
+            panic!("brightness runtime effect did not expose amount");
+        };
+        assert!((*amount + 0.1).abs() < 1e-5, "unexpected amount: {amount}");
     }
 }

@@ -435,8 +435,13 @@ impl ProcessWebGpuRenderer {
                 let amount = if pass_has_param(pass, "amount") {
                     process_param_f32(pass, &["amount"], time_norm, time_sec, 0.0)
                 } else {
-                    process_param_f32(pass, &["brightness", "value"], time_norm, time_sec, 1.0)
-                        - 1.0
+                    let value =
+                        process_param_f32(pass, &["brightness", "value"], time_norm, time_sec, 1.0);
+                    if (-1.0..=1.0).contains(&value) {
+                        value
+                    } else {
+                        value - 1.0
+                    }
                 };
                 (amount.clamp(-1.0, 1.0), 0.0, 0.0, 0.0, 1.0)
             }

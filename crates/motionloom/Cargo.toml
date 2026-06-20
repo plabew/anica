@@ -9,6 +9,7 @@ repository = "https://github.com/LOVELYZOMBIEYHO/anica"
 homepage = "https://github.com/LOVELYZOMBIEYHO/anica"
 documentation = "https://docs.rs/motionloom"
 readme = "README.md"
+keywords = ["video", "vfx", "webgpu", "motion-graphics", "dsl"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

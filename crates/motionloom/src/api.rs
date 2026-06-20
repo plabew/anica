@@ -62,7 +62,7 @@
 //! use motionloom::api::{process_effect_for_id, process_effects};
 //!
 //! for effect in process_effects() {
-//!     println!("{}: {}", effect.id, effect.label);
+//!     println!("{}: {}", effect.id, effect.display_name);
 //! }
 //!
 //! let bloom = process_effect_for_id("glow_bloom");

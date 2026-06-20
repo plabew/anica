@@ -140,7 +140,23 @@ fn save_waveform_file(path: &Path, peaks: &[f32]) -> Result<(), WaveformError> {
     Ok(())
 }
 
-fn probe_audio_channel_count(ffprobe_bin: &str, src: &Path) -> Option<usize> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioProbeResult {
+    Channels(usize),
+    NoAudio,
+    Unknown,
+}
+
+fn parse_audio_channel_probe_stdout(stdout: &str) -> AudioProbeResult {
+    stdout
+        .lines()
+        .find_map(|line| line.trim().parse::<usize>().ok())
+        .filter(|count| *count > 0)
+        .map(AudioProbeResult::Channels)
+        .unwrap_or(AudioProbeResult::NoAudio)
+}
+
+fn probe_audio_channel_count(ffprobe_bin: &str, src: &Path) -> AudioProbeResult {
     // Preserve the loudest channel when building the envelope instead of
     // letting a mono downmix hide stereo transients.
     let out = Command::new(ffprobe_bin)
@@ -156,15 +172,15 @@ fn probe_audio_channel_count(ffprobe_bin: &str, src: &Path) -> Option<usize> {
         ])
         .arg(src)
         .output()
-        .ok()?;
+        .ok();
+    let Some(out) = out else {
+        return AudioProbeResult::Unknown;
+    };
     if !out.status.success() {
-        return None;
+        return AudioProbeResult::Unknown;
     }
 
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find_map(|line| line.trim().parse::<usize>().ok())
-        .filter(|count| *count > 0)
+    parse_audio_channel_probe_stdout(&String::from_utf8_lossy(&out.stdout))
 }
 
 fn extract_peaks_from_pcm_bytes(
@@ -224,7 +240,20 @@ pub fn run_waveform_job(ffmpeg_bin: &str, job: &WaveformJob) -> Result<Vec<f32>,
 
     // Keep original channel peaks when ffprobe can describe the audio stream.
     let ffprobe_bin = ffprobe_from_ffmpeg(ffmpeg_bin);
-    let channel_count = probe_audio_channel_count(&ffprobe_bin, &job.src_path).unwrap_or(1);
+    let channel_count = match probe_audio_channel_count(&ffprobe_bin, &job.src_path) {
+        AudioProbeResult::Channels(count) => count,
+        AudioProbeResult::NoAudio => {
+            let peaks = vec![0.0; job.bucket_count];
+            save_waveform_file(&job.dst_path, &peaks)?;
+            info!(
+                "[Waveform] skip no-audio source {} -> {}",
+                job.src_path.to_string_lossy(),
+                job.dst_path.to_string_lossy()
+            );
+            return Ok(peaks);
+        }
+        AudioProbeResult::Unknown => 1,
+    };
 
     let mut args = vec![
         "-hide_banner".to_string(),
@@ -262,4 +291,25 @@ pub fn run_waveform_job(ffmpeg_bin: &str, job: &WaveformJob) -> Result<Vec<f32>,
 
     info!("[Waveform] ready {}", job.dst_path.to_string_lossy());
     Ok(peaks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AudioProbeResult, parse_audio_channel_probe_stdout};
+
+    #[test]
+    fn audio_probe_stdout_detects_channels() {
+        assert_eq!(
+            parse_audio_channel_probe_stdout("2\n"),
+            AudioProbeResult::Channels(2)
+        );
+    }
+
+    #[test]
+    fn audio_probe_stdout_detects_no_audio() {
+        assert_eq!(
+            parse_audio_channel_probe_stdout(""),
+            AudioProbeResult::NoAudio
+        );
+    }
 }

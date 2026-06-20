@@ -58,7 +58,9 @@ use gpui_video_renderer::{
     VIDEO_MAX_LOCAL_MASK_LAYERS, VideoElement, VideoLocalMaskLayer, bgra_cpu_safe_mode_notice,
     process_bgra_effects_with_params,
 };
-use motionloom::{BlurSharpenMode, RuntimeProcessEffectInstance, RuntimeProcessParamValue};
+use motionloom::{
+    BlurSharpenMode, GraphScript, RuntimeProcessEffectInstance, RuntimeProcessParamValue,
+};
 use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_graph_frame};
 use video_engine::{Position, Video, VideoOptions};
 
@@ -116,6 +118,25 @@ fn scene_layer_script_hash(script: &str) -> u64 {
     hasher.finish()
 }
 
+fn motionloom_graph_uses_timeline_input(graph: &GraphScript) -> bool {
+    graph
+        .inputs
+        .iter()
+        .any(|input| input.from.as_deref().is_some_and(is_timeline_input_ref))
+        || graph.textures.iter().any(|tex| {
+            tex.from.as_deref().is_some_and(is_timeline_input_ref)
+                || tex.input.as_deref().is_some_and(is_timeline_input_ref)
+        })
+}
+
+fn is_timeline_input_ref(value: &str) -> bool {
+    value.trim().starts_with("input:")
+}
+
+fn motionloom_graph_can_render_as_scene_layer_overlay(graph: &GraphScript) -> bool {
+    graph.has_scene_nodes() && !motionloom_graph_uses_timeline_input(graph)
+}
+
 fn scene_layer_script_meta(script: &str) -> Option<(u64, SceneLayerScriptMeta)> {
     let script = script.trim();
     if script.is_empty() {
@@ -131,12 +152,78 @@ fn scene_layer_script_meta(script: &str) -> Option<(u64, SceneLayerScriptMeta)> 
         .ok()
         .map(|graph| SceneLayerScriptMeta {
             fps: graph.fps.max(1.0),
-            has_scene: graph.has_scene_nodes(),
+            has_scene: motionloom_graph_can_render_as_scene_layer_overlay(&graph),
         });
     if let Ok(mut cache) = scene_layer_script_meta_cache().lock() {
         cache.insert(script_hash, parsed);
     }
     parsed.map(|meta| (script_hash, meta))
+}
+
+#[cfg(test)]
+mod scene_layer_script_meta_tests {
+    use super::*;
+
+    #[test]
+    fn process_layer_fx_with_timeline_input_is_not_scene_overlay() {
+        let script = r##"
+<Graph fps={30} duration="3s" size={[800,450]} renderSize={[800,450]}>
+  <Background color="#FFFFFF" />
+
+  <Process id="BrightnessProcess">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[800,450]} />
+    <Pass id="fx_brightness" kind="compute" effect="brightness"
+          in={["src"]} out={["out"]}
+          params={{ brightness: "0.3" }} />
+  </Process>
+
+  <Present from="BrightnessProcess" />
+</Graph>
+"##;
+
+        let Some((_, meta)) = scene_layer_script_meta(script) else {
+            panic!("expected valid layer script metadata");
+        };
+
+        assert!(!meta.has_scene);
+    }
+
+    #[test]
+    fn scene_process_without_timeline_input_can_render_as_scene_overlay() {
+        let script = r##"
+<Graph fps={30} duration="3s" size={[800,450]} renderSize={[800,450]}>
+  <Scene id="source_scene">
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="3s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="800" height="450" color="#101827" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Process id="scene_post">
+    <Tex id="src" fmt="rgba16f" from="scene:source_scene" />
+    <Tex id="out" fmt="rgba16f" size={[800,450]} />
+    <Pass id="fx_brightness" kind="compute" effect="brightness"
+          in={["src"]} out={["out"]}
+          params={{ brightness: "0.3" }} />
+  </Process>
+
+  <Present from="scene_post" />
+</Graph>
+"##;
+
+        let Some((_, meta)) = scene_layer_script_meta(script) else {
+            panic!("expected valid layer script metadata");
+        };
+
+        assert!(meta.has_scene);
+    }
 }
 
 fn motionloom_runtime_effect_to_bgra(
@@ -2119,7 +2206,8 @@ impl VideoPreview {
             && tint_lightness.abs() < 0.01
             && tint_alpha.abs() < 0.01
             && tone_map.is_none()
-            && light_sweep.is_none();
+            && light_sweep.is_none()
+            && process_effects.is_empty();
 
         // 3. Fast path: effects are at default — use clean base_data image.
         //    When transitioning from non-default → default (e.g. Layer FX dragged
@@ -2834,40 +2922,15 @@ impl VideoPreview {
     }
 
     fn get_clip_tint(gs: &GlobalState, clip_id: u64) -> Option<(f32, f32, f32, f32)> {
-        let layer_hsla = gs.layer_hsla_overlay_at(gs.playhead);
         if let Some(c) = gs.v1_clips.iter().find(|c| c.id == clip_id) {
-            let clip_hsla = c.get_hsla_overlay();
-            return Some(Self::blend_hsla_overlay(clip_hsla, layer_hsla));
+            return Some(c.get_hsla_overlay());
         }
         for track in &gs.video_tracks {
             if let Some(c) = track.clips.iter().find(|c| c.id == clip_id) {
-                let clip_hsla = c.get_hsla_overlay();
-                return Some(Self::blend_hsla_overlay(clip_hsla, layer_hsla));
+                return Some(c.get_hsla_overlay());
             }
         }
         None
-    }
-
-    fn blend_hsla_overlay(
-        base: (f32, f32, f32, f32),
-        layer: (f32, f32, f32, f32),
-    ) -> (f32, f32, f32, f32) {
-        let (base_h, base_s, base_l, base_a) = base;
-        let (layer_h, layer_s, layer_l, layer_a) = layer;
-        let layer_a = layer_a.clamp(0.0, 1.0);
-        let base_a = base_a.clamp(0.0, 1.0);
-        if layer_a <= 0.0 {
-            return (base_h, base_s, base_l, base_a);
-        }
-        if base_a <= 0.0 {
-            return (layer_h, layer_s, layer_l, layer_a);
-        }
-        let w = layer_a;
-        let out_h = (base_h * (1.0 - w) + layer_h * w).rem_euclid(360.0);
-        let out_s = (base_s * (1.0 - w) + layer_s * w).clamp(0.0, 1.0);
-        let out_l = (base_l * (1.0 - w) + layer_l * w).clamp(0.0, 1.0);
-        let out_a = 1.0 - (1.0 - base_a) * (1.0 - layer_a);
-        (out_h, out_s, out_l, out_a.clamp(0.0, 1.0))
     }
 
     fn get_clip_bcs(gs: &GlobalState, clip_id: u64) -> Option<(f32, f32, f32)> {
@@ -5185,6 +5248,17 @@ impl Render for VideoPreview {
         let mut subtitle_layer = div().absolute().inset_0();
         // Re-borrow gs for subtitle rendering after the clip loop released it.
         let gs = self.global.read(cx);
+        let (layer_hue, layer_sat, layer_light, layer_alpha) =
+            gs.layer_hsla_overlay_at(gs.playhead);
+        let mut layer_hsla_overlay = div().absolute().inset_0();
+        if layer_alpha > 0.001 {
+            layer_hsla_overlay = layer_hsla_overlay.bg(gpui::hsla(
+                layer_hue / 360.0,
+                layer_sat,
+                layer_light,
+                layer_alpha,
+            ));
+        }
         let visible_subtitles = Self::resolve_visible_subtitles(gs, gs.playhead);
         for sub in visible_subtitles {
             let (pos_x, pos_y, font_size_raw) = gs.effective_subtitle_transform(&sub);
@@ -5257,6 +5331,7 @@ impl Render for VideoPreview {
                                     .bg(black()) // Canvas background color.
                                     .overflow_hidden() // Clip overflow content (FFmpeg-like).
                                     .child(clip_stack) // Insert all video layers.
+                                    .child(layer_hsla_overlay)
                                     .child(subtitle_layer),
                             )
                             .when_some(cpu_safe_mode_notice, |s, note| {

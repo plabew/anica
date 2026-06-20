@@ -122,16 +122,7 @@ fn apply_process_pass(
             image
         }
         Some(ProcessEffect::Brightness) => {
-            let amount = if pass
-                .params
-                .iter()
-                .any(|param| param.key.eq_ignore_ascii_case("amount"))
-            {
-                process_param_f32(pass, &["amount"], time_norm, time_sec, 0.0)
-            } else {
-                process_param_f32(pass, &["brightness", "value"], time_norm, time_sec, 1.0) - 1.0
-            }
-            .clamp(-1.0, 1.0);
+            let amount = process_brightness_amount(pass, time_norm, time_sec).clamp(-1.0, 1.0);
             apply_brightness(&image, amount)
         }
         Some(ProcessEffect::GlowStack)
@@ -143,6 +134,22 @@ fn apply_process_pass(
             image
         }
         None => image,
+    }
+}
+
+fn process_brightness_amount(pass: &PassNode, time_norm: f32, time_sec: f32) -> f32 {
+    if pass
+        .params
+        .iter()
+        .any(|param| param.key.eq_ignore_ascii_case("amount"))
+    {
+        return process_param_f32(pass, &["amount"], time_norm, time_sec, 0.0);
+    }
+    let value = process_param_f32(pass, &["brightness", "value"], time_norm, time_sec, 1.0);
+    if (-1.0..=1.0).contains(&value) {
+        value
+    } else {
+        value - 1.0
     }
 }
 
