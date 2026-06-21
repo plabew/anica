@@ -230,7 +230,7 @@ pub(crate) fn scene_layer_local_transform(
     time_norm: f32,
     time_sec: f32,
 ) -> Result<Affine2, MotionLoomSceneRenderError> {
-    scene_local_transform(
+    let base = scene_local_transform(
         &layer.x,
         &layer.y,
         &layer.rotation,
@@ -243,7 +243,34 @@ pub(crate) fn scene_layer_local_transform(
         &layer.transform_origin_y,
         time_norm,
         time_sec,
-    )
+    )?;
+    if !layer.is_3d {
+        return Ok(base);
+    }
+
+    // Scene Layer3D is AE-like 2.5D: flat 2D content receives depth scale and
+    // rotation foreshortening, but it remains a composited scene layer.
+    let z = eval_scene_number(&layer.z, time_norm, time_sec)?;
+    let rotation_x = eval_scene_number(&layer.rotation_x, time_norm, time_sec)?;
+    let rotation_y = eval_scene_number(&layer.rotation_y, time_norm, time_sec)?;
+    let perspective = eval_scene_number(&layer.perspective, time_norm, time_sec)?
+        .abs()
+        .clamp(1.0, 100_000.0);
+    let depth_scale = (perspective / (perspective + z).max(1.0)).clamp(0.01, 64.0);
+    let (sin_x, cos_x) = rotation_x.to_radians().sin_cos();
+    let (sin_y, cos_y) = rotation_y.to_radians().sin_cos();
+    let foreshorten_x = clamp_nonzero_signed_scale(cos_y * depth_scale);
+    let foreshorten_y = clamp_nonzero_signed_scale(cos_x * depth_scale);
+    let skew_x = (-sin_y * 0.34 * depth_scale).clamp(-2.5, 2.5);
+    let skew_y = (sin_x * 0.34 * depth_scale).clamp(-2.5, 2.5);
+    Ok(base.mul(Affine2 {
+        m00: foreshorten_x,
+        m01: skew_x,
+        m02: 0.0,
+        m10: skew_y,
+        m11: foreshorten_y,
+        m12: 0.0,
+    }))
 }
 
 pub(crate) fn scene_use_local_transform(

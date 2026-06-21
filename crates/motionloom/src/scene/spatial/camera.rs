@@ -431,7 +431,7 @@ fn resolve_camera_anchor(
     Ok(viewport_origin + offset)
 }
 
-fn find_scene_node_anchor(
+pub(crate) fn find_scene_node_anchor(
     nodes: &[SceneNode],
     id: &str,
     transform: Affine2,

@@ -671,6 +671,8 @@ pub struct GroupNode {
     pub deform_amount: String,
     #[serde(default)]
     pub mask: Option<String>,
+    #[serde(default)]
+    pub mask_from: Option<String>,
     #[serde(default = "default_scene_mask_mode")]
     pub mask_mode: String,
     pub opacity: String,
@@ -717,6 +719,8 @@ pub struct RepeatNode {
 #[serde(rename_all = "camelCase")]
 pub struct MaskNode {
     pub id: Option<String>,
+    #[serde(default)]
+    pub follow: Option<String>,
     pub shape: String,
     pub x: String,
     pub y: String,
@@ -772,9 +776,19 @@ pub struct SceneLayerNode {
     pub id: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub is_3d: bool,
     pub x: String,
     pub y: String,
+    #[serde(default = "default_scene_zero")]
+    pub z: String,
+    #[serde(default = "default_scene_zero")]
+    pub rotation_x: String,
+    #[serde(default = "default_scene_zero")]
+    pub rotation_y: String,
     pub rotation: String,
+    #[serde(default = "default_scene_perspective")]
+    pub perspective: String,
     pub scale: String,
     #[serde(default = "default_scene_one")]
     pub scale_x: String,
@@ -805,10 +819,14 @@ pub struct SceneLayerNode {
     pub out: String,
     #[serde(default)]
     pub mask: Option<String>,
+    #[serde(default)]
+    pub mask_from: Option<String>,
     #[serde(default = "default_scene_mask_mode")]
     pub mask_mode: String,
     #[serde(default)]
     pub matte: Option<String>,
+    #[serde(default)]
+    pub matte_from: Option<String>,
     #[serde(default = "default_scene_matte_mode")]
     pub matte_mode: String,
     #[serde(default = "default_scene_false")]
@@ -848,6 +866,10 @@ pub struct CameraNode {
 
 fn default_scene_mask_mode() -> String {
     "alpha".to_string()
+}
+
+fn default_scene_perspective() -> String {
+    "900".to_string()
 }
 
 fn default_scene_matte_mode() -> String {

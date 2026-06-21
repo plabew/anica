@@ -5,7 +5,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 <Graph fps={30} duration="1s" size={[640,360]}>
   <Background color="#101827" />
   <Scene id="compat_scene">
-    <Circle x="320" y="180" radius="96" color="#4CC9F0" />
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Circle x="320" y="180" radius="96" color="#4CC9F0" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
   <Present from="compat_scene" />
 </Graph>

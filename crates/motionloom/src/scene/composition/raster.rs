@@ -244,6 +244,58 @@ pub(crate) fn composite_layer_affine_clipped(
     }
 }
 
+pub(crate) fn composite_layer_projected_quad_blend_clipped(
+    canvas: &mut RgbaImage,
+    layer: &RgbaImage,
+    quad: [(f32, f32, f32); 4],
+    opacity: f32,
+    blend: SceneBlendMode,
+    clip: Option<CameraRect>,
+) {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if opacity <= 0.0001 || layer.width() == 0 || layer.height() == 0 {
+        return;
+    }
+
+    // Split the projected plane into two triangles. The third component is
+    // reciprocal depth and keeps sampling perspective-correct across the card.
+    let src = [
+        Point2::new(0.0, 0.0),
+        Point2::new(layer.width().saturating_sub(1) as f32, 0.0),
+        Point2::new(
+            layer.width().saturating_sub(1) as f32,
+            layer.height().saturating_sub(1) as f32,
+        ),
+        Point2::new(0.0, layer.height().saturating_sub(1) as f32),
+    ];
+    let dst = [
+        Point2::new(quad[0].0, quad[0].1),
+        Point2::new(quad[1].0, quad[1].1),
+        Point2::new(quad[2].0, quad[2].1),
+        Point2::new(quad[3].0, quad[3].1),
+    ];
+    raster_projected_triangle(
+        canvas,
+        layer,
+        [src[0], src[1], src[2]],
+        [dst[0], dst[1], dst[2]],
+        [quad[0].2, quad[1].2, quad[2].2],
+        opacity,
+        blend,
+        clip,
+    );
+    raster_projected_triangle(
+        canvas,
+        layer,
+        [src[0], src[2], src[3]],
+        [dst[0], dst[2], dst[3]],
+        [quad[0].2, quad[2].2, quad[3].2],
+        opacity,
+        blend,
+        clip,
+    );
+}
+
 pub(crate) fn sample_layer_bilinear(layer: &RgbaImage, x: f32, y: f32) -> Option<[u8; 4]> {
     if x < -0.5 || y < -0.5 || x > layer.width() as f32 - 0.5 || y > layer.height() as f32 - 0.5 {
         return None;
@@ -284,6 +336,95 @@ pub(crate) fn sample_layer_bilinear(layer: &RgbaImage, x: f32, y: f32) -> Option
         (premul[2] / alpha).round().clamp(0.0, 255.0) as u8,
         (alpha * 255.0).round().clamp(0.0, 255.0) as u8,
     ])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raster_projected_triangle(
+    canvas: &mut RgbaImage,
+    layer: &RgbaImage,
+    src: [Point2; 3],
+    dst: [Point2; 3],
+    reciprocal_depth: [f32; 3],
+    opacity: f32,
+    blend: SceneBlendMode,
+    clip: Option<CameraRect>,
+) {
+    let min_x = dst
+        .iter()
+        .map(|point| point.x)
+        .fold(f32::INFINITY, f32::min)
+        .floor() as i32
+        - 1;
+    let min_y = dst
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::INFINITY, f32::min)
+        .floor() as i32
+        - 1;
+    let max_x = dst
+        .iter()
+        .map(|point| point.x)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .ceil() as i32
+        + 1;
+    let max_y = dst
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .ceil() as i32
+        + 1;
+
+    let mut x0 = min_x.clamp(0, canvas.width() as i32);
+    let mut y0 = min_y.clamp(0, canvas.height() as i32);
+    let mut x1 = max_x.clamp(0, canvas.width() as i32);
+    let mut y1 = max_y.clamp(0, canvas.height() as i32);
+    if let Some(clip) = clip {
+        x0 = x0.max(clip.x.floor() as i32);
+        y0 = y0.max(clip.y.floor() as i32);
+        x1 = x1.min((clip.x + clip.width).ceil() as i32);
+        y1 = y1.min((clip.y + clip.height).ceil() as i32);
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+
+    let denom = triangle_barycentric_denominator(dst);
+    if denom.abs() <= 0.00001 {
+        return;
+    }
+
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let point = Point2::new(x as f32, y as f32);
+            let Some((w0, w1, w2)) = triangle_barycentric(point, dst, denom) else {
+                continue;
+            };
+            if w0 < -0.001 || w1 < -0.001 || w2 < -0.001 {
+                continue;
+            }
+            let weighted_depth =
+                reciprocal_depth[0] * w0 + reciprocal_depth[1] * w1 + reciprocal_depth[2] * w2;
+            if weighted_depth.abs() <= 0.00001 {
+                continue;
+            }
+            let src_x = (src[0].x * reciprocal_depth[0] * w0
+                + src[1].x * reciprocal_depth[1] * w1
+                + src[2].x * reciprocal_depth[2] * w2)
+                / weighted_depth;
+            let src_y = (src[0].y * reciprocal_depth[0] * w0
+                + src[1].y * reciprocal_depth[1] * w1
+                + src[2].y * reciprocal_depth[2] * w2)
+                / weighted_depth;
+            let Some(mut pixel) = sample_layer_bilinear(layer, src_x, src_y) else {
+                continue;
+            };
+            if pixel[3] == 0 {
+                continue;
+            }
+            pixel[3] = ((pixel[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+            blend_pixel_with_mode(canvas, x as u32, y as u32, pixel, blend);
+        }
+    }
 }
 
 pub(crate) fn draw_rgba_image(

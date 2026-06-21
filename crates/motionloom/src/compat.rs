@@ -252,6 +252,19 @@ fn inspect_scene_gpu_feature_compatibility(
                     for _gradient in &defs.gradients {
                         features.has_gradient = true;
                     }
+                    for mask in &defs.masks {
+                        features.has_mask_def = true;
+                        if mask.follow.is_some() {
+                            features.has_mask_follow = true;
+                        }
+                        scan_nodes(&mask.children, features);
+                    }
+                    for precompose in &defs.precomposes {
+                        scan_nodes(&precompose.children, features);
+                    }
+                    for component in &defs.components {
+                        scan_nodes(&component.children, features);
+                    }
                 }
                 SceneNode::Timeline(timeline) => {
                     scan_nodes(&timeline.children, features);
@@ -266,6 +279,9 @@ fn inspect_scene_gpu_feature_compatibility(
                     scan_nodes(&chain.children, features);
                 }
                 SceneNode::Group(group) => {
+                    if group.mask.is_some() || group.mask_from.is_some() {
+                        features.has_scene_mask = true;
+                    }
                     scan_nodes(&group.children, features);
                 }
                 SceneNode::Part(part) => {
@@ -278,12 +294,22 @@ fn inspect_scene_gpu_feature_compatibility(
                     scan_nodes(&character.children, features);
                 }
                 SceneNode::Layer(layer) => {
+                    if layer.mask.is_some()
+                        || layer.mask_from.is_some()
+                        || layer.matte_from.is_some()
+                    {
+                        features.has_scene_mask = true;
+                    }
                     scan_nodes(&layer.children, features);
                 }
                 SceneNode::Precompose(precompose) => {
                     scan_nodes(&precompose.children, features);
                 }
                 SceneNode::Mask(mask) => {
+                    features.has_mask_def = true;
+                    if mask.follow.is_some() {
+                        features.has_mask_follow = true;
+                    }
                     scan_nodes(&mask.children, features);
                 }
                 _ => {}
@@ -375,6 +401,30 @@ fn inspect_scene_gpu_feature_compatibility(
             "Path trimStart/trimEnd present; GPU path supports stroke trimming.",
         );
     }
+    if features.has_scene_mask {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "scene_mask",
+            "Scene mask/matte present; GPU path supports group and layer alpha/luma masks.",
+        );
+    }
+    if features.has_mask_def {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "mask_def",
+            "<Mask> definitions present; GPU path supports rect/circle/path mask textures.",
+        );
+    }
+    if features.has_mask_follow {
+        push_info(
+            issues,
+            GpuCompatibilityTarget::NativeScenePreview,
+            "mask_follow",
+            "<Mask follow=\"node:id\"> present; mask position follows the referenced scene node anchor.",
+        );
+    }
 }
 
 #[derive(Default)]
@@ -387,6 +437,9 @@ struct SceneGpuFeatures {
     has_complex_expr: bool,
     has_advanced_text: bool,
     has_trim_path: bool,
+    has_scene_mask: bool,
+    has_mask_def: bool,
+    has_mask_follow: bool,
 }
 
 fn inspect_wasm_process_compatibility(
@@ -552,6 +605,42 @@ mod tests {
         assert_eq!(report.likely_preview_path, ScenePreviewPath::WindowsD3D);
         #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
         assert_eq!(report.likely_preview_path, ScenePreviewPath::CpuBgra);
+    }
+
+    #[test]
+    fn mask_follow_reports_scene_gpu_info() {
+        let report = inspect_gpu_compatibility(
+            r##"
+<Graph fps={30} duration="1s" size={[320,180]}>
+  <Scene id="demo_scene">
+    <Defs>
+      <Mask id="spot" follow="node:target" shape="circle" x="0" y="0" radius="32" />
+    </Defs>
+    <Timeline>
+      <Track>
+        <Sequence duration="1s">
+          <Layer>
+            <Circle id="target" x="160" y="90" radius="4" color="#FFFFFF" opacity="0" />
+            <Group mask="spot">
+              <Rect x="0" y="0" width="320" height="180" color="#FF0000" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="demo_scene" />
+</Graph>
+"##,
+        )
+        .expect("compatibility report");
+
+        assert!(report.can_use_native_scene_preview);
+        assert!(report.issues.iter().any(|issue| {
+            issue.target == GpuCompatibilityTarget::NativeScenePreview
+                && issue.severity == GpuCompatibilitySeverity::Info
+                && issue.code == "mask_follow"
+        }));
     }
 
     #[test]

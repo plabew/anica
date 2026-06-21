@@ -20,5 +20,6 @@ pub(crate) use raster::{
     apply_alpha_mask, apply_alpha_mask_with_invert, apply_deform_grid, blend_pixel,
     blend_pixel_with_mode, composite_layer, composite_layer_affine, composite_layer_affine_blend,
     composite_layer_affine_blend_clipped, composite_layer_affine_clipped,
-    composite_transformed_layer, composite_transformed_layer_anchored, draw_rgba_image,
+    composite_layer_projected_quad_blend_clipped, composite_transformed_layer,
+    composite_transformed_layer_anchored, draw_rgba_image,
 };

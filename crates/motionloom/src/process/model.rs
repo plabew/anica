@@ -337,12 +337,26 @@ pub struct PassNode {
     #[serde(rename = "out")]
     pub outputs: Vec<ResourceRef>,
     pub params: Vec<PassParam>,
+    #[serde(default)]
+    pub mask: Option<String>,
+    #[serde(default = "default_pass_mask_mode")]
+    pub mask_mode: String,
+    #[serde(default = "default_pass_false")]
+    pub mask_invert: String,
     pub iterate: Option<Quality<u32>>,
     pub pingpong: Option<String>,
     pub cache: Option<PassCache>,
     pub blend: Option<BlendMode>,
     pub load_op: Option<LoadOp>,
     pub store_op: Option<StoreOp>,
+}
+
+fn default_pass_mask_mode() -> String {
+    "alpha".to_string()
+}
+
+fn default_pass_false() -> String {
+    "false".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

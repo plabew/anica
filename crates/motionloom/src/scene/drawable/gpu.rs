@@ -55,6 +55,7 @@ pub(crate) struct GpuSceneNativeTexture {
     pub(crate) texture: std::sync::Arc<wgpu::Texture>,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) _keepalive_textures: Vec<std::sync::Arc<wgpu::Texture>>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +120,7 @@ pub(crate) struct GpuSceneTextureMatte {
 pub(crate) struct GpuSceneTextureLayer {
     pub(crate) source: GpuSceneTextureSource,
     pub(crate) transform: Affine2,
+    pub(crate) projected_quad: Option<[(f32, f32, f32); 4]>,
     pub(crate) opacity: f32,
     pub(crate) blend: SceneBlendMode,
     pub(crate) matte: Option<GpuSceneTextureMatte>,
@@ -596,6 +598,32 @@ pub(crate) fn texture_layer_bounds(
     Some((x0, y0, x1 - x0, y1 - y0))
 }
 
+pub(crate) fn texture_layer_projected_bounds(
+    quad: [(f32, f32, f32); 4],
+    canvas_w: u32,
+    canvas_h: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let mut bx0 = f32::INFINITY;
+    let mut by0 = f32::INFINITY;
+    let mut bx1 = f32::NEG_INFINITY;
+    let mut by1 = f32::NEG_INFINITY;
+    for (x, y, _) in quad {
+        bx0 = bx0.min(x);
+        by0 = by0.min(y);
+        bx1 = bx1.max(x);
+        by1 = by1.max(y);
+    }
+    let pad = 2.0;
+    let x0 = (bx0 - pad).floor().clamp(0.0, canvas_w as f32) as u32;
+    let y0 = (by0 - pad).floor().clamp(0.0, canvas_h as f32) as u32;
+    let x1 = (bx1 + pad).ceil().clamp(0.0, canvas_w as f32) as u32;
+    let y1 = (by1 + pad).ceil().clamp(0.0, canvas_h as f32) as u32;
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn raster_texture_layer(
     texture: std::sync::Arc<wgpu::Texture>,
@@ -626,8 +654,10 @@ pub(crate) fn raster_texture_layer(
             texture,
             width: source_w,
             height: source_h,
+            _keepalive_textures: Vec::new(),
         }),
         transform: transform.mul(local_transform),
+        projected_quad: None,
         opacity,
         blend: SceneBlendMode::Normal,
         matte: None,
@@ -649,7 +679,7 @@ pub(crate) fn matte_texture_uniform(
     matte_h: u32,
     matte_mode: GpuSceneMatteMode,
     invert_matte: bool,
-) -> Result<[u8; 96], MotionLoomSceneRenderError> {
+) -> Result<[u8; 160], MotionLoomSceneRenderError> {
     let inverse =
         layer
             .transform
@@ -657,11 +687,18 @@ pub(crate) fn matte_texture_uniform(
             .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
                 message: "texture transform is not invertible".to_string(),
             })?;
-    let point_sample_source = texture_layer_is_pixel_aligned_1_to_1(layer.transform);
+    let point_sample_source =
+        layer.projected_quad.is_none() && texture_layer_is_pixel_aligned_1_to_1(layer.transform);
     let point_sample_matte = point_sample_source
         && matte_mode != GpuSceneMatteMode::None
         && matte_w == image_w
         && matte_h == image_h;
+    let quad = layer.projected_quad.unwrap_or([
+        (0.0, 0.0, 1.0),
+        (image_w as f32, 0.0, 1.0),
+        (image_w as f32, image_h as f32, 1.0),
+        (0.0, image_h as f32, 1.0),
+    ]);
     let values = [
         canvas_w as f32,
         canvas_h as f32,
@@ -682,13 +719,33 @@ pub(crate) fn matte_texture_uniform(
         inverse.m00,
         inverse.m01,
         inverse.m02,
-        0.0,
+        if layer.projected_quad.is_some() {
+            1.0
+        } else {
+            0.0
+        },
         inverse.m10,
         inverse.m11,
         inverse.m12,
         0.0,
+        quad[0].0,
+        quad[0].1,
+        quad[0].2,
+        0.0,
+        quad[1].0,
+        quad[1].1,
+        quad[1].2,
+        0.0,
+        quad[2].0,
+        quad[2].1,
+        quad[2].2,
+        0.0,
+        quad[3].0,
+        quad[3].1,
+        quad[3].2,
+        0.0,
     ];
-    let mut uniform = [0u8; 96];
+    let mut uniform = [0u8; 160];
     for (ix, value) in values.iter().enumerate() {
         uniform[ix * 4..ix * 4 + 4].copy_from_slice(&value.to_ne_bytes());
     }

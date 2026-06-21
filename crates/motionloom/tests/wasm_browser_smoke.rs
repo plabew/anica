@@ -13,7 +13,7 @@ mod wasm_tests {
 
     use motionloom::wasm_api::{
         WasmSceneRenderer, WasmWorldRenderer, motionloom_document_type, motionloom_parse_summary,
-        motionloom_render_scene_frame, motionloom_render_scene_frame_with_profile,
+        motionloom_render_scene_frame_with_profile,
     };
 
     // These tests do not require browser-only APIs, so they run in Node.js by
@@ -63,19 +63,78 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
-    async fn standalone_render_scene_frame_produces_rgba_buffer() {
-        let buffer = motionloom_render_scene_frame(COLOR_SCENE, 0, 32, 32)
+    async fn standalone_render_scene_frame_with_cpu_profile_produces_rgba_buffer() {
+        // Node-based wasm-bindgen tests do not run on the browser main thread,
+        // so WebGPU initialization can panic inside wgpu before fallback can run.
+        // Keep this smoke test CPU-only; browser WebGPU canvas paths are exercised
+        // manually from the landing page.
+        let buffer = motionloom_render_scene_frame_with_profile(COLOR_SCENE, 0, 32, 32, "cpu")
             .await
-            .expect("standalone render frame");
+            .expect("standalone cpu render frame");
         assert_eq!(buffer.len(), 32 * 32 * 4);
     }
 
     #[wasm_bindgen_test]
-    async fn render_scene_frame_with_gpu_cpu_fallback() {
-        let buffer = motionloom_render_scene_frame_with_profile(COLOR_SCENE, 0, 32, 32, "gpu-cpu")
-            .await
-            .expect("gpu-cpu render frame");
-        assert_eq!(buffer.len(), 32 * 32 * 4);
+    async fn render_layer3d_scene_frame_produces_rgba_buffer() {
+        let script = r##"<Graph fps={30} duration="1s" size={[96,64]}>
+  <Background color="#000000" />
+  <Scene id="stage">
+    <Timeline>
+      <Track id="main" z="0">
+        <Sequence duration="1s">
+          <Layer3D id="card"
+                   x="18" y="12" z="-24"
+                   rotationX="12"
+                   rotationY="-24"
+                   perspective="180"
+                   transformOriginX="30"
+                   transformOriginY="20">
+            <Rect x="0" y="0" width="60" height="40" color="#ff8800" />
+            <Rect x="10" y="10" width="40" height="20" color="#fff2b8" />
+          </Layer3D>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="stage" />
+</Graph>"##;
+
+        let mut renderer = WasmSceneRenderer::new(script, "cpu").expect("layer3d renderer");
+        let buffer = renderer.render_frame(0).await.expect("render layer3d frame");
+        assert_eq!(buffer.len(), 96 * 64 * 4);
+        assert!(buffer.chunks_exact(4).any(|px| px[0] > 160 && px[1] > 60));
+    }
+
+    #[wasm_bindgen_test]
+    async fn render_mask_scene_frame_produces_rgba_buffer() {
+        let script = r##"<Graph fps={30} duration="1s" size={[64,64]}>
+  <Background color="#000000" />
+  <Scene id="stage">
+    <Defs>
+      <Mask id="left_mask" shape="rect" x="0" y="0" width="32" height="64" />
+    </Defs>
+    <Timeline>
+      <Track id="main" z="0">
+        <Sequence duration="1s">
+          <Layer>
+            <Group mask="left_mask">
+              <Rect x="0" y="0" width="64" height="64" color="#00ff00" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="stage" />
+</Graph>"##;
+
+        let mut renderer = WasmSceneRenderer::new(script, "cpu").expect("mask renderer");
+        let buffer = renderer.render_frame(0).await.expect("render mask frame");
+        assert_eq!(buffer.len(), 64 * 64 * 4);
+        let left = &buffer[4 * (32 * 64 + 16)..4 * (32 * 64 + 16) + 4];
+        let right = &buffer[4 * (32 * 64 + 48)..4 * (32 * 64 + 48) + 4];
+        assert!(left[1] > 180, "left side should be green: {left:?}");
+        assert!(right[1] < 40, "right side should remain black: {right:?}");
     }
 
     #[wasm_bindgen_test]

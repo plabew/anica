@@ -40,7 +40,8 @@ pub(crate) fn scene_nodes_require_cpu_scene_compositing(nodes: &[SceneNode]) -> 
     nodes.iter().any(|node| match node {
         SceneNode::Precompose(_) => true,
         SceneNode::Layer(layer) => {
-            layer.source.is_some()
+            layer.is_3d
+                || layer.source.is_some()
                 || layer.mask.is_some()
                 || layer.matte.is_some()
                 || layer.effect.is_some()

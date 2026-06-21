@@ -1466,6 +1466,25 @@ fn parse_scene_nodes(
             i = end_ix + 1;
             continue;
         }
+        if starts_open_tag(line, "Layer3D") {
+            let (tag, tag_end_ix) = collect_tag_block(lines, i, '>', false)?;
+            if is_self_closing_tag(&tag) {
+                nodes.push(SceneNode::Layer(parse_scene_layer_node(
+                    &tag,
+                    i + 1,
+                    Vec::new(),
+                    true,
+                    true,
+                )?));
+                i = tag_end_ix + 1;
+            } else {
+                let (layer, end_ix) =
+                    parse_scene_layer_block(lines, i, brush_ctx, "Layer3D", true)?;
+                nodes.push(SceneNode::Layer(layer));
+                i = end_ix + 1;
+            }
+            continue;
+        }
         if starts_open_tag(line, "Layer") {
             let (tag, tag_end_ix) = collect_tag_block(lines, i, '>', false)?;
             if is_self_closing_tag(&tag) {
@@ -1474,10 +1493,11 @@ fn parse_scene_nodes(
                     i + 1,
                     Vec::new(),
                     true,
+                    false,
                 )?));
                 i = tag_end_ix + 1;
             } else {
-                let (layer, end_ix) = parse_scene_layer_block(lines, i, brush_ctx)?;
+                let (layer, end_ix) = parse_scene_layer_block(lines, i, brush_ctx, "Layer", false)?;
                 nodes.push(SceneNode::Layer(layer));
                 i = end_ix + 1;
             }
@@ -3315,6 +3335,12 @@ fn parse_group_node(
         .or_else(|| attr_value(block, "mask_id"))
         .map(|v| strip_wrappers(&v).to_string())
         .filter(|v| !v.trim().is_empty());
+    let mask_from = attr_value(block, "maskFrom")
+        .or_else(|| attr_value(block, "mask_from"))
+        .or_else(|| attr_value(block, "matteFrom"))
+        .or_else(|| attr_value(block, "matte_from"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .filter(|v| !v.trim().is_empty());
     let mask_mode = attr_value(block, "maskMode")
         .or_else(|| attr_value(block, "mask_mode"))
         .map(|v| strip_wrappers(&v).to_string())
@@ -3340,6 +3366,7 @@ fn parse_group_node(
         grid_to,
         deform_amount,
         mask,
+        mask_from,
         mask_mode,
         opacity,
         children,
@@ -3476,6 +3503,11 @@ fn parse_mask_node(
     children: Vec<SceneNode>,
 ) -> Result<MaskNode, GraphParseError> {
     let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let follow = attr_value(block, "follow")
+        .or_else(|| attr_value(block, "target"))
+        .or_else(|| attr_value(block, "followTarget"))
+        .or_else(|| attr_value(block, "follow_target"))
+        .map(|v| strip_wrappers(&v).to_string());
     let shape = attr_value(block, "shape")
         .map(|v| strip_wrappers(&v).to_string())
         .unwrap_or_else(|| "rect".to_string());
@@ -3505,6 +3537,7 @@ fn parse_mask_node(
         .unwrap_or_else(|| "1.0".to_string());
     Ok(MaskNode {
         id,
+        follow,
         shape,
         x,
         y,
@@ -3522,13 +3555,15 @@ fn parse_scene_layer_block(
     lines: &[&str],
     start: usize,
     brush_ctx: &BrushParseContext,
+    tag_name: &str,
+    is_3d: bool,
 ) -> Result<(SceneLayerNode, usize), GraphParseError> {
     let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
-    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Layer")?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, tag_name)?;
     let mut child_ctx = brush_ctx.clone();
     let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
     Ok((
-        parse_scene_layer_node(&open_tag, start + 1, children, false)?,
+        parse_scene_layer_node(&open_tag, start + 1, children, false, is_3d)?,
         close_ix,
     ))
 }
@@ -3538,6 +3573,7 @@ fn parse_scene_layer_node(
     line: usize,
     children: Vec<SceneNode>,
     require_source: bool,
+    is_3d: bool,
 ) -> Result<SceneLayerNode, GraphParseError> {
     let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
     let source = attr_value(block, "source")
@@ -3557,9 +3593,29 @@ fn parse_scene_layer_node(
     let y = attr_value(block, "y")
         .map(|v| strip_wrappers(&v).to_string())
         .unwrap_or_else(|| "0".to_string());
-    let rotation = attr_value(block, "rotation")
+    let z = attr_value(block, "z")
+        .or_else(|| attr_value(block, "translateZ"))
+        .or_else(|| attr_value(block, "translate_z"))
         .map(|v| strip_wrappers(&v).to_string())
         .unwrap_or_else(|| "0".to_string());
+    let rotation_x = attr_value(block, "rotationX")
+        .or_else(|| attr_value(block, "rotation_x"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let rotation_y = attr_value(block, "rotationY")
+        .or_else(|| attr_value(block, "rotation_y"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let rotation = attr_value(block, "rotation")
+        .or_else(|| attr_value(block, "rotationZ"))
+        .or_else(|| attr_value(block, "rotation_z"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let perspective = attr_value(block, "perspective")
+        .or_else(|| attr_value(block, "cameraDistance"))
+        .or_else(|| attr_value(block, "camera_distance"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "900".to_string());
     let scale = attr_value(block, "scale")
         .map(|v| strip_wrappers(&v).to_string())
         .unwrap_or_else(|| "1.0".to_string());
@@ -3628,6 +3684,10 @@ fn parse_scene_layer_node(
         .or_else(|| attr_value(block, "mask_id"))
         .map(|v| strip_wrappers(&v).to_string())
         .filter(|v| !v.trim().is_empty());
+    let mask_from = attr_value(block, "maskFrom")
+        .or_else(|| attr_value(block, "mask_from"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .filter(|v| !v.trim().is_empty());
     let mask_mode = attr_value(block, "maskMode")
         .or_else(|| attr_value(block, "mask_mode"))
         .map(|v| strip_wrappers(&v).to_string())
@@ -3635,6 +3695,12 @@ fn parse_scene_layer_node(
     let matte = attr_value(block, "matte")
         .or_else(|| attr_value(block, "trackMatte"))
         .or_else(|| attr_value(block, "track_matte"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .filter(|v| !v.trim().is_empty());
+    let matte_from = attr_value(block, "matteFrom")
+        .or_else(|| attr_value(block, "matte_from"))
+        .or_else(|| attr_value(block, "maskFrom"))
+        .or_else(|| attr_value(block, "mask_from"))
         .map(|v| strip_wrappers(&v).to_string())
         .filter(|v| !v.trim().is_empty());
     let matte_mode = attr_value(block, "matteMode")
@@ -3651,9 +3717,14 @@ fn parse_scene_layer_node(
     Ok(SceneLayerNode {
         id,
         source,
+        is_3d,
         x,
         y,
+        z,
+        rotation_x,
+        rotation_y,
         rotation,
+        perspective,
         scale,
         scale_x,
         scale_y,
@@ -3670,8 +3741,10 @@ fn parse_scene_layer_node(
         playback_rate,
         out,
         mask,
+        mask_from,
         mask_mode,
         matte,
+        matte_from,
         matte_mode,
         invert_matte,
         children,

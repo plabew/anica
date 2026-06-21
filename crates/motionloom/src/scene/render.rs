@@ -39,10 +39,11 @@ use crate::scene::composition::{
     apply_over_pass, apply_scene_filter_step, apply_scene_post_pass, blend_pixel,
     build_scene_bloom_prefilter, composite_layer, composite_layer_affine,
     composite_layer_affine_blend, composite_layer_affine_blend_clipped,
-    composite_layer_affine_clipped, composite_scene_bloom, composite_transformed_layer,
-    composite_transformed_layer_anchored, draw_rgba_image, is_color_key_alpha_effect,
-    pass_param_expr, scene_post_bloom_params, scene_post_blur_passes, scene_post_brightness_amount,
-    scene_post_glow_stack_params, scene_post_light_sweep_params, scene_post_magnify_lens_params,
+    composite_layer_affine_clipped, composite_layer_projected_quad_blend_clipped,
+    composite_scene_bloom, composite_transformed_layer, composite_transformed_layer_anchored,
+    draw_rgba_image, is_color_key_alpha_effect, pass_param_expr, scene_post_bloom_params,
+    scene_post_blur_passes, scene_post_brightness_amount, scene_post_glow_stack_params,
+    scene_post_light_sweep_params, scene_post_magnify_lens_params,
     scene_post_texture_overlay_params, scene_post_tone_map_params,
 };
 use crate::scene::domain::apply_action_graph_at_time;
@@ -82,12 +83,13 @@ use crate::scene::resource::{
 };
 use crate::scene::spatial::{
     Affine2, CameraRect, EvaluatedDeformGrid, active_scene_camera_from_tracks, affine_is_identity,
-    camera_transform, camera_viewport, camera_world_bounds, eval_group_deform_grid,
-    is_scene_camera_track, is_scene_world_track, resolve_axis, scene_character_local_transform,
-    scene_circle_local_transform, scene_group_local_transform, scene_layer_local_transform,
-    scene_line_local_transform, scene_path_local_transform, scene_polyline_local_transform,
-    scene_rect_local_transform, scene_text_local_transform, scene_use_local_transform,
-    transform_and_deform_point, transform_and_deform_subpaths, transform_deform_grid,
+    camera_transform, camera_viewport, camera_world_bounds, clamp_nonzero_signed_scale,
+    eval_group_deform_grid, find_scene_node_anchor, is_scene_camera_track, is_scene_world_track,
+    resolve_axis, scene_character_local_transform, scene_circle_local_transform,
+    scene_group_local_transform, scene_layer_local_transform, scene_line_local_transform,
+    scene_path_local_transform, scene_polyline_local_transform, scene_rect_local_transform,
+    scene_text_local_transform, scene_use_local_transform, transform_and_deform_point,
+    transform_and_deform_subpaths, transform_deform_grid,
 };
 use crate::scene::text::TextNode;
 use crate::scene::text::{
@@ -725,6 +727,8 @@ struct SceneFrameRenderer {
     font_defs: HashMap<String, FontDef>,
     texture_defs: HashMap<String, TextureDef>,
     filter_defs: HashMap<String, FilterDef>,
+    scene_node_defs: HashMap<String, SceneNode>,
+    scene_follow_nodes: Vec<SceneNode>,
     scene_components: HashMap<String, Vec<SceneNode>>,
     scene_precompose_defs: HashMap<String, PrecomposeNode>,
     scene_precomposes: HashMap<String, RgbaImage>,
@@ -747,6 +751,205 @@ struct SceneLayerDrawParams {
     time_norm: f32,
     time_sec: f32,
     inherited_opacity: f32,
+}
+
+fn crop_layer_alpha_bounds(layer: &RgbaImage) -> Option<(RgbaImage, u32, u32)> {
+    let mut min_x = layer.width();
+    let mut min_y = layer.height();
+    let mut max_x = 0_u32;
+    let mut max_y = 0_u32;
+    let mut found = false;
+    for (x, y, pixel) in layer.enumerate_pixels() {
+        if pixel[3] == 0 {
+            continue;
+        }
+        found = true;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    if !found {
+        return None;
+    }
+
+    let width = max_x - min_x + 1;
+    let height = max_y - min_y + 1;
+    let mut cropped = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
+    for y in 0..height {
+        for x in 0..width {
+            cropped.put_pixel(x, y, *layer.get_pixel(min_x + x, min_y + y));
+        }
+    }
+    Some((cropped, min_x, min_y))
+}
+
+fn scene_layer_3d_projected_quad(
+    layer: &SceneLayerNode,
+    base_transform: Affine2,
+    offset: (f32, f32),
+    size: (f32, f32),
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<[(f32, f32, f32); 4], MotionLoomSceneRenderError> {
+    let x = eval_scene_number(&layer.x, time_norm, time_sec)?;
+    let y = eval_scene_number(&layer.y, time_norm, time_sec)?;
+    let z = eval_scene_number(&layer.z, time_norm, time_sec)?;
+    let rotation_x = eval_scene_number(&layer.rotation_x, time_norm, time_sec)?.to_radians();
+    let rotation_y = eval_scene_number(&layer.rotation_y, time_norm, time_sec)?.to_radians();
+    let rotation_z = eval_scene_number(&layer.rotation, time_norm, time_sec)?.to_radians();
+    let scale = eval_scene_number(&layer.scale, time_norm, time_sec)?.clamp(0.001, 64.0);
+    let scale_x =
+        clamp_nonzero_signed_scale(scale * eval_scene_number(&layer.scale_x, time_norm, time_sec)?);
+    let scale_y =
+        clamp_nonzero_signed_scale(scale * eval_scene_number(&layer.scale_y, time_norm, time_sec)?);
+    let origin_x = eval_scene_number(&layer.transform_origin_x, time_norm, time_sec)?;
+    let origin_y = eval_scene_number(&layer.transform_origin_y, time_norm, time_sec)?;
+    let perspective = eval_scene_number(&layer.perspective, time_norm, time_sec)?
+        .abs()
+        .clamp(1.0, 100_000.0);
+    let (sin_x, cos_x) = rotation_x.sin_cos();
+    let (sin_y, cos_y) = rotation_y.sin_cos();
+    let (sin_z, cos_z) = rotation_z.sin_cos();
+    let corners = [
+        (offset.0, offset.1),
+        (offset.0 + size.0, offset.1),
+        (offset.0 + size.0, offset.1 + size.1),
+        (offset.0, offset.1 + size.1),
+    ];
+
+    Ok(corners.map(|(corner_x, corner_y)| {
+        // Project the flat layer plane through a simple perspective camera.
+        let mut px = (corner_x - origin_x) * scale_x;
+        let mut py = (corner_y - origin_y) * scale_y;
+        let mut pz = 0.0_f32;
+        let y2 = py * cos_x - pz * sin_x;
+        let z2 = py * sin_x + pz * cos_x;
+        py = y2;
+        pz = z2;
+        let x2 = px * cos_y + pz * sin_y;
+        let z3 = -px * sin_y + pz * cos_y;
+        px = x2;
+        pz = z3;
+        let x3 = px * cos_z - py * sin_z;
+        let y3 = px * sin_z + py * cos_z;
+        let depth = (perspective + z + pz).max(1.0);
+        let projected_scale = perspective / depth;
+        let (screen_x, screen_y) = base_transform.transform_point(
+            x + origin_x + x3 * projected_scale,
+            y + origin_y + y3 * projected_scale,
+        );
+        (screen_x, screen_y, 1.0 / depth)
+    }))
+}
+
+fn collect_graph_scene_node_defs(graph: &GraphScript, out: &mut HashMap<String, SceneNode>) {
+    collect_scene_node_defs_from_nodes(&graph.scene_nodes, out);
+    for scene in &graph.scenes {
+        collect_scene_node_defs_from_nodes(&scene.children, out);
+    }
+}
+
+fn collect_graph_scene_follow_nodes(graph: &GraphScript) -> Vec<SceneNode> {
+    let mut nodes = graph.scene_nodes.clone();
+    for scene in &graph.scenes {
+        nodes.extend(scene.children.clone());
+    }
+    nodes
+}
+
+fn collect_scene_node_defs_from_nodes(nodes: &[SceneNode], out: &mut HashMap<String, SceneNode>) {
+    for node in nodes {
+        if let Some(id) = scene_node_id(node) {
+            out.insert(id.to_string(), node.clone());
+        }
+        match node {
+            SceneNode::Defs(defs) => {
+                for mask in &defs.masks {
+                    collect_scene_node_defs_from_nodes(&mask.children, out);
+                }
+                for precompose in &defs.precomposes {
+                    out.insert(
+                        precompose.id.clone(),
+                        SceneNode::Precompose(precompose.clone()),
+                    );
+                    collect_scene_node_defs_from_nodes(&precompose.children, out);
+                }
+                for component in &defs.components {
+                    out.insert(
+                        component.id.clone(),
+                        SceneNode::Group(GroupNode {
+                            id: Some(component.id.clone()),
+                            brush: None,
+                            x: "0".to_string(),
+                            y: "0".to_string(),
+                            rotation: "0".to_string(),
+                            scale: "1".to_string(),
+                            scale_x: "1".to_string(),
+                            scale_y: "1".to_string(),
+                            skew_x: "0".to_string(),
+                            skew_y: "0".to_string(),
+                            transform_origin_x: "0".to_string(),
+                            transform_origin_y: "0".to_string(),
+                            deform_grid: None,
+                            grid_from: None,
+                            grid_to: None,
+                            deform_amount: "0".to_string(),
+                            mask: None,
+                            mask_from: None,
+                            mask_mode: "alpha".to_string(),
+                            opacity: "1".to_string(),
+                            children: component.children.clone(),
+                        }),
+                    );
+                    collect_scene_node_defs_from_nodes(&component.children, out);
+                }
+            }
+            SceneNode::Timeline(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Track(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Sequence(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Chain(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Group(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Part(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Repeat(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Mask(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Precompose(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Camera(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            SceneNode::Character(node) => collect_scene_node_defs_from_nodes(&node.children, out),
+            _ => {}
+        }
+    }
+}
+
+fn scene_node_id(node: &SceneNode) -> Option<&str> {
+    match node {
+        SceneNode::Defs(node) => node.id.as_deref(),
+        SceneNode::Timeline(node) => node.id.as_deref(),
+        SceneNode::Track(node) => node.id.as_deref(),
+        SceneNode::Sequence(node) => node.id.as_deref(),
+        SceneNode::Chain(node) => node.id.as_deref(),
+        SceneNode::Palette(node) => Some(node.id.as_str()),
+        SceneNode::PixelGrid(node) => node.id.as_deref(),
+        SceneNode::Text(node) => node.id.as_deref(),
+        SceneNode::Image(node) => node.id.as_deref(),
+        SceneNode::Svg(node) => node.id.as_deref(),
+        SceneNode::Rect(node) => node.id.as_deref(),
+        SceneNode::Circle(node) => node.id.as_deref(),
+        SceneNode::Line(node) => node.id.as_deref(),
+        SceneNode::Polyline(node) => node.id.as_deref(),
+        SceneNode::Path(node) => node.id.as_deref(),
+        SceneNode::FaceJaw(node) => node.id.as_deref(),
+        SceneNode::Shadow(_) => None,
+        SceneNode::Group(node) => node.id.as_deref(),
+        SceneNode::Part(node) => node.id.as_deref(),
+        SceneNode::Repeat(node) => node.id.as_deref(),
+        SceneNode::Mask(node) => node.id.as_deref(),
+        SceneNode::Precompose(node) => Some(node.id.as_str()),
+        SceneNode::Use(node) => node.id.as_deref(),
+        SceneNode::Layer(node) => node.id.as_deref(),
+        SceneNode::Camera(node) => node.id.as_deref(),
+        SceneNode::Character(node) => node.id.as_deref(),
+    }
 }
 
 impl SceneFrameRenderer {
@@ -779,6 +982,8 @@ impl SceneFrameRenderer {
             font_defs: HashMap::new(),
             texture_defs: HashMap::new(),
             filter_defs: HashMap::new(),
+            scene_node_defs: HashMap::new(),
+            scene_follow_nodes: Vec::new(),
             scene_components: HashMap::new(),
             scene_precompose_defs: HashMap::new(),
             scene_precomposes: HashMap::new(),
@@ -815,6 +1020,8 @@ impl SceneFrameRenderer {
             font_defs: HashMap::new(),
             texture_defs: HashMap::new(),
             filter_defs: HashMap::new(),
+            scene_node_defs: HashMap::new(),
+            scene_follow_nodes: Vec::new(),
             scene_components: HashMap::new(),
             scene_precompose_defs: HashMap::new(),
             scene_precomposes: HashMap::new(),
@@ -1145,6 +1352,8 @@ impl SceneFrameRenderer {
         self.font_defs.clear();
         self.texture_defs.clear();
         self.filter_defs.clear();
+        self.scene_node_defs.clear();
+        self.scene_follow_nodes.clear();
         self.scene_components.clear();
         self.scene_precompose_defs.clear();
         self.scene_precomposes.clear();
@@ -1154,6 +1363,8 @@ impl SceneFrameRenderer {
         collect_graph_font_defs(graph, &mut self.font_defs);
         collect_graph_texture_defs(graph, &mut self.texture_defs);
         collect_graph_filter_defs(graph, &mut self.filter_defs);
+        collect_graph_scene_node_defs(graph, &mut self.scene_node_defs);
+        self.scene_follow_nodes = collect_graph_scene_follow_nodes(graph);
         collect_graph_component_defs(graph, &mut self.scene_components);
         collect_graph_mask_defs(graph, &mut self.scene_masks);
         for precompose in collect_graph_precompose_defs(graph) {
@@ -1190,6 +1401,7 @@ impl SceneFrameRenderer {
                     texture: texture.texture,
                     width: texture.width,
                     height: texture.height,
+                    _keepalive_textures: Vec::new(),
                 };
                 let compositor = self.gpu_compositor.as_mut().ok_or_else(|| {
                     MotionLoomSceneRenderError::GpuRender {
@@ -1220,6 +1432,8 @@ impl SceneFrameRenderer {
         self.font_defs.clear();
         self.texture_defs.clear();
         self.filter_defs.clear();
+        self.scene_node_defs.clear();
+        self.scene_follow_nodes.clear();
         self.scene_components.clear();
         self.scene_precompose_defs.clear();
         self.scene_precomposes.clear();
@@ -1229,6 +1443,8 @@ impl SceneFrameRenderer {
         collect_graph_font_defs(graph, &mut self.font_defs);
         collect_graph_texture_defs(graph, &mut self.texture_defs);
         collect_graph_filter_defs(graph, &mut self.filter_defs);
+        collect_graph_scene_node_defs(graph, &mut self.scene_node_defs);
+        self.scene_follow_nodes = collect_graph_scene_follow_nodes(graph);
         collect_graph_component_defs(graph, &mut self.scene_components);
         collect_graph_mask_defs(graph, &mut self.scene_masks);
         for precompose in collect_graph_precompose_defs(graph) {
@@ -1570,8 +1786,11 @@ impl SceneFrameRenderer {
             if inputs.is_empty() {
                 continue;
             }
-            let output = self
+            let mut output = self
                 .apply_scene_post_pass_multi(&inputs, pass, time_norm, time_sec)
+                .await?;
+            output = self
+                .apply_process_pass_mask(output, pass, &resources, time_norm, time_sec)
                 .await?;
             for output_ref in &pass.outputs {
                 resources.insert(output_ref.resource_id().to_string(), output.clone());
@@ -1991,7 +2210,12 @@ impl SceneFrameRenderer {
         if needs_new_compositor {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                if let Some((device, queue)) = self.external_device_queue.clone() {
+                if let Some((device, queue)) = self
+                    .gpu_compositor
+                    .as_ref()
+                    .map(|compositor| compositor.device_queue())
+                    .or_else(|| self.external_device_queue.clone())
+                {
                     self.gpu_compositor = Some(
                         WgpuSceneCompositor::new_with_device(
                             device,
@@ -2152,6 +2376,54 @@ impl SceneFrameRenderer {
             .map(Some)
     }
 
+    async fn render_gpu_node_matte_texture(
+        &mut self,
+        id: &str,
+        time_norm: f32,
+        time_sec: f32,
+        canvas_size: (u32, u32),
+        assets: &mut GpuSceneNativeAssets,
+    ) -> Result<Option<GpuSceneNativeTexture>, MotionLoomSceneRenderError> {
+        if let Some(mask) = assets.masks.get(id).cloned() {
+            return Ok(Some(mask));
+        }
+        if let Some(precompose) = self.scene_precompose_defs.get(id).cloned() {
+            let texture = self
+                .render_gpu_scene_texture_from_nodes(
+                    &precompose.children,
+                    Affine2::identity(),
+                    1.0,
+                    time_norm,
+                    time_sec,
+                    precompose.size.unwrap_or(canvas_size),
+                    assets,
+                )
+                .await?;
+            return self.copy_gpu_native_texture_owned_optional(
+                texture,
+                "anica-motionloom-scene-mask-from-precompose-owned-copy",
+            );
+        }
+        let Some(node) = self.scene_node_defs.get(id).cloned() else {
+            return Ok(None);
+        };
+        let texture = self
+            .render_gpu_scene_texture_from_nodes(
+                std::slice::from_ref(&node),
+                Affine2::identity(),
+                1.0,
+                time_norm,
+                time_sec,
+                canvas_size,
+                assets,
+            )
+            .await?;
+        self.copy_gpu_native_texture_owned_optional(
+            texture,
+            "anica-motionloom-scene-mask-from-node-owned-copy",
+        )
+    }
+
     async fn render_gpu_precompose_instance(
         &mut self,
         source_id: &str,
@@ -2173,16 +2445,40 @@ impl SceneFrameRenderer {
         else {
             return Ok(None);
         };
-        self.render_gpu_scene_texture_from_nodes(
-            &precompose.children,
-            Affine2::identity(),
-            1.0,
-            source_norm,
-            source_sec,
-            canvas_size,
-            assets,
+        let texture = self
+            .render_gpu_scene_texture_from_nodes(
+                &precompose.children,
+                Affine2::identity(),
+                1.0,
+                source_norm,
+                source_sec,
+                canvas_size,
+                assets,
+            )
+            .await?;
+        self.copy_gpu_native_texture_owned_optional(
+            texture,
+            "anica-motionloom-scene-precompose-owned-copy",
         )
-        .await
+    }
+
+    fn copy_gpu_native_texture_owned_optional(
+        &mut self,
+        texture: Option<GpuSceneNativeTexture>,
+        label: &'static str,
+    ) -> Result<Option<GpuSceneNativeTexture>, MotionLoomSceneRenderError> {
+        let Some(texture) = texture else {
+            return Ok(None);
+        };
+        let compositor =
+            self.gpu_compositor
+                .as_ref()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        Ok(Some(
+            compositor.copy_gpu_native_texture_owned(&texture, label),
+        ))
     }
 
     fn apply_gpu_scene_filter_texture(
@@ -2564,6 +2860,7 @@ impl SceneFrameRenderer {
                             texture_layers.push(GpuSceneTextureLayer {
                                 source: GpuSceneTextureSource::Gpu(source),
                                 transform: Affine2::identity(),
+                                projected_quad: None,
                                 opacity: 1.0,
                                 blend: SceneBlendMode::Normal,
                                 matte: Some(GpuSceneTextureMatte {
@@ -2579,6 +2876,58 @@ impl SceneFrameRenderer {
                             .insert(precompose.id.clone(), precompose.clone());
                     }
                     SceneNode::Layer(layer) => {
+                        if layer.is_3d {
+                            let opacity = (eval_scene_number(&layer.opacity, time_norm, time_sec)?
+                                * inherited_opacity)
+                                .clamp(0.0, 1.0);
+                            if opacity <= 0.0001 {
+                                continue;
+                            }
+                            let blend = parse_scene_blend(&layer.blend)?;
+                            let base_transform = if let Some(depth) = depth {
+                                let z_depth = scene_layer_effective_z_depth(
+                                    layer, depth, time_norm, time_sec,
+                                )?;
+                                transform.mul(scene_z_depth_transform(
+                                    depth.active_camera,
+                                    depth.canvas_size,
+                                    z_depth,
+                                ))
+                            } else {
+                                transform
+                            };
+                            let Some(source) = self.scene_layer_source_image(
+                                layer,
+                                canvas_size,
+                                time_norm,
+                                time_sec,
+                            )?
+                            else {
+                                continue;
+                            };
+                            let Some((cropped, offset_x, offset_y)) =
+                                crop_layer_alpha_bounds(&source)
+                            else {
+                                continue;
+                            };
+                            let projected_quad = scene_layer_3d_projected_quad(
+                                layer,
+                                base_transform,
+                                (offset_x as f32, offset_y as f32),
+                                (cropped.width() as f32, cropped.height() as f32),
+                                time_norm,
+                                time_sec,
+                            )?;
+                            texture_layers.push(GpuSceneTextureLayer {
+                                source: GpuSceneTextureSource::Cpu(cropped),
+                                transform: Affine2::identity(),
+                                projected_quad: Some(projected_quad),
+                                opacity,
+                                blend,
+                                matte: None,
+                            });
+                            continue;
+                        }
                         let opacity = (eval_scene_number(&layer.opacity, time_norm, time_sec)?
                             * inherited_opacity)
                             .clamp(0.0, 1.0);
@@ -2674,7 +3023,16 @@ impl SceneFrameRenderer {
                                 source, filter_id, time_norm, time_sec,
                             )?;
                         }
-                        if layer.mask.is_some() && layer.matte.is_some() {
+                        let layer_matte_sources = [
+                            layer.mask.as_ref(),
+                            layer.mask_from.as_ref(),
+                            layer.matte.as_ref(),
+                            layer.matte_from.as_ref(),
+                        ]
+                        .iter()
+                        .filter(|value| value.is_some())
+                        .count();
+                        if layer_matte_sources > 1 {
                             *unsupported = true;
                             continue;
                         }
@@ -2688,6 +3046,20 @@ impl SceneFrameRenderer {
                                     mode: GpuSceneMatteMode::Alpha,
                                     invert: scene_mask_mode_inverts(&layer.mask_mode),
                                 })
+                        } else if let Some(mask_from) = layer.mask_from.as_deref() {
+                            self.render_gpu_node_matte_texture(
+                                mask_from,
+                                time_norm,
+                                time_sec,
+                                canvas_size,
+                                assets,
+                            )
+                            .await?
+                            .map(|texture| GpuSceneTextureMatte {
+                                texture,
+                                mode: gpu_matte_mode(&layer.mask_mode),
+                                invert: scene_mask_mode_inverts(&layer.mask_mode),
+                            })
                         } else if let Some(matte_id) = layer.matte.as_deref() {
                             if let Some(mask) = assets.masks.get(matte_id).cloned() {
                                 Some(GpuSceneTextureMatte {
@@ -2719,6 +3091,20 @@ impl SceneFrameRenderer {
                                     }
                                 })
                             }
+                        } else if let Some(matte_from) = layer.matte_from.as_deref() {
+                            self.render_gpu_node_matte_texture(
+                                matte_from,
+                                time_norm,
+                                time_sec,
+                                canvas_size,
+                                assets,
+                            )
+                            .await?
+                            .map(|texture| GpuSceneTextureMatte {
+                                texture,
+                                mode: gpu_matte_mode(&layer.matte_mode),
+                                invert: scene_bool(&layer.invert_matte),
+                            })
                         } else {
                             None
                         };
@@ -2726,6 +3112,7 @@ impl SceneFrameRenderer {
                             source: GpuSceneTextureSource::Gpu(source),
                             transform: base_transform
                                 .mul(scene_layer_local_transform(layer, time_norm, time_sec)?),
+                            projected_quad: None,
                             opacity,
                             blend,
                             matte,
@@ -2773,6 +3160,10 @@ impl SceneFrameRenderer {
                         let group_local = scene_group_local_transform(group, time_norm, time_sec)?;
                         let group_transform = transform.mul(group_local);
                         let group_deform = eval_group_deform_grid(group, time_norm, time_sec)?;
+                        if group.mask.is_some() && group.mask_from.is_some() {
+                            *unsupported = true;
+                            continue;
+                        }
                         if let Some(mask_id) = group.mask.as_deref() {
                             if !affine_is_identity(group_local) || group_deform.is_some() {
                                 *unsupported = true;
@@ -2800,11 +3191,57 @@ impl SceneFrameRenderer {
                             texture_layers.push(GpuSceneTextureLayer {
                                 source: GpuSceneTextureSource::Gpu(source),
                                 transform: Affine2::identity(),
+                                projected_quad: None,
                                 opacity: 1.0,
                                 blend: SceneBlendMode::Normal,
                                 matte: Some(GpuSceneTextureMatte {
                                     texture: matte,
                                     mode: GpuSceneMatteMode::Alpha,
+                                    invert: scene_mask_mode_inverts(&group.mask_mode),
+                                }),
+                            });
+                        } else if let Some(mask_from) = group.mask_from.as_deref() {
+                            if !affine_is_identity(group_local) || group_deform.is_some() {
+                                *unsupported = true;
+                                continue;
+                            }
+                            let Some(matte) = self
+                                .render_gpu_node_matte_texture(
+                                    mask_from,
+                                    time_norm,
+                                    time_sec,
+                                    canvas_size,
+                                    assets,
+                                )
+                                .await?
+                            else {
+                                *unsupported = true;
+                                continue;
+                            };
+                            let Some(source) = self
+                                .render_gpu_scene_texture_from_nodes(
+                                    &group.children,
+                                    group_transform,
+                                    opacity,
+                                    time_norm,
+                                    time_sec,
+                                    canvas_size,
+                                    assets,
+                                )
+                                .await?
+                            else {
+                                *unsupported = true;
+                                continue;
+                            };
+                            texture_layers.push(GpuSceneTextureLayer {
+                                source: GpuSceneTextureSource::Gpu(source),
+                                transform: Affine2::identity(),
+                                projected_quad: None,
+                                opacity: 1.0,
+                                blend: SceneBlendMode::Normal,
+                                matte: Some(GpuSceneTextureMatte {
+                                    texture: matte,
+                                    mode: gpu_matte_mode(&group.mask_mode),
                                     invert: scene_mask_mode_inverts(&group.mask_mode),
                                 }),
                             });
@@ -3140,6 +3577,7 @@ impl SceneFrameRenderer {
         canvas_size: (u32, u32),
     ) -> Result<Option<GpuSceneNativeTexture>, MotionLoomSceneRenderError> {
         let opacity = eval_scene_number(&mask.opacity, time_norm, time_sec)?.clamp(0.0, 1.0);
+        let transform = self.mask_effective_transform(mask, transform, time_norm, time_sec);
         let mut primitives = Vec::<GpuScenePrimitive>::new();
         if opacity > 0.0001 {
             let color = [255, 255, 255, 255];
@@ -3321,6 +3759,33 @@ impl SceneFrameRenderer {
                     .await
             }
         }
+    }
+
+    async fn apply_process_pass_mask(
+        &mut self,
+        output: GraphTextureSource,
+        pass: &PassNode,
+        resources: &HashMap<String, GraphTextureSource>,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GraphTextureSource, MotionLoomSceneRenderError> {
+        let Some(mask_id) = pass.mask.as_deref().map(normalize_process_mask_ref) else {
+            return Ok(output);
+        };
+        let Some(mask_source) = resources.get(mask_id.as_str()) else {
+            return Ok(output);
+        };
+        let mut image = self.graph_source_to_cpu(&output).await?;
+        let mask = self.graph_source_to_cpu(mask_source).await?;
+        let invert = scene_mask_mode_inverts(&pass.mask_mode)
+            || eval_scene_bool_like(&pass.mask_invert, time_norm, time_sec)?;
+        let mode = pass.mask_mode.trim().to_ascii_lowercase().replace('_', "-");
+        if mode == "luma" || mode == "luminance" || mode == "brightness" {
+            apply_luma_process_mask(&mut image, &mask, invert);
+        } else {
+            apply_alpha_mask_with_invert(&mut image, &mask, invert);
+        }
+        Ok(GraphTextureSource::Cpu(image))
     }
 
     async fn apply_scene_post_pass_multi(
@@ -4603,7 +5068,7 @@ impl SceneFrameRenderer {
         let transform = scene_group_local_transform(group, time_norm, time_sec)?;
         let deform_grid = eval_group_deform_grid(group, time_norm, time_sec)?;
 
-        if group.mask.is_none() && deform_grid.is_none() {
+        if group.mask.is_none() && group.mask_from.is_none() && deform_grid.is_none() {
             self.draw_character_nodes_vector(
                 canvas,
                 &group.children,
@@ -4630,6 +5095,21 @@ impl SceneFrameRenderer {
                 || group.mask_mode.trim().eq_ignore_ascii_case("invert")
                 || group.mask_mode.trim().eq_ignore_ascii_case("inverted");
             apply_alpha_mask_with_invert(&mut layer, &mask_alpha, invert);
+        } else if let Some(mask_from) = group.mask_from.as_deref()
+            && let Some(mask_alpha) = self.scene_matte_alpha(
+                mask_from,
+                (canvas.width(), canvas.height()),
+                &group.mask_mode,
+                None,
+                time_norm,
+                time_sec,
+            )?
+        {
+            apply_alpha_mask_with_invert(
+                &mut layer,
+                &mask_alpha,
+                scene_mask_mode_inverts(&group.mask_mode),
+            );
         }
         if let Some(deform_grid) = deform_grid {
             layer = apply_deform_grid(&layer, &deform_grid);
@@ -4751,48 +5231,110 @@ impl SceneFrameRenderer {
         if opacity <= 0.0001 {
             return Ok(());
         }
+        let Some(source) = self.scene_layer_source_image(
+            layer,
+            params.source_size,
+            params.time_norm,
+            params.time_sec,
+        )?
+        else {
+            return Ok(());
+        };
+
+        let blend = parse_scene_blend(&layer.blend)?;
+        if layer.is_3d {
+            let Some((cropped, offset_x, offset_y)) = crop_layer_alpha_bounds(&source) else {
+                return Ok(());
+            };
+            let quad = scene_layer_3d_projected_quad(
+                layer,
+                params.base_transform,
+                (offset_x as f32, offset_y as f32),
+                (cropped.width() as f32, cropped.height() as f32),
+                params.time_norm,
+                params.time_sec,
+            )?;
+            composite_layer_projected_quad_blend_clipped(
+                canvas,
+                &cropped,
+                quad,
+                opacity,
+                blend,
+                params.clip,
+            );
+            return Ok(());
+        }
+
+        let transform = params.base_transform.mul(scene_layer_local_transform(
+            layer,
+            params.time_norm,
+            params.time_sec,
+        )?);
+        composite_layer_affine_blend_clipped(
+            canvas,
+            &source,
+            transform,
+            opacity,
+            blend,
+            params.clip,
+        );
+        Ok(())
+    }
+
+    fn scene_layer_source_image(
+        &mut self,
+        layer: &SceneLayerNode,
+        source_size: (u32, u32),
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<Option<RgbaImage>, MotionLoomSceneRenderError> {
         let mut source = if let Some(source_id) = layer.source.as_deref() {
             let Some(source) = self.render_precompose_instance(
                 source_id,
-                params.source_size,
+                source_size,
                 layer,
-                params.time_norm,
-                params.time_sec,
+                time_norm,
+                time_sec,
             )?
             else {
-                return Ok(());
+                return Ok(None);
             };
             source
         } else {
             if layer.children.is_empty() {
-                return Ok(());
+                return Ok(None);
             }
-            RgbaImage::from_pixel(
-                params.source_size.0,
-                params.source_size.1,
-                Rgba([0, 0, 0, 0]),
-            )
+            RgbaImage::from_pixel(source_size.0, source_size.1, Rgba([0, 0, 0, 0]))
         };
         if !layer.children.is_empty() {
-            self.draw_scene_nodes(
-                &mut source,
-                &layer.children,
-                params.time_norm,
-                params.time_sec,
-                1.0,
-            )?;
+            self.draw_scene_nodes(&mut source, &layer.children, time_norm, time_sec, 1.0)?;
         }
         if let Some(filter_id) = layer.effect.as_deref() {
-            source =
-                self.apply_scene_filter(&source, filter_id, params.time_norm, params.time_sec)?;
+            source = self.apply_scene_filter(&source, filter_id, time_norm, time_sec)?;
         }
         if let Some(mask_id) = layer.mask.as_deref()
             && let Some(mask_alpha) = self.scene_mask_alpha(
                 mask_id,
                 source.width(),
                 source.height(),
-                params.time_norm,
-                params.time_sec,
+                time_norm,
+                time_sec,
+            )?
+        {
+            apply_alpha_mask_with_invert(
+                &mut source,
+                &mask_alpha,
+                scene_mask_mode_inverts(&layer.mask_mode),
+            );
+        }
+        if let Some(mask_from) = layer.mask_from.as_deref()
+            && let Some(mask_alpha) = self.scene_matte_alpha(
+                mask_from,
+                (source.width(), source.height()),
+                &layer.mask_mode,
+                Some(layer),
+                time_norm,
+                time_sec,
             )?
         {
             apply_alpha_mask_with_invert(
@@ -4807,8 +5349,8 @@ impl SceneFrameRenderer {
                 (source.width(), source.height()),
                 &layer.matte_mode,
                 Some(layer),
-                params.time_norm,
-                params.time_sec,
+                time_norm,
+                time_sec,
             )?
         {
             apply_alpha_mask_with_invert(
@@ -4817,22 +5359,23 @@ impl SceneFrameRenderer {
                 scene_bool(&layer.invert_matte),
             );
         }
-
-        let transform = params.base_transform.mul(scene_layer_local_transform(
-            layer,
-            params.time_norm,
-            params.time_sec,
-        )?);
-        let blend = parse_scene_blend(&layer.blend)?;
-        composite_layer_affine_blend_clipped(
-            canvas,
-            &source,
-            transform,
-            opacity,
-            blend,
-            params.clip,
-        );
-        Ok(())
+        if let Some(matte_from) = layer.matte_from.as_deref()
+            && let Some(matte_alpha) = self.scene_matte_alpha(
+                matte_from,
+                (source.width(), source.height()),
+                &layer.matte_mode,
+                Some(layer),
+                time_norm,
+                time_sec,
+            )?
+        {
+            apply_alpha_mask_with_invert(
+                &mut source,
+                &matte_alpha,
+                scene_bool(&layer.invert_matte),
+            );
+        }
+        Ok(Some(source))
     }
 
     fn apply_scene_filter(
@@ -4893,6 +5436,13 @@ impl SceneFrameRenderer {
         } else {
             self.scene_precomposes.get(id).cloned()
         };
+        let matte = if let Some(matte) = matte {
+            Some(matte)
+        } else if let Some(node) = self.scene_node_defs.get(id).cloned() {
+            Some(self.render_scene_node_def_matte_image(&node, size, time_norm, time_sec)?)
+        } else {
+            None
+        };
         let Some(matte) = matte else {
             return Ok(None);
         };
@@ -4924,6 +5474,31 @@ impl SceneFrameRenderer {
             }
         }
         Ok(Some(alpha))
+    }
+
+    fn render_scene_node_def_matte_image(
+        &mut self,
+        node: &SceneNode,
+        size: (u32, u32),
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+        let mut image = RgbaImage::from_pixel(size.0.max(1), size.1.max(1), Rgba([0, 0, 0, 0]));
+        match node {
+            SceneNode::Precompose(precompose) => {
+                self.draw_scene_nodes(&mut image, &precompose.children, time_norm, time_sec, 1.0)?;
+            }
+            _ => {
+                self.draw_scene_nodes(
+                    &mut image,
+                    std::slice::from_ref(node),
+                    time_norm,
+                    time_sec,
+                    1.0,
+                )?;
+            }
+        }
+        Ok(image)
     }
 
     fn draw_part(
@@ -5097,6 +5672,32 @@ impl SceneFrameRenderer {
         Ok(parsed)
     }
 
+    fn mask_effective_transform(
+        &self,
+        mask: &MaskNode,
+        transform: Affine2,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Affine2 {
+        let Some(follow) = mask.follow.as_deref() else {
+            return transform;
+        };
+        let follow_id = normalize_scene_follow_ref(follow);
+        if follow_id.is_empty() {
+            return transform;
+        }
+        let Some((x, y)) = find_scene_node_anchor(
+            &self.scene_follow_nodes,
+            follow_id.as_str(),
+            Affine2::identity(),
+            time_norm,
+            time_sec,
+        ) else {
+            return transform;
+        };
+        transform.mul(Affine2::translate(x, y))
+    }
+
     fn render_mask_alpha(
         &mut self,
         width: u32,
@@ -5111,6 +5712,7 @@ impl SceneFrameRenderer {
         if opacity <= 0.0001 {
             return Ok(alpha);
         }
+        let transform = self.mask_effective_transform(mask, transform, time_norm, time_sec);
         let mask_color = [255, 255, 255, (opacity * 255.0).round() as u8];
         match mask.shape.trim().to_ascii_lowercase().as_str() {
             "circle" => {
@@ -6586,6 +7188,7 @@ impl SceneFrameRenderer {
         Ok(Some(GpuSceneTextureLayer {
             source: GpuSceneTextureSource::Cpu(image),
             transform: base.transform,
+            projected_quad: None,
             opacity: 1.0,
             blend: SceneBlendMode::Normal,
             matte: None,
@@ -6617,6 +7220,7 @@ impl SceneFrameRenderer {
             return Ok(vec![GpuSceneTextureLayer {
                 source: GpuSceneTextureSource::Cpu(base.image),
                 transform: base.transform,
+                projected_quad: None,
                 opacity: 1.0,
                 blend: SceneBlendMode::Normal,
                 matte: None,
@@ -6650,6 +7254,7 @@ impl SceneFrameRenderer {
                 layers.push(GpuSceneTextureLayer {
                     source: GpuSceneTextureSource::Gpu(shadow_texture),
                     transform: base.transform.mul(Affine2::translate(shadow.x, shadow.y)),
+                    projected_quad: None,
                     opacity: 1.0,
                     blend: SceneBlendMode::Normal,
                     matte: None,
@@ -6665,6 +7270,7 @@ impl SceneFrameRenderer {
                 layers.push(GpuSceneTextureLayer {
                     source: GpuSceneTextureSource::Gpu(glow_texture),
                     transform: base.transform,
+                    projected_quad: None,
                     opacity: 1.0,
                     blend: SceneBlendMode::Screen,
                     matte: None,
@@ -6677,6 +7283,7 @@ impl SceneFrameRenderer {
             layers.push(GpuSceneTextureLayer {
                 source: GpuSceneTextureSource::Cpu(stroke_layer),
                 transform: base.transform,
+                projected_quad: None,
                 opacity: 1.0,
                 blend: SceneBlendMode::Normal,
                 matte: None,
@@ -6702,6 +7309,7 @@ impl SceneFrameRenderer {
         layers.push(GpuSceneTextureLayer {
             source: fill_source,
             transform: base.transform,
+            projected_quad: None,
             opacity: 1.0,
             blend: SceneBlendMode::Normal,
             matte: None,
@@ -7500,6 +8108,13 @@ fn collect_gpu_scene_commands_with_depth(
                 pending_shadow = None;
             }
             SceneNode::Layer(layer) => {
+                if layer.is_3d {
+                    scene_overlays.push(CpuSceneOverlay::Vector {
+                        nodes: vec![SceneNode::Layer(layer.clone())],
+                    });
+                    pending_shadow = None;
+                    continue;
+                }
                 if layer.source.is_some()
                     || layer.mask.is_some()
                     || layer.matte.is_some()
@@ -8920,6 +9535,68 @@ fn push_gpu_stroke_segments(
     }
 }
 
+fn normalize_process_mask_ref(raw: &str) -> String {
+    let trimmed = raw.trim().trim_matches('"').trim();
+    if let Some(inner) = trimmed
+        .strip_prefix("url(#")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        inner.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_scene_follow_ref(raw: &str) -> String {
+    let trimmed = raw.trim().trim_matches('"').trim();
+    let trimmed = trimmed
+        .strip_prefix("node:")
+        .or_else(|| trimmed.strip_prefix("target:"))
+        .unwrap_or(trimmed);
+    if let Some(inner) = trimmed
+        .strip_prefix("url(#")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        inner.to_string()
+    } else {
+        trimmed.trim_start_matches('#').to_string()
+    }
+}
+
+fn eval_scene_bool_like(
+    raw: &str,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<bool, MotionLoomSceneRenderError> {
+    let normalized = raw.trim().trim_matches('"').trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "false" | "no" | "off" | "0" => Ok(false),
+        "true" | "yes" | "on" | "1" => Ok(true),
+        _ => Ok(eval_scene_number(raw, time_norm, time_sec)?.abs() > 0.0001),
+    }
+}
+
+fn apply_luma_process_mask(layer: &mut RgbaImage, mask: &RgbaImage, invert: bool) {
+    let w = layer.width().min(mask.width());
+    let h = layer.height().min(mask.height());
+    for y in 0..h {
+        for x in 0..w {
+            let mask_pixel = mask.get_pixel(x, y);
+            let luma = (0.2126 * mask_pixel[0] as f32
+                + 0.7152 * mask_pixel[1] as f32
+                + 0.0722 * mask_pixel[2] as f32)
+                / 255.0;
+            let alpha = mask_pixel[3] as f32 / 255.0;
+            let mut mask_amount = luma * alpha;
+            if invert {
+                mask_amount = 1.0 - mask_amount;
+            }
+            let pixel = layer.get_pixel_mut(x, y);
+            pixel[3] = ((pixel[3] as f32) * mask_amount).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
 fn scene_bool(value: &str) -> bool {
     !matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -9599,6 +10276,141 @@ mod tests {
         assert!(
             hidden[0] < 30 && hidden[1] < 30 && hidden[2] < 30,
             "expected black luma matte to hide source, got {hidden:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_applies_layer_matte_from_path_node() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,32]}>
+  <Background color="#000000" />
+  <Scene id="matte_from_scene">
+    <Defs>
+      <Precompose id="matte_library" size={[64,32]}>
+        <Path id="left_path_matte" d="M 0 0 L 32 0 L 32 32 L 0 32 Z" fill="#ffffff" stroke="none" />
+      </Precompose>
+      <Precompose id="green_source" size={[64,32]}>
+        <Rect x="0" y="0" width="64" height="32" color="#00ff00" />
+      </Precompose>
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Layer id="matted_green" source="green_source" matteFrom="left_path_matte" matteMode="alpha" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="matte_from_scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+
+        let revealed = rendered.get_pixel(8, 8);
+        let hidden = rendered.get_pixel(48, 8);
+        assert!(
+            revealed[1] > 200,
+            "expected matteFrom path node to reveal green pixel, got {revealed:?}"
+        );
+        assert!(
+            hidden[0] < 30 && hidden[1] < 30 && hidden[2] < 30,
+            "expected outside matteFrom path node to remain background, got {hidden:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_applies_group_mask_from_path_node() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,32]}>
+  <Background color="#000000" />
+  <Scene id="mask_from_scene">
+    <Defs>
+      <Precompose id="matte_library" size={[64,32]}>
+        <Path id="left_group_matte" d="M 0 0 L 32 0 L 32 32 L 0 32 Z" fill="#ffffff" stroke="none" />
+      </Precompose>
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Group id="masked_red" maskFrom="left_group_matte" maskMode="alpha">
+              <Rect x="0" y="0" width="64" height="32" color="#ff0000" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="mask_from_scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+
+        let revealed = rendered.get_pixel(8, 8);
+        let hidden = rendered.get_pixel(48, 8);
+        assert!(
+            revealed[0] > 200,
+            "expected maskFrom path node to reveal red pixel, got {revealed:?}"
+        );
+        assert!(
+            hidden[0] < 30 && hidden[1] < 30 && hidden[2] < 30,
+            "expected outside maskFrom path node to remain background, got {hidden:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_applies_mask_follow_target_node() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,32]}>
+  <Background color="#000000" />
+  <Scene id="mask_follow_scene">
+    <Defs>
+      <Mask id="follow_target_mask" follow="node:target_dot" shape="circle" x="0" y="0" radius="9" />
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Circle id="target_dot" x="16" y="16" radius="2" color="#ffffff" opacity="0" />
+            <Group id="masked_red" mask="follow_target_mask" maskMode="alpha">
+              <Rect x="0" y="0" width="64" height="32" color="#ff0000" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="mask_follow_scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+
+        let revealed = rendered.get_pixel(16, 16);
+        let hidden = rendered.get_pixel(48, 16);
+        assert!(
+            revealed[0] > 200,
+            "expected followed mask to reveal red near target, got {revealed:?}"
+        );
+        assert!(
+            hidden[0] < 30 && hidden[1] < 30 && hidden[2] < 30,
+            "expected outside followed mask to remain background, got {hidden:?}"
         );
     }
 
@@ -11209,6 +12021,66 @@ mod tests {
         assert!(
             (120..=136).contains(&pixel[3]),
             "expected opacity pass to halve alpha, got {pixel:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_applies_process_pass_luma_mask() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,48]}>
+  <Background color="#00000000" />
+  <Scene id="source_scene">
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="64" height="48" color="#ff0000" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Scene id="mask_scene">
+    <Timeline>
+      <Track id="mask" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Rect x="32" y="0" width="32" height="48" color="#ffffff" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Process id="masked_post">
+    <Tex id="src" fmt="rgba16f" from="scene:source_scene" />
+    <Tex id="mask_tex" fmt="rgba16f" from="scene:mask_scene" />
+    <Tex id="out" fmt="rgba16f" size={[64,48]} />
+    <Pass id="masked_opacity" kind="compute"
+          effect="opacity"
+          in={["src"]} out={["out"]}
+          mask="mask_tex"
+          maskMode="luma"
+          params={{ opacity: "1.0" }} />
+  </Process>
+  <Present from="masked_post" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let pass = &graph.passes[0];
+        assert_eq!(pass.mask.as_deref(), Some("mask_tex"));
+        assert_eq!(pass.mask_mode, "luma");
+
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+        let left = rendered.get_pixel(12, 24);
+        let right = rendered.get_pixel(48, 24);
+
+        assert!(left[3] < 8, "expected masked-out left pixel, got {left:?}");
+        assert!(
+            right[0] > 200 && right[3] > 240,
+            "expected red right pixel to remain, got {right:?}"
         );
     }
 

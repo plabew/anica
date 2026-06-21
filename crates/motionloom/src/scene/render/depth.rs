@@ -51,8 +51,15 @@ pub(super) fn scene_layer_effective_z_depth(
     time_norm: f32,
     time_sec: f32,
 ) -> Result<f32, MotionLoomSceneRenderError> {
-    let value = layer.z_depth.as_deref().unwrap_or(depth.track_z_depth);
-    eval_scene_number(value, time_norm, time_sec)
+    if let Some(value) = layer.z_depth.as_deref() {
+        return eval_scene_number(value, time_norm, time_sec);
+    }
+    if layer.is_3d {
+        // Layer3D uses pixel-like z units. Convert them into the existing
+        // camera-space zDepth scale so negative z sorts nearer than positive z.
+        return Ok(eval_scene_number(&layer.z, time_norm, time_sec)? / 120.0);
+    }
+    eval_scene_number(depth.track_z_depth, time_norm, time_sec)
 }
 
 pub(super) fn scene_depth_track_sort_key(

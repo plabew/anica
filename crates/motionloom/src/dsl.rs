@@ -1632,6 +1632,17 @@ fn parse_pass_node(block: &str, line: usize) -> Result<PassNode, GraphParseError
     let inputs = parse_resource_ref_array(&required_attr_value(block, "in", line)?, line, "in")?;
     let outputs = parse_resource_ref_array(&required_attr_value(block, "out", line)?, line, "out")?;
     let params = parse_params(block);
+    let mask = attr_value(block, "mask").map(|v| strip_wrappers(&v).to_string());
+    let mask_mode = attr_value(block, "maskMode")
+        .or_else(|| attr_value(block, "mask_mode"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "alpha".to_string());
+    let mask_invert = attr_value(block, "maskInvert")
+        .or_else(|| attr_value(block, "mask_invert"))
+        .or_else(|| attr_value(block, "invertMask"))
+        .or_else(|| attr_value(block, "invert_mask"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "false".to_string());
     let iterate = attr_value(block, "iterate")
         .as_deref()
         .map(|v| parse_quality_u32(v, line, "iterate"))
@@ -1670,6 +1681,9 @@ fn parse_pass_node(block: &str, line: usize) -> Result<PassNode, GraphParseError
         inputs,
         outputs,
         params,
+        mask,
+        mask_mode,
+        mask_invert,
         iterate,
         pingpong,
         cache,
