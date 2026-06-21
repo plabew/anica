@@ -145,12 +145,7 @@ fn process_brightness_amount(pass: &PassNode, time_norm: f32, time_sec: f32) -> 
     {
         return process_param_f32(pass, &["amount"], time_norm, time_sec, 0.0);
     }
-    let value = process_param_f32(pass, &["brightness", "value"], time_norm, time_sec, 1.0);
-    if (-1.0..=1.0).contains(&value) {
-        value
-    } else {
-        value - 1.0
-    }
+    process_param_f32(pass, &["brightness", "value"], time_norm, time_sec, 0.0)
 }
 
 fn apply_brightness(input: &RgbaImage, amount: f32) -> RgbaImage {

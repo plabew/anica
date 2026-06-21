@@ -351,19 +351,14 @@ impl RuntimeProgram {
                         let amount_expr = if let Some(amount) = pass_param(pass, "amount") {
                             normalize_param_expr(amount)
                         } else {
-                            let value_expr = pass_param(pass, "brightness")
+                            let value_expr = match pass_param(pass, "brightness")
                                 .or_else(|| pass_param(pass, "value"))
                                 .map(normalize_param_expr)
-                                .unwrap_or_else(|| "1.0".to_string());
-                            if let Ok(value) = value_expr.parse::<f32>() {
-                                if (-1.0..=1.0).contains(&value) {
-                                    value_expr
-                                } else {
-                                    format!("({value_expr}) - 1.0")
-                                }
-                            } else {
-                                format!("({value_expr}) - 1.0")
-                            }
+                            {
+                                Some(value_expr) => value_expr,
+                                None => "0.0".to_string(),
+                            };
+                            value_expr
                         };
                         validate_expr(&amount_expr).map_err(|e| RuntimeCompileError {
                             message: format!(
@@ -2668,7 +2663,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_brightness_multiplier_emits_additive_amount() {
+    fn runtime_brightness_one_emits_full_positive_amount() {
         let script = r#"
 <Graph fps={30} size={[1920,1080]}>
   <Process id="brightness_post">
@@ -2677,7 +2672,7 @@ mod tests {
     <Tex id="out" fmt="rgba16f" size={[1920,1080]} />
     <Pass id="fx_brightness" kind="compute" effect="brightness"
           in={["src"]} out={["out"]}
-          params={{ brightness: "1.3" }} />
+          params={{ brightness: "1.0" }} />
   </Process>
   <Present from="brightness_post" />
 </Graph>
@@ -2693,7 +2688,7 @@ mod tests {
         let Some(RuntimeProcessParamValue::Float(amount)) = brightness.params.get("amount") else {
             panic!("brightness runtime effect did not expose amount");
         };
-        assert!((*amount - 0.3).abs() < 1e-5, "unexpected amount: {amount}");
+        assert!((*amount - 1.0).abs() < 1e-5, "unexpected amount: {amount}");
     }
 
     #[test]

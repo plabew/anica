@@ -3543,14 +3543,6 @@ impl BgraProcessEffectInstance {
     }
 }
 
-fn normalize_brightness_param(value: f32) -> f32 {
-    if (-1.0..=1.0).contains(&value) {
-        value
-    } else {
-        value - 1.0
-    }
-}
-
 pub fn bgra_process_effects_cache_key(effects: &[BgraProcessEffectInstance]) -> u64 {
     const SCALE: f32 = 1000.0;
     let mut hasher = DefaultHasher::new();
@@ -3588,8 +3580,8 @@ impl BgraGpuEffectParams {
                 "brightness" | "brighten" => {
                     let amount = effect
                         .float("amount")
-                        .or_else(|| effect.float("brightness").map(normalize_brightness_param))
-                        .or_else(|| effect.float("value").map(normalize_brightness_param))
+                        .or_else(|| effect.float("brightness"))
+                        .or_else(|| effect.float("value"))
                         .unwrap_or(0.0);
                     self.brightness = (self.brightness + amount).clamp(-1.0, 1.0);
                 }
@@ -3895,17 +3887,17 @@ mod tests {
     }
 
     #[test]
-    fn process_brightness_multiplier_maps_to_additive_brightness() {
+    fn process_brightness_one_maps_to_full_positive_brightness() {
         let mut params = BgraGpuEffectParams::default();
         let effect = BgraProcessEffectInstance {
             effect_id: "brightness".to_string(),
-            params: BTreeMap::from([("brightness".to_string(), BgraProcessParamValue::Float(1.3))]),
+            params: BTreeMap::from([("brightness".to_string(), BgraProcessParamValue::Float(1.0))]),
         };
 
         let unsupported = params.apply_process_effects(&[effect]);
 
         assert!(unsupported.is_empty());
-        assert!((params.brightness - 0.3).abs() < 1e-6);
+        assert!((params.brightness - 1.0).abs() < 1e-6);
     }
 
     #[test]

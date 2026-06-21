@@ -194,8 +194,8 @@ pub(crate) fn scene_post_brightness_amount(
     let value = pass_param_expr_any(pass, &["brightness", "value"])
         .map(|expr| eval_scene_number(expr, time_norm, time_sec))
         .transpose()?
-        .unwrap_or(1.0);
-    Ok(Some((value - 1.0).clamp(-1.0, 1.0)))
+        .unwrap_or(0.0);
+    Ok(Some(value.clamp(-1.0, 1.0)))
 }
 
 pub(crate) fn is_color_key_alpha_effect(effect: &str) -> bool {
