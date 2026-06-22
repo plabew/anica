@@ -195,7 +195,12 @@ pub(crate) fn text_layer_effect_spec(
         });
     let mut shadows = Vec::new();
     let mut glows = Vec::new();
-    let mut blur_radius = 0.0_f32;
+    let mut blur_radius = text
+        .blur
+        .as_deref()
+        .and_then(|expr| eval_scene_number(expr, time_norm, time_sec).ok())
+        .unwrap_or(0.0)
+        .max(0.0);
 
     for animator in &text.animators {
         if let Some(style) = animator.style.as_ref() {
@@ -355,6 +360,28 @@ pub(crate) fn apply_text_layer_effects(input: &RgbaImage, spec: &TextLayerEffect
 fn blur_rgba_image(input: &RgbaImage, sigma: f32) -> RgbaImage {
     let blurred = apply_box_blur_pass(input, sigma, true);
     apply_box_blur_pass(&blurred, sigma, false)
+}
+
+pub(crate) fn soften_text_alpha_edges(input: &RgbaImage, amount: f32) -> RgbaImage {
+    let amount = amount.clamp(0.0, 1.0);
+    if amount <= 0.001 {
+        return input.clone();
+    }
+    let blurred = blur_rgba_image(input, 0.35 + amount * 1.15);
+    let mut out = input.clone();
+    for (x, y, pixel) in out.enumerate_pixels_mut() {
+        let base = input.get_pixel(x, y);
+        let soft = blurred.get_pixel(x, y);
+        let alpha = (base[3] as f32 * (1.0 - amount) + soft[3] as f32 * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        if alpha == 0 {
+            *pixel = Rgba([0, 0, 0, 0]);
+        } else {
+            *pixel = Rgba([base[0], base[1], base[2], alpha]);
+        }
+    }
+    out
 }
 
 fn tint_alpha_layer(input: &RgbaImage, color: [u8; 4], alpha_scale: f32) -> RgbaImage {

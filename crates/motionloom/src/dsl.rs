@@ -2790,6 +2790,30 @@ mod tests {
     }
 
     #[test]
+    fn graph_parser_accepts_text_blur_and_smoothing_attrs() {
+        let script = r##"
+<Graph fps={30} duration="4s" size={[256,256]}>
+  <Background color="#ffffff" />
+  <Text x="24" y="96" value="Soft" fontSize="48" renderScale="auto"
+        antialias="subpixel"
+        softEdge="0.34"
+        blur={curve("0:0.4:linear, 1.6:2.8:ease_in_out, 4:0.8:ease_out")}
+        color="#111111" />
+  <Present from="scene" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script).expect("Text blur/smoothing attrs should parse");
+        assert_eq!(graph.texts.len(), 1);
+        assert_eq!(graph.texts[0].render_scale, "auto");
+        assert_eq!(graph.texts[0].antialias.as_deref(), Some("subpixel"));
+        assert_eq!(graph.texts[0].soft_edge.as_deref(), Some("0.34"));
+        assert_eq!(
+            graph.texts[0].blur.as_deref(),
+            Some(r#"curve("0:0.4:linear, 1.6:2.8:ease_in_out, 4:0.8:ease_out")"#)
+        );
+    }
+
+    #[test]
     fn graph_parser_rejects_leading_plain_text() {
         let script = r##"
 Font note: this is not a structured XML comment.

@@ -1597,6 +1597,17 @@ pub(crate) fn parse_text_node(
         .or_else(|| attr_value(block, "render_scale"))
         .map(|v| strip_wrappers(&v).to_string())
         .unwrap_or_else(|| "1x".to_string());
+    let antialias = attr_value(block, "antialias")
+        .or_else(|| attr_value(block, "antiAlias"))
+        .or_else(|| attr_value(block, "aa"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let edge_smoothing = attr_value(block, "edgeSmoothing")
+        .or_else(|| attr_value(block, "edge_smoothing"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let soft_edge = attr_value(block, "softEdge")
+        .or_else(|| attr_value(block, "soft_edge"))
+        .map(|v| strip_wrappers(&v).to_string());
+    let blur = attr_value(block, "blur").map(|v| strip_wrappers(&v).to_string());
     let line_height = attr_value(block, "lineHeight")
         .or_else(|| attr_value(block, "line_height"))
         .map(|v| strip_wrappers(&v).to_string());
@@ -1676,6 +1687,10 @@ pub(crate) fn parse_text_node(
         tracking,
         font_size,
         render_scale,
+        antialias,
+        edge_smoothing,
+        blur,
+        soft_edge,
         line_height,
         color,
         opacity,

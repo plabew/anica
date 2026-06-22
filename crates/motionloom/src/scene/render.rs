@@ -94,8 +94,8 @@ use crate::scene::spatial::{
 use crate::scene::text::TextNode;
 use crate::scene::text::{
     TextAnimatorRasterParams, TextRasterizedLayer, apply_text_layer_effects,
-    draw_text_buffer_with_animators, prepare_text_layout_for_value, stroke_layer_from_alpha,
-    text_bounds, text_layer_effect_spec,
+    draw_text_buffer_with_animators, prepare_text_layout_for_value, soften_text_alpha_edges,
+    stroke_layer_from_alpha, text_bounds, text_layer_effect_spec,
 };
 use crate::scene::timeline::{
     eval_repeat_count, scene_layer_source_time, scene_sequence_local_time,
@@ -6966,8 +6966,9 @@ impl SceneFrameRenderer {
             }
         }
 
-        let render_scale = eval_text_render_scale(&text.render_scale, time_norm, time_sec)?;
         let font_size = eval_scene_number(&text.font_size, time_norm, time_sec)?.clamp(1.0, 1024.0);
+        let render_scale =
+            eval_text_render_scale(&text.render_scale, font_size, time_norm, time_sec)?;
         let raster_font_size = font_size * render_scale;
         let opacity = (eval_scene_number(&text.opacity, time_norm, time_sec)? * inherited_opacity)
             .clamp(0.0, 1.0);
@@ -7146,6 +7147,12 @@ impl SceneFrameRenderer {
                 },
             );
         }
+        let edge_smoothing =
+            eval_text_edge_smoothing(text, time_norm, time_sec)?.clamp(0.0, 1.0);
+        if edge_smoothing > 0.001 {
+            layer = soften_text_alpha_edges(&layer, edge_smoothing);
+        }
+
         let text_transform = transform
             .mul(Affine2::translate(
                 x_base - box_pad_x - pad as f32 / render_scale,
@@ -7358,11 +7365,21 @@ pub(crate) fn eval_scene_number(
 
 fn eval_text_render_scale(
     expr: &str,
+    font_size: f32,
     time_norm: f32,
     time_sec: f32,
 ) -> Result<f32, MotionLoomSceneRenderError> {
     let trimmed = expr.trim();
-    let scale = if let Some(without_suffix) = trimmed
+    let normalized = trimmed.to_ascii_lowercase();
+    let scale = if matches!(normalized.as_str(), "" | "auto") {
+        if font_size < 24.0 {
+            4.0
+        } else if font_size < 64.0 {
+            3.0
+        } else {
+            2.0
+        }
+    } else if let Some(without_suffix) = trimmed
         .strip_suffix('x')
         .or_else(|| trimmed.strip_suffix('X'))
     {
@@ -7376,6 +7393,34 @@ fn eval_text_render_scale(
         eval_scene_number(trimmed, time_norm, time_sec)?
     };
     Ok(scale.clamp(1.0, 8.0))
+}
+
+fn eval_text_edge_smoothing(
+    text: &TextNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<f32, MotionLoomSceneRenderError> {
+    if let Some(expr) = text
+        .edge_smoothing
+        .as_deref()
+        .or(text.soft_edge.as_deref())
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(eval_scene_number(expr, time_norm, time_sec)?.clamp(0.0, 1.0));
+    }
+
+    let Some(mode) = text.antialias.as_deref().map(str::trim) else {
+        return Ok(0.0);
+    };
+    let normalized = mode.to_ascii_lowercase().replace(['-', '_', ' '], "");
+    Ok(match normalized.as_str() {
+        "none" | "off" | "false" => 0.0,
+        "grayscale" | "gray" | "standard" | "on" | "true" => 0.25,
+        "subpixel" | "smooth" | "strong" => 0.45,
+        _ => eval_scene_number(mode, time_norm, time_sec)
+            .map(|value| value.clamp(0.0, 1.0))
+            .unwrap_or(0.25),
+    })
 }
 
 fn eval_text_font_weight(
@@ -9658,6 +9703,10 @@ mod tests {
             tracking: None,
             font_size: "32".to_string(),
             render_scale: render_scale.to_string(),
+            antialias: None,
+            edge_smoothing: None,
+            blur: None,
+            soft_edge: None,
             line_height: None,
             color: "#111111".to_string(),
             opacity: "1".to_string(),

@@ -41,6 +41,10 @@ pub struct TextNode {
     pub font_size: String,
     #[serde(default = "default_text_scene_one")]
     pub render_scale: String,
+    pub antialias: Option<String>,
+    pub edge_smoothing: Option<String>,
+    pub blur: Option<String>,
+    pub soft_edge: Option<String>,
     pub line_height: Option<String>,
     pub color: String,
     pub opacity: String,
