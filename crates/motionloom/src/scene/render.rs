@@ -7147,8 +7147,7 @@ impl SceneFrameRenderer {
                 },
             );
         }
-        let edge_smoothing =
-            eval_text_edge_smoothing(text, time_norm, time_sec)?.clamp(0.0, 1.0);
+        let edge_smoothing = eval_text_edge_smoothing(text, time_norm, time_sec)?.clamp(0.0, 1.0);
         if edge_smoothing > 0.001 {
             layer = soften_text_alpha_edges(&layer, edge_smoothing);
         }
@@ -9683,6 +9682,12 @@ mod tests {
         eprintln!("Skipping GPU texture render test: {message}");
     }
 
+    fn is_gpu_adapter_unavailable(message: &str) -> bool {
+        message.contains("No suitable graphics adapter found")
+            || message.contains("no compatible GPU adapter")
+            || message.contains("No compatible GPU adapter")
+    }
+
     fn basic_text_node(render_scale: &str) -> TextNode {
         TextNode {
             id: None,
@@ -10539,9 +10544,18 @@ mod tests {
         .expect("scene graph parse");
         let mut renderer =
             pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
-        let source = pollster::block_on(renderer.try_render_gpu_scene_tree_frame(&graph, 0.0, 0.0))
-            .expect("GPU native filter render")
-            .expect("expected GPU-native filter path");
+        let source =
+            match pollster::block_on(renderer.try_render_gpu_scene_tree_frame(&graph, 0.0, 0.0)) {
+                Ok(Some(source)) => source,
+                Ok(None) => panic!("expected GPU-native filter path"),
+                Err(MotionLoomSceneRenderError::GpuRender { message })
+                    if is_gpu_adapter_unavailable(&message) =>
+                {
+                    skip_gpu_texture_test(message);
+                    return;
+                }
+                Err(err) => panic!("unexpected GPU native filter render error: {err}"),
+            };
         let rendered = pollster::block_on(renderer.graph_source_to_cpu(&source))
             .expect("GPU readback after filter render");
 
@@ -10587,9 +10601,18 @@ mod tests {
         .expect("scene graph parse");
         let mut renderer =
             pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
-        let source = pollster::block_on(renderer.try_render_gpu_scene_tree_frame(&graph, 0.0, 0.0))
-            .expect("GPU native FaceJaw render")
-            .expect("expected GPU-native FaceJaw path");
+        let source =
+            match pollster::block_on(renderer.try_render_gpu_scene_tree_frame(&graph, 0.0, 0.0)) {
+                Ok(Some(source)) => source,
+                Ok(None) => panic!("expected GPU-native FaceJaw path"),
+                Err(MotionLoomSceneRenderError::GpuRender { message })
+                    if is_gpu_adapter_unavailable(&message) =>
+                {
+                    skip_gpu_texture_test(message);
+                    return;
+                }
+                Err(err) => panic!("unexpected GPU native FaceJaw render error: {err}"),
+            };
         let rendered = pollster::block_on(renderer.graph_source_to_cpu(&source))
             .expect("GPU readback after FaceJaw render");
 
@@ -10886,7 +10909,16 @@ mod tests {
         .expect("scene graph parse");
         let mut renderer =
             pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
-        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+        let rendered = match pollster::block_on(renderer.render_frame(&graph, 0)) {
+            Ok(rendered) => rendered,
+            Err(MotionLoomSceneRenderError::GpuRender { message })
+                if is_gpu_adapter_unavailable(&message) =>
+            {
+                skip_gpu_texture_test(message);
+                return;
+            }
+            Err(err) => panic!("unexpected GPU layer container render error: {err}"),
+        };
 
         let inside = rendered.get_pixel(8, 8);
         let outside = rendered.get_pixel(48, 8);
@@ -10939,7 +10971,7 @@ mod tests {
         let nodes = super::scene_nodes_for_present(&graph).expect("present scene");
         let mut renderer =
             pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
-        let source = pollster::block_on(renderer.try_render_gpu_scene_nodes_composited(
+        let source = match pollster::block_on(renderer.try_render_gpu_scene_nodes_composited(
             nodes,
             graph.size,
             graph.size,
@@ -10947,9 +10979,17 @@ mod tests {
             0.0,
             0.0,
             Some([0, 0, 0, 255]),
-        ))
-        .expect("native gpu render")
-        .expect("expected mask/matte/precompose native GPU path");
+        )) {
+            Ok(Some(source)) => source,
+            Ok(None) => panic!("expected mask/matte/precompose native GPU path"),
+            Err(MotionLoomSceneRenderError::GpuRender { message })
+                if is_gpu_adapter_unavailable(&message) =>
+            {
+                skip_gpu_texture_test(message);
+                return;
+            }
+            Err(err) => panic!("unexpected native GPU mask/matte render error: {err}"),
+        };
         let rendered = pollster::block_on(renderer.graph_source_to_cpu(&source))
             .expect("GPU readback after native composited render");
 
@@ -11156,7 +11196,16 @@ mod tests {
         .expect("graph parse");
         let mut renderer =
             pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
-        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("gpu frame");
+        let rendered = match pollster::block_on(renderer.render_frame(&graph, 0)) {
+            Ok(rendered) => rendered,
+            Err(MotionLoomSceneRenderError::GpuRender { message })
+                if is_gpu_adapter_unavailable(&message) =>
+            {
+                skip_gpu_texture_test(message);
+                return;
+            }
+            Err(err) => panic!("unexpected GPU background resource render error: {err}"),
+        };
         assert_eq!(*rendered.get_pixel(1, 1), Rgba([0x12, 0x34, 0x56, 0xff]));
     }
 
@@ -11184,7 +11233,16 @@ mod tests {
         .expect("graph parse");
         let mut renderer =
             pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
-        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("gpu frame");
+        let rendered = match pollster::block_on(renderer.render_frame(&graph, 0)) {
+            Ok(rendered) => rendered,
+            Err(MotionLoomSceneRenderError::GpuRender { message })
+                if is_gpu_adapter_unavailable(&message) =>
+            {
+                skip_gpu_texture_test(message);
+                return;
+            }
+            Err(err) => panic!("unexpected direct present GPU render error: {err}"),
+        };
         assert_eq!(*rendered.get_pixel(1, 1), Rgba([0xf7, 0xf7, 0xf7, 0xff]));
         assert_eq!(*rendered.get_pixel(16, 9), Rgba([0x00, 0x00, 0x00, 0xff]));
     }
@@ -12682,9 +12740,9 @@ mod tests {
                 assert_eq!(outside[0], 0);
             }
             Err(MotionLoomSceneRenderError::GpuRender { message })
-                if message.contains("No compatible GPU adapter found") =>
+                if is_gpu_adapter_unavailable(&message) =>
             {
-                eprintln!("skipping GPU character image test: {message}");
+                skip_gpu_texture_test(message);
             }
             Err(err) => panic!("GPU character image render failed: {err}"),
         }

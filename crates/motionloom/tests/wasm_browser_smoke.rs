@@ -100,7 +100,10 @@ mod wasm_tests {
 </Graph>"##;
 
         let mut renderer = WasmSceneRenderer::new(script, "cpu").expect("layer3d renderer");
-        let buffer = renderer.render_frame(0).await.expect("render layer3d frame");
+        let buffer = renderer
+            .render_frame(0)
+            .await
+            .expect("render layer3d frame");
         assert_eq!(buffer.len(), 96 * 64 * 4);
         assert!(buffer.chunks_exact(4).any(|px| px[0] > 160 && px[1] > 60));
     }

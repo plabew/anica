@@ -351,14 +351,13 @@ impl RuntimeProgram {
                         let amount_expr = if let Some(amount) = pass_param(pass, "amount") {
                             normalize_param_expr(amount)
                         } else {
-                            let value_expr = match pass_param(pass, "brightness")
+                            match pass_param(pass, "brightness")
                                 .or_else(|| pass_param(pass, "value"))
                                 .map(normalize_param_expr)
                             {
                                 Some(value_expr) => value_expr,
                                 None => "0.0".to_string(),
-                            };
-                            value_expr
+                            }
                         };
                         validate_expr(&amount_expr).map_err(|e| RuntimeCompileError {
                             message: format!(
