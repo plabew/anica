@@ -18,11 +18,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 <Graph fps={24} duration="2s" size={[640,360]}>
   <Background color="#0F172A" />
   <Scene id="video_scene">
-    <Circle x={curve("0:120:ease_out, 2:520:ease_in_out")}
-            y="180"
-            radius="72"
-            color="#F43F5E" />
-    <Text x="320" y="310" value="MotionLoom video export" fontSize="28" color="#FFFFFF" />
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="2s" out="hold">
+          <Layer>
+            <Circle x={curve("0:120:ease_out, 2:520:ease_in_out")}
+                    y="180"
+                    radius="72"
+                    color="#F43F5E" />
+            <Text x="320" y="310" value="MotionLoom video export" fontSize="28" color="#FFFFFF" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
   <Present from="video_scene" />
 </Graph>

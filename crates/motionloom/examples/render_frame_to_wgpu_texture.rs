@@ -11,13 +11,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   <Scene id="example_scene">
     <Timeline>
-      <Track>
-        <Sequence duration="1s">
-          <Circle x="320" y="180" radius="96" color="#4cc9f0" />
-          <Path id="spark"
-                d="M 320 84 L 342 158 L 416 180 L 342 202 L 320 276 L 298 202 L 224 180 L 298 158 Z"
-                fill="#ffffff"
-                opacity="0.86" />
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Circle x="320" y="180" radius="96" color="#4cc9f0" />
+            <Path id="spark"
+                  d="M 320 84 L 342 158 L 416 180 L 342 202 L 320 276 L 298 202 L 224 180 L 298 158 Z"
+                  fill="#ffffff"
+                  opacity="0.86" />
+          </Layer>
         </Sequence>
       </Track>
     </Timeline>

@@ -2010,6 +2010,7 @@ pub struct GlobalState {
 
     // Transport
     pub is_playing: bool,
+    pub loop_playback: bool,
     pub playhead: Duration,
 
     // Tools
@@ -2122,6 +2123,7 @@ impl Default for GlobalState {
             layer_color_blur_effects: LayerColorBlurEffects::default(),
 
             is_playing: false,
+            loop_playback: false,
             playhead: Duration::ZERO,
             active_tool: ActiveTool::Select,
             active_page: AppPage::Editor,
@@ -5726,6 +5728,10 @@ impl GlobalState {
 
     pub fn toggle_playing(&mut self) {
         self.is_playing = !self.is_playing;
+    }
+
+    pub fn toggle_loop_playback(&mut self) {
+        self.loop_playback = !self.loop_playback;
     }
 
     pub fn set_tool(&mut self, tool: ActiveTool) {

@@ -12,10 +12,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 <Graph fps={12} duration="1s" size={[320,180]}>
   <Background color="#020617" />
   <Scene id="moving_dot">
-    <Circle x={curve("0:64:ease_out, 1:256:ease_in_out")}
-            y="90"
-            radius="34"
-            color="#A3E635" />
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Circle x={curve("0:64:ease_out, 1:256:ease_in_out")}
+                    y="90"
+                    radius="34"
+                    color="#A3E635" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
   <Present from="moving_dot" />
 </Graph>

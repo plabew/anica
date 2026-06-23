@@ -12,8 +12,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 <Graph fps={30} duration="1s" size={[640,360]}>
   <Background color="#101827" />
   <Scene id="hello_scene">
-    <Circle x="320" y="170" radius="92" color="#38BDF8" />
-    <Text x="320" y="300" value="Hello MotionLoom" fontSize="34" color="#FFFFFF" />
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Circle x="320" y="170" radius="92" color="#38BDF8" />
+            <Text x="320" y="300" value="Hello MotionLoom" fontSize="34" color="#FFFFFF" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
   </Scene>
   <Present from="hello_scene" />
 </Graph>

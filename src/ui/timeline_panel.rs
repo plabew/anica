@@ -4206,6 +4206,7 @@ impl Render for TimelinePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (
             playing,
+            loop_playback,
             active_tool,
             timeline_edit_token,
             timeline_body_sig,
@@ -4248,6 +4249,7 @@ impl Render for TimelinePanel {
             // );
             (
                 gs.is_playing,
+                gs.loop_playback,
                 gs.active_tool,
                 gs.timeline_edit_token(),
                 timeline_body_structure_sig(gs),
@@ -4289,6 +4291,7 @@ impl Render for TimelinePanel {
         self.ensure_audio_lane_time_index(&audio_tracks_data, timeline_edit_token);
 
         let play_label: &'static str = if playing { "Pause" } else { "Play" };
+        let loop_label: &'static str = if loop_playback { "Loop: On" } else { "Loop" };
         let timeline_low_load_mode = self.effective_low_load_mode(playing);
         self.timeline_body_cache.reset_if_changed(timeline_body_sig);
         let show_fps_counters = !timeline_low_load_mode;
@@ -5689,6 +5692,7 @@ impl Render for TimelinePanel {
         };
 
         let global_for_play = self.global.clone();
+        let global_for_loop = self.global.clone();
         let global_for_delete = self.global.clone();
         let global_for_unlink = self.global.clone();
         let global_for_tool_select = self.global.clone();
@@ -6914,6 +6918,40 @@ impl Render for TimelinePanel {
                                     .items_center()
                                     .gap_2()
                                     .child(TimelinePanel::transport_btn(play_label).on_mouse_down(MouseButton::Left, cx.listener(move |_this, _, _, cx| { global_for_play.update(cx, |gs, cx| { gs.toggle_playing(); cx.notify(); }); })))
+                                    .child(
+                                        div()
+                                            .h(px(28.0))
+                                            .px_3()
+                                            .rounded_lg()
+                                            .border_1()
+                                            .border_color(if loop_playback {
+                                                rgb(0x22c55e)
+                                            } else {
+                                                rgba(0xffffff1f)
+                                            })
+                                            .bg(if loop_playback {
+                                                rgba(0x16a34a66)
+                                            } else {
+                                                rgba(0xffffff0d)
+                                            })
+                                            .text_color(if loop_playback {
+                                                rgb(0xdcfce7)
+                                            } else {
+                                                rgba(0xffffffd9)
+                                            })
+                                            .hover(|s| s.bg(white().opacity(0.10)))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(loop_label)
+                                            .on_mouse_down(MouseButton::Left, cx.listener(move |_this, _, _, cx| {
+                                                global_for_loop.update(cx, |gs, cx| {
+                                                    gs.toggle_loop_playback();
+                                                    cx.notify();
+                                                });
+                                            })),
+                                    )
                                     .child(TimelinePanel::transport_btn("Delete").on_mouse_down(MouseButton::Left, cx.listener(move |_this, _, _, cx| { global_for_delete.update(cx, |gs, cx| { if gs.layer_effect_clip_selected() { let _ = gs.remove_selected_layer_effect_clip(); } else if gs.selected_semantic_clip_id().is_some() { let _ = gs.remove_selected_semantic_clip(); } else { let _ = gs.delete_selected_items(); } cx.notify(); }); })))
                                     .child(unlink_btn)
                                     .child(

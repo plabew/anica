@@ -4257,26 +4257,38 @@ impl VideoPreview {
             this.last_pump_instant = Some(now);
             let editor_visible = this.global.read(cx).active_page == AppPage::Editor;
 
-            let (playhead_before_tick, next_ph, end) = {
+            let (playhead_before_tick, next_ph, end, looped) = {
                 let gs = this.global.read(cx);
                 let total = VideoPreview::sequence_total(gs);
                 let current = gs.playhead;
                 let next = gs.playhead + dt;
-                if next >= total {
-                    (current, total, true)
+                if next >= total && gs.loop_playback && total > Duration::ZERO {
+                    let overflow = next.saturating_sub(total);
+                    let looped_playhead = if overflow < total {
+                        overflow
+                    } else {
+                        Duration::ZERO
+                    };
+                    (current, looped_playhead, false, true)
+                } else if next >= total {
+                    (current, total, true, false)
                 } else {
-                    (current, next, false)
+                    (current, next, false, false)
                 }
             };
-            let external_playhead_jump = this
-                .last_pump_playhead
-                .map(|last| (last.as_secs_f64() - playhead_before_tick.as_secs_f64()).abs() > 0.050)
-                .unwrap_or(false);
+            let external_playhead_jump = looped
+                || this
+                    .last_pump_playhead
+                    .map(|last| {
+                        (last.as_secs_f64() - playhead_before_tick.as_secs_f64()).abs() > 0.050
+                    })
+                    .unwrap_or(false);
 
             let preview_fps = this.global.read(cx).preview_fps.value();
             let ui_tick_interval = Self::playback_ui_tick_interval(preview_fps);
             let should_emit_ui_tick = editor_visible
                 && (end
+                    || looped
                     || this.last_playback_ui_tick_instant.is_none_or(|last| {
                         now.saturating_duration_since(last) >= ui_tick_interval
                     }));
@@ -4411,16 +4423,26 @@ impl VideoPreview {
             return;
         }
         if Self::playhead_is_at_or_near_end(playhead, total) {
-            self.global.update(cx, |gs, cx| {
-                gs.playhead = total;
-                gs.is_playing = false;
-                if editor_visible {
-                    cx.emit(PlaybackUiEvent::Tick);
-                    cx.notify();
-                }
-            });
-            self.stop_after_playback_end(cx);
-            return;
+            if self.global.read(cx).loop_playback && total > Duration::ZERO {
+                self.global.update(cx, |gs, cx| {
+                    gs.playhead = Duration::ZERO;
+                    if editor_visible {
+                        cx.emit(PlaybackUiEvent::Tick);
+                        cx.notify();
+                    }
+                });
+            } else {
+                self.global.update(cx, |gs, cx| {
+                    gs.playhead = total;
+                    gs.is_playing = false;
+                    if editor_visible {
+                        cx.emit(PlaybackUiEvent::Tick);
+                        cx.notify();
+                    }
+                });
+                self.stop_after_playback_end(cx);
+                return;
+            }
         }
         if self.pump_running {
             return;
