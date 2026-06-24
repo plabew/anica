@@ -20,8 +20,16 @@
 //! <Graph fps={30} duration="1s" size={[640,360]}>
 //!   <Background color="#101827" />
 //!   <Scene id="example">
-//!     <Circle x="320" y="180" radius="96" color="#4CC9F0" />
-//!     <Text x="320" y="306" value="MotionLoom" fontSize="34" color="#FFFFFF" />
+//!     <Timeline>
+//!       <Track id="main" space="world" z="0">
+//!         <Sequence from="0s" duration="1s" out="hold">
+//!           <Layer>
+//!             <Circle x="320" y="180" radius="96" color="#4CC9F0" />
+//!             <Text x="320" y="306" value="MotionLoom" fontSize="34" color="#FFFFFF" />
+//!           </Layer>
+//!         </Sequence>
+//!       </Track>
+//!     </Timeline>
 //!   </Scene>
 //!   <Present from="example" />
 //! </Graph>
