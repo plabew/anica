@@ -10,7 +10,7 @@ use crate::common::gpu_async::{
 use crate::dsl::GraphScript;
 use crate::scene::backend::gpu::shaders::{
     WGPU_BATCH_SHAPE_SHADER, WGPU_BLOOM_SHADER, WGPU_DOWNSAMPLE_SHADER, WGPU_LIGHT_SWEEP_SHADER,
-    WGPU_MATTE_TEXTURE_SHADER, WGPU_POST_SHADER, WGPU_SCENE_SHADER,
+    WGPU_MATTE_TEXTURE_SHADER, WGPU_POST_SHADER, WGPU_PUPPET_DEFORM_SHADER, WGPU_SCENE_SHADER,
 };
 use crate::scene::composition::{SceneMagnifyLensParams, SceneTextureOverlayParams};
 use crate::scene::drawable::{
@@ -24,7 +24,7 @@ use crate::scene::drawable::{
 };
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 use crate::scene::resource::{load_rgba_image_source, load_svg_source};
-use crate::scene::spatial::{TextureRect, resolve_axis};
+use crate::scene::spatial::{EvaluatedDeformGrid, TextureRect, resolve_axis};
 
 struct WgpuImageTexture {
     pub(crate) width: u32,
@@ -51,6 +51,8 @@ pub(crate) struct WgpuSceneCompositor {
     pipeline: wgpu::ComputePipeline,
     matte_texture_bind_group_layout: wgpu::BindGroupLayout,
     matte_texture_pipeline: wgpu::ComputePipeline,
+    puppet_deform_bind_group_layout: wgpu::BindGroupLayout,
+    puppet_deform_pipeline: wgpu::ComputePipeline,
     shape_bind_group_layout: wgpu::BindGroupLayout,
     shape_pipeline: wgpu::ComputePipeline,
     post_bind_group_layout: wgpu::BindGroupLayout,
@@ -271,6 +273,10 @@ impl WgpuSceneCompositor {
             label: Some("anica-motionloom-scene-matte-texture-gpu-shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(WGPU_MATTE_TEXTURE_SHADER)),
         });
+        let puppet_deform_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("anica-motionloom-scene-puppet-deform-gpu-shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(WGPU_PUPPET_DEFORM_SHADER)),
+        });
         let shape_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("anica-motionloom-scene-shape-gpu-shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(WGPU_BATCH_SHAPE_SHADER)),
@@ -471,6 +477,58 @@ impl WgpuSceneCompositor {
                     },
                 ],
             });
+        let puppet_deform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("anica-motionloom-scene-puppet-deform-gpu-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
         let post_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("anica-motionloom-scene-post-gpu-bgl"),
@@ -600,6 +658,21 @@ impl WgpuSceneCompositor {
                 label: Some("anica-motionloom-scene-matte-texture-gpu-pipeline"),
                 layout: Some(&matte_texture_pipeline_layout),
                 module: &matte_texture_shader,
+                entry_point: Some("main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        let puppet_deform_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("anica-motionloom-scene-puppet-deform-gpu-pipeline-layout"),
+                bind_group_layouts: &[&puppet_deform_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let puppet_deform_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("anica-motionloom-scene-puppet-deform-gpu-pipeline"),
+                layout: Some(&puppet_deform_pipeline_layout),
+                module: &puppet_deform_shader,
                 entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
@@ -783,6 +856,8 @@ impl WgpuSceneCompositor {
             pipeline,
             matte_texture_bind_group_layout,
             matte_texture_pipeline,
+            puppet_deform_bind_group_layout,
+            puppet_deform_pipeline,
             shape_bind_group_layout,
             shape_pipeline,
             post_bind_group_layout,
@@ -1935,6 +2010,57 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         })
     }
 
+    pub(crate) fn apply_gpu_deform_texture(
+        &mut self,
+        input: &GpuSceneNativeTexture,
+        grid: &EvaluatedDeformGrid,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let width = input.width.max(1);
+        let height = input.height.max(1);
+        let triangles = deform_grid_triangle_bytes(grid);
+        let triangle_count = triangles.len() / (24 * 4);
+        if triangle_count == 0 {
+            return Ok(input.clone());
+        }
+
+        let uniform = puppet_deform_uniform(width, height, triangle_count as u32);
+        let uniform_buffer = self.make_post_uniform_buffer(&uniform);
+        let triangle_buffer =
+            self.make_storage_buffer("anica-motionloom-scene-puppet-deform-triangles", &triangles);
+        let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-scene-puppet-deform-gpu-encoder"),
+            });
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        self.dispatch_puppet_deform_pass(
+            &mut encoder,
+            &input.texture,
+            &dst,
+            &uniform_buffer,
+            &triangle_buffer,
+            width,
+            height,
+            &mut keepalive,
+        );
+        self.submit_encoder(encoder);
+        drop(uniform_buffer);
+        drop(triangle_buffer);
+        drop(keepalive);
+
+        let mut keepalive_textures = Vec::with_capacity(input._keepalive_textures.len() + 1);
+        keepalive_textures.push(input.texture.clone());
+        keepalive_textures.extend(input._keepalive_textures.iter().cloned());
+        Ok(GpuSceneNativeTexture {
+            texture: dst,
+            width,
+            height,
+            _keepalive_textures: keepalive_textures,
+        })
+    }
+
     pub(crate) fn apply_gpu_downsample_texture(
         &mut self,
         input: &GpuSceneNativeTexture,
@@ -2870,6 +2996,63 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dispatch_puppet_deform_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source_texture: &Arc<wgpu::Texture>,
+        out_texture: &Arc<wgpu::Texture>,
+        uniform_buffer: &wgpu::Buffer,
+        triangle_buffer: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        keepalive: &mut WgpuDispatchKeepalive,
+    ) {
+        keepalive
+            .textures
+            .extend([source_texture.clone(), out_texture.clone()]);
+
+        let source_view = source_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let out_view = out_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("anica-motionloom-scene-puppet-deform-gpu-bg"),
+            layout: &self.puppet_deform_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&source_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&out_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: triangle_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("anica-motionloom-scene-puppet-deform-gpu-pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.puppet_deform_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups(width.div_ceil(16).max(1), height.div_ceil(16).max(1), 1);
+        drop(pass);
+        keepalive.texture_views.extend([source_view, out_view]);
+        keepalive.bind_groups.push(bind_group);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_matte_texture_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -3389,6 +3572,75 @@ fn downsample_uniform(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> [u8; 32
     out[8..12].copy_from_slice(&(dst_w.max(1) as f32).to_ne_bytes());
     out[12..16].copy_from_slice(&(dst_h.max(1) as f32).to_ne_bytes());
     out
+}
+
+fn puppet_deform_uniform(width: u32, height: u32, triangle_count: u32) -> [u8; 16] {
+    let values = [
+        width.max(1) as f32,
+        height.max(1) as f32,
+        triangle_count as f32,
+        0.0,
+    ];
+    let mut out = [0u8; 16];
+    for (ix, value) in values.iter().enumerate() {
+        out[ix * 4..ix * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+    out
+}
+
+fn deform_grid_triangle_bytes(grid: &EvaluatedDeformGrid) -> Vec<u8> {
+    let mut out = Vec::new();
+    if !grid.triangles.is_empty() {
+        for triangle in &grid.triangles {
+            push_deform_triangle_bytes(grid, *triangle, &mut out);
+        }
+        return out;
+    }
+    if grid.cols < 2 || grid.rows < 2 {
+        return out;
+    }
+    for row in 0..grid.rows - 1 {
+        for col in 0..grid.cols - 1 {
+            let i00 = row * grid.cols + col;
+            let i10 = i00 + 1;
+            let i01 = (row + 1) * grid.cols + col;
+            let i11 = i01 + 1;
+            push_deform_triangle_bytes(grid, [i00, i10, i11], &mut out);
+            push_deform_triangle_bytes(grid, [i00, i11, i01], &mut out);
+        }
+    }
+    out
+}
+
+fn push_deform_triangle_bytes(grid: &EvaluatedDeformGrid, triangle: [usize; 3], out: &mut Vec<u8>) {
+    if triangle
+        .iter()
+        .any(|index| *index >= grid.from.len() || *index >= grid.to.len())
+    {
+        return;
+    }
+    let src = [
+        grid.from[triangle[0]],
+        grid.from[triangle[1]],
+        grid.from[triangle[2]],
+    ];
+    let dst = [
+        grid.to[triangle[0]],
+        grid.to[triangle[1]],
+        grid.to[triangle[2]],
+    ];
+    push_deform_vec4(out, src[0].x, src[0].y, 0.0, 0.0);
+    push_deform_vec4(out, src[1].x, src[1].y, 0.0, 0.0);
+    push_deform_vec4(out, src[2].x, src[2].y, 0.0, 0.0);
+    push_deform_vec4(out, dst[0].x, dst[0].y, 0.0, 0.0);
+    push_deform_vec4(out, dst[1].x, dst[1].y, 0.0, 0.0);
+    push_deform_vec4(out, dst[2].x, dst[2].y, 0.0, 0.0);
+}
+
+fn push_deform_vec4(out: &mut Vec<u8>, x: f32, y: f32, z: f32, w: f32) {
+    for value in [x, y, z, w] {
+        out.extend_from_slice(&value.to_ne_bytes());
+    }
 }
 
 fn union_texture_rect(current: Option<TextureRect>, next: TextureRect) -> Option<TextureRect> {

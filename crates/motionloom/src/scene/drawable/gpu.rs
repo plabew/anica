@@ -205,6 +205,17 @@ fn describe_scene_node_for_gpu(node: &SceneNode) -> String {
         SceneNode::FaceJaw(face_jaw) => format!("FaceJaw{}", id_suffix(face_jaw.id.as_deref())),
         SceneNode::Shadow(shadow) => format!("Shadow{}", id_suffix(shadow.id.as_deref())),
         SceneNode::Group(group) => format!("Group{}", id_suffix(group.id.as_deref())),
+        SceneNode::Puppet(puppet) => format!("Puppet{}", id_suffix(puppet.id.as_deref())),
+        SceneNode::Pin(pin) => format!("Pin{}", id_suffix(pin.id.as_deref())),
+        SceneNode::MeshTopology(topology) => {
+            format!("MeshTopology{}", id_suffix(topology.id.as_deref()))
+        }
+        SceneNode::Vertex(vertex) => format!("Vertex#{}", vertex.id),
+        SceneNode::Triangle(triangle) => {
+            format!("Triangle{}", id_suffix(triangle.id.as_deref()))
+        }
+        SceneNode::Edge(edge) => format!("Edge{}", id_suffix(edge.id.as_deref())),
+        SceneNode::Region(region) => format!("Region#{}", region.id),
         SceneNode::Part(part) => format!("Part{}", id_suffix(part.id.as_deref())),
         SceneNode::Repeat(repeat) => format!("Repeat{}", id_suffix(repeat.id.as_deref())),
         SceneNode::Mask(mask) => format!("Mask{}", id_suffix(mask.id.as_deref())),

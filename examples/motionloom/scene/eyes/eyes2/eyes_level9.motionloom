@@ -1,0 +1,232 @@
+<Graph fps={30} duration="5s" size={[1320,768]}>
+  <Background color="#ffffff" />
+
+  <Scene id="eyes2_single_eye_gaze_blink_level9">
+    <Defs>
+      <LinearGradient id="sclera_soft" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#D3CEE6, 0.30:#F7F7F7, 0.70:#F7F7F7, 1:#ffffff" />
+
+      <LinearGradient id="iris_level9" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#9368C2, 0.54:#9368C2, 0.55:#FB93A6, 0.68:#FB93A6, 0.69:#FEC3A6, 1:#FEC3A6" />
+
+      <LinearGradient id="lid_grey" x1="0" y1="0" x2="0" y2="1"
+                      stops="0:#B7C7C7, 0.70:#B7C7C7, 1:#8da0a3" />
+
+      <Brush id="iris_fill_09" stroke="none" fill="#FB93A6" opacity="0.92" />
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="5s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="1320" height="768" color="#ffffff" />
+
+            <!-- The stage leans subtly with each 45-degree gaze without implying a profile turn. -->
+            <Rect id="gaze_stage_plate"
+                  x="400"
+                  y="112"
+                  width="520"
+                  height="530"
+                  radius="36"
+                  color="#F8FBFF"
+                  opacity={curve("0.00:0.58:linear, 3.45:0.58:linear, 3.78:0.42:ease_in, 4.28:0.42:linear, 4.58:0.58:ease_out, 5.00:0.58:linear")}
+                  scaleX={curve("0.00:1.00:ease_in_out, 1.00:0.94:ease_in_out, 1.55:1.00:ease_in_out, 2.55:0.94:ease_in_out, 3.15:1.00:ease_in_out, 5.00:1.00:linear")}
+                  skewX={curve("0.00:0:ease_in_out, 1.00:-3:ease_in_out, 1.55:0:ease_in_out, 2.55:3:ease_in_out, 3.15:0:ease_in_out, 5.00:0:linear")}
+                  transformOriginX="660"
+                  transformOriginY="384" />
+
+            <Text id="gaze_caption"
+                  value="Level9 left 45 + right 45 + blink"
+                  x="46"
+                  y="710"
+                  fontSize="24"
+                  color="#3F5877"
+                  opacity="0.18" />
+
+            <!-- The open-eye layer looks left, crosses center, looks right, then compresses into the blink. -->
+            <Character id="single_eye_gaze_open"
+                       x={curve("0.00:660:ease_in_out, 1.00:650:ease_in_out, 1.55:660:ease_in_out, 2.55:670:ease_in_out, 3.15:660:ease_in_out, 5.00:660:linear")}
+                       y="384"
+                       rotation={curve("0.00:0:ease_in_out, 1.00:-1.5:ease_in_out, 1.55:0:ease_in_out, 2.55:1.5:ease_in_out, 3.15:0:ease_in_out, 5.00:0:linear")}
+                       scale="0.74"
+                       scaleX={curve("0.00:1.00:linear, 3.45:1.00:linear, 3.82:1.03:ease_in, 4.18:1.03:linear, 4.52:1.00:ease_out, 5.00:1.00:linear")}
+                       scaleY={curve("0.00:1.00:linear, 3.45:1.00:linear, 3.82:0.10:ease_in, 4.18:0.10:linear, 4.52:1.00:ease_out, 5.00:1.00:linear")}
+                       transformOriginX="0"
+                       transformOriginY="54"
+                       opacity={curve("0.00:1.0:linear, 3.62:1.0:linear, 3.82:0.0:ease_in, 4.18:0.0:linear, 4.42:1.0:ease_out, 5.00:1.0:linear")}>
+
+              <!-- Positive and negative deformation provide restrained left/right perspective. -->
+              <Group id="gaze_eye_deform"
+                     deformGrid="3x3"
+                     deformAmount={curve("0.00:0:linear, 1.00:0.32:ease_in_out, 1.55:0:ease_in_out, 2.55:-0.32:ease_in_out, 3.15:0:ease_in_out, 5.00:0:linear")}
+                     gridFrom="-520,-190 0,-190 360,-190;
+                               -520,40   0,40   360,40;
+                               -520,310  0,310  360,310"
+                     gridTo="-545,-172 -18,-198 310,-168;
+                             -530,40   -18,34   320,52;
+                             -510,298  -10,282  300,276">
+
+                <Path id="eye_white_gaze"
+                      d="M 210 -86 C 96 -156 -34 -182 -158 -142 C -262 -108 -334 -36 -350 54 C -306 180 -178 252 -26 248 C 126 244 224 154 234 20 C 238 -30 230 -62 210 -86 Z"
+                      fill="url(#sclera_soft)"
+                      stroke="#3F5877"
+                      strokeWidth="3"
+                      opacity="0.98" />
+
+                <Path id="upper_lid_mass_gaze"
+                      d="M 244 -82 C 114 -184 -26 -214 -176 -172 C -268 -146 -342 -86 -390 2 C -420 56 -458 82 -512 88 C -456 96 -416 76 -374 34 C -292 -42 -194 -92 -78 -102 C 44 -112 150 -72 230 24 C 260 62 282 90 306 116 C 284 52 264 -30 244 -82 Z"
+                      fill="url(#lid_grey)"
+                      stroke="#3F5877"
+                      strokeWidth="4"
+                      opacity="0.98" />
+
+                <Path id="upper_lid_sketch_gaze"
+                      d="M 280 -106 C 172 -194 26 -232 -146 -196 C -290 -166 -382 -74 -428 20"
+                      stroke="#3F5877"
+                      strokeWidth="2.3"
+                      lineCap="round"
+                      fill="none"
+                      opacity="0.72" />
+
+                <Path id="outer_corner_spikes_gaze"
+                      d="M -384 26 C -438 48 -486 70 -538 78 M -386 54 C -436 96 -475 124 -514 154 M -366 90 C -408 132 -432 174 -438 226"
+                      stroke="#3F5877"
+                      strokeWidth="3.2"
+                      lineCap="round"
+                      fill="none"
+                      opacity="0.92" />
+
+                <!-- The iris travels across the sclera with a small squash at each extreme. -->
+                <Group id="iris_gaze"
+                       x={curve("0.00:4:ease_in_out, 1.00:-112:ease_in_out, 1.55:4:ease_in_out, 2.55:116:ease_in_out, 3.15:4:ease_in_out, 5.00:4:linear")}
+                       y={curve("0.00:16:ease_in_out, 1.00:18:ease_in_out, 1.55:16:ease_in_out, 2.55:18:ease_in_out, 3.15:16:ease_in_out, 5.00:16:linear")}
+                       scaleX={curve("0.00:1.00:ease_in_out, 1.00:0.84:ease_in_out, 1.55:1.00:ease_in_out, 2.55:0.84:ease_in_out, 3.15:1.00:ease_in_out, 5.00:1.00:linear")}
+                       transformOriginX="0"
+                       transformOriginY="24">
+
+                  <Path id="iris_oval_gaze"
+                        d="M 58 -184 C -34 -222 -132 -168 -164 -48 C -202 94 -148 256 -30 274 C 90 292 164 188 166 34 C 168 -78 132 -154 58 -184 Z"
+                        fill="url(#iris_level9)"
+                        stroke="#3F5877"
+                        strokeWidth="8" />
+
+                  <Path id="iris_shadow_gaze"
+                        d="M 76 -178 C 132 -112 152 8 134 112 C 120 196 76 254 0 276"
+                        stroke="#3F5877"
+                        strokeWidth="7"
+                        lineCap="round"
+                        fill="none"
+                        opacity="0.84" />
+
+                  <Path id="pupil_gaze"
+                        d="M 22 26 C 32 82 26 132 -8 148 C -44 164 -78 116 -82 50 C -78 96 -54 126 -26 126 C 6 124 18 86 22 26 Z"
+                        fill="#3F5877"
+                        stroke="none"
+                        opacity="0.86" />
+
+                  <Path id="iris_pink_band_top_gaze"
+                        d="M 138 54 L 78 38 L 76 68 L 140 88 Z"
+                        fill="#FB93A6"
+                        stroke="none"
+                        opacity="0.96" />
+
+                  <Path id="iris_pink_band_mid_gaze"
+                        brush="iris_fill_09"
+                        d="M 146 108 L 74 78 L 66 108 L 146 146 Z" />
+
+                  <Path id="iris_pink_band_right_gaze"
+                        brush="iris_fill_09"
+                        d="M -72 84 L -154 118 L -146 162 L -64 116 Z" />
+
+                  <Path id="highlight_top_gaze"
+                        d="M -110 -86 C -148 -104 -206 -92 -224 -58 C -202 -28 -136 -24 -100 -48 C -88 -58 -92 -76 -110 -86 Z"
+                        fill="#F7F7F7"
+                        stroke="none"
+                        opacity="0.96" />
+
+                  <Circle id="cornea_glint_gaze"
+                          x="-118"
+                          y="-68"
+                          radius="18"
+                          color="#F7F7F7"
+                          opacity={curve("0.00:0.54:ease_in_out, 1.00:0.72:ease_in_out, 1.55:0.54:ease_in_out, 2.55:0.72:ease_in_out, 3.15:0.54:ease_in_out, 5.00:0.54:linear")} />
+                </Group>
+
+                <Path id="lower_sclera_rim_gaze"
+                      d="M 106 220 C 20 278 -130 288 -224 224 C -154 286 -24 324 88 266"
+                      stroke="#3F5877"
+                      strokeWidth="3"
+                      lineCap="round"
+                      fill="none"
+                      opacity="0.70" />
+
+                <Path id="lower_lashes_gaze"
+                      d="M 34 270 L 46 296 M -10 276 L 4 306 M -68 264 L -78 292"
+                      stroke="#3F5877"
+                      strokeWidth="2"
+                      lineCap="round"
+                      fill="none"
+                      opacity="0.72" />
+
+                <Path id="inner_corner_sketch_gaze"
+                      d="M 236 -88 C 278 -46 306 0 334 70 M 250 -66 C 302 0 340 72 368 130"
+                      stroke="#3F5877"
+                      strokeWidth="2"
+                      lineCap="round"
+                      fill="none"
+                      opacity="0.62" />
+              </Group>
+            </Character>
+
+            <!-- A dedicated lid replaces the flattened open eye during the closed hold. -->
+            <Character id="single_eye_closed_overlay"
+                       x="660"
+                       y="384"
+                       scale="0.74"
+                       scaleY={curve("0.00:0.82:linear, 3.62:0.82:linear, 3.86:1.00:ease_out, 4.16:1.00:linear, 4.42:0.82:ease_in, 5.00:0.82:linear")}
+                       transformOriginX="0"
+                       transformOriginY="54"
+                       opacity={curve("0.00:0.0:linear, 3.62:0.0:linear, 3.84:1.0:ease_in, 4.18:1.0:linear, 4.42:0.0:ease_out, 5.00:0.0:linear")}>
+              <Path id="closed_lid_mass_level9"
+                    d="M 230 -74 C 104 -150 -64 -166 -216 -104 C -300 -70 -362 -14 -406 58 C -334 42 -250 4 -154 -22 C -42 -54 78 -34 212 28 C 238 40 252 -48 230 -74 Z"
+                    fill="url(#lid_grey)"
+                    stroke="#3F5877"
+                    strokeWidth="4"
+                    lineJoin="round"
+                    opacity="0.98" />
+
+              <Path id="closed_lash_line_level9"
+                    d="M 202 -20 C 90 -72 -52 -82 -180 -42 C -266 -16 -328 30 -374 84"
+                    stroke="#3F5877"
+                    strokeWidth="8"
+                    lineCap="round"
+                    lineJoin="round"
+                    taperStart="0.10"
+                    taperEnd="0.30"
+                    fill="none"
+                    opacity="0.96" />
+
+              <Path id="closed_lash_soft_level9"
+                    d="M 176 4 C 72 -32 -48 -40 -160 -8 C -236 14 -288 48 -326 86"
+                    stroke="#B7C7C7"
+                    strokeWidth="5"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.62" />
+
+              <Path id="closed_outer_spikes_level9"
+                    d="M -350 70 C -404 86 -454 104 -510 108 M -334 94 C -382 130 -418 158 -456 192 M -304 112 C -340 154 -360 196 -364 234"
+                    stroke="#3F5877"
+                    strokeWidth="3"
+                    lineCap="round"
+                    fill="none"
+                    opacity="0.82" />
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="eyes2_single_eye_gaze_blink_level9" />
+</Graph>

@@ -146,12 +146,13 @@ pub use root::{
     render_motionloom_document_to_video_with_progress_and_cancel,
 };
 pub use scene::model::{
-    BrushDef, CameraNode, CharacterNode, CircleNode, ComponentNode, DefsNode, FaceJawNode,
-    FilterDef, FilterStepDef, FontDef, GradientDef, GradientStop, GroupNode, LineNode,
-    LinearGradientDef, MaskNode, PaletteColorDef, PaletteNode, PartNode, PathNode, PixelGridNode,
-    PolylineNode, PrecomposeNode, RadialGradientDef, RectNode, RepeatNode, SceneChainNode,
-    SceneLayerNode, SceneNode, SceneRootNode, SceneSequenceNode, SceneTimelineNode, SceneTrackNode,
-    ShadowNode, UseNode,
+    BrushDef, CameraNode, CharacterNode, CircleNode, ComponentNode, DefsNode, EdgeNode,
+    FaceJawNode, FilterDef, FilterStepDef, FontDef, GradientDef, GradientStop, GroupNode, LineNode,
+    LinearGradientDef, MaskNode, MeshTopologyNode, PaletteColorDef, PaletteNode, PartNode,
+    PathNode, PinNode, PixelGridNode, PolylineNode, PrecomposeNode, PuppetNode, RadialGradientDef,
+    RectNode, RegionNode, RepeatNode, SceneChainNode, SceneLayerNode, SceneNode, SceneRootNode,
+    SceneSequenceNode, SceneTimelineNode, SceneTrackNode, ShadowNode, TriangleNode, UseNode,
+    VertexNode,
 };
 #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 pub use scene::render::DmabufPlane;

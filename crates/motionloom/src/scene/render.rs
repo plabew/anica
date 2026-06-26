@@ -72,7 +72,8 @@ use crate::scene::dsl::{ImageNode, SvgNode};
 use crate::scene::model::{
     CameraNode, CharacterNode, CircleNode, DefsNode, FaceJawNode, FilterDef, FontDef, GradientDef,
     GroupNode, LineNode, MaskNode, PaletteNode, PartNode, PathNode, PixelGridNode, PolylineNode,
-    PrecomposeNode, RectNode, RepeatNode, SceneLayerNode, SceneNode, TextureDef, UseNode,
+    PrecomposeNode, PuppetNode, RectNode, RepeatNode, SceneLayerNode, SceneNode, TextureDef,
+    UseNode,
 };
 pub use crate::scene::resource::{clear_scene_asset_roots, set_scene_asset_roots};
 use crate::scene::resource::{
@@ -84,12 +85,13 @@ use crate::scene::resource::{
 use crate::scene::spatial::{
     Affine2, CameraRect, EvaluatedDeformGrid, active_scene_camera_from_tracks, affine_is_identity,
     camera_transform, camera_viewport, camera_world_bounds, clamp_nonzero_signed_scale,
-    eval_group_deform_grid, find_scene_node_anchor, is_scene_camera_track, is_scene_world_track,
-    resolve_axis, scene_character_local_transform, scene_circle_local_transform,
-    scene_group_local_transform, scene_layer_local_transform, scene_line_local_transform,
-    scene_path_local_transform, scene_polyline_local_transform, scene_rect_local_transform,
-    scene_text_local_transform, scene_use_local_transform, transform_and_deform_point,
-    transform_and_deform_subpaths, transform_deform_grid,
+    eval_group_deform_grid, eval_puppet_deform_grid, find_scene_node_anchor, is_scene_camera_track,
+    is_scene_world_track, resolve_axis, scene_character_local_transform,
+    scene_circle_local_transform, scene_group_local_transform, scene_layer_local_transform,
+    scene_line_local_transform, scene_path_local_transform, scene_polyline_local_transform,
+    scene_puppet_local_transform, scene_rect_local_transform, scene_text_local_transform,
+    scene_use_local_transform, transform_and_deform_point, transform_and_deform_subpaths,
+    transform_deform_grid,
 };
 use crate::scene::text::TextNode;
 use crate::scene::text::{
@@ -621,6 +623,7 @@ fn collect_scene_gradient_refs(nodes: &[SceneNode], out: &mut Vec<(String, Strin
             }
             SceneNode::Shadow(shadow) => collect_paint_gradient_ref(&shadow.color, out),
             SceneNode::Group(group) => collect_scene_gradient_refs(&group.children, out),
+            SceneNode::Puppet(puppet) => collect_scene_gradient_refs(&puppet.children, out),
             SceneNode::Part(part) => collect_scene_gradient_refs(&part.children, out),
             SceneNode::Repeat(repeat) => collect_scene_gradient_refs(&repeat.children, out),
             SceneNode::Mask(mask) => collect_scene_gradient_refs(&mask.children, out),
@@ -636,7 +639,13 @@ fn collect_scene_gradient_refs(nodes: &[SceneNode], out: &mut Vec<(String, Strin
             | SceneNode::PixelGrid(_)
             | SceneNode::Image(_)
             | SceneNode::Svg(_)
-            | SceneNode::Use(_) => {}
+            | SceneNode::Use(_)
+            | SceneNode::Pin(_)
+            | SceneNode::MeshTopology(_)
+            | SceneNode::Vertex(_)
+            | SceneNode::Triangle(_)
+            | SceneNode::Edge(_)
+            | SceneNode::Region(_) => {}
         }
     }
 }
@@ -941,6 +950,13 @@ fn scene_node_id(node: &SceneNode) -> Option<&str> {
         SceneNode::FaceJaw(node) => node.id.as_deref(),
         SceneNode::Shadow(_) => None,
         SceneNode::Group(node) => node.id.as_deref(),
+        SceneNode::Puppet(node) => node.id.as_deref(),
+        SceneNode::Pin(node) => node.id.as_deref(),
+        SceneNode::MeshTopology(node) => node.id.as_deref(),
+        SceneNode::Vertex(node) => Some(node.id.as_str()),
+        SceneNode::Triangle(node) => node.id.as_deref(),
+        SceneNode::Edge(node) => node.id.as_deref(),
+        SceneNode::Region(node) => Some(node.id.as_str()),
         SceneNode::Part(node) => node.id.as_deref(),
         SceneNode::Repeat(node) => node.id.as_deref(),
         SceneNode::Mask(node) => node.id.as_deref(),
@@ -3267,6 +3283,80 @@ impl SceneFrameRenderer {
                             .await?;
                         }
                     }
+                    SceneNode::Puppet(puppet) => {
+                        let opacity = (eval_scene_number(&puppet.opacity, time_norm, time_sec)?
+                            * inherited_opacity)
+                            .clamp(0.0, 1.0);
+                        if opacity <= 0.0001 {
+                            continue;
+                        }
+                        let puppet_local =
+                            scene_puppet_local_transform(puppet, time_norm, time_sec)?;
+                        let puppet_transform = transform.mul(puppet_local);
+                        let visual_children = puppet
+                            .children
+                            .iter()
+                            .filter(|child| {
+                                !matches!(
+                                    child,
+                                    SceneNode::Pin(_)
+                                        | SceneNode::MeshTopology(_)
+                                        | SceneNode::Vertex(_)
+                                        | SceneNode::Triangle(_)
+                                        | SceneNode::Edge(_)
+                                        | SceneNode::Region(_)
+                                )
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if visual_children.is_empty() {
+                            continue;
+                        }
+                        let Some(mut source) = self
+                            .render_gpu_scene_texture_from_nodes(
+                                &visual_children,
+                                puppet_transform,
+                                opacity,
+                                time_norm,
+                                time_sec,
+                                canvas_size,
+                                assets,
+                            )
+                            .await?
+                        else {
+                            *unsupported = true;
+                            continue;
+                        };
+                        if let Some(deform_grid) =
+                            eval_puppet_deform_grid(puppet, time_norm, time_sec)?
+                        {
+                            let transformed_grid =
+                                transform_deform_grid(&deform_grid, puppet_transform);
+                            source = self
+                                .gpu_compositor
+                                .as_mut()
+                                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                                    message: "GPU compositor was not initialized".to_string(),
+                                })?
+                                .apply_gpu_deform_texture(&source, &transformed_grid)?;
+                        }
+                        texture_layers.push(GpuSceneTextureLayer {
+                            source: GpuSceneTextureSource::Gpu(source),
+                            transform: Affine2::identity(),
+                            projected_quad: None,
+                            opacity: 1.0,
+                            blend: SceneBlendMode::Normal,
+                            matte: None,
+                        });
+                    }
+                    SceneNode::Pin(_)
+                    | SceneNode::MeshTopology(_)
+                    | SceneNode::Vertex(_)
+                    | SceneNode::Triangle(_)
+                    | SceneNode::Edge(_)
+                    | SceneNode::Region(_) => {
+                        continue;
+                    }
                     SceneNode::Camera(camera) => {
                         let opacity = (eval_scene_number(&camera.opacity, time_norm, time_sec)?
                             * inherited_opacity)
@@ -4624,6 +4714,18 @@ impl SceneFrameRenderer {
                     self.draw_group(canvas, group, time_norm, time_sec, inherited_opacity)?;
                     pending_shadow = None;
                 }
+                SceneNode::Puppet(puppet) => {
+                    self.draw_puppet(canvas, puppet, time_norm, time_sec, inherited_opacity)?;
+                    pending_shadow = None;
+                }
+                SceneNode::Pin(_)
+                | SceneNode::MeshTopology(_)
+                | SceneNode::Vertex(_)
+                | SceneNode::Triangle(_)
+                | SceneNode::Edge(_)
+                | SceneNode::Region(_) => {
+                    pending_shadow = None;
+                }
                 SceneNode::Part(part) => {
                     self.draw_part(canvas, part, time_norm, time_sec, inherited_opacity)?;
                     pending_shadow = None;
@@ -5111,6 +5213,32 @@ impl SceneFrameRenderer {
                 scene_mask_mode_inverts(&group.mask_mode),
             );
         }
+        if let Some(deform_grid) = deform_grid {
+            layer = apply_deform_grid(&layer, &deform_grid);
+        }
+        composite_layer_affine(canvas, &layer, transform);
+        Ok(())
+    }
+
+    fn draw_puppet(
+        &mut self,
+        canvas: &mut RgbaImage,
+        puppet: &PuppetNode,
+        time_norm: f32,
+        time_sec: f32,
+        inherited_opacity: f32,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        let opacity = (eval_scene_number(&puppet.opacity, time_norm, time_sec)?
+            * inherited_opacity)
+            .clamp(0.0, 1.0);
+        if opacity <= 0.0001 {
+            return Ok(());
+        }
+        let transform = scene_puppet_local_transform(puppet, time_norm, time_sec)?;
+        let deform_grid = eval_puppet_deform_grid(puppet, time_norm, time_sec)?;
+
+        let mut layer = RgbaImage::from_pixel(canvas.width(), canvas.height(), Rgba([0, 0, 0, 0]));
+        self.draw_scene_nodes(&mut layer, &puppet.children, time_norm, time_sec, opacity)?;
         if let Some(deform_grid) = deform_grid {
             layer = apply_deform_grid(&layer, &deform_grid);
         }
@@ -5781,6 +5909,25 @@ impl SceneFrameRenderer {
         let character_transform = transform.mul(scene_character_local_transform(
             character, time_norm, time_sec,
         )?);
+        if let Some(src) = character.src.as_deref() {
+            // Character-level image sources reuse the same raster loader as <Image>.
+            let image = ImageNode {
+                id: character.id.clone(),
+                src: src.to_string(),
+                x: "0".to_string(),
+                y: "0".to_string(),
+                scale: "1.0".to_string(),
+                opacity: "1.0".to_string(),
+            };
+            self.draw_image_transformed(
+                canvas,
+                &image,
+                character_transform,
+                opacity,
+                time_norm,
+                time_sec,
+            )?;
+        }
         self.draw_character_nodes_vector(
             canvas,
             &character.children,
@@ -5916,6 +6063,40 @@ impl SceneFrameRenderer {
                         time_sec,
                     )?;
                 }
+                SceneNode::Puppet(puppet) => {
+                    let opacity = (eval_scene_number(&puppet.opacity, time_norm, time_sec)?
+                        * inherited_opacity)
+                        .clamp(0.0, 1.0);
+                    if opacity <= 0.0001 {
+                        continue;
+                    }
+                    let puppet_transform =
+                        transform.mul(scene_puppet_local_transform(puppet, time_norm, time_sec)?);
+                    let mut layer =
+                        RgbaImage::from_pixel(canvas.width(), canvas.height(), Rgba([0, 0, 0, 0]));
+                    self.draw_character_nodes_vector(
+                        &mut layer,
+                        &puppet.children,
+                        puppet_transform,
+                        opacity,
+                        time_norm,
+                        time_sec,
+                    )?;
+                    if let Some(deform_grid) = eval_puppet_deform_grid(puppet, time_norm, time_sec)?
+                    {
+                        layer = apply_deform_grid(
+                            &layer,
+                            &transform_deform_grid(&deform_grid, puppet_transform),
+                        );
+                    }
+                    composite_layer(canvas, &layer);
+                }
+                SceneNode::Pin(_)
+                | SceneNode::MeshTopology(_)
+                | SceneNode::Vertex(_)
+                | SceneNode::Triangle(_)
+                | SceneNode::Edge(_)
+                | SceneNode::Region(_) => {}
                 SceneNode::Part(part) => {
                     let opacity = (eval_scene_number(&part.opacity, time_norm, time_sec)?
                         * inherited_opacity)
@@ -8015,6 +8196,25 @@ fn collect_gpu_scene_commands_with_depth(
                 }
                 pending_shadow = None;
             }
+            SceneNode::Puppet(puppet) => {
+                let opacity = (eval_scene_number(&puppet.opacity, time_norm, time_sec)?
+                    * inherited_opacity)
+                    .clamp(0.0, 1.0);
+                if opacity > 0.0001 {
+                    scene_overlays.push(CpuSceneOverlay::Vector {
+                        nodes: vec![SceneNode::Puppet(puppet.clone())],
+                    });
+                }
+                pending_shadow = None;
+            }
+            SceneNode::Pin(_)
+            | SceneNode::MeshTopology(_)
+            | SceneNode::Vertex(_)
+            | SceneNode::Triangle(_)
+            | SceneNode::Edge(_)
+            | SceneNode::Region(_) => {
+                pending_shadow = None;
+            }
             SceneNode::Part(part) => {
                 let opacity = (eval_scene_number(&part.opacity, time_norm, time_sec)?
                     * inherited_opacity)
@@ -9655,8 +9855,10 @@ mod tests {
     use crate::scene::drawable::{GpuSceneTextureLayer, GpuSceneTextureSource};
     use crate::scene::spatial::Affine2;
     use crate::scene::text::TextNode;
+    use base64::Engine;
     use cosmic_text::Weight;
     use image::{Rgba, RgbaImage};
+    use std::io::Cursor;
     use std::path::{Path, PathBuf};
 
     use super::{
@@ -11367,6 +11569,108 @@ mod tests {
     }
 
     #[test]
+    fn scene_renderer_applies_two_bone_ik_target() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[180,180]}>
+  <Background color="#ffffff" />
+
+  <Skeleton id="arm_v1">
+    <Bone id="upper" x="0" y="0" />
+    <Bone id="lower" parent="upper" x="40" y="0" />
+    <Bone id="hand" parent="lower" x="40" y="0" />
+  </Skeleton>
+
+  <Action id="reach" skeleton="arm_v1" duration="1s">
+    <IK root="upper" mid="lower" end="hand" targetX="40" targetY="40" bend="1" />
+  </Action>
+
+  <Scene id="scene0">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Character id="hero" rig="arm_v1" x="80" y="80">
+              <Part id="hand_marker" attachTo="hand">
+                <Circle x="0" y="0" radius="8" fill="#ff0000" />
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <ApplyAction target="hero" action="reach" at="0s" />
+  <Present from="scene0" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer =
+            pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Cpu));
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+        let target_pixel = rendered.get_pixel(120, 120);
+
+        assert!(
+            target_pixel[0] > 180 && target_pixel[1] < 90 && target_pixel[2] < 90,
+            "expected IK end marker at target, got {target_pixel:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_applies_chain_ik_target() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[180,180]}>
+  <Background color="#ffffff" />
+
+  <Skeleton id="finger_v1">
+    <Bone id="finger_1" x="0" y="0" />
+    <Bone id="finger_2" parent="finger_1" x="0" y="-40" />
+    <Bone id="finger_3" parent="finger_2" x="0" y="-32" />
+    <Bone id="finger_tip" parent="finger_3" x="0" y="-24" />
+  </Skeleton>
+
+  <Action id="touch" skeleton="finger_v1" duration="1s">
+    <IK chain="finger_1,finger_2,finger_3,finger_tip"
+        targetX="32" targetY="-66" iterations="12" weight="1" />
+  </Action>
+
+  <Scene id="scene0">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Character id="hand" rig="finger_v1" x="80" y="120">
+              <Part id="tip_marker" attachTo="finger_tip">
+                <Circle x="0" y="0" radius="8" fill="#ff0000" />
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <ApplyAction target="hand" action="touch" at="0s" />
+  <Present from="scene0" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer =
+            pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Cpu));
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+        let target_pixel = rendered.get_pixel(112, 54);
+
+        assert!(
+            target_pixel[0] > 180 && target_pixel[1] < 90 && target_pixel[2] < 90,
+            "expected chain IK end marker at target, got {target_pixel:?}"
+        );
+    }
+
+    #[test]
     fn scene_renderer_draws_scene_group_shapes_and_text() {
         let graph = parse_graph_script(
             r##"
@@ -12687,6 +12991,55 @@ mod tests {
         assert_eq!(outside[0], 0);
 
         let _ = std::fs::remove_file(image_path);
+    }
+
+    #[test]
+    fn scene_character_draws_data_uri_image_source() {
+        let mut bytes = Vec::new();
+        RgbaImage::from_pixel(8, 6, Rgba([255, 0, 0, 255]))
+            .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .expect("encode test image");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+
+        let graph = parse_graph_script(&format!(
+            r##"
+<Graph fps={{30}} duration="1s" size={{[64,48]}}>
+  <Background color="#000000" />
+
+  <Scene id="scene0">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Character id="test_character"
+                       src="data:image/png;base64,{}"
+                       x="20"
+                       y="10"
+                       scale="2.0" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+
+  <Present from="scene0" />
+</Graph>
+"##,
+            encoded
+        ))
+        .expect("scene graph parse");
+
+        let mut renderer =
+            pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Cpu));
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+        let inside = rendered.get_pixel(25, 14);
+        let outside = rendered.get_pixel(2, 2);
+
+        assert!(
+            inside[0] > 200 && inside[1] < 40 && inside[2] < 40,
+            "expected character data URI image pixel, got {inside:?}"
+        );
+        assert_eq!(outside[0], 0);
     }
 
     #[test]

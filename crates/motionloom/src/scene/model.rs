@@ -92,6 +92,13 @@ pub enum SceneNode {
     Layer(SceneLayerNode),
     Camera(CameraNode),
     Character(CharacterNode),
+    Puppet(PuppetNode),
+    Pin(PinNode),
+    MeshTopology(MeshTopologyNode),
+    Vertex(VertexNode),
+    Triangle(TriangleNode),
+    Edge(EdgeNode),
+    Region(RegionNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -681,6 +688,134 @@ pub struct GroupNode {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PuppetNode {
+    pub id: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default = "default_scene_puppet_mesh")]
+    pub mesh: String,
+    #[serde(default = "default_scene_puppet_density")]
+    pub density: String,
+    pub x: String,
+    pub y: String,
+    pub rotation: String,
+    pub scale: String,
+    #[serde(default = "default_scene_one")]
+    pub scale_x: String,
+    #[serde(default = "default_scene_one")]
+    pub scale_y: String,
+    #[serde(default = "default_scene_zero")]
+    pub skew_x: String,
+    #[serde(default = "default_scene_zero")]
+    pub skew_y: String,
+    #[serde(default = "default_scene_zero")]
+    pub transform_origin_x: String,
+    #[serde(default = "default_scene_zero")]
+    pub transform_origin_y: String,
+    #[serde(default = "default_scene_puppet_width")]
+    pub width: String,
+    #[serde(default = "default_scene_puppet_height")]
+    pub height: String,
+    #[serde(default = "default_scene_one")]
+    pub amount: String,
+    pub opacity: String,
+    pub children: Vec<SceneNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinNode {
+    pub id: Option<String>,
+    #[serde(default)]
+    pub vertex: Option<String>,
+    pub x: Option<String>,
+    pub y: Option<String>,
+    pub target_x: Option<String>,
+    pub target_y: Option<String>,
+    #[serde(default = "default_scene_pin_radius")]
+    pub radius: String,
+    #[serde(default = "default_scene_one")]
+    pub strength: String,
+    #[serde(default = "default_scene_pin_falloff")]
+    pub falloff: String,
+    #[serde(default = "default_scene_false")]
+    pub fixed: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshTopologyNode {
+    pub id: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    pub children: Vec<SceneNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VertexNode {
+    pub id: String,
+    pub x: String,
+    pub y: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriangleNode {
+    pub id: Option<String>,
+    pub a: String,
+    pub b: String,
+    pub c: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeNode {
+    pub id: Option<String>,
+    pub a: String,
+    pub b: String,
+    #[serde(default = "default_scene_false")]
+    pub boundary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionNode {
+    pub id: String,
+    #[serde(default)]
+    pub vertices: String,
+    #[serde(default)]
+    pub triangles: String,
+    #[serde(default = "default_scene_one")]
+    pub weight: String,
+}
+
+fn default_scene_puppet_mesh() -> String {
+    "auto".to_string()
+}
+
+fn default_scene_puppet_density() -> String {
+    "medium".to_string()
+}
+
+fn default_scene_puppet_width() -> String {
+    "512".to_string()
+}
+
+fn default_scene_puppet_height() -> String {
+    "512".to_string()
+}
+
+fn default_scene_pin_radius() -> String {
+    "120".to_string()
+}
+
+fn default_scene_pin_falloff() -> String {
+    "smooth".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PartNode {
     pub id: Option<String>,
     pub label: Option<String>,
@@ -884,6 +1019,8 @@ fn default_scene_false() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct CharacterNode {
     pub id: Option<String>,
+    #[serde(default)]
+    pub src: Option<String>,
     #[serde(default)]
     pub rig: Option<String>,
     #[serde(default)]

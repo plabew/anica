@@ -1,6 +1,7 @@
 use crate::scene::drawable::Point2;
-use crate::scene::model::GroupNode;
+use crate::scene::model::{GroupNode, MeshTopologyNode, PinNode, PuppetNode, SceneNode};
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
+use std::collections::HashMap;
 
 use super::Affine2;
 
@@ -10,6 +11,7 @@ pub(crate) struct EvaluatedDeformGrid {
     pub(crate) rows: usize,
     pub(crate) from: Vec<Point2>,
     pub(crate) to: Vec<Point2>,
+    pub(crate) triangles: Vec<[usize; 3]>,
 }
 
 pub(crate) fn eval_group_deform_grid(
@@ -59,6 +61,67 @@ pub(crate) fn eval_group_deform_grid(
         rows,
         from,
         to,
+        triangles: Vec::new(),
+    }))
+}
+
+pub(crate) fn eval_puppet_deform_grid(
+    puppet: &PuppetNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Option<EvaluatedDeformGrid>, MotionLoomSceneRenderError> {
+    let mesh = puppet.mesh.trim();
+    if mesh.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+
+    let amount = eval_scene_number(&puppet.amount, time_norm, time_sec)?.clamp(0.0, 1.0);
+    if amount <= 0.0001 {
+        return Ok(None);
+    }
+
+    let width = eval_scene_number(&puppet.width, time_norm, time_sec)?.max(1.0);
+    let height = eval_scene_number(&puppet.height, time_norm, time_sec)?.max(1.0);
+    let topology = puppet_topology_mesh(puppet, time_norm, time_sec)?;
+    let (cols, rows, from, triangles) = if topology.triangles.is_empty() {
+        let (cols, rows) = puppet_grid_size(&puppet.density);
+        (
+            cols,
+            rows,
+            regular_grid_points(width, height, cols, rows),
+            Vec::new(),
+        )
+    } else {
+        (
+            topology.vertices.len().max(1),
+            1,
+            topology.vertices.clone(),
+            topology.triangles.clone(),
+        )
+    };
+    let pins = puppet_pin_controls(puppet, &topology.vertex_map, amount, time_norm, time_sec)?;
+    if pins.is_empty() {
+        return Ok(None);
+    }
+
+    let to = from
+        .iter()
+        .map(|point| apply_puppet_pins_to_point(*point, &pins))
+        .collect::<Vec<_>>();
+    if from
+        .iter()
+        .zip(to.iter())
+        .all(|(a, b)| (a.x - b.x).abs() <= 0.001 && (a.y - b.y).abs() <= 0.001)
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(EvaluatedDeformGrid {
+        cols,
+        rows,
+        from,
+        to,
+        triangles,
     }))
 }
 
@@ -79,6 +142,7 @@ pub(crate) fn transform_deform_grid(
             .iter()
             .map(|point| transform_point2(transform, *point))
             .collect(),
+        triangles: grid.triangles.clone(),
     }
 }
 
@@ -115,6 +179,32 @@ pub(crate) fn transform_and_deform_subpaths(
 }
 
 fn warp_point_with_deform_grid(point: Point2, grid: &EvaluatedDeformGrid) -> Point2 {
+    if !grid.triangles.is_empty() {
+        for triangle in &grid.triangles {
+            if triangle
+                .iter()
+                .any(|index| *index >= grid.from.len() || *index >= grid.to.len())
+            {
+                continue;
+            }
+            if let Some(warped) = warp_point_with_deform_triangle(
+                point,
+                [
+                    grid.from[triangle[0]],
+                    grid.from[triangle[1]],
+                    grid.from[triangle[2]],
+                ],
+                [
+                    grid.to[triangle[0]],
+                    grid.to[triangle[1]],
+                    grid.to[triangle[2]],
+                ],
+            ) {
+                return warped;
+            }
+        }
+        return point;
+    }
     for row in 0..grid.rows - 1 {
         for col in 0..grid.cols - 1 {
             let i00 = row * grid.cols + col;
@@ -177,6 +267,229 @@ fn parse_deform_grid_size(size: &str) -> Result<(usize, usize), MotionLoomSceneR
         ));
     }
     Ok((cols, rows))
+}
+
+fn puppet_grid_size(density: &str) -> (usize, usize) {
+    match density.trim().to_ascii_lowercase().as_str() {
+        "low" | "coarse" => (3, 3),
+        "high" | "fine" => (7, 7),
+        "ultra" | "dense" => (9, 9),
+        raw => parse_deform_grid_size(raw).unwrap_or((5, 5)),
+    }
+}
+
+fn regular_grid_points(width: f32, height: f32, cols: usize, rows: usize) -> Vec<Point2> {
+    let mut points = Vec::with_capacity(cols * rows);
+    for row in 0..rows {
+        let y = if rows <= 1 {
+            0.0
+        } else {
+            height * row as f32 / (rows - 1) as f32
+        };
+        for col in 0..cols {
+            let x = if cols <= 1 {
+                0.0
+            } else {
+                width * col as f32 / (cols - 1) as f32
+            };
+            points.push(Point2::new(x, y));
+        }
+    }
+    points
+}
+
+#[derive(Debug, Clone, Default)]
+struct EvaluatedPuppetTopology {
+    vertex_map: HashMap<String, Point2>,
+    vertex_indices: HashMap<String, usize>,
+    vertices: Vec<Point2>,
+    triangles: Vec<[usize; 3]>,
+}
+
+#[derive(Debug, Clone)]
+struct EvaluatedPuppetPin {
+    source: Point2,
+    delta: Point2,
+    radius: f32,
+    strength: f32,
+    falloff: String,
+}
+
+fn puppet_pin_controls(
+    puppet: &PuppetNode,
+    vertices: &HashMap<String, Point2>,
+    amount: f32,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Vec<EvaluatedPuppetPin>, MotionLoomSceneRenderError> {
+    let mut pins = Vec::new();
+    for child in &puppet.children {
+        let SceneNode::Pin(pin) = child else {
+            continue;
+        };
+        let source = eval_pin_source(pin, vertices, time_norm, time_sec)?;
+        let fixed = eval_pin_fixed(pin, time_norm, time_sec)?;
+        let target_x = if fixed {
+            source.x
+        } else {
+            pin.target_x
+                .as_deref()
+                .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+                .transpose()?
+                .unwrap_or(source.x)
+        };
+        let target_y = if fixed {
+            source.y
+        } else {
+            pin.target_y
+                .as_deref()
+                .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+                .transpose()?
+                .unwrap_or(source.y)
+        };
+        let radius = eval_scene_number(&pin.radius, time_norm, time_sec)?.max(0.001);
+        let strength = eval_scene_number(&pin.strength, time_norm, time_sec)?.clamp(0.0, 8.0);
+        pins.push(EvaluatedPuppetPin {
+            source,
+            delta: Point2::new(
+                (target_x - source.x) * amount,
+                (target_y - source.y) * amount,
+            ),
+            radius,
+            strength,
+            falloff: pin.falloff.clone(),
+        });
+    }
+    Ok(pins)
+}
+
+fn eval_pin_source(
+    pin: &PinNode,
+    vertices: &HashMap<String, Point2>,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Point2, MotionLoomSceneRenderError> {
+    if let Some(vertex) = pin.vertex.as_deref()
+        && let Some(point) = vertices.get(vertex)
+    {
+        return Ok(*point);
+    }
+    let x = pin.x.as_deref().ok_or_else(|| {
+        invalid_deform_grid(
+            pin.id.as_deref().unwrap_or("pin"),
+            "Pin requires x/y or vertex.",
+        )
+    })?;
+    let y = pin.y.as_deref().ok_or_else(|| {
+        invalid_deform_grid(
+            pin.id.as_deref().unwrap_or("pin"),
+            "Pin requires x/y or vertex.",
+        )
+    })?;
+    Ok(Point2::new(
+        eval_scene_number(x, time_norm, time_sec)?,
+        eval_scene_number(y, time_norm, time_sec)?,
+    ))
+}
+
+fn eval_pin_fixed(
+    pin: &PinNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<bool, MotionLoomSceneRenderError> {
+    let raw = pin.fixed.trim();
+    if raw.eq_ignore_ascii_case("true") || raw.eq_ignore_ascii_case("yes") || raw == "1" {
+        return Ok(true);
+    }
+    if raw.eq_ignore_ascii_case("false") || raw.eq_ignore_ascii_case("no") || raw == "0" {
+        return Ok(false);
+    }
+    Ok(eval_scene_number(raw, time_norm, time_sec)? >= 0.5)
+}
+
+fn puppet_topology_mesh(
+    puppet: &PuppetNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<EvaluatedPuppetTopology, MotionLoomSceneRenderError> {
+    let mut topology_eval = EvaluatedPuppetTopology::default();
+    for topology in puppet.children.iter().filter_map(|child| match child {
+        SceneNode::MeshTopology(topology) => Some(topology),
+        _ => None,
+    }) {
+        collect_topology_vertices(topology, &mut topology_eval, time_norm, time_sec)?;
+        collect_topology_triangles(topology, &mut topology_eval);
+    }
+    Ok(topology_eval)
+}
+
+fn collect_topology_vertices(
+    topology: &MeshTopologyNode,
+    out: &mut EvaluatedPuppetTopology,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<(), MotionLoomSceneRenderError> {
+    for child in &topology.children {
+        if let SceneNode::Vertex(vertex) = child {
+            let point = Point2::new(
+                eval_scene_number(&vertex.x, time_norm, time_sec)?,
+                eval_scene_number(&vertex.y, time_norm, time_sec)?,
+            );
+            let index = out.vertices.len();
+            out.vertex_map.insert(vertex.id.clone(), point);
+            out.vertex_indices.insert(vertex.id.clone(), index);
+            out.vertices.push(point);
+        }
+    }
+    Ok(())
+}
+
+fn collect_topology_triangles(topology: &MeshTopologyNode, out: &mut EvaluatedPuppetTopology) {
+    for child in &topology.children {
+        if let SceneNode::Triangle(triangle) = child {
+            let Some(a) = out.vertex_indices.get(&triangle.a).copied() else {
+                continue;
+            };
+            let Some(b) = out.vertex_indices.get(&triangle.b).copied() else {
+                continue;
+            };
+            let Some(c) = out.vertex_indices.get(&triangle.c).copied() else {
+                continue;
+            };
+            out.triangles.push([a, b, c]);
+        }
+    }
+}
+
+fn apply_puppet_pins_to_point(point: Point2, pins: &[EvaluatedPuppetPin]) -> Point2 {
+    let mut dx = 0.0;
+    let mut dy = 0.0;
+    let mut weight_sum = 0.0;
+    for pin in pins {
+        let distance = ((point.x - pin.source.x).powi(2) + (point.y - pin.source.y).powi(2)).sqrt();
+        let mut weight = puppet_pin_falloff(distance, pin.radius, &pin.falloff) * pin.strength;
+        if !weight.is_finite() {
+            weight = 0.0;
+        }
+        dx += pin.delta.x * weight;
+        dy += pin.delta.y * weight;
+        weight_sum += weight;
+    }
+    let divisor = weight_sum.max(1.0);
+    Point2::new(point.x + dx / divisor, point.y + dy / divisor)
+}
+
+fn puppet_pin_falloff(distance: f32, radius: f32, falloff: &str) -> f32 {
+    if distance >= radius {
+        return 0.0;
+    }
+    let t = (1.0 - distance / radius).clamp(0.0, 1.0);
+    match falloff.trim().to_ascii_lowercase().as_str() {
+        "linear" => t,
+        "gaussian" | "gauss" => (-(distance / radius).powi(2) * 4.0).exp(),
+        "none" | "constant" => 1.0,
+        _ => t * t * (3.0 - 2.0 * t),
+    }
 }
 
 fn parse_deform_grid_points(

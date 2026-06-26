@@ -1,4 +1,4 @@
-<Graph fps={30} duration="1s" size={[1520,260]}>
+<Graph fps={30} duration="2s" size={[640,420]}>
   <Background color="#f6efe9" />
 
   <Scene id="high_detail_bishoujo_eye_big_pupil_star_grouped">
@@ -27,12 +27,19 @@
 
     <Timeline>
       <Track id="scene_content" space="world" z="0">
-        <Sequence from="0s" duration="1s" out="hold">
+        <Sequence from="0s" duration="2s" out="hold">
           <Layer>
 
-            <Rect x="0" y="0" width="520" height="260" color="url(#skin_soft)" />
+            <Rect x="0" y="0" width="640" height="420" color="url(#skin_soft)" />
 
-            <Character id="eye_detail" x="252" y="128" rotation="-4" opacity="1">
+            <Character id="eye_detail"
+                       x={curve("0.00:300:ease_in_out, 0.52:300:ease_in_out, 0.92:250:ease_in_out, 1.24:300:ease_in_out, 2.00:300:linear")}
+                       y="206"
+                       rotation={curve("0.00:-4:ease_in_out, 0.52:-4:ease_in_out, 0.92:-7:ease_in_out, 1.24:-4:ease_in_out, 2.00:-4:linear")}
+                       scaleY={curve("0.00:1.00:linear, 1.30:1.00:linear, 1.70:0.42:ease_in_out, 2.00:0.42:linear")}
+                       transformOriginX="0"
+                       transformOriginY="8"
+                       opacity="1">
 
               <!-- 眼白 -->
               <Path id="eye_white"
@@ -46,7 +53,11 @@
                     strokeWidth="3" />
 
               <!-- 虹膜 Group：已放大 5% -->
-              <Group id="iris_group" x="0" y="-18" opacity="1" scale="1.35">
+              <Group id="iris_group"
+                     x={curve("0.00:0:ease_in_out, 0.52:0:ease_in_out, 0.92:-52:ease_in_out, 1.24:0:ease_in_out, 2.00:0:linear")}
+                     y="-18"
+                     opacity={curve("0.00:1.00:linear, 1.30:1.00:linear, 1.70:0.66:ease_in_out, 2.00:0.66:linear")}
+                     scale="1.35">
 
                 <!-- 大虹膜 -->
                 <Circle id="iris_outer_soft" x="4" y="6" radius="88"
@@ -569,6 +580,20 @@
                     lineCap="round"
                     fill="none"
                     opacity="0.48" />
+
+              <!-- Squint crease becomes visible as the eye narrows. -->
+              <Path id="squint_lid_crease"
+                    d="M -172 24
+                       C -104 0 -18 -8 72 4
+                       C 132 12 178 30 208 54"
+                    stroke="#2a172c"
+                    strokeWidth="6.8"
+                    lineCap="round"
+                    lineJoin="round"
+                    taperStart="0.18"
+                    taperEnd="0.28"
+                    fill="none"
+                    opacity={curve("0.00:0.00:linear, 1.30:0.00:linear, 1.70:0.86:ease_in_out, 2.00:0.86:linear")} />
 
               <Path id="lower_inner_line"
                     d="M -106 66

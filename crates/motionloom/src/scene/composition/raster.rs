@@ -457,6 +457,31 @@ pub(crate) fn draw_rgba_image(
 
 pub(crate) fn apply_deform_grid(source: &RgbaImage, grid: &EvaluatedDeformGrid) -> RgbaImage {
     let mut out = RgbaImage::from_pixel(source.width(), source.height(), Rgba([0, 0, 0, 0]));
+    if !grid.triangles.is_empty() {
+        for triangle in &grid.triangles {
+            if triangle
+                .iter()
+                .any(|index| *index >= grid.from.len() || *index >= grid.to.len())
+            {
+                continue;
+            }
+            raster_deform_triangle(
+                &mut out,
+                source,
+                [
+                    grid.from[triangle[0]],
+                    grid.from[triangle[1]],
+                    grid.from[triangle[2]],
+                ],
+                [
+                    grid.to[triangle[0]],
+                    grid.to[triangle[1]],
+                    grid.to[triangle[2]],
+                ],
+            );
+        }
+        return out;
+    }
     for row in 0..grid.rows - 1 {
         for col in 0..grid.cols - 1 {
             let i00 = row * grid.cols + col;

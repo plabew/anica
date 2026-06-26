@@ -1,5 +1,5 @@
 use crate::scene::model::{
-    CharacterNode, CircleNode, GroupNode, LineNode, PathNode, PolylineNode, RectNode,
+    CharacterNode, CircleNode, GroupNode, LineNode, PathNode, PolylineNode, PuppetNode, RectNode,
     SceneLayerNode, UseNode,
 };
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
@@ -223,6 +223,27 @@ pub(crate) fn scene_group_local_transform_opt(
     time_sec: f32,
 ) -> Option<Affine2> {
     scene_group_local_transform(group, time_norm, time_sec).ok()
+}
+
+pub(crate) fn scene_puppet_local_transform(
+    puppet: &PuppetNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Affine2, MotionLoomSceneRenderError> {
+    scene_local_transform(
+        &puppet.x,
+        &puppet.y,
+        &puppet.rotation,
+        &puppet.scale,
+        &puppet.scale_x,
+        &puppet.scale_y,
+        &puppet.skew_x,
+        &puppet.skew_y,
+        &puppet.transform_origin_x,
+        &puppet.transform_origin_y,
+        time_norm,
+        time_sec,
+    )
 }
 
 pub(crate) fn scene_layer_local_transform(

@@ -25,6 +25,7 @@ pub(crate) fn scene_nodes_contain_image_or_svg(nodes: &[SceneNode]) -> bool {
         SceneNode::Sequence(sequence) => scene_nodes_contain_image_or_svg(&sequence.children),
         SceneNode::Chain(chain) => scene_nodes_contain_image_or_svg(&chain.children),
         SceneNode::Group(group) => scene_nodes_contain_image_or_svg(&group.children),
+        SceneNode::Puppet(puppet) => scene_nodes_contain_image_or_svg(&puppet.children),
         SceneNode::Part(part) => scene_nodes_contain_image_or_svg(&part.children),
         SceneNode::Repeat(repeat) => scene_nodes_contain_image_or_svg(&repeat.children),
         SceneNode::Camera(camera) => scene_nodes_contain_image_or_svg(&camera.children),
@@ -60,6 +61,7 @@ pub(crate) fn scene_nodes_require_cpu_scene_compositing(nodes: &[SceneNode]) -> 
         SceneNode::Group(group) => {
             group.mask.is_some() || scene_nodes_require_cpu_scene_compositing(&group.children)
         }
+        SceneNode::Puppet(_) => true,
         SceneNode::Mask(mask) => {
             mask.feather.trim() != "0" || scene_nodes_require_cpu_scene_compositing(&mask.children)
         }
@@ -110,8 +112,15 @@ fn scene_node_is_rich(node: &SceneNode) -> bool {
         SceneNode::Sequence(sequence) => sequence.children.iter().any(scene_node_is_rich),
         SceneNode::Chain(chain) => chain.children.iter().any(scene_node_is_rich),
         SceneNode::Group(group) => group.children.iter().any(scene_node_is_rich),
+        SceneNode::Puppet(puppet) => puppet.children.iter().any(scene_node_is_rich),
         SceneNode::Part(part) => part.children.iter().any(scene_node_is_rich),
         SceneNode::Repeat(repeat) => repeat.children.iter().any(scene_node_is_rich),
+        SceneNode::Pin(_)
+        | SceneNode::MeshTopology(_)
+        | SceneNode::Vertex(_)
+        | SceneNode::Triangle(_)
+        | SceneNode::Edge(_)
+        | SceneNode::Region(_) => false,
         SceneNode::Camera(_) | SceneNode::Character(_) => true,
     }
 }

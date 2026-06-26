@@ -19,11 +19,11 @@ use crate::scene::dsl::{
     BrushParseContext, parse_action_block, parse_apply_action_node, parse_background_node,
     parse_camera_block, parse_camera_node, parse_character_block, parse_circle_node,
     parse_defs_block, parse_face_jaw_node, parse_group_block, parse_image_node, parse_line_node,
-    parse_mask_any, parse_model_profile_block, parse_part_block, parse_path_node,
-    parse_pixel_grid_block, parse_polyline_node, parse_precompose_block, parse_rect_node,
-    parse_repeat_block, parse_scene_root_block, parse_shadow_node, parse_skeleton_block,
-    parse_svg_node, parse_text_node, validate_scene_camera_structure,
-    validate_scene_model_profile_refs,
+    parse_mask_any, parse_mesh_topology_block, parse_model_profile_block, parse_part_block,
+    parse_path_node, parse_pin_node, parse_pixel_grid_block, parse_polyline_node,
+    parse_precompose_block, parse_puppet_block, parse_rect_node, parse_repeat_block,
+    parse_scene_root_block, parse_shadow_node, parse_skeleton_block, parse_svg_node,
+    parse_text_node, validate_scene_camera_structure, validate_scene_model_profile_refs,
 };
 use crate::scene::model::{SceneNode, SceneRootNode};
 pub use crate::scene::text::TextNode;
@@ -666,6 +666,27 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
             continue;
         }
 
+        if starts_open_tag(line, "Puppet") {
+            let (puppet, end_ix) = parse_puppet_block(&lines, i, &brush_ctx)?;
+            scene_nodes.push(SceneNode::Puppet(puppet));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "Pin") {
+            let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
+            scene_nodes.push(SceneNode::Pin(parse_pin_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "MeshTopology") {
+            let (topology, end_ix) = parse_mesh_topology_block(&lines, i)?;
+            scene_nodes.push(SceneNode::MeshTopology(topology));
+            i = end_ix + 1;
+            continue;
+        }
+
         if starts_open_tag(line, "Part") {
             let (part, end_ix) = parse_part_block(&lines, i, &brush_ctx)?;
             scene_nodes.push(SceneNode::Part(part));
@@ -974,10 +995,13 @@ fn validate_graph(
                 message: format!("Duplicate action id: {}", action.id),
             });
         }
-        if action.poses.is_empty() {
+        if action.poses.is_empty() && action.iks.is_empty() {
             return Err(GraphParseError {
                 line,
-                message: format!("Action {} must contain at least one <Pose>.", action.id),
+                message: format!(
+                    "Action {} must contain at least one <Pose> or <IK />.",
+                    action.id
+                ),
             });
         }
     }
@@ -3220,6 +3244,125 @@ Font note: this is not a structured XML comment.
             character.model_profile.as_deref(),
             Some("2d_humanoid_vector_v1")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_character_image_source() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph fps={30} duration="1s" size={[64,48]}>
+  <Scene id="scene0">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Character id="hero" src="data:image/png;base64,AAAA" x="10" y="12" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        let SceneNode::Timeline(timeline) = &graph.scenes[0].children[0] else {
+            panic!("expected timeline");
+        };
+        let SceneNode::Track(track) = &timeline.children[0] else {
+            panic!("expected track");
+        };
+        let SceneNode::Sequence(sequence) = &track.children[0] else {
+            panic!("expected sequence");
+        };
+        let SceneNode::Layer(layer) = &sequence.children[0] else {
+            panic!("expected layer");
+        };
+        let SceneNode::Character(character) = &layer.children[0] else {
+            panic!("expected character");
+        };
+
+        assert_eq!(character.src.as_deref(), Some("data:image/png;base64,AAAA"));
+        assert_eq!(character.x, "10");
+        assert_eq!(character.y, "12");
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_action_ik_target() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph fps={30} duration="1s" size={[120,120]}>
+  <Skeleton id="arm">
+    <Bone id="upper" x="0" y="0" />
+    <Bone id="lower" parent="upper" x="40" y="0" />
+    <Bone id="hand" parent="lower" x="40" y="0" />
+  </Skeleton>
+
+  <Action id="reach" skeleton="arm" duration="1s">
+    <IK root="upper" mid="lower" end="hand" targetX="40" targetY="40" bend="1" />
+  </Action>
+
+  <Scene id="scene0">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Character id="hero" rig="arm" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <ApplyAction target="hero" action="reach" />
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+
+        assert_eq!(graph.actions[0].iks.len(), 1);
+        assert_eq!(graph.actions[0].iks[0].root, "upper");
+        assert_eq!(graph.actions[0].iks[0].target_x, "40");
+        assert_eq!(graph.actions[0].iks[0].weight, "1");
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_accepts_action_chain_ik_target() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph fps={30} duration="1s" size={[120,120]}>
+  <Skeleton id="finger">
+    <Bone id="finger_1" x="0" y="0" />
+    <Bone id="finger_2" parent="finger_1" x="0" y="-40" />
+    <Bone id="finger_3" parent="finger_2" x="0" y="-32" />
+    <Bone id="finger_tip" parent="finger_3" x="0" y="-24" />
+  </Skeleton>
+
+  <Action id="curl" skeleton="finger" duration="1s">
+    <IK chain="finger_1,finger_2,finger_3,finger_tip"
+        targetX="24" targetY="-64" iterations="10" weight="1" />
+  </Action>
+
+  <Scene id="scene0">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Character id="hand" rig="finger" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <ApplyAction target="hand" action="curl" />
+  <Present from="scene0" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+
+        assert_eq!(graph.actions[0].iks[0].chain.len(), 4);
+        assert_eq!(graph.actions[0].iks[0].root, "finger_1");
+        assert_eq!(graph.actions[0].iks[0].end, "finger_tip");
+        assert_eq!(graph.actions[0].iks[0].iterations, "10");
         Ok(())
     }
 

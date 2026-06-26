@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::dsl::GraphScript;
 use crate::scene::backend::sizing::format_scene_number;
-use crate::scene::dsl::{ActionNode, ApplyActionNode, SkeletonNode};
+use crate::scene::dsl::{
+    ActionIkNode, ActionNode, ApplyActionNode, SkeletonBoneNode, SkeletonNode,
+};
 use crate::scene::model::{PartNode, SceneNode};
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 use crate::scene::spatial::Affine2;
@@ -53,13 +55,13 @@ pub(crate) fn apply_action_graph_at_time(
             }
         })?;
         let samples = sample_action_bones(action, apply, time_norm, time_sec)?;
-        if samples.is_empty() {
+        if samples.is_empty() && action.iks.is_empty() {
             continue;
         }
         apply_action_to_nodes(
             &mut next.scene_nodes,
             &apply.target,
-            action.skeleton.as_deref(),
+            action,
             &skeleton_map,
             &samples,
             time_norm,
@@ -69,7 +71,7 @@ pub(crate) fn apply_action_graph_at_time(
             apply_action_to_nodes(
                 &mut scene.children,
                 &apply.target,
-                action.skeleton.as_deref(),
+                action,
                 &skeleton_map,
                 &samples,
                 time_norm,
@@ -201,7 +203,7 @@ fn interpolate_action_attr(
 fn apply_action_to_nodes(
     nodes: &mut [SceneNode],
     target: &str,
-    action_skeleton: Option<&str>,
+    action: &ActionNode,
     skeleton_map: &HashMap<&str, &SkeletonNode>,
     samples: &HashMap<String, ActionBoneSample>,
     time_norm: f32,
@@ -212,7 +214,7 @@ fn apply_action_to_nodes(
             SceneNode::Timeline(timeline) => apply_action_to_nodes(
                 &mut timeline.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -221,7 +223,7 @@ fn apply_action_to_nodes(
             SceneNode::Track(track) => apply_action_to_nodes(
                 &mut track.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -230,7 +232,7 @@ fn apply_action_to_nodes(
             SceneNode::Sequence(sequence) => apply_action_to_nodes(
                 &mut sequence.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -239,7 +241,7 @@ fn apply_action_to_nodes(
             SceneNode::Chain(chain) => apply_action_to_nodes(
                 &mut chain.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -248,7 +250,7 @@ fn apply_action_to_nodes(
             SceneNode::Layer(layer) => apply_action_to_nodes(
                 &mut layer.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -256,15 +258,27 @@ fn apply_action_to_nodes(
             )?,
             SceneNode::Character(character) => {
                 if character.id.as_deref() == Some(target) {
-                    let skeleton_id = action_skeleton.or(character.rig.as_deref());
+                    let skeleton_id = action.skeleton.as_deref().or(character.rig.as_deref());
                     if let Some(skeleton) = skeleton_id.and_then(|id| skeleton_map.get(id).copied())
                     {
-                        let bone_world =
-                            sample_skeleton_bones(skeleton, samples, time_norm, time_sec)?;
+                        let mut character_samples = samples.clone();
+                        apply_ik_targets_to_samples(
+                            skeleton,
+                            &action.iks,
+                            &mut character_samples,
+                            time_norm,
+                            time_sec,
+                        )?;
+                        let bone_world = sample_skeleton_bones(
+                            skeleton,
+                            &character_samples,
+                            time_norm,
+                            time_sec,
+                        )?;
                         apply_skeleton_action_to_character_children(
                             &mut character.children,
                             &bone_world,
-                            samples,
+                            &character_samples,
                             time_norm,
                             time_sec,
                         )?;
@@ -280,7 +294,7 @@ fn apply_action_to_nodes(
                     apply_action_to_nodes(
                         &mut character.children,
                         target,
-                        action_skeleton,
+                        action,
                         skeleton_map,
                         samples,
                         time_norm,
@@ -291,7 +305,7 @@ fn apply_action_to_nodes(
             SceneNode::Group(group) => apply_action_to_nodes(
                 &mut group.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -300,7 +314,7 @@ fn apply_action_to_nodes(
             SceneNode::Part(part) => apply_action_to_nodes(
                 &mut part.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -309,7 +323,7 @@ fn apply_action_to_nodes(
             SceneNode::Repeat(repeat) => apply_action_to_nodes(
                 &mut repeat.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -318,7 +332,7 @@ fn apply_action_to_nodes(
             SceneNode::Mask(mask) => apply_action_to_nodes(
                 &mut mask.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -327,7 +341,7 @@ fn apply_action_to_nodes(
             SceneNode::Precompose(precompose) => apply_action_to_nodes(
                 &mut precompose.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -336,7 +350,7 @@ fn apply_action_to_nodes(
             SceneNode::Camera(camera) => apply_action_to_nodes(
                 &mut camera.children,
                 target,
-                action_skeleton,
+                action,
                 skeleton_map,
                 samples,
                 time_norm,
@@ -453,6 +467,234 @@ fn sample_skeleton_bone(
     Ok(world)
 }
 
+fn apply_ik_targets_to_samples(
+    skeleton: &SkeletonNode,
+    iks: &[ActionIkNode],
+    samples: &mut HashMap<String, ActionBoneSample>,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<(), MotionLoomSceneRenderError> {
+    if iks.is_empty() {
+        return Ok(());
+    }
+
+    for ik in iks {
+        if ik.chain.len() > 3 {
+            solve_chain_ccd_ik(skeleton, ik, samples, time_norm, time_sec)?;
+        } else {
+            // IK starts from the current FK pose and writes solved local rotations back into samples.
+            let base_world = sample_skeleton_bones(skeleton, samples, time_norm, time_sec)?;
+            solve_two_bone_ik(skeleton, &base_world, ik, samples, time_norm, time_sec)?;
+        }
+    }
+    Ok(())
+}
+
+fn solve_chain_ccd_ik(
+    skeleton: &SkeletonNode,
+    ik: &ActionIkNode,
+    samples: &mut HashMap<String, ActionBoneSample>,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<(), MotionLoomSceneRenderError> {
+    let chain = if ik.chain.is_empty() {
+        vec![ik.root.clone(), ik.mid.clone(), ik.end.clone()]
+    } else {
+        ik.chain.clone()
+    };
+    validate_ik_chain(skeleton, &chain)?;
+    let target_x = eval_scene_number(&ik.target_x, time_norm, time_sec)?;
+    let target_y = eval_scene_number(&ik.target_y, time_norm, time_sec)?;
+    let weight = eval_scene_number(&ik.weight, time_norm, time_sec)?.clamp(0.0, 1.0);
+    if weight <= 0.0 {
+        return Ok(());
+    }
+    let iterations = eval_scene_number(&ik.iterations, time_norm, time_sec)?
+        .round()
+        .clamp(1.0, 32.0) as usize;
+
+    // CCD rotates each joint toward the target, then resamples the skeleton for the next joint.
+    for _ in 0..iterations {
+        for joint_id in chain.iter().take(chain.len().saturating_sub(1)).rev() {
+            let bone_world = sample_skeleton_bones(skeleton, samples, time_norm, time_sec)?;
+            let joint = bone_world.get(joint_id).ok_or_else(|| {
+                MotionLoomSceneRenderError::InvalidExpression {
+                    expr: joint_id.clone(),
+                    message: format!("Skeleton {} IK joint not found.", skeleton.id),
+                }
+            })?;
+            let end_id = chain.last().expect("validated non-empty chain");
+            let end = bone_world.get(end_id).ok_or_else(|| {
+                MotionLoomSceneRenderError::InvalidExpression {
+                    expr: end_id.clone(),
+                    message: format!("Skeleton {} IK end not found.", skeleton.id),
+                }
+            })?;
+            let (joint_x, joint_y) = joint.transform.transform_point(0.0, 0.0);
+            let (end_x, end_y) = end.transform.transform_point(0.0, 0.0);
+            let current_angle = (end_y - joint_y).atan2(end_x - joint_x).to_degrees();
+            let target_angle = (target_y - joint_y).atan2(target_x - joint_x).to_degrees();
+            let delta = shortest_angle_delta(current_angle, target_angle);
+            let entry = samples.entry(joint_id.clone()).or_default();
+            entry.rotation = Some(entry.rotation.unwrap_or(0.0) + delta * weight);
+        }
+    }
+    Ok(())
+}
+
+fn validate_ik_chain(
+    skeleton: &SkeletonNode,
+    chain: &[String],
+) -> Result<(), MotionLoomSceneRenderError> {
+    if chain.len() < 3 {
+        return Err(MotionLoomSceneRenderError::InvalidExpression {
+            expr: chain.join(","),
+            message: "IK chain requires at least three bone ids.".to_string(),
+        });
+    }
+    for id in chain {
+        find_skeleton_bone(skeleton, id)?;
+    }
+    for pair in chain.windows(2) {
+        let parent = &pair[0];
+        let child = find_skeleton_bone(skeleton, &pair[1])?;
+        if child.parent.as_deref() != Some(parent.as_str()) {
+            return Err(MotionLoomSceneRenderError::InvalidExpression {
+                expr: chain.join(","),
+                message: "IK chain ids must be direct parent-child bones.".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn shortest_angle_delta(from_deg: f32, to_deg: f32) -> f32 {
+    let mut delta = to_deg - from_deg;
+    while delta > 180.0 {
+        delta -= 360.0;
+    }
+    while delta < -180.0 {
+        delta += 360.0;
+    }
+    delta
+}
+
+fn solve_two_bone_ik(
+    skeleton: &SkeletonNode,
+    base_world: &HashMap<String, BoneWorldSample>,
+    ik: &ActionIkNode,
+    samples: &mut HashMap<String, ActionBoneSample>,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<(), MotionLoomSceneRenderError> {
+    let root = find_skeleton_bone(skeleton, &ik.root)?;
+    let mid = find_skeleton_bone(skeleton, &ik.mid)?;
+    let end = find_skeleton_bone(skeleton, &ik.end)?;
+    if mid.parent.as_deref() != Some(root.id.as_str())
+        || end.parent.as_deref() != Some(mid.id.as_str())
+    {
+        return Err(MotionLoomSceneRenderError::InvalidExpression {
+            expr: format!("{}>{}>{}", root.id, mid.id, end.id),
+            message: "IK requires a direct root -> mid -> end bone chain.".to_string(),
+        });
+    }
+
+    let parent = root
+        .parent
+        .as_deref()
+        .and_then(|parent_id| base_world.get(parent_id).copied())
+        .unwrap_or(BoneWorldSample {
+            transform: Affine2::identity(),
+            rotation: 0.0,
+            scale: 1.0,
+            opacity: 1.0,
+        });
+    let parent_inverse = parent.transform.inverse().ok_or_else(|| {
+        MotionLoomSceneRenderError::InvalidExpression {
+            expr: ik.root.clone(),
+            message: "IK parent transform is not invertible.".to_string(),
+        }
+    })?;
+
+    let target_world_x = eval_scene_number(&ik.target_x, time_norm, time_sec)?;
+    let target_world_y = eval_scene_number(&ik.target_y, time_norm, time_sec)?;
+    let (target_x, target_y) = parent_inverse.transform_point(target_world_x, target_world_y);
+
+    let root_sample = samples.get(&root.id).copied().unwrap_or_default();
+    let root_x = eval_scene_number(&root.x, time_norm, time_sec)? + root_sample.x.unwrap_or(0.0);
+    let root_y = eval_scene_number(&root.y, time_norm, time_sec)? + root_sample.y.unwrap_or(0.0);
+    let mid_x = eval_scene_number(&mid.x, time_norm, time_sec)?;
+    let mid_y = eval_scene_number(&mid.y, time_norm, time_sec)?;
+    let end_x = eval_scene_number(&end.x, time_norm, time_sec)?;
+    let end_y = eval_scene_number(&end.y, time_norm, time_sec)?;
+
+    let first_len = mid_x.hypot(mid_y).max(0.0001);
+    let second_len = end_x.hypot(end_y).max(0.0001);
+    let base_first_angle = mid_y.atan2(mid_x).to_degrees();
+    let base_second_angle = end_y.atan2(end_x).to_degrees();
+    let dx = target_x - root_x;
+    let dy = target_y - root_y;
+    let distance = dx.hypot(dy).clamp(0.0001, first_len + second_len - 0.0001);
+    let target_angle = dy.atan2(dx).to_degrees();
+    let bend_sign = if eval_scene_number(&ik.bend, time_norm, time_sec)? < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    let weight = eval_scene_number(&ik.weight, time_norm, time_sec)?.clamp(0.0, 1.0);
+    if weight <= 0.0 {
+        return Ok(());
+    }
+
+    let root_offset = (((first_len * first_len) + (distance * distance)
+        - (second_len * second_len))
+        / (2.0 * first_len * distance))
+        .clamp(-1.0, 1.0)
+        .acos()
+        .to_degrees();
+    let elbow_internal = (((first_len * first_len) + (second_len * second_len)
+        - (distance * distance))
+        / (2.0 * first_len * second_len))
+        .clamp(-1.0, 1.0)
+        .acos()
+        .to_degrees();
+    let root_rest_rotation = eval_scene_number(&root.rotation, time_norm, time_sec)?;
+    let mid_rest_rotation = eval_scene_number(&mid.rotation, time_norm, time_sec)?;
+    let solved_root_delta =
+        target_angle - bend_sign * root_offset - base_first_angle - root_rest_rotation;
+    let solved_mid_delta =
+        bend_sign * (180.0 - elbow_internal) - base_second_angle - mid_rest_rotation;
+
+    blend_rotation_sample(samples, &root.id, solved_root_delta, weight);
+    blend_rotation_sample(samples, &mid.id, solved_mid_delta, weight);
+    Ok(())
+}
+
+fn find_skeleton_bone<'a>(
+    skeleton: &'a SkeletonNode,
+    bone_id: &str,
+) -> Result<&'a SkeletonBoneNode, MotionLoomSceneRenderError> {
+    skeleton
+        .bones
+        .iter()
+        .find(|bone| bone.id == bone_id)
+        .ok_or_else(|| MotionLoomSceneRenderError::InvalidExpression {
+            expr: bone_id.to_string(),
+            message: format!("Skeleton {} IK bone not found.", skeleton.id),
+        })
+}
+
+fn blend_rotation_sample(
+    samples: &mut HashMap<String, ActionBoneSample>,
+    bone_id: &str,
+    solved_rotation: f32,
+    weight: f32,
+) {
+    let entry = samples.entry(bone_id.to_string()).or_default();
+    let current = entry.rotation.unwrap_or(0.0);
+    entry.rotation = Some(current + (solved_rotation - current) * weight);
+}
+
 fn apply_skeleton_action_to_character_children(
     nodes: &mut [SceneNode],
     bone_world: &HashMap<String, BoneWorldSample>,
@@ -517,6 +759,13 @@ fn apply_skeleton_action_to_character_children(
             }
             SceneNode::Group(group) => apply_skeleton_action_to_character_children(
                 &mut group.children,
+                bone_world,
+                samples,
+                time_norm,
+                time_sec,
+            )?,
+            SceneNode::Puppet(puppet) => apply_skeleton_action_to_character_children(
+                &mut puppet.children,
                 bone_world,
                 samples,
                 time_norm,
@@ -637,6 +886,12 @@ fn apply_action_to_character_children(
             }
             SceneNode::Group(group) => apply_action_to_character_children(
                 &mut group.children,
+                samples,
+                time_norm,
+                time_sec,
+            )?,
+            SceneNode::Puppet(puppet) => apply_action_to_character_children(
+                &mut puppet.children,
                 samples,
                 time_norm,
                 time_sec,

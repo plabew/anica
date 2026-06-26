@@ -103,6 +103,8 @@ pub struct ActionNode {
     pub skeleton: Option<String>,
     pub duration_ms: u64,
     pub poses: Vec<ActionPoseNode>,
+    #[serde(default)]
+    pub iks: Vec<ActionIkNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -121,6 +123,21 @@ pub struct ActionBoneNode {
     pub rotation: Option<String>,
     pub scale: Option<String>,
     pub opacity: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionIkNode {
+    pub root: String,
+    pub mid: String,
+    pub end: String,
+    #[serde(default)]
+    pub chain: Vec<String>,
+    pub target_x: String,
+    pub target_y: String,
+    pub bend: String,
+    pub weight: String,
+    pub iterations: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -815,6 +832,7 @@ pub(crate) fn parse_action_block(
         .map(|v| strip_wrappers(&v).to_string());
     let duration_explicit = attr_value(&open_tag, "duration").is_some();
     let mut poses = Vec::<ActionPoseNode>::new();
+    let mut iks = Vec::<ActionIkNode>::new();
     let mut i = open_end_ix + 1;
 
     while i < close_ix {
@@ -829,9 +847,15 @@ pub(crate) fn parse_action_block(
             i = end_ix + 1;
             continue;
         }
+        if starts_open_tag(line, "IK") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            iks.push(parse_action_ik_node(&tag, i + 1)?);
+            i = end_ix + 1;
+            continue;
+        }
         return Err(GraphParseError {
             line: i + 1,
-            message: format!("<Action> only accepts <Pose> children, got: {line}"),
+            message: format!("<Action> only accepts <Pose> or <IK /> children, got: {line}"),
         });
     }
 
@@ -858,6 +882,7 @@ pub(crate) fn parse_action_block(
             skeleton,
             duration_ms,
             poses,
+            iks,
         },
         close_ix,
     ))
@@ -907,6 +932,73 @@ fn parse_action_bone_node(block: &str, line: usize) -> Result<ActionBoneNode, Gr
             .map(|v| strip_wrappers(&v).to_string()),
         scale: attr_value(block, "scale").map(|v| strip_wrappers(&v).to_string()),
         opacity: attr_value(block, "opacity").map(|v| strip_wrappers(&v).to_string()),
+    })
+}
+
+fn parse_action_ik_node(block: &str, line: usize) -> Result<ActionIkNode, GraphParseError> {
+    let chain = attr_value(block, "chain")
+        .map(|v| {
+            strip_wrappers(&v)
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !chain.is_empty() && chain.len() < 3 {
+        return Err(GraphParseError {
+            line,
+            message: "<IK chain=\"...\"> requires at least three bone ids.".to_string(),
+        });
+    }
+    let root = if let Some(root) = chain.first() {
+        root.clone()
+    } else {
+        required_attr_value(block, "root", line)
+            .or_else(|_| required_attr_value(block, "start", line))
+            .map(|v| strip_wrappers(&v).to_string())?
+    };
+    let mid = if chain.len() >= 3 {
+        chain[1].clone()
+    } else {
+        required_attr_value(block, "mid", line)
+            .or_else(|_| required_attr_value(block, "joint", line))
+            .map(|v| strip_wrappers(&v).to_string())?
+    };
+    let end = if let Some(end) = chain.last() {
+        end.clone()
+    } else {
+        required_attr_value(block, "end", line)
+            .or_else(|_| required_attr_value(block, "tip", line))
+            .map(|v| strip_wrappers(&v).to_string())?
+    };
+    let target_x = required_attr_value_any(block, &["targetX", "target_x", "x"], line)
+        .map(|v| strip_wrappers(&v).to_string())?;
+    let target_y = required_attr_value_any(block, &["targetY", "target_y", "y"], line)
+        .map(|v| strip_wrappers(&v).to_string())?;
+    let bend = attr_value(block, "bend")
+        .or_else(|| attr_value(block, "pole"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1".to_string());
+    let weight = attr_value(block, "weight")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1".to_string());
+    let iterations = attr_value(block, "iterations")
+        .or_else(|| attr_value(block, "iters"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "8".to_string());
+
+    Ok(ActionIkNode {
+        root,
+        mid,
+        end,
+        chain,
+        target_x,
+        target_y,
+        bend,
+        weight,
+        iterations,
     })
 }
 
@@ -1173,6 +1265,79 @@ pub(crate) fn parse_group_block(
     Ok((parse_group_node(&open_tag, start + 1, children)?, close_ix))
 }
 
+pub(crate) fn parse_puppet_block(
+    lines: &[&str],
+    start: usize,
+    brush_ctx: &BrushParseContext,
+) -> Result<(PuppetNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    if is_self_closing_tag(&open_tag) {
+        return Ok((
+            parse_puppet_node(&open_tag, start + 1, Vec::new())?,
+            open_end_ix,
+        ));
+    }
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Puppet")?;
+    let mut child_ctx = brush_ctx.clone();
+    let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    Ok((parse_puppet_node(&open_tag, start + 1, children)?, close_ix))
+}
+
+pub(crate) fn parse_mesh_topology_block(
+    lines: &[&str],
+    start: usize,
+) -> Result<(MeshTopologyNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    if is_self_closing_tag(&open_tag) {
+        return Ok((
+            parse_mesh_topology_node(&open_tag, start + 1, Vec::new())?,
+            open_end_ix,
+        ));
+    }
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "MeshTopology")?;
+    let mut children = Vec::<SceneNode>::new();
+    let mut i = open_end_ix + 1;
+    while i < close_ix {
+        let line = lines[i].trim();
+        if line.is_empty() || line.starts_with("//") {
+            i += 1;
+            continue;
+        }
+        if starts_open_tag(line, "Vertex") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            children.push(SceneNode::Vertex(parse_vertex_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Triangle") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            children.push(SceneNode::Triangle(parse_triangle_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Edge") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            children.push(SceneNode::Edge(parse_edge_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Region") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            children.push(SceneNode::Region(parse_region_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        return Err(GraphParseError {
+            line: i + 1,
+            message: format!("Unsupported <MeshTopology> child: {line}"),
+        });
+    }
+    Ok((
+        parse_mesh_topology_node(&open_tag, start + 1, children)?,
+        close_ix,
+    ))
+}
+
 pub(crate) fn parse_part_block(
     lines: &[&str],
     start: usize,
@@ -1321,6 +1486,13 @@ pub(crate) fn parse_character_block(
     brush_ctx: &BrushParseContext,
 ) -> Result<(CharacterNode, usize), GraphParseError> {
     let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    if is_self_closing_tag(&open_tag) {
+        // Image-only characters need no child scene nodes.
+        return Ok((
+            parse_character_node(&open_tag, start + 1, Vec::new())?,
+            open_end_ix,
+        ));
+    }
     let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Character")?;
     let mut child_ctx = brush_ctx.clone();
     let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
@@ -1433,6 +1605,24 @@ fn parse_scene_nodes(
         if starts_open_tag(line, "Group") {
             let (group, end_ix) = parse_group_block(lines, i, brush_ctx)?;
             nodes.push(SceneNode::Group(group));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Puppet") {
+            let (puppet, end_ix) = parse_puppet_block(lines, i, brush_ctx)?;
+            nodes.push(SceneNode::Puppet(puppet));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Pin") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Pin(parse_pin_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "MeshTopology") {
+            let (topology, end_ix) = parse_mesh_topology_block(lines, i)?;
+            nodes.push(SceneNode::MeshTopology(topology));
             i = end_ix + 1;
             continue;
         }
@@ -3388,6 +3578,118 @@ fn parse_group_node(
     })
 }
 
+fn parse_puppet_node(
+    block: &str,
+    _line: usize,
+    children: Vec<SceneNode>,
+) -> Result<PuppetNode, GraphParseError> {
+    Ok(PuppetNode {
+        id: attr_value(block, "id").map(|v| strip_wrappers(&v).to_string()),
+        target: attr_value(block, "target")
+            .or_else(|| attr_value(block, "targetId"))
+            .or_else(|| attr_value(block, "target_id"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .filter(|v| !v.trim().is_empty()),
+        mesh: scene_attr_or_default(block, &["mesh"], "auto"),
+        density: scene_attr_or_default(block, &["density"], "medium"),
+        x: scene_attr_or_default(block, &["x"], "0"),
+        y: scene_attr_or_default(block, &["y"], "0"),
+        rotation: scene_attr_or_default(block, &["rotation"], "0"),
+        scale: scene_attr_or_default(block, &["scale"], "1"),
+        scale_x: scene_attr_or_default(block, &["scaleX", "scale_x"], "1"),
+        scale_y: scene_attr_or_default(block, &["scaleY", "scale_y"], "1"),
+        skew_x: scene_attr_or_default(block, &["skewX", "skew_x"], "0"),
+        skew_y: scene_attr_or_default(block, &["skewY", "skew_y"], "0"),
+        transform_origin_x: scene_attr_or_default(
+            block,
+            &["transformOriginX", "transform_origin_x"],
+            "0",
+        ),
+        transform_origin_y: scene_attr_or_default(
+            block,
+            &["transformOriginY", "transform_origin_y"],
+            "0",
+        ),
+        width: scene_attr_or_default(block, &["width", "w"], "512"),
+        height: scene_attr_or_default(block, &["height", "h"], "512"),
+        amount: scene_attr_or_default(block, &["amount", "deformAmount", "deform_amount"], "1"),
+        opacity: scene_attr_or_default(block, &["opacity"], "1"),
+        children,
+    })
+}
+
+pub(crate) fn parse_pin_node(block: &str, _line: usize) -> Result<PinNode, GraphParseError> {
+    Ok(PinNode {
+        id: attr_value(block, "id").map(|v| strip_wrappers(&v).to_string()),
+        vertex: attr_value(block, "vertex")
+            .or_else(|| attr_value(block, "vertexId"))
+            .or_else(|| attr_value(block, "vertex_id"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .filter(|v| !v.trim().is_empty()),
+        x: attr_value(block, "x").map(|v| strip_wrappers(&v).to_string()),
+        y: attr_value(block, "y").map(|v| strip_wrappers(&v).to_string()),
+        target_x: attr_value(block, "targetX")
+            .or_else(|| attr_value(block, "target_x"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        target_y: attr_value(block, "targetY")
+            .or_else(|| attr_value(block, "target_y"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        radius: scene_attr_or_default(block, &["radius", "r"], "120"),
+        strength: scene_attr_or_default(block, &["strength", "weight"], "1"),
+        falloff: scene_attr_or_default(block, &["falloff"], "smooth"),
+        fixed: scene_attr_or_default(block, &["fixed", "lock", "locked"], "false"),
+    })
+}
+
+fn parse_mesh_topology_node(
+    block: &str,
+    _line: usize,
+    children: Vec<SceneNode>,
+) -> Result<MeshTopologyNode, GraphParseError> {
+    Ok(MeshTopologyNode {
+        id: attr_value(block, "id").map(|v| strip_wrappers(&v).to_string()),
+        mode: attr_value(block, "mode")
+            .or_else(|| attr_value(block, "kind"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        children,
+    })
+}
+
+fn parse_vertex_node(block: &str, line: usize) -> Result<VertexNode, GraphParseError> {
+    Ok(VertexNode {
+        id: required_attr_value(block, "id", line)?,
+        x: required_attr_value(block, "x", line)?,
+        y: required_attr_value(block, "y", line)?,
+    })
+}
+
+fn parse_triangle_node(block: &str, line: usize) -> Result<TriangleNode, GraphParseError> {
+    Ok(TriangleNode {
+        id: attr_value(block, "id").map(|v| strip_wrappers(&v).to_string()),
+        a: required_attr_value(block, "a", line)?,
+        b: required_attr_value(block, "b", line)?,
+        c: required_attr_value(block, "c", line)?,
+    })
+}
+
+fn parse_edge_node(block: &str, line: usize) -> Result<EdgeNode, GraphParseError> {
+    Ok(EdgeNode {
+        id: attr_value(block, "id").map(|v| strip_wrappers(&v).to_string()),
+        a: required_attr_value(block, "a", line)?,
+        b: required_attr_value(block, "b", line)?,
+        boundary: scene_attr_or_default(block, &["boundary"], "false"),
+    })
+}
+
+fn parse_region_node(block: &str, line: usize) -> Result<RegionNode, GraphParseError> {
+    Ok(RegionNode {
+        id: required_attr_value(block, "id", line)?,
+        vertices: scene_attr_or_default(block, &["vertices", "verts"], ""),
+        triangles: scene_attr_or_default(block, &["triangles"], ""),
+        weight: scene_attr_or_default(block, &["weight"], "1"),
+    })
+}
+
 fn parse_part_node(
     block: &str,
     _line: usize,
@@ -3878,6 +4180,10 @@ fn parse_character_node(
     children: Vec<SceneNode>,
 ) -> Result<CharacterNode, GraphParseError> {
     let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let src = attr_value(block, "src")
+        .or_else(|| attr_value(block, "image"))
+        .or_else(|| attr_value(block, "path"))
+        .map(|v| strip_wrappers(&v).to_string());
     let rig = attr_value(block, "rig")
         .or_else(|| attr_value(block, "skeleton"))
         .map(|v| strip_wrappers(&v).to_string());
@@ -3926,6 +4232,7 @@ fn parse_character_node(
         .unwrap_or_else(|| "1.0".to_string());
     Ok(CharacterNode {
         id,
+        src,
         rig,
         model_profile,
         x,

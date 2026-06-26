@@ -139,6 +139,40 @@ graphs unless the process wraps a self-contained `<Scene>` or `<World>` source.
 
 Scene `zDepth` uses camera-space depth: negative is closer, positive is farther.
 
+## Scene Character IK
+
+Scene `<Action>` supports optional IK targets for 2D `<Skeleton>` rigs. Use it
+when a chain endpoint must reach a target while keeping FK poses as the base
+motion:
+
+```xml
+<Skeleton id="arm">
+  <Bone id="upper" x="0" y="0" />
+  <Bone id="lower" parent="upper" x="40" y="0" />
+  <Bone id="hand" parent="lower" x="40" y="0" />
+</Skeleton>
+
+<Action id="reach" skeleton="arm" duration="1s">
+  <IK root="upper" mid="lower" end="hand"
+      targetX="40" targetY="40" bend="1" weight="1" />
+</Action>
+```
+
+`root`, `mid`, and `end` must be a direct parented chain. `targetX` and
+`targetY` use the skeleton's local coordinate space and may be numeric
+expressions or `curve(...)` values. `bend` chooses the elbow/finger bend side
+(`1` or `-1`), and `weight` blends between FK and IK.
+
+For longer chains, use CCD IK with `chain`:
+
+```xml
+<IK chain="finger_1,finger_2,finger_3,finger_tip"
+    targetX="24" targetY="-120" iterations="10" weight="1" />
+```
+
+`chain` ids must be direct parent-child bones. The last id is the end effector;
+all earlier ids can rotate during the solve.
+
 ## Preview Surfaces
 
 `SceneRenderer::render_frame_to_preview_surface(graph, frame, options)`

@@ -2,6 +2,7 @@
 
 pub(crate) const WGPU_SCENE_SHADER: &str = include_str!("scene.wgsl");
 pub(crate) const WGPU_MATTE_TEXTURE_SHADER: &str = include_str!("matte_texture.wgsl");
+pub(crate) const WGPU_PUPPET_DEFORM_SHADER: &str = include_str!("puppet_deform.wgsl");
 #[allow(dead_code)]
 pub(crate) const WGPU_SHAPE_SHADER: &str = include_str!("shape.wgsl");
 pub(crate) const WGPU_BATCH_SHAPE_SHADER: &str = include_str!("batch_shape.wgsl");
