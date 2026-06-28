@@ -17,24 +17,27 @@ use core_video::pixel_buffer::CVPixelBuffer;
 
 use gpui::{
     ClipboardItem, Context, Element, Entity, Focusable, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, MouseButton, MouseDownEvent, PathPromptOptions, Render, RenderImage,
-    ScrollWheelEvent, Style, Subscription, Timer, Window, div, prelude::*, px, rgb, rgba,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PathPromptOptions, Render, RenderImage, ScrollWheelEvent, SharedString, Style, Subscription,
+    Timer, Window, div, prelude::*, px, rgb, rgba,
 };
 use gpui_component::{
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
-    select::{SearchableVec, Select, SelectState},
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     white,
 };
 use image::{ImageBuffer, Rgba, RgbaImage};
 use motionloom::{
-    GraphScript, MotionLoomDocument, MotionLoomRenderProgress, RuntimeProgram,
-    ScenePlatformPreviewSurface, ScenePreviewBackend, ScenePreviewSurface,
-    ScenePreviewSurfaceOptions, SceneRenderProfile, SceneRenderer, WorldFrameRenderer, WorldGraph,
-    WorldPathStyle, compile_runtime_program, is_graph_script, is_world_graph_script,
+    EditableAnimationKey, EditableAnimationTarget, GraphScript, MotionLoomDocument,
+    MotionLoomRenderProgress, RuntimeProgram, ScenePlatformPreviewSurface, ScenePreviewBackend,
+    ScenePreviewSurface, ScenePreviewSurfaceOptions, SceneRenderProfile, SceneRenderer,
+    WorldFrameRenderer, WorldGraph, WorldPathStyle, compile_runtime_program,
+    extract_editable_animation_timeline, is_graph_script, is_world_graph_script,
     load_glb_mesh_data, next_scene_output_path_for_profile, parse_graph_script,
     parse_motionloom_document, parse_world_graph_script,
     render_motionloom_document_to_video_with_progress_and_cancel, render_scene_graph_frame,
+    replace_editable_animation_targets, upsert_editable_animation_target,
 };
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -103,6 +106,34 @@ enum SceneLivePreviewFrame {
         height: u32,
         surface: motionloom::WindowsD3DSharedSurface,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SceneLiveGizmoMode {
+    Move,
+    Rotate,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SceneLiveGizmoDrag {
+    Move {
+        start_mouse_x: f32,
+        start_mouse_y: f32,
+        start_x: f32,
+        start_y: f32,
+    },
+    Rotate {
+        start_mouse_x: f32,
+        start_rotation: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SceneLiveGizmoBounds {
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
 }
 
 impl SceneLivePreviewFrame {
@@ -355,6 +386,24 @@ struct SceneLiveTarget {
     id: String,
     tag: String,
     attrs: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SceneLiveTargetOption {
+    id: String,
+    label: String,
+}
+
+impl SelectItem for SceneLiveTargetOption {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        SharedString::from(self.label.clone())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -632,6 +681,13 @@ pub struct MotionLoomPage {
     scene_render_log_collapsed: bool,
     scene_live_knob_node_id: String,
     scene_live_knob_attr: String,
+    scene_live_target_select: Option<Entity<SelectState<SearchableVec<SceneLiveTargetOption>>>>,
+    scene_live_target_select_sub: Option<Subscription>,
+    scene_live_attr_menu_open: bool,
+    scene_live_keyframe_show_as_frame: bool,
+    scene_live_preview_overrides: HashMap<(String, String), f32>,
+    scene_live_gizmo_mode: SceneLiveGizmoMode,
+    scene_live_gizmo_drag: Option<SceneLiveGizmoDrag>,
     scene_live_knob_input: Option<Entity<InputState>>,
     scene_live_knob_input_sub: Option<Subscription>,
     scene_live_knob_input_syncing: bool,
@@ -725,6 +781,13 @@ impl MotionLoomPage {
             scene_render_log_collapsed: false,
             scene_live_knob_node_id: DEFAULT_SCENE_LIVE_NODE_ID.to_string(),
             scene_live_knob_attr: DEFAULT_SCENE_LIVE_ATTR.to_string(),
+            scene_live_target_select: None,
+            scene_live_target_select_sub: None,
+            scene_live_attr_menu_open: false,
+            scene_live_keyframe_show_as_frame: false,
+            scene_live_preview_overrides: HashMap::new(),
+            scene_live_gizmo_mode: SceneLiveGizmoMode::Move,
+            scene_live_gizmo_drag: None,
             scene_live_knob_input: None,
             scene_live_knob_input_sub: None,
             scene_live_knob_input_syncing: false,
@@ -1187,6 +1250,8 @@ impl MotionLoomPage {
         if let Some(cancel) = self.scene_live_prerender_cancel.take() {
             cancel.store(true, Ordering::Relaxed);
         }
+        self.scene_live_preview_overrides.clear();
+        self.scene_live_gizmo_drag = None;
         self.clear_scene_live_preview_images();
         self.scene_live_parsed_script_hash = None;
         self.scene_live_parsed_graph = None;
@@ -1195,6 +1260,17 @@ impl MotionLoomPage {
         self.scene_live_prerender_token = self.scene_live_prerender_token.wrapping_add(1);
         self.scene_live_prerendering = false;
         self.scene_live_prerender_progress = None;
+        self.scene_live_render_defer_until = None;
+        self.scene_live_render_defer_token = self.scene_live_render_defer_token.wrapping_add(1);
+    }
+
+    fn invalidate_scene_live_preview_render_only(&mut self) {
+        self.cancel_scene_live_prerender();
+        self.cancel_scene_live_async_render();
+        self.scene_live_preview_cache_key = None;
+        self.clear_scene_live_preview_frame_cache();
+        self.scene_live_parsed_script_hash = None;
+        self.scene_live_parsed_graph = None;
         self.scene_live_render_defer_until = None;
         self.scene_live_render_defer_token = self.scene_live_render_defer_token.wrapping_add(1);
     }
@@ -1353,7 +1429,7 @@ impl MotionLoomPage {
         frame: u32,
         cx: &mut Context<Self>,
     ) -> Result<Option<LoadedPreview>, String> {
-        let raw = self.script_text.clone();
+        let raw = self.scene_live_preview_script_text();
         if raw.trim().is_empty() {
             if self.has_scene_live_preview_state() {
                 self.invalidate_scene_live_preview_cache();
@@ -2196,6 +2272,7 @@ impl MotionLoomPage {
         if !attrs.iter().any(|attr| attr == &self.scene_live_knob_attr) {
             self.scene_live_knob_attr = Self::default_scene_live_attr(&attrs);
         }
+        self.scene_live_attr_menu_open = false;
         self.status_line = format!(
             "Live target selected: {}.{}.",
             self.scene_live_knob_node_id, self.scene_live_knob_attr
@@ -2204,10 +2281,71 @@ impl MotionLoomPage {
 
     fn select_scene_live_attr(&mut self, attr: String) {
         self.scene_live_knob_attr = attr;
+        self.scene_live_attr_menu_open = false;
         self.status_line = format!(
             "Live attribute selected: {}.{}.",
             self.scene_live_knob_node_id, self.scene_live_knob_attr
         );
+    }
+
+    fn scene_live_target_select_items(
+        targets: &[SceneLiveTarget],
+    ) -> SearchableVec<SceneLiveTargetOption> {
+        SearchableVec::new(
+            targets
+                .iter()
+                .map(|target| SceneLiveTargetOption {
+                    id: target.id.clone(),
+                    label: format!("{} · {}", target.tag, target.id),
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn sync_scene_live_dropdowns(
+        &mut self,
+        targets: &[SceneLiveTarget],
+        _attrs: &[String],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target_items = Self::scene_live_target_select_items(targets);
+        if self.scene_live_target_select.is_none() {
+            let state = cx.new(|cx| {
+                SelectState::new(target_items.clone(), None, window, cx).searchable(false)
+            });
+            let sub = cx.subscribe(
+                &state,
+                |this, _, ev: &SelectEvent<SearchableVec<SceneLiveTargetOption>>, cx| {
+                    let SelectEvent::Confirm(value) = ev;
+                    let Some(value) = value else {
+                        return;
+                    };
+                    let mut targets = Self::extract_scene_live_targets(&this.script_text);
+                    if !this.scene_live_tag_filters.is_empty() {
+                        targets.retain(|target| {
+                            this.scene_live_tag_filters.contains(target.tag.as_str())
+                        });
+                    }
+                    if let Some(target) = targets.iter().find(|target| target.id == *value) {
+                        this.select_scene_live_target(value.clone(), target.attrs.clone());
+                    }
+                    cx.notify();
+                },
+            );
+            self.scene_live_target_select = Some(state);
+            self.scene_live_target_select_sub = Some(sub);
+        } else if let Some(state) = self.scene_live_target_select.as_ref() {
+            state.update(cx, |this, cx| {
+                this.set_items(target_items.clone(), window, cx);
+            });
+        }
+        if let Some(state) = self.scene_live_target_select.as_ref() {
+            let selected = self.scene_live_knob_node_id.clone();
+            state.update(cx, |this, cx| {
+                this.set_selected_value(&selected, window, cx);
+            });
+        }
     }
 
     fn find_scene_tag_attr_number(script: &str, node_id: &str, attr: &str) -> Option<f32> {
@@ -2255,12 +2393,348 @@ impl MotionLoomPage {
         Ok(out)
     }
 
+    fn scene_live_preview_script_text(&self) -> String {
+        if self.scene_live_preview_overrides.is_empty() {
+            return self.script_text.clone();
+        }
+
+        let mut script = self.script_text.clone();
+        let mut overrides = self
+            .scene_live_preview_overrides
+            .iter()
+            .map(|((node, attr), value)| (node.clone(), attr.clone(), *value))
+            .collect::<Vec<_>>();
+        overrides.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        for (node, attr, value) in overrides {
+            if let Ok(next) = Self::patch_scene_tag_attr_number(&script, &node, &attr, value) {
+                script = next;
+            }
+        }
+        script
+    }
+
     fn scene_live_knob_current_value(&self) -> Option<f32> {
-        Self::find_scene_tag_attr_number(
-            &self.script_text,
-            &self.scene_live_knob_node_id,
-            &self.scene_live_knob_attr,
+        if let Some(value) = self.scene_live_preview_overrides.get(&(
+            self.scene_live_knob_node_id.clone(),
+            self.scene_live_knob_attr.clone(),
+        )) {
+            return Some(*value);
+        }
+        self.scene_live_value_for_attr(&self.scene_live_knob_node_id, &self.scene_live_knob_attr)
+    }
+
+    fn scene_live_value_for_attr(&self, node: &str, attr: &str) -> Option<f32> {
+        if let Some(value) = self
+            .scene_live_preview_overrides
+            .get(&(node.to_string(), attr.to_string()))
+        {
+            return Some(*value);
+        }
+        Self::find_scene_tag_attr_number(&self.script_text, node, attr)
+    }
+
+    fn scene_live_gizmo_bounds(&self, preview_w: f32, preview_h: f32) -> SceneLiveGizmoBounds {
+        let raw = self.scene_live_preview_script_text();
+        let graph_size = parse_graph_script(&raw)
+            .ok()
+            .map(|graph| graph.render_size.unwrap_or(graph.size))
+            .unwrap_or((1280, 720));
+        let graph_w = graph_size.0.max(1) as f32;
+        let graph_h = graph_size.1.max(1) as f32;
+        let scale = (preview_w / graph_w).min(preview_h / graph_h).max(0.001);
+        let image_w = graph_w * scale;
+        let image_h = graph_h * scale;
+        let image_left = ((preview_w - image_w) * 0.5).max(0.0);
+        let image_top = ((preview_h - image_h) * 0.5).max(0.0);
+
+        let node = self.scene_live_knob_node_id.as_str();
+        let x = self
+            .scene_live_value_for_attr(node, "x")
+            .unwrap_or(graph_w * 0.5 - 80.0);
+        let y = self
+            .scene_live_value_for_attr(node, "y")
+            .unwrap_or(graph_h * 0.5 - 50.0);
+        let width = self
+            .scene_live_value_for_attr(node, "width")
+            .or_else(|| {
+                self.scene_live_value_for_attr(node, "radius")
+                    .map(|r| r * 2.0)
+            })
+            .unwrap_or(160.0)
+            .abs()
+            .max(24.0);
+        let height = self
+            .scene_live_value_for_attr(node, "height")
+            .or_else(|| {
+                self.scene_live_value_for_attr(node, "radius")
+                    .map(|r| r * 2.0)
+            })
+            .unwrap_or(100.0)
+            .abs()
+            .max(24.0);
+
+        SceneLiveGizmoBounds {
+            left: image_left + x * scale,
+            top: image_top + y * scale,
+            width: width * scale,
+            height: height * scale,
+        }
+    }
+
+    fn scene_live_knob_input_value(&self, cx: &Context<Self>) -> Option<f32> {
+        self.scene_live_knob_input
+            .as_ref()
+            .and_then(|input| Self::parse_live_number(&input.read(cx).value()))
+    }
+
+    fn scene_live_animation_target_property_supported(attr: &str) -> bool {
+        matches!(
+            attr,
+            "x" | "y"
+                | "rotation"
+                | "scale"
+                | "scaleX"
+                | "scaleY"
+                | "skewX"
+                | "skewY"
+                | "transformOriginX"
+                | "transformOriginY"
+                | "opacity"
         )
+    }
+
+    fn scene_live_keyframe_summary(&self) -> String {
+        match extract_editable_animation_timeline(&self.script_text) {
+            Ok(timeline) if timeline.targets.is_empty() => {
+                "Keyframes: none in code block DSL.".to_string()
+            }
+            Ok(timeline) => {
+                let key_count: usize = timeline
+                    .targets
+                    .iter()
+                    .map(|target| target.keys.len())
+                    .sum();
+                let channels = timeline
+                    .targets
+                    .iter()
+                    .take(4)
+                    .map(|target| {
+                        format!("{}.{}:{}", target.node, target.property, target.keys.len())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let suffix = if timeline.targets.len() > 4 {
+                    format!(" · +{} more", timeline.targets.len() - 4)
+                } else {
+                    String::new()
+                };
+                format!(
+                    "Keyframes: {} channels · {} keys · {}{}",
+                    timeline.targets.len(),
+                    key_count,
+                    channels,
+                    suffix
+                )
+            }
+            Err(err) => format!("Keyframes: unavailable until DSL parses ({err})."),
+        }
+    }
+
+    fn scene_live_current_animation_keys(&self) -> Vec<EditableAnimationKey> {
+        let node = &self.scene_live_knob_node_id;
+        let property = &self.scene_live_knob_attr;
+        let Ok(timeline) = extract_editable_animation_timeline(&self.script_text) else {
+            return Vec::new();
+        };
+        timeline
+            .targets
+            .into_iter()
+            .find(|target| &target.node == node && &target.property == property)
+            .map(|target| target.keys)
+            .unwrap_or_default()
+    }
+
+    fn scene_live_key_timing_label(key: &EditableAnimationKey) -> String {
+        key.time
+            .clone()
+            .unwrap_or_else(|| format!("f{}", key.frame))
+    }
+
+    fn upsert_scene_live_keyframe_for_code_block(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let node = self.scene_live_knob_node_id.clone();
+        let property = self.scene_live_knob_attr.clone();
+        if !Self::scene_live_animation_target_property_supported(&property) {
+            self.status_line = format!(
+                "AnimationTarget UI keying does not support selected property yet: {property}."
+            );
+            return;
+        }
+
+        let frame = self.preview_frame;
+        let value = self
+            .scene_live_knob_input_value(cx)
+            .or_else(|| self.scene_live_knob_current_value())
+            .unwrap_or_else(|| Self::scene_live_attr_default_value(&property));
+        let value_text = Self::format_live_number(value);
+
+        self.upsert_scene_live_keyframe_value_for_code_block(
+            &node, &property, frame, value_text, window, cx,
+        );
+    }
+
+    fn upsert_scene_live_keyframe_value_for_code_block(
+        &mut self,
+        node: &str,
+        property: &str,
+        frame: u32,
+        value_text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let timeline = extract_editable_animation_timeline(&self.script_text).ok();
+        let fps = timeline
+            .as_ref()
+            .map(|timeline| timeline.fps)
+            .unwrap_or(30.0);
+        let mut keys = timeline
+            .and_then(|timeline| {
+                timeline
+                    .targets
+                    .into_iter()
+                    .find(|target| target.node == node && target.property == property)
+                    .map(|target| target.keys)
+            })
+            .unwrap_or_default();
+
+        if let Some(existing) = keys.iter_mut().find(|key| key.frame == frame) {
+            existing.value = value_text.clone();
+            if existing.ease.trim().is_empty() {
+                existing.ease = "linear".to_string();
+            }
+        } else {
+            let time = (!self.scene_live_keyframe_show_as_frame)
+                .then(|| format!("{}s", Self::format_live_number(frame as f32 / fps.max(1.0))));
+            keys.push(EditableAnimationKey {
+                frame,
+                time,
+                value: value_text.clone(),
+                ease: "linear".to_string(),
+            });
+        }
+        keys.sort_by_key(|key| key.frame);
+
+        let target = EditableAnimationTarget {
+            node: node.to_string(),
+            property: property.to_string(),
+            keys,
+        };
+
+        match upsert_editable_animation_target(&self.script_text, target) {
+            Ok(script) => {
+                self.set_script_text_preserve_preview(script, window, cx);
+                self.status_line = format!(
+                    "Code block DSL updated: keyed {node}.{property} at frame {frame} = {value_text}."
+                );
+            }
+            Err(err) => {
+                self.status_line = format!("Could not write keyframe into code block DSL: {err}");
+            }
+        }
+    }
+
+    fn delete_scene_live_keyframe_for_code_block(
+        &mut self,
+        frame: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let node = self.scene_live_knob_node_id.clone();
+        let property = self.scene_live_knob_attr.clone();
+        let Ok(timeline) = extract_editable_animation_timeline(&self.script_text) else {
+            self.status_line = "Could not delete keyframe: DSL does not parse.".to_string();
+            return;
+        };
+
+        let mut deleted = false;
+        let targets = timeline
+            .targets
+            .into_iter()
+            .filter_map(|mut target| {
+                if target.node == node && target.property == property {
+                    let before = target.keys.len();
+                    target.keys.retain(|key| key.frame != frame);
+                    deleted = deleted || target.keys.len() != before;
+                }
+                (!target.keys.is_empty()).then_some(target)
+            })
+            .collect::<Vec<_>>();
+
+        if !deleted {
+            self.status_line =
+                format!("No keyframe to delete for {node}.{property} at frame {frame}.");
+            return;
+        }
+
+        match replace_editable_animation_targets(&self.script_text, &targets) {
+            Ok(script) => {
+                self.set_script_text_preserve_preview(script, window, cx);
+                self.status_line = format!("Deleted keyframe: {node}.{property} at frame {frame}.");
+            }
+            Err(err) => {
+                self.status_line = format!("Could not delete keyframe: {err}");
+            }
+        }
+    }
+
+    fn set_scene_live_keyframe_ease_for_code_block(
+        &mut self,
+        frame: u32,
+        ease: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let node = self.scene_live_knob_node_id.clone();
+        let property = self.scene_live_knob_attr.clone();
+        let Ok(timeline) = extract_editable_animation_timeline(&self.script_text) else {
+            self.status_line = "Could not update key ease: DSL does not parse.".to_string();
+            return;
+        };
+
+        let mut changed = false;
+        let targets = timeline
+            .targets
+            .into_iter()
+            .map(|mut target| {
+                if target.node == node && target.property == property {
+                    if let Some(key) = target.keys.iter_mut().find(|key| key.frame == frame) {
+                        key.ease = ease.to_string();
+                        changed = true;
+                    }
+                }
+                target
+            })
+            .collect::<Vec<_>>();
+
+        if !changed {
+            self.status_line =
+                format!("No keyframe to update for {node}.{property} at frame {frame}.");
+            return;
+        }
+
+        match replace_editable_animation_targets(&self.script_text, &targets) {
+            Ok(script) => {
+                self.set_script_text_preserve_preview(script, window, cx);
+                self.status_line =
+                    format!("Updated ease: {node}.{property} at frame {frame} = {ease}.");
+            }
+            Err(err) => {
+                self.status_line = format!("Could not update key ease: {err}");
+            }
+        }
     }
 
     fn scene_live_attr_default_value(attr: &str) -> f32 {
@@ -2295,42 +2769,34 @@ impl MotionLoomPage {
     fn patch_scene_live_knob_value(
         &mut self,
         value: f32,
-        window: Option<&mut Window>,
+        _window: Option<&mut Window>,
         cx: &mut Context<Self>,
         defer_preview_ms: Option<u64>,
     ) {
         let next = Self::clamp_scene_live_attr_value(&self.scene_live_knob_attr, value);
-        match Self::patch_scene_tag_attr_number(
-            &self.script_text,
-            &self.scene_live_knob_node_id,
-            &self.scene_live_knob_attr,
-            next,
-        ) {
-            Ok(script) => {
-                if let Some(defer_ms) = defer_preview_ms {
-                    self.script_text = script.clone();
-                    self.script_input_needs_sync = true;
-                    self.defer_scene_live_preview_render(cx, defer_ms);
-                    self.sync_script_to_global(cx, false);
-                } else if let Some(window) = window {
-                    self.set_script_text_preserve_preview(script, window, cx);
-                } else {
-                    self.script_text = script.clone();
-                    self.script_input_needs_sync = true;
-                    self.invalidate_scene_live_preview_cache();
-                    self.sync_script_to_global(cx, false);
-                }
-                self.status_line = format!(
-                    "Updated selected group attr: {}.{} = {}.",
-                    self.scene_live_knob_node_id,
-                    self.scene_live_knob_attr,
-                    Self::format_live_number(next)
-                );
-            }
-            Err(message) => {
-                self.status_line = message;
-            }
+        let node = self.scene_live_knob_node_id.clone();
+        let attr = self.scene_live_knob_attr.clone();
+        if Self::find_scene_tag_range_by_id(&self.script_text, &node).is_none() {
+            self.status_line = format!("Live knob target id=\"{node}\" was not found.");
+            return;
         }
+        self.scene_live_preview_overrides
+            .insert((node.clone(), attr.clone()), next);
+        if let Some(defer_ms) = defer_preview_ms {
+            self.cancel_scene_live_prerender();
+            self.cancel_scene_live_async_render();
+            self.scene_live_preview_cache_key = None;
+            self.clear_scene_live_preview_frame_cache();
+            self.scene_live_parsed_script_hash = None;
+            self.scene_live_parsed_graph = None;
+            self.defer_scene_live_preview_render(cx, defer_ms);
+        } else {
+            self.invalidate_scene_live_preview_render_only();
+        }
+        self.status_line = format!(
+            "Preview override only: {node}.{attr} = {}. Press Key Frame to write DSL.",
+            Self::format_live_number(next)
+        );
     }
 
     fn nudge_scene_live_knob(
@@ -2352,6 +2818,116 @@ impl MotionLoomPage {
             );
         } else {
             self.patch_scene_live_knob_value(current + delta, Some(window), cx, None);
+        }
+    }
+
+    fn begin_scene_live_gizmo_drag(&mut self, mouse_x: f32, mouse_y: f32) {
+        let node = self.scene_live_knob_node_id.clone();
+        self.scene_live_gizmo_drag = match self.scene_live_gizmo_mode {
+            SceneLiveGizmoMode::Move => Some(SceneLiveGizmoDrag::Move {
+                start_mouse_x: mouse_x,
+                start_mouse_y: mouse_y,
+                start_x: self
+                    .scene_live_value_for_attr(&node, "x")
+                    .unwrap_or_else(|| Self::scene_live_attr_default_value("x")),
+                start_y: self
+                    .scene_live_value_for_attr(&node, "y")
+                    .unwrap_or_else(|| Self::scene_live_attr_default_value("y")),
+            }),
+            SceneLiveGizmoMode::Rotate => Some(SceneLiveGizmoDrag::Rotate {
+                start_mouse_x: mouse_x,
+                start_rotation: self
+                    .scene_live_value_for_attr(&node, "rotation")
+                    .unwrap_or_else(|| Self::scene_live_attr_default_value("rotation")),
+            }),
+        };
+    }
+
+    fn update_scene_live_gizmo_drag(&mut self, mouse_x: f32, mouse_y: f32) {
+        let Some(drag) = self.scene_live_gizmo_drag else {
+            return;
+        };
+        let node = self.scene_live_knob_node_id.clone();
+        match drag {
+            SceneLiveGizmoDrag::Move {
+                start_mouse_x,
+                start_mouse_y,
+                start_x,
+                start_y,
+            } => {
+                self.scene_live_preview_overrides.insert(
+                    (node.clone(), "x".to_string()),
+                    start_x + mouse_x - start_mouse_x,
+                );
+                self.scene_live_preview_overrides
+                    .insert((node, "y".to_string()), start_y + mouse_y - start_mouse_y);
+            }
+            SceneLiveGizmoDrag::Rotate {
+                start_mouse_x,
+                start_rotation,
+            } => {
+                self.scene_live_preview_overrides.insert(
+                    (node, "rotation".to_string()),
+                    start_rotation + (mouse_x - start_mouse_x) * 0.5,
+                );
+            }
+        }
+        self.invalidate_scene_live_preview_render_only();
+    }
+
+    fn commit_scene_live_gizmo_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(drag) = self.scene_live_gizmo_drag.take() else {
+            return;
+        };
+        let node = self.scene_live_knob_node_id.clone();
+        let frame = self.preview_frame;
+        match drag {
+            SceneLiveGizmoDrag::Move { .. } => {
+                let x = self
+                    .scene_live_preview_overrides
+                    .get(&(node.clone(), "x".to_string()))
+                    .copied();
+                let y = self
+                    .scene_live_preview_overrides
+                    .get(&(node.clone(), "y".to_string()))
+                    .copied();
+                if let Some(x) = x {
+                    self.upsert_scene_live_keyframe_value_for_code_block(
+                        &node,
+                        "x",
+                        frame,
+                        Self::format_live_number(x),
+                        window,
+                        cx,
+                    );
+                }
+                if let Some(y) = y {
+                    self.upsert_scene_live_keyframe_value_for_code_block(
+                        &node,
+                        "y",
+                        frame,
+                        Self::format_live_number(y),
+                        window,
+                        cx,
+                    );
+                }
+            }
+            SceneLiveGizmoDrag::Rotate { .. } => {
+                if let Some(rotation) = self
+                    .scene_live_preview_overrides
+                    .get(&(node.clone(), "rotation".to_string()))
+                    .copied()
+                {
+                    self.upsert_scene_live_keyframe_value_for_code_block(
+                        &node,
+                        "rotation",
+                        frame,
+                        Self::format_live_number(rotation),
+                        window,
+                        cx,
+                    );
+                }
+            }
         }
     }
 
@@ -2387,7 +2963,7 @@ impl MotionLoomPage {
     fn scene_live_scroll_hint(attr: &str) -> String {
         let base_step = Self::scene_live_attr_base_step(attr);
         format!(
-            "Scroll the selected value: normal = {}, Shift = {}, Option/Alt = {}. This edits the DSL immediately.",
+            "Scroll the selected value: normal = {}, Shift = {}, Option/Alt = {}. This edits preview only; press Key Frame to write DSL.",
             Self::format_live_number(base_step),
             Self::format_live_number(base_step * 0.1),
             Self::format_live_number(base_step * 10.0)
@@ -2502,6 +3078,8 @@ impl MotionLoomPage {
                             break;
                         }
                         this.preview_frame = next_frame;
+                        this.scene_live_preview_overrides.clear();
+                        this.scene_live_gizmo_drag = None;
                         advanced += 1;
                         step -= 1;
                     }
@@ -2516,6 +3094,8 @@ impl MotionLoomPage {
                     this.preview_frame_accum -= step as f32;
                     let next_frame = this.preview_frame.saturating_add(step);
                     this.preview_frame = next_frame % frame_count;
+                    this.scene_live_preview_overrides.clear();
+                    this.scene_live_gizmo_drag = None;
                     cx.notify();
                 }
             }
@@ -2957,7 +3537,13 @@ impl MotionLoomPage {
 
     fn set_preview_frame_value(&mut self, frame: u32) {
         let frame_count = self.playback_frame_count().max(1);
-        self.preview_frame = frame.min(frame_count.saturating_sub(1));
+        let next_frame = frame.min(frame_count.saturating_sub(1));
+        if self.preview_frame != next_frame {
+            self.scene_live_preview_overrides.clear();
+            self.scene_live_gizmo_drag = None;
+            self.invalidate_scene_live_preview_render_only();
+        }
+        self.preview_frame = next_frame;
     }
 
     fn set_preview_frame(&mut self, frame: u32) {
@@ -4225,6 +4811,7 @@ impl MotionLoomPage {
         cx: &mut Context<Self>,
     ) {
         self.script_text = text.clone();
+        self.scene_live_preview_overrides.clear();
         self.cancel_scene_live_prerender();
         self.cancel_scene_live_async_render();
         self.scene_live_preview_cache_key = None;
@@ -8340,6 +8927,7 @@ impl Render for MotionLoomPage {
         } else {
             (viewport_h * 0.46).clamp(300.0, 560.0)
         };
+        let scene_live_preview_w = content_max_w;
         let scene_live_panel_min_h = (scene_live_preview_h + 190.0).clamp(420.0, 760.0);
 
         // Build script editor element (expands in left column)
@@ -8377,71 +8965,38 @@ impl Render for MotionLoomPage {
             .map(|target| target.attrs.clone())
             .unwrap_or_else(|| vec![self.scene_live_knob_attr.clone()]);
 
-        let mut scene_live_target_entries = Vec::<(String, String, Vec<String>, bool)>::new();
-        if self.scene_live_tag_filters.is_empty()
-            && let Some(overall) = Self::overall_scene_live_target(&scene_live_targets)
-        {
-            scene_live_target_entries.push((
-                format!("Overall · {}", overall.id),
-                overall.id.clone(),
-                overall.attrs.clone(),
-                self.scene_live_knob_node_id == overall.id,
-            ));
-        }
-        for target in scene_live_targets.iter() {
-            scene_live_target_entries.push((
-                format!("{} · {}", target.tag, target.id),
-                target.id.clone(),
-                target.attrs.clone(),
-                self.scene_live_knob_node_id == target.id,
-            ));
-        }
-        let scene_live_target_visible_count = if viewport_w < 1080.0 {
-            4_usize
-        } else if viewport_w < 1500.0 {
-            6_usize
-        } else {
-            8_usize
-        };
-        let scene_live_target_total = scene_live_target_entries.len();
-        let scene_live_target_max_offset =
-            scene_live_target_total.saturating_sub(scene_live_target_visible_count);
-        self.scene_live_target_offset = self
-            .scene_live_target_offset
-            .min(scene_live_target_max_offset);
-        let scene_live_target_offset = self.scene_live_target_offset;
-        let scene_live_target_chips = scene_live_target_entries
-            .iter()
-            .skip(scene_live_target_offset)
-            .take(scene_live_target_visible_count)
-            .map(|(label, id, attrs, active)| {
-                let id = id.clone();
-                let attrs = attrs.clone();
-                Self::scene_live_chip(label.clone(), *active).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.select_scene_live_target(id.clone(), attrs.clone());
-                        cx.notify();
-                    }),
-                )
-            })
-            .collect::<Vec<_>>();
-
-        let scene_live_attr_chips = scene_live_attrs
+        self.sync_scene_live_dropdowns(&scene_live_targets, &scene_live_attrs, window, cx);
+        let scene_live_target_select = self.scene_live_target_select.as_ref().cloned();
+        let scene_live_attr_rows = scene_live_attrs
             .iter()
             .map(|attr| {
                 let attr_value = attr.clone();
-                Self::scene_live_chip(
-                    attr.clone(),
-                    self.scene_live_knob_attr.as_str() == attr.as_str(),
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        this.select_scene_live_attr(attr_value.clone());
-                        cx.notify();
-                    }),
-                )
+                let active = self.scene_live_knob_attr.as_str() == attr.as_str();
+                div()
+                    .w_full()
+                    .h(px(34.0))
+                    .flex_shrink_0()
+                    .px_3()
+                    .rounded_md()
+                    .bg(if active {
+                        rgba(0x1f5c85aa)
+                    } else {
+                        rgba(0xffffff00)
+                    })
+                    .hover(|style| style.bg(white().opacity(0.08)))
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(white().opacity(if active { 0.96 } else { 0.82 }))
+                    .flex()
+                    .items_center()
+                    .child(attr.clone())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.select_scene_live_attr(attr_value.clone());
+                            cx.notify();
+                        }),
+                    )
             })
             .collect::<Vec<_>>();
 
@@ -8503,53 +9058,28 @@ impl Render for MotionLoomPage {
                             .text_color(white().opacity(0.52))
                             .child("Target"),
                     )
-                    .child(Self::scene_live_chip("<".to_string(), false).on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.scene_live_target_offset =
-                                this.scene_live_target_offset.saturating_sub(1);
-                            cx.notify();
-                        }),
-                    ))
-                    .child(
+                    .child(if let Some(select) = scene_live_target_select.as_ref() {
+                        Select::new(select)
+                            .placeholder("Select target")
+                            .menu_width(px(360.0))
+                            .w(px(300.0))
+                            .into_any_element()
+                    } else {
                         div()
-                            .flex_1()
-                            .min_w_0()
+                            .h(px(28.0))
+                            .w(px(300.0))
+                            .rounded_md()
+                            .border_1()
+                            .border_color(white().opacity(0.12))
+                            .bg(white().opacity(0.04))
+                            .text_xs()
+                            .text_color(white().opacity(0.52))
                             .flex()
-                            .flex_wrap()
                             .items_center()
-                            .gap_2()
-                            .on_scroll_wheel(cx.listener(
-                                move |this, evt: &ScrollWheelEvent, _window, cx| {
-                                    let delta_y = evt.delta.pixel_delta(px(10.0)).y / px(1.0);
-                                    if delta_y.abs() <= f32::EPSILON {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    let max_offset = scene_live_target_total
-                                        .saturating_sub(scene_live_target_visible_count);
-                                    if delta_y > 0.0 {
-                                        this.scene_live_target_offset =
-                                            (this.scene_live_target_offset + 1).min(max_offset);
-                                    } else {
-                                        this.scene_live_target_offset =
-                                            this.scene_live_target_offset.saturating_sub(1);
-                                    }
-                                    cx.notify();
-                                },
-                            ))
-                            .children(scene_live_target_chips),
-                    )
-                    .child(Self::scene_live_chip(">".to_string(), false).on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            let max_offset = scene_live_target_total
-                                .saturating_sub(scene_live_target_visible_count);
-                            this.scene_live_target_offset =
-                                (this.scene_live_target_offset + 1).min(max_offset);
-                            cx.notify();
-                        }),
-                    )),
+                            .px_2()
+                            .child("No targets")
+                            .into_any_element()
+                    }),
             )
             .child(
                 div()
@@ -8567,15 +9097,58 @@ impl Render for MotionLoomPage {
                     )
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
+                            .h(px(28.0))
+                            .w(px(240.0))
+                            .rounded_md()
+                            .border_1()
+                            .border_color(if self.scene_live_attr_menu_open {
+                                rgba(0x79c7ffcc)
+                            } else {
+                                rgba(0xffffff24)
+                            })
+                            .bg(white().opacity(0.06))
+                            .hover(|style| style.bg(white().opacity(0.10)))
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(white().opacity(0.90))
                             .flex()
-                            .flex_wrap()
                             .items_center()
-                            .gap_2()
-                            .children(scene_live_attr_chips),
+                            .justify_between()
+                            .px_2()
+                            .child(self.scene_live_knob_attr.clone())
+                            .child(if self.scene_live_attr_menu_open {
+                                "▲"
+                            } else {
+                                "▼"
+                            })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.scene_live_attr_menu_open =
+                                        !this.scene_live_attr_menu_open;
+                                    cx.notify();
+                                }),
+                            ),
                     ),
             )
+            .when(self.scene_live_attr_menu_open, |panel| {
+                panel.child(
+                    div()
+                        .ml(px(56.0))
+                        .w(px(320.0))
+                        .max_h(px(260.0))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(white().opacity(0.16))
+                        .bg(rgb(0x080a0f))
+                        .p_1()
+                        .overflow_y_scrollbar()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(scene_live_attr_rows),
+                )
+            })
             .child(
                 div()
                     .w_full()
@@ -8759,6 +9332,104 @@ impl Render for MotionLoomPage {
                 )
                 .into_any_element(),
         };
+        let scene_live_gizmo_bounds =
+            self.scene_live_gizmo_bounds(scene_live_preview_w, scene_live_preview_h);
+        let rotate_handle_x =
+            scene_live_gizmo_bounds.left + scene_live_gizmo_bounds.width * 0.5 - 8.0;
+        let rotate_handle_y = (scene_live_gizmo_bounds.top - 34.0).max(8.0);
+        let scene_live_gizmo_overlay = div()
+            .absolute()
+            .left_0()
+            .top_0()
+            .w_full()
+            .h_full()
+            .child(
+                div()
+                    .absolute()
+                    .left(px(scene_live_gizmo_bounds.left))
+                    .top(px(scene_live_gizmo_bounds.top))
+                    .w(px(scene_live_gizmo_bounds.width))
+                    .h(px(scene_live_gizmo_bounds.height))
+                    .border_1()
+                    .border_color(rgba(0x38bdf8ee))
+                    .bg(rgba(0x38bdf814)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(
+                        scene_live_gizmo_bounds.left + scene_live_gizmo_bounds.width * 0.5
+                    ))
+                    .top(px(rotate_handle_y + 14.0))
+                    .w(px(1.0))
+                    .h(px(
+                        (scene_live_gizmo_bounds.top - rotate_handle_y - 4.0).max(12.0)
+                    ))
+                    .bg(rgba(0x38bdf8cc)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(rotate_handle_x))
+                    .top(px(rotate_handle_y))
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(rgba(0xffffffee))
+                    .bg(rgba(0x0ea5e9ee))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, evt: &MouseDownEvent, _window, cx| {
+                            let mouse_x = f32::from(evt.position.x);
+                            let mouse_y = f32::from(evt.position.y);
+                            this.scene_live_gizmo_mode = SceneLiveGizmoMode::Rotate;
+                            this.begin_scene_live_gizmo_drag(mouse_x, mouse_y);
+                            this.status_line =
+                                "Scene Live gizmo: release to key rotation.".to_string();
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    ),
+            );
+        let scene_live_preview_card = div()
+            .relative()
+            .w_full()
+            .h(px(scene_live_preview_h))
+            .flex_shrink_0()
+            .child(scene_live_preview_card)
+            .child(scene_live_gizmo_overlay)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, evt: &MouseDownEvent, _window, cx| {
+                    let mouse_x = f32::from(evt.position.x);
+                    let mouse_y = f32::from(evt.position.y);
+                    this.begin_scene_live_gizmo_drag(mouse_x, mouse_y);
+                    this.status_line = match this.scene_live_gizmo_mode {
+                        SceneLiveGizmoMode::Move => "Scene Live gizmo: release to key x/y.",
+                        SceneLiveGizmoMode::Rotate => "Scene Live gizmo: release to key rotation.",
+                    }
+                    .to_string();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, evt: &MouseMoveEvent, _window, cx| {
+                if !evt.dragging() {
+                    return;
+                }
+                let mouse_x = f32::from(evt.position.x);
+                let mouse_y = f32::from(evt.position.y);
+                this.update_scene_live_gizmo_drag(mouse_x, mouse_y);
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _evt: &MouseUpEvent, window, cx| {
+                    this.commit_scene_live_gizmo_drag(window, cx);
+                    cx.notify();
+                }),
+            );
 
         let scene_live_knob_target = format!(
             "{}.{}",
@@ -8797,6 +9468,14 @@ impl Render for MotionLoomPage {
         };
         let scene_live_knob_scroll_label = format!("Scroll {}", self.scene_live_knob_attr);
         let scene_live_scroll_attr = self.scene_live_knob_attr.clone();
+        let keyframe_summary = self.scene_live_keyframe_summary();
+        let keyframe_button_active =
+            Self::scene_live_animation_target_property_supported(&self.scene_live_knob_attr);
+        let keyframe_time_mode_label = if self.scene_live_keyframe_show_as_frame {
+            "Write frame"
+        } else {
+            "Write time"
+        };
         let (
             scene_live_small_step,
             scene_live_large_step,
@@ -8947,6 +9626,52 @@ impl Render for MotionLoomPage {
                 rgba(0xffffffad)
             })
             .child(self.scene_live_preview_status.clone());
+        let scene_live_gizmo_mode_row = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.58))
+                    .child("Gizmo"),
+            )
+            .child(
+                Self::scene_live_chip(
+                    "Move x/y".to_string(),
+                    self.scene_live_gizmo_mode == SceneLiveGizmoMode::Move,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.scene_live_gizmo_mode = SceneLiveGizmoMode::Move;
+                        this.status_line =
+                            "Scene Live gizmo: drag preview to move x/y.".to_string();
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
+                Self::scene_live_chip(
+                    "Rotate".to_string(),
+                    self.scene_live_gizmo_mode == SceneLiveGizmoMode::Rotate,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.scene_live_gizmo_mode = SceneLiveGizmoMode::Rotate;
+                        this.status_line =
+                            "Scene Live gizmo: drag preview horizontally to rotate.".to_string();
+                        cx.notify();
+                    }),
+                ),
+            );
+        let current_channel_keys = self.scene_live_current_animation_keys();
+        let current_key = current_channel_keys
+            .iter()
+            .find(|key| key.frame == self.preview_frame)
+            .cloned();
         let scene_live_controls_row = div()
             .w_full()
             .min_w_0()
@@ -8955,6 +9680,7 @@ impl Render for MotionLoomPage {
             .items_center()
             .gap_2()
             .child(scene_live_preview_quality_group)
+            .child(scene_live_gizmo_mode_row)
             .child(
                 div()
                     .h(px(28.0))
@@ -9021,6 +9747,38 @@ impl Render for MotionLoomPage {
             )
             .child(scene_live_knob_scroll)
             .child(
+                Self::scene_live_chip(
+                    "Key Frame".to_string(),
+                    keyframe_button_active && current_key.is_some(),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.upsert_scene_live_keyframe_for_code_block(window, cx);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
+                Self::scene_live_chip(
+                    keyframe_time_mode_label.to_string(),
+                    !self.scene_live_keyframe_show_as_frame,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.scene_live_keyframe_show_as_frame =
+                            !this.scene_live_keyframe_show_as_frame;
+                        this.status_line = if this.scene_live_keyframe_show_as_frame {
+                            "Scene Live keyframes will be written as frame=\"...\".".to_string()
+                        } else {
+                            "Scene Live keyframes will be written as time=\"...\".".to_string()
+                        };
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
                 Self::scene_live_chip(scene_live_pos_small_label, false).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
@@ -9038,6 +9796,197 @@ impl Render for MotionLoomPage {
                     }),
                 ),
             );
+
+        let current_key_label = current_key
+            .as_ref()
+            .map(|key| {
+                format!(
+                    "Current key: {} · value {} · ease {}",
+                    Self::scene_live_key_timing_label(key),
+                    key.value,
+                    key.ease
+                )
+            })
+            .unwrap_or_else(|| format!("Current frame {} has no key.", self.preview_frame));
+        let keyframe_ease_row = ["linear", "ease_in", "ease_out", "ease_in_out"]
+            .into_iter()
+            .map(|ease| {
+                let active = current_key.as_ref().is_some_and(|key| key.ease == ease);
+                let frame = self.preview_frame;
+                Self::scene_live_chip(ease.to_string(), active).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.set_scene_live_keyframe_ease_for_code_block(frame, ease, window, cx);
+                        cx.notify();
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+        let keyframe_rows = current_channel_keys
+            .iter()
+            .take(18)
+            .cloned()
+            .map(|key| {
+                let jump_frame = key.frame;
+                let delete_frame = key.frame;
+                let is_current = jump_frame == self.preview_frame;
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(if is_current {
+                        rgba(0x2b8cff22)
+                    } else {
+                        rgba(0xffffff08)
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(white().opacity(0.78))
+                            .child(Self::scene_live_key_timing_label(&key))
+                            .child("·")
+                            .child(format!("f{}", key.frame))
+                            .child("·")
+                            .child(format!("value {}", key.value))
+                            .child("·")
+                            .child(format!("ease {}", key.ease)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(Self::control_button("Jump").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.set_preview_frame(jump_frame);
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(Self::control_button("Delete").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.delete_scene_live_keyframe_for_code_block(
+                                        delete_frame,
+                                        window,
+                                        cx,
+                                    );
+                                    cx.notify();
+                                }),
+                            )),
+                    )
+            })
+            .collect::<Vec<_>>();
+        let keyframe_hidden_count = current_channel_keys.len().saturating_sub(18);
+        let scene_live_keyframe_panel = div()
+            .w_full()
+            .rounded_lg()
+            .border_1()
+            .border_color(white().opacity(0.12))
+            .bg(rgba(0x060a12cc))
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(white().opacity(0.88))
+                            .child(format!(
+                                "Keys · {}.{}",
+                                self.scene_live_knob_node_id, self.scene_live_knob_attr
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(white().opacity(0.58))
+                            .child(format!("{} key(s)", current_channel_keys.len())),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(if current_key.is_some() {
+                        rgba(0x9bdcffee)
+                    } else {
+                        rgba(0xffffff8f)
+                    })
+                    .child(current_key_label),
+            )
+            .when(current_key.is_some(), |el| {
+                let delete_frame = self.preview_frame;
+                el.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(white().opacity(0.58))
+                                .child("Ease"),
+                        )
+                        .children(keyframe_ease_row)
+                        .child(Self::control_button("Delete Current").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                this.delete_scene_live_keyframe_for_code_block(
+                                    delete_frame,
+                                    window,
+                                    cx,
+                                );
+                                cx.notify();
+                            }),
+                        )),
+                )
+            })
+            .when(!keyframe_rows.is_empty(), |el| {
+                el.child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(keyframe_rows),
+                )
+            })
+            .when(current_channel_keys.is_empty(), |el| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(white().opacity(0.48))
+                        .child("No keys for this selected target/property yet."),
+                )
+            })
+            .when(keyframe_hidden_count > 0, |el| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(white().opacity(0.48))
+                        .child(format!("+{} more key(s) hidden", keyframe_hidden_count)),
+                )
+            });
 
         let source_button = Self::control_button("Source / Import").on_mouse_down(
             MouseButton::Left,
@@ -9133,7 +10082,13 @@ impl Render for MotionLoomPage {
             .child(div().text_xs().text_color(white().opacity(0.68)).child(
                 "Use Scene Live Preview for direct frame playback. Use Source / Import only when the graph needs media inputs.",
             ))
-            .child(script_input_elem);
+            .child(script_input_elem)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(white().opacity(0.56))
+                    .child(keyframe_summary),
+            );
 
         // --- Scene Live Preview: direct single-frame scene raster, no FFmpeg ---
         let scene_live_panel = div()
@@ -9185,6 +10140,7 @@ impl Render for MotionLoomPage {
             )
             .child(scene_live_selector_panel)
             .child(scene_live_controls_row)
+            .child(scene_live_keyframe_panel)
             .child(scene_live_preview_card)
             .child(
                 div()

@@ -70,12 +70,39 @@ pub struct GraphScript {
     #[serde(default)]
     pub apply_actions: Vec<ApplyActionNode>,
     #[serde(default)]
+    pub animation_targets: Vec<AnimationTargetNode>,
+    #[serde(default)]
     pub layers: Vec<LayerNode>,
     #[serde(default)]
     pub world_sources: Vec<WorldSourceNode>,
     pub passes: Vec<PassNode>,
     pub outputs: Vec<OutputNode>,
     pub present: PresentNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimationTargetNode {
+    pub node: String,
+    pub property: String,
+    pub keys: Vec<AnimationKeyNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimationKeyNode {
+    pub frame: u32,
+    #[serde(default)]
+    pub time: Option<String>,
+    #[serde(default)]
+    pub seconds: f32,
+    pub value: String,
+    #[serde(default = "default_animation_key_ease")]
+    pub ease: String,
+}
+
+fn default_animation_key_ease() -> String {
+    "linear".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -87,7 +114,7 @@ pub struct WorldSourceNode {
 impl GraphScript {
     pub fn summary(&self) -> String {
         format!(
-            "Graph parsed: fps={:.2}, apply={:?}, duration={}ms, size={}x{}, input={}, tex={}, buffer={}, scene={}, scene_node={}, model_profile={}, skeleton={}, action={}, apply_action={}, layer={}, world={}, pass={}, output={}, present={}",
+            "Graph parsed: fps={:.2}, apply={:?}, duration={}ms, size={}x{}, input={}, tex={}, buffer={}, scene={}, scene_node={}, model_profile={}, skeleton={}, action={}, apply_action={}, animation_target={}, layer={}, world={}, pass={}, output={}, present={}",
             self.fps,
             self.apply,
             self.duration_ms,
@@ -102,6 +129,7 @@ impl GraphScript {
             self.skeletons.len(),
             self.actions.len(),
             self.apply_actions.len(),
+            self.animation_targets.len(),
             self.layers.len(),
             self.world_sources.len(),
             self.passes.len(),
@@ -460,6 +488,7 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
     let mut skeletons = Vec::<SkeletonNode>::new();
     let mut actions = Vec::<ActionNode>::new();
     let mut apply_actions = Vec::<ApplyActionNode>::new();
+    let mut animation_targets = Vec::<AnimationTargetNode>::new();
     let mut layers = Vec::<LayerNode>::new();
     let mut world_sources = Vec::<WorldSourceNode>::new();
     let mut outputs = Vec::<OutputNode>::new();
@@ -556,6 +585,13 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
         if starts_open_tag(line, "ApplyAction") {
             let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
             apply_actions.push(parse_apply_action_node(&tag, i + 1)?);
+            i = end_ix + 1;
+            continue;
+        }
+
+        if starts_open_tag(line, "AnimationTarget") {
+            let (target, end_ix) = parse_animation_target_block(&lines, i, fps)?;
+            animation_targets.push(target);
             i = end_ix + 1;
             continue;
         }
@@ -844,12 +880,130 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
         skeletons,
         actions,
         apply_actions,
+        animation_targets,
         layers,
         world_sources,
         passes,
         outputs,
         present,
     })
+}
+
+fn parse_animation_target_block(
+    lines: &[&str],
+    start: usize,
+    fps: f32,
+) -> Result<(AnimationTargetNode, usize), GraphParseError> {
+    let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "AnimationTarget")?;
+    let node = strip_wrappers(&required_attr_value(&open_tag, "node", start + 1)?).to_string();
+    let property =
+        strip_wrappers(&required_attr_value(&open_tag, "property", start + 1)?).to_string();
+    validate_animation_target_property(&property, start + 1)?;
+
+    let mut keys = Vec::<AnimationKeyNode>::new();
+    let mut i = open_end_ix + 1;
+    while i < close_ix {
+        let line = lines[i].trim();
+        if line.is_empty()
+            || line.starts_with("//")
+            || line.starts_with('{')
+            || line.starts_with("<!--")
+        {
+            i += 1;
+            continue;
+        }
+        if starts_open_tag(line, "Key") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            keys.push(parse_animation_key_node(&tag, i + 1, fps)?);
+            i = end_ix + 1;
+            continue;
+        }
+        return Err(GraphParseError {
+            line: i + 1,
+            message: format!("<AnimationTarget> only accepts <Key /> children, got: {line}"),
+        });
+    }
+
+    if keys.is_empty() {
+        return Err(GraphParseError {
+            line: start + 1,
+            message: "<AnimationTarget> requires at least one <Key /> child.".to_string(),
+        });
+    }
+    keys.sort_by(|a, b| {
+        a.seconds
+            .partial_cmp(&b.seconds)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.frame.cmp(&b.frame))
+    });
+    Ok((
+        AnimationTargetNode {
+            node,
+            property,
+            keys,
+        },
+        close_ix,
+    ))
+}
+
+fn parse_animation_key_node(
+    block: &str,
+    line: usize,
+    fps: f32,
+) -> Result<AnimationKeyNode, GraphParseError> {
+    let frame_attr = attr_value(block, "frame");
+    let time_attr = attr_value(block, "time");
+    if frame_attr.is_some() && time_attr.is_some() {
+        return Err(GraphParseError {
+            line,
+            message: "Key must use either frame or time, not both.".to_string(),
+        });
+    }
+    let (frame, time, seconds) = if let Some(frame_attr) = frame_attr {
+        let frame_raw = strip_wrappers(&frame_attr);
+        let frame = frame_raw.parse::<u32>().map_err(|_| GraphParseError {
+            line,
+            message: format!("Key.frame must be a non-negative integer, got {frame_raw}."),
+        })?;
+        (frame, None, frame as f32 / fps.max(1.0))
+    } else if let Some(time_attr) = time_attr {
+        let time_raw = strip_wrappers(&time_attr).to_string();
+        let seconds = parse_time_seconds(&time_raw, line, "Key.time")?;
+        let frame = (seconds * fps.max(1.0)).round().max(0.0) as u32;
+        (frame, Some(time_raw), seconds)
+    } else {
+        return Err(GraphParseError {
+            line,
+            message: "Key requires either frame=\"...\" or time=\"...\".".to_string(),
+        });
+    };
+    let value = strip_wrappers(&required_attr_value(block, "value", line)?).to_string();
+    let ease = attr_value(block, "ease")
+        .as_deref()
+        .map(strip_wrappers)
+        .unwrap_or("linear")
+        .to_string();
+    Ok(AnimationKeyNode {
+        frame,
+        time,
+        seconds,
+        value,
+        ease,
+    })
+}
+
+fn validate_animation_target_property(property: &str, line: usize) -> Result<(), GraphParseError> {
+    match property {
+        "x" | "y" | "rotation" | "scale" | "scaleX" | "scaleY" | "skewX" | "skewY"
+        | "transformOriginX" | "transformOriginY" | "opacity" | "d" => Ok(()),
+        _ => Err(GraphParseError {
+            line,
+            message: format!(
+                "AnimationTarget.property only supports x, y, rotation, scale, scaleX, scaleY, skewX, skewY, transformOriginX, transformOriginY, opacity, d; got {property}."
+            ),
+        }),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3695,7 +3849,10 @@ Font note: this is not a structured XML comment.
 "##,
         )
         .expect_err("Scene Camera mode attr must be rejected");
-        assert!(err.message.contains("Camera2D"), "unexpected error: {err}");
+        assert!(
+            err.message.contains("Scene Camera"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

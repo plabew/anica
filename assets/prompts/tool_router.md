@@ -37,12 +37,12 @@ Rules:
 - For MotionLoom `scene` DSL generation (text/image/svg/motion-graphics scene), use scene-node style:
   - Preferred skeleton: `<Graph scope="scene" ...>`, `<Scene id="scene0">...</Scene>`, `<Present from="scene0" />`.
   - Simple direct scene nodes remain valid (`<Solid>`, `<Text>`, `<Image>`, `<Svg>`, `<Present from="scene" />`), but prefer `<Scene id="scene0">` for new scripts.
-  - `<Scene>` children may include `<Solid>`, `<Text>`, `<Image>`, `<Svg>`, `<Group>`, `<Mask>`, `<Character>`, `<Camera>`, `<Rect>`, `<Circle>`, `<Line>`, `<Polyline>`, `<Path>`, and `<Shadow>`.
+  - `<Scene>` children should use `<Timeline><Track><Sequence><Layer>...`; visual layers may include `<Text>`, `<Image>`, `<Svg>`, `<Group>`, `<Mask>`, `<Character>`, `<Rect>`, `<Circle>`, `<Line>`, `<Polyline>`, `<Path>`, `<Shadow>`, and `<Repeat>`.
   - Use `<Group x="..." y="..." rotation="..." scale="..." opacity="...">...</Group>` for card/layout transforms.
   - Use `<Character x="..." y="..." rotation="..." scale="..." opacity="...">...</Character>` for dense vector character/face/hair rigs; inside it, prefer `<Group>`, `<Mask>`, `<Path>`, `<Polyline>`, `<Line>`, `<Circle>`, `<Rect>`, and `<Text>`.
   - Use `<Mask shape="circle" x="..." y="..." radius="...">...</Mask>` or `<Mask shape="rect" x="..." y="..." width="..." height="..." radius="...">...</Mask>` to clip child nodes.
-  - Use `<Camera mode="2d" x="..." y="..." zoom="..." anchorX="0.5" anchorY="0.5">...</Camera>` only when the scene needs pan/zoom/follow-style world framing.
-  - Camera target can be explicit (`targetX`, `targetY`) or follow a child node id (`follow="marker"`). Use `worldBounds="0,0,2400,1400"` to clamp camera movement and `viewport="100,80,1720,920"` for a sub-frame camera viewport.
+  - Use a self-closing Scene Camera only in `<Track role="camera"><Sequence><Camera ... /></Sequence></Track>` when the scene needs pan/zoom/follow-style world framing. Do not use `mode`.
+  - Scene Camera target can be explicit (`targetX`, `targetY`) or follow a scene node id (`follow="marker"` / `target="marker"`). Use `worldBounds="0,0,2400,1400"` to clamp camera movement and `viewport="100,80,1720,920"` for a sub-frame camera viewport.
   - Use `<Shadow ... />` immediately before `<Rect>` or `<Circle>` to apply a drop shadow to that shape.
   - Use `<Text value="..." width="..." fontSize="..." lineHeight="..." ... />` for wrapped UI/caption text.
   - Use `<Polyline points="x,y x,y ..." trimStart="..." trimEnd="..." />` for animated chart/route lines.

@@ -1,6 +1,6 @@
 //! Scene spatial model.
 //!
-//! Owns transforms, coordinate spaces, Camera2D, bounds, layout, anchors,
+//! Owns transforms, coordinate spaces, Scene Camera, bounds, layout, anchors,
 //! constraints, and world/screen mapping. Spatial code maps coordinates; it
 //! should not perform image processing.
 

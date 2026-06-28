@@ -13,7 +13,7 @@ use std::sync::{
 
 use crate::dsl::GraphScript;
 use crate::process::model::PassNode;
-use crate::process::runtime::eval_time_expr;
+use crate::process::runtime::{apply_curve_ease, eval_time_expr, parse_curve_ease};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::scene::backend::encoding::scene_encoder_args;
@@ -94,6 +94,533 @@ use crate::scene::spatial::{
     transform_deform_grid,
 };
 use crate::scene::text::TextNode;
+
+fn apply_animation_targets_at_frame(
+    graph: &GraphScript,
+    frame: u32,
+) -> Result<Option<GraphScript>, MotionLoomSceneRenderError> {
+    if graph.animation_targets.is_empty() {
+        return Ok(None);
+    }
+
+    let mut graph = graph.clone();
+    let fps = graph.fps.max(1.0);
+    for target in graph.animation_targets.clone() {
+        let value = sample_animation_target_value(&target.keys, frame, fps, &target.property)?;
+        apply_animation_property_to_graph(&mut graph, &target.node, &target.property, value);
+    }
+    Ok(Some(graph))
+}
+
+fn sample_animation_target_value(
+    keys: &[crate::dsl::AnimationKeyNode],
+    frame: u32,
+    fps: f32,
+    property: &str,
+) -> Result<String, MotionLoomSceneRenderError> {
+    if keys.is_empty() {
+        return Ok("0".to_string());
+    }
+    if property == "d" {
+        return Ok(path_morph_expr_from_animation_keys(keys, fps));
+    }
+    let seconds = frame as f32 / fps.max(1.0);
+    if seconds <= keys[0].seconds {
+        return Ok(keys[0].value.clone());
+    }
+    for pair in keys.windows(2) {
+        let before = &pair[0];
+        let after = &pair[1];
+        if seconds <= after.seconds {
+            let before_value = before.value.parse::<f32>().map_err(|_| {
+                MotionLoomSceneRenderError::InvalidExpression {
+                    expr: before.value.clone(),
+                    message:
+                        "AnimationTarget key value must be numeric for transform and opacity properties."
+                            .to_string(),
+                }
+            })?;
+            let after_value = after.value.parse::<f32>().map_err(|_| {
+                MotionLoomSceneRenderError::InvalidExpression {
+                    expr: after.value.clone(),
+                    message:
+                        "AnimationTarget key value must be numeric for transform and opacity properties."
+                            .to_string(),
+                }
+            })?;
+            let span = (after.seconds - before.seconds).max(1.0 / fps.max(1.0));
+            let t = ((seconds - before.seconds) / span).clamp(0.0, 1.0);
+            let easing = parse_curve_ease(&after.ease).map_err(|message| {
+                MotionLoomSceneRenderError::InvalidExpression {
+                    expr: after.ease.clone(),
+                    message,
+                }
+            })?;
+            let eased = apply_curve_ease(t, easing);
+            return Ok(format_float_for_animation(
+                before_value + (after_value - before_value) * eased,
+            ));
+        }
+    }
+    Ok(keys[keys.len() - 1].value.clone())
+}
+
+fn path_morph_expr_from_animation_keys(keys: &[crate::dsl::AnimationKeyNode], _fps: f32) -> String {
+    if keys.len() == 1 {
+        return keys[0].value.clone();
+    }
+    let args = keys
+        .iter()
+        .map(|key| {
+            format!(
+                "\"{}:{}\"",
+                format_float_for_animation(key.seconds),
+                escape_path_morph_value(&key.value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("morph({args})")
+}
+
+fn escape_path_morph_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn format_float_for_animation(value: f32) -> String {
+    let mut text = format!("{value:.4}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
+}
+
+fn apply_animation_property_to_graph(
+    graph: &mut GraphScript,
+    node_id: &str,
+    property: &str,
+    value: String,
+) {
+    for scene in &mut graph.scenes {
+        apply_animation_property_to_nodes(&mut scene.children, node_id, property, &value);
+    }
+    apply_animation_property_to_nodes(&mut graph.scene_nodes, node_id, property, &value);
+    for text in &mut graph.texts {
+        apply_animation_property_to_text(text, node_id, property, &value);
+    }
+    for image in &mut graph.images {
+        apply_animation_property_to_image(image, node_id, property, &value);
+    }
+    for svg in &mut graph.svgs {
+        apply_animation_property_to_svg(svg, node_id, property, &value);
+    }
+    for skeleton in &mut graph.skeletons {
+        for bone in &mut skeleton.bones {
+            if bone.id == node_id && property == "rotation" {
+                bone.rotation = value.clone();
+            }
+        }
+    }
+}
+
+fn apply_animation_property_to_nodes(
+    nodes: &mut [SceneNode],
+    node_id: &str,
+    property: &str,
+    value: &str,
+) {
+    for node in nodes {
+        match node {
+            SceneNode::Timeline(timeline) => {
+                apply_animation_property_to_nodes(&mut timeline.children, node_id, property, value);
+            }
+            SceneNode::Track(track) => {
+                apply_animation_property_to_nodes(&mut track.children, node_id, property, value);
+            }
+            SceneNode::Sequence(sequence) => {
+                apply_animation_property_to_nodes(&mut sequence.children, node_id, property, value);
+            }
+            SceneNode::Chain(chain) => {
+                apply_animation_property_to_nodes(&mut chain.children, node_id, property, value);
+            }
+            SceneNode::Text(text) => {
+                apply_animation_property_to_text(text, node_id, property, value)
+            }
+            SceneNode::Image(image) => {
+                apply_animation_property_to_image(image, node_id, property, value)
+            }
+            SceneNode::Svg(svg) => apply_animation_property_to_svg(svg, node_id, property, value),
+            SceneNode::Rect(rect) => {
+                apply_animation_property_to_transform(
+                    rect.id.as_deref(),
+                    &mut rect.x,
+                    &mut rect.y,
+                    Some(&mut rect.rotation),
+                    &mut rect.scale,
+                    Some(&mut rect.scale_x),
+                    Some(&mut rect.scale_y),
+                    Some(&mut rect.skew_x),
+                    Some(&mut rect.skew_y),
+                    Some(&mut rect.transform_origin_x),
+                    Some(&mut rect.transform_origin_y),
+                    &mut rect.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+            }
+            SceneNode::Circle(circle) => {
+                apply_animation_property_to_transform(
+                    circle.id.as_deref(),
+                    &mut circle.x,
+                    &mut circle.y,
+                    Some(&mut circle.rotation),
+                    &mut circle.scale,
+                    Some(&mut circle.scale_x),
+                    Some(&mut circle.scale_y),
+                    Some(&mut circle.skew_x),
+                    Some(&mut circle.skew_y),
+                    Some(&mut circle.transform_origin_x),
+                    Some(&mut circle.transform_origin_y),
+                    &mut circle.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+            }
+            SceneNode::Line(line) => {
+                apply_animation_property_to_transform(
+                    line.id.as_deref(),
+                    &mut line.x,
+                    &mut line.y,
+                    Some(&mut line.rotation),
+                    &mut line.scale,
+                    Some(&mut line.scale_x),
+                    Some(&mut line.scale_y),
+                    Some(&mut line.skew_x),
+                    Some(&mut line.skew_y),
+                    Some(&mut line.transform_origin_x),
+                    Some(&mut line.transform_origin_y),
+                    &mut line.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+            }
+            SceneNode::Polyline(polyline) => {
+                apply_animation_property_to_transform(
+                    polyline.id.as_deref(),
+                    &mut polyline.x,
+                    &mut polyline.y,
+                    Some(&mut polyline.rotation),
+                    &mut polyline.scale,
+                    Some(&mut polyline.scale_x),
+                    Some(&mut polyline.scale_y),
+                    Some(&mut polyline.skew_x),
+                    Some(&mut polyline.skew_y),
+                    Some(&mut polyline.transform_origin_x),
+                    Some(&mut polyline.transform_origin_y),
+                    &mut polyline.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+            }
+            SceneNode::Path(path) => {
+                if path.id.as_deref() == Some(node_id) && property == "d" {
+                    path.d = value.to_string();
+                } else {
+                    apply_animation_property_to_transform(
+                        path.id.as_deref(),
+                        &mut path.x,
+                        &mut path.y,
+                        Some(&mut path.rotation),
+                        &mut path.scale,
+                        Some(&mut path.scale_x),
+                        Some(&mut path.scale_y),
+                        Some(&mut path.skew_x),
+                        Some(&mut path.skew_y),
+                        Some(&mut path.transform_origin_x),
+                        Some(&mut path.transform_origin_y),
+                        &mut path.opacity,
+                        node_id,
+                        property,
+                        value,
+                    );
+                }
+            }
+            SceneNode::Group(group) => {
+                apply_animation_property_to_transform(
+                    group.id.as_deref(),
+                    &mut group.x,
+                    &mut group.y,
+                    Some(&mut group.rotation),
+                    &mut group.scale,
+                    Some(&mut group.scale_x),
+                    Some(&mut group.scale_y),
+                    Some(&mut group.skew_x),
+                    Some(&mut group.skew_y),
+                    Some(&mut group.transform_origin_x),
+                    Some(&mut group.transform_origin_y),
+                    &mut group.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+                apply_animation_property_to_nodes(&mut group.children, node_id, property, value);
+            }
+            SceneNode::Part(part) => {
+                apply_animation_property_to_nodes(&mut part.children, node_id, property, value);
+            }
+            SceneNode::Repeat(repeat) => {
+                apply_animation_property_to_nodes(&mut repeat.children, node_id, property, value);
+            }
+            SceneNode::Mask(mask) => {
+                apply_animation_property_to_nodes(&mut mask.children, node_id, property, value);
+            }
+            SceneNode::Precompose(precompose) => {
+                apply_animation_property_to_nodes(
+                    &mut precompose.children,
+                    node_id,
+                    property,
+                    value,
+                );
+            }
+            SceneNode::Layer(layer) => {
+                apply_animation_property_to_transform(
+                    layer.id.as_deref(),
+                    &mut layer.x,
+                    &mut layer.y,
+                    Some(&mut layer.rotation),
+                    &mut layer.scale,
+                    Some(&mut layer.scale_x),
+                    Some(&mut layer.scale_y),
+                    Some(&mut layer.skew_x),
+                    Some(&mut layer.skew_y),
+                    Some(&mut layer.transform_origin_x),
+                    Some(&mut layer.transform_origin_y),
+                    &mut layer.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+                apply_animation_property_to_nodes(&mut layer.children, node_id, property, value);
+            }
+            SceneNode::Character(character) => {
+                apply_animation_property_to_transform(
+                    character.id.as_deref(),
+                    &mut character.x,
+                    &mut character.y,
+                    Some(&mut character.rotation),
+                    &mut character.scale,
+                    Some(&mut character.scale_x),
+                    Some(&mut character.scale_y),
+                    Some(&mut character.skew_x),
+                    Some(&mut character.skew_y),
+                    Some(&mut character.transform_origin_x),
+                    Some(&mut character.transform_origin_y),
+                    &mut character.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+                apply_animation_property_to_nodes(
+                    &mut character.children,
+                    node_id,
+                    property,
+                    value,
+                );
+            }
+            SceneNode::Puppet(puppet) => {
+                apply_animation_property_to_transform(
+                    puppet.id.as_deref(),
+                    &mut puppet.x,
+                    &mut puppet.y,
+                    Some(&mut puppet.rotation),
+                    &mut puppet.scale,
+                    Some(&mut puppet.scale_x),
+                    Some(&mut puppet.scale_y),
+                    Some(&mut puppet.skew_x),
+                    Some(&mut puppet.skew_y),
+                    Some(&mut puppet.transform_origin_x),
+                    Some(&mut puppet.transform_origin_y),
+                    &mut puppet.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+                apply_animation_property_to_nodes(&mut puppet.children, node_id, property, value);
+            }
+            SceneNode::Pin(pin) => {
+                if pin.id.as_deref() == Some(node_id) {
+                    match property {
+                        "x" => pin.target_x = Some(value.to_string()),
+                        "y" => pin.target_y = Some(value.to_string()),
+                        _ => {}
+                    }
+                }
+            }
+            SceneNode::FaceJaw(face) => {
+                apply_animation_property_to_transform(
+                    face.id.as_deref(),
+                    &mut face.x,
+                    &mut face.y,
+                    None,
+                    &mut face.scale,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &mut face.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_animation_property_to_transform(
+    id: Option<&str>,
+    x: &mut String,
+    y: &mut String,
+    rotation: Option<&mut String>,
+    scale: &mut String,
+    scale_x: Option<&mut String>,
+    scale_y: Option<&mut String>,
+    skew_x: Option<&mut String>,
+    skew_y: Option<&mut String>,
+    transform_origin_x: Option<&mut String>,
+    transform_origin_y: Option<&mut String>,
+    opacity: &mut String,
+    node_id: &str,
+    property: &str,
+    value: &str,
+) {
+    if id != Some(node_id) {
+        return;
+    }
+    match property {
+        "x" => *x = value.to_string(),
+        "y" => *y = value.to_string(),
+        "rotation" => {
+            if let Some(rotation) = rotation {
+                *rotation = value.to_string();
+            }
+        }
+        "scale" => *scale = value.to_string(),
+        "scaleX" => {
+            if let Some(scale_x) = scale_x {
+                *scale_x = value.to_string();
+            }
+        }
+        "scaleY" => {
+            if let Some(scale_y) = scale_y {
+                *scale_y = value.to_string();
+            }
+        }
+        "skewX" => {
+            if let Some(skew_x) = skew_x {
+                *skew_x = value.to_string();
+            }
+        }
+        "skewY" => {
+            if let Some(skew_y) = skew_y {
+                *skew_y = value.to_string();
+            }
+        }
+        "transformOriginX" => {
+            if let Some(transform_origin_x) = transform_origin_x {
+                *transform_origin_x = value.to_string();
+            }
+        }
+        "transformOriginY" => {
+            if let Some(transform_origin_y) = transform_origin_y {
+                *transform_origin_y = value.to_string();
+            }
+        }
+        "opacity" => *opacity = value.to_string(),
+        _ => {}
+    }
+}
+
+fn apply_animation_property_to_text(
+    text: &mut TextNode,
+    node_id: &str,
+    property: &str,
+    value: &str,
+) {
+    apply_animation_property_to_transform(
+        text.id.as_deref(),
+        &mut text.x,
+        &mut text.y,
+        Some(&mut text.rotation),
+        &mut text.scale,
+        Some(&mut text.scale_x),
+        Some(&mut text.scale_y),
+        Some(&mut text.skew_x),
+        Some(&mut text.skew_y),
+        Some(&mut text.transform_origin_x),
+        Some(&mut text.transform_origin_y),
+        &mut text.opacity,
+        node_id,
+        property,
+        value,
+    );
+}
+
+fn apply_animation_property_to_image(
+    image: &mut ImageNode,
+    node_id: &str,
+    property: &str,
+    value: &str,
+) {
+    apply_animation_property_to_transform(
+        image.id.as_deref(),
+        &mut image.x,
+        &mut image.y,
+        None,
+        &mut image.scale,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut image.opacity,
+        node_id,
+        property,
+        value,
+    );
+}
+
+fn apply_animation_property_to_svg(svg: &mut SvgNode, node_id: &str, property: &str, value: &str) {
+    apply_animation_property_to_transform(
+        svg.id.as_deref(),
+        &mut svg.x,
+        &mut svg.y,
+        None,
+        &mut svg.scale,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut svg.opacity,
+        node_id,
+        property,
+        value,
+    );
+}
 use crate::scene::text::{
     TextAnimatorRasterParams, TextRasterizedLayer, apply_text_layer_effects,
     draw_text_buffer_with_animators, prepare_text_layout_for_value, soften_text_alpha_edges,
@@ -1059,6 +1586,8 @@ impl SceneFrameRenderer {
         let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / fps);
         let time_sec = frame as f32 / fps;
         let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
+        let animated_graph = apply_animation_targets_at_frame(graph, frame)?;
+        let graph = animated_graph.as_ref().unwrap_or(graph);
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
         self.prepare_frame_caches(graph);
@@ -1106,6 +1635,8 @@ impl SceneFrameRenderer {
         let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / fps);
         let time_sec = frame as f32 / fps;
         let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
+        let animated_graph = apply_animation_targets_at_frame(graph, frame)?;
+        let graph = animated_graph.as_ref().unwrap_or(graph);
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
         self.prepare_frame_caches(graph);
@@ -1440,6 +1971,8 @@ impl SceneFrameRenderer {
         let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / fps);
         let time_sec = frame as f32 / fps;
         let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
+        let animated_graph = apply_animation_targets_at_frame(graph, frame)?;
+        let graph = animated_graph.as_ref().unwrap_or(graph);
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
 

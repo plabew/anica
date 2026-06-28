@@ -32,7 +32,7 @@ enum TransitionCoreEffect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum CurveEase {
+pub(crate) enum CurveEase {
     Linear,
     EaseIn,
     EaseOut,
@@ -1653,7 +1653,7 @@ fn split_curve_point_tokens(inner: &str) -> Result<Vec<&str>, String> {
     Ok(tokens)
 }
 
-fn parse_curve_ease(raw: &str) -> Result<CurveEase, String> {
+pub(crate) fn parse_curve_ease(raw: &str) -> Result<CurveEase, String> {
     let normalized = raw
         .trim()
         .trim_matches('"')
@@ -1695,7 +1695,7 @@ fn parse_curve_ease(raw: &str) -> Result<CurveEase, String> {
     }
 }
 
-fn apply_curve_ease(t: f32, easing: CurveEase) -> f32 {
+pub(crate) fn apply_curve_ease(t: f32, easing: CurveEase) -> f32 {
     let t = t.clamp(0.0, 1.0);
     match easing {
         CurveEase::Linear => t,

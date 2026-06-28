@@ -54,6 +54,30 @@
 //! Use PNG sequence export when FFmpeg is not available. Use video export when
 //! the host application supplies an FFmpeg binary path.
 //!
+//! # Scene editor DSL
+//!
+//! MotionLoom scene graphs include editor-oriented controls in addition to
+//! static vector/text/image nodes:
+//!
+//! - `curve(...)` remains the compact expression API for numeric animation.
+//! - [`AnimationTargetNode`] and [`AnimationKeyNode`] represent UI-editable
+//!   keyframes with `time` or `frame` timing. They support `x`, `y`,
+//!   `rotation`, `scale`, extended transforms, `opacity`, and `d` path-shape
+//!   keys.
+//! - [`extract_editable_animation_timeline`],
+//!   [`upsert_editable_animation_target`], and
+//!   [`replace_editable_animation_targets`] provide a UI-facing read/write
+//!   layer for `.motionloom` keyframe editing.
+//! - [`PuppetNode`] and [`PinNode`] provide AE-style pin deformation with auto
+//!   mesh by default; [`MeshTopologyNode`] plus [`VertexNode`] and
+//!   [`TriangleNode`] provide optional manual topology.
+//! - [`SkeletonNode`], [`ActionNode`], [`CharacterNode`], [`PartNode`], and
+//!   [`ApplyActionNode`] provide 2D character rigging. Actions can contain
+//!   two-bone IK or CCD-chain IK targets.
+//! - [`CharacterNode`] can draw vector children and/or a raster `src`, `image`,
+//!   or `path` using the same loader as `<Image>`, including PNG/JPG paths and
+//!   raster `data:image/*;base64,...` URIs.
+//!
 //! ```no_run
 //! use std::path::Path;
 //! use motionloom::api::{
@@ -99,10 +123,11 @@ pub use export::{EncodeError, VideoEncoder, VideoFrame, create_encoder};
 
 pub use common::keyframe::ScalarKeyframe;
 pub use dsl::{
-    ActionBoneNode, ActionNode, ActionPoseNode, ApplyActionNode, BackgroundNode, GraphScript,
-    ImageNode, ModelProfileBoneAxisMapNode, ModelProfileBoneAxisNode, ModelProfileNode,
-    ModelProfileRetargetMapNode, ModelProfileRetargetNode, SkeletonBoneNode, SkeletonNode, SvgNode,
-    is_graph_script, parse_graph_script,
+    ActionBoneNode, ActionNode, ActionPoseNode, AnimationKeyNode, AnimationTargetNode,
+    ApplyActionNode, BackgroundNode, GraphScript, ImageNode, ModelProfileBoneAxisMapNode,
+    ModelProfileBoneAxisNode, ModelProfileNode, ModelProfileRetargetMapNode,
+    ModelProfileRetargetNode, SkeletonBoneNode, SkeletonNode, SvgNode, is_graph_script,
+    parse_graph_script,
 };
 pub use error::{GraphParseError, MotionLoomError, RootGraphError, RuntimeCompileError};
 pub use process::adapters::clip::curve::sample_anim_f32;
@@ -144,6 +169,11 @@ pub use root::{
     render_motionloom_document_to_png_sequence_with_progress_and_cancel,
     render_motionloom_document_to_video_with_progress,
     render_motionloom_document_to_video_with_progress_and_cancel,
+};
+pub use scene::editor_keyframes::{
+    AnimationKeyframeEditError, EditableAnimationKey, EditableAnimationTarget,
+    EditableAnimationTimeline, extract_editable_animation_timeline,
+    replace_editable_animation_targets, upsert_editable_animation_target,
 };
 pub use scene::model::{
     BrushDef, CameraNode, CharacterNode, CircleNode, ComponentNode, DefsNode, EdgeNode,

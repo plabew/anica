@@ -1476,7 +1476,7 @@ pub(crate) fn parse_camera_block(
     let (_open_tag, _open_end_ix) = collect_tag_block(lines, start, '>', false)?;
     Err(GraphParseError {
         line: start + 1,
-        message: "<Scene> Camera is an active Camera2D controller and must be self-closing. Use <Track role=\"camera\"><Sequence><Camera ... /></Sequence></Track>. Put visuals in <Track space=\"world\"> or <Track space=\"screen\">.".to_string(),
+        message: "<Scene> Camera is an active Scene Camera controller and must be self-closing. Use <Track role=\"camera\"><Sequence><Camera ... /></Sequence></Track>. Put visuals in <Track space=\"world\"> or <Track space=\"screen\">.".to_string(),
     })
 }
 
@@ -4077,7 +4077,7 @@ pub(crate) fn parse_camera_node(
     if attr_value(block, "mode").is_some() {
         return Err(GraphParseError {
             line,
-            message: "<Scene> Camera is always Camera2D; remove mode=\"...\". Use <World><Camera> for 3D/world cameras.".to_string(),
+            message: "<Scene> Camera is the 2D Scene Camera; remove mode=\"...\". Use <World><Camera> for 3D/world cameras.".to_string(),
         });
     }
     let x = attr_value(block, "x")

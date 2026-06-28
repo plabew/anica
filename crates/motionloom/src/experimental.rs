@@ -40,6 +40,14 @@ pub mod keyframe {
     pub use crate::common::keyframe::{ScalarKeyframe, index_at, sample_linear, set_or_insert};
 }
 
+pub mod editor {
+    pub use crate::scene::editor_keyframes::{
+        AnimationKeyframeEditError, EditableAnimationKey, EditableAnimationTarget,
+        EditableAnimationTimeline, extract_editable_animation_timeline,
+        replace_editable_animation_targets, upsert_editable_animation_target,
+    };
+}
+
 pub mod transitions {
     pub use crate::process::adapters::clip::transitions::{
         build_dissolve_expr, build_fade_expr, build_shock_zoom_expr, build_slide_expr,

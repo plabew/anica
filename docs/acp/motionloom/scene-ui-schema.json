@@ -1,0 +1,428 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schemaVersion": 1,
+  "name": "motionloom-scene-ui-properties",
+  "description": "UI-ready editable property metadata for MotionLoom Scene Camera and Layer3D. This file describes editor panels; it does not define parser grammar.",
+  "nodes": [
+    {
+      "kind": "SceneCamera",
+      "dslTag": "Camera",
+      "displayName": "Scene Camera",
+      "description": "Active 2D scene camera for pan, zoom, rotation, follow, viewport, shake, and bounds. Must be used as a self-closing node inside Track role=camera.",
+      "placement": {
+        "requiredParent": "Track(role=camera) > Sequence",
+        "selfClosing": true,
+        "normalLayerVisualNode": false
+      },
+      "propertyGroups": [
+        {
+          "id": "identity",
+          "label": "Identity",
+          "properties": [
+            {
+              "name": "id",
+              "type": "string",
+              "animatable": false,
+              "required": false,
+              "ui": {
+                "control": "text"
+              },
+              "notes": "Optional camera node id."
+            }
+          ]
+        },
+        {
+          "id": "transform",
+          "label": "Transform",
+          "properties": [
+            {
+              "name": "x",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "Camera position alias used by the scene camera transform."
+            },
+            {
+              "name": "y",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "Camera position alias used by the scene camera transform."
+            },
+            {
+              "name": "targetX",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "World-space target point mapped to the camera anchor."
+            },
+            {
+              "name": "targetY",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "World-space target point mapped to the camera anchor."
+            },
+            {
+              "name": "zoom",
+              "type": "number",
+              "animatable": true,
+              "default": 1,
+              "min": 0.0001,
+              "ui": {
+                "control": "number",
+                "step": 0.01
+              },
+              "notes": "2D camera zoom scale."
+            },
+            {
+              "name": "rotation",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "deg"
+              },
+              "notes": "2D camera rotation in degrees."
+            }
+          ]
+        },
+        {
+          "id": "anchor",
+          "label": "Anchor",
+          "properties": [
+            {
+              "name": "anchorX",
+              "type": "numberOrPercent",
+              "animatable": true,
+              "default": "50%",
+              "ui": {
+                "control": "numberOrPercent",
+                "unit": "px|%"
+              },
+              "notes": "Viewport anchor x. Percent values are relative to viewport width."
+            },
+            {
+              "name": "anchorY",
+              "type": "numberOrPercent",
+              "animatable": true,
+              "default": "50%",
+              "ui": {
+                "control": "numberOrPercent",
+                "unit": "px|%"
+              },
+              "notes": "Viewport anchor y. Percent values are relative to viewport height."
+            },
+            {
+              "name": "offsetX",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "Additional screen-space camera x offset."
+            },
+            {
+              "name": "offsetY",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "Additional screen-space camera y offset."
+            }
+          ]
+        },
+        {
+          "id": "follow",
+          "label": "Follow",
+          "properties": [
+            {
+              "name": "follow",
+              "aliases": [
+                "target"
+              ],
+              "type": "nodeRef",
+              "animatable": false,
+              "ui": {
+                "control": "nodePicker",
+                "filter": "sceneNodeWithId"
+              },
+              "notes": "Scene node id to follow. Use target as an accepted alias in existing scripts."
+            },
+            {
+              "name": "deadZone",
+              "type": "rect",
+              "format": "x,y,width,height",
+              "animatable": true,
+              "ui": {
+                "control": "rect",
+                "unit": "px"
+              },
+              "notes": "Screen-space dead-zone before the camera follows the target."
+            }
+          ]
+        },
+        {
+          "id": "bounds",
+          "label": "Bounds",
+          "properties": [
+            {
+              "name": "worldBounds",
+              "type": "rect",
+              "format": "x,y,width,height",
+              "animatable": false,
+              "ui": {
+                "control": "rect",
+                "unit": "px"
+              },
+              "notes": "World-space rectangle that clamps camera movement."
+            },
+            {
+              "name": "viewport",
+              "type": "rect",
+              "format": "x,y,width,height",
+              "animatable": false,
+              "ui": {
+                "control": "rect",
+                "unit": "px"
+              },
+              "notes": "Optional sub-frame viewport for the camera."
+            }
+          ]
+        },
+        {
+          "id": "shake",
+          "label": "Shake",
+          "properties": [
+            {
+              "name": "shakeX",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "Additional animated x shake."
+            },
+            {
+              "name": "shakeY",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "Additional animated y shake."
+            }
+          ]
+        }
+      ],
+      "animationTarget": {
+        "recommended": false,
+        "notes": "Camera attributes can already use curve(...). AnimationTarget can be added later if the UI wants frame-key editing for camera properties."
+      }
+    },
+    {
+      "kind": "Layer3D",
+      "dslTag": "Layer3D",
+      "displayName": "Layer3D / 2.5D Layer",
+      "description": "Flat 2.5D scene layer/card. It is not a camera. Use it for panels, logos, cards, and UI surfaces with z depth and rotationX/rotationY foreshortening.",
+      "placement": {
+        "requiredParent": "Track > Sequence",
+        "selfClosing": false,
+        "normalLayerVisualNode": true
+      },
+      "propertyGroups": [
+        {
+          "id": "identity",
+          "label": "Identity",
+          "properties": [
+            {
+              "name": "id",
+              "type": "string",
+              "animatable": false,
+              "required": false,
+              "ui": {
+                "control": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "transform",
+          "label": "Transform",
+          "properties": [
+            {
+              "name": "x",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              }
+            },
+            {
+              "name": "y",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              }
+            },
+            {
+              "name": "z",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "Layer-local depth used by Layer3D projection."
+            },
+            {
+              "name": "rotationX",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "deg"
+              }
+            },
+            {
+              "name": "rotationY",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "deg"
+              }
+            },
+            {
+              "name": "rotationZ",
+              "aliases": [
+                "rotation"
+              ],
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number",
+                "unit": "deg"
+              },
+              "notes": "Planar rotation. Existing scripts may use rotation as an alias."
+            },
+            {
+              "name": "scale",
+              "type": "number",
+              "animatable": true,
+              "default": 1,
+              "min": 0,
+              "ui": {
+                "control": "number",
+                "step": 0.01
+              }
+            },
+            {
+              "name": "opacity",
+              "type": "number",
+              "animatable": true,
+              "default": 1,
+              "min": 0,
+              "max": 1,
+              "ui": {
+                "control": "slider",
+                "step": 0.01
+              }
+            }
+          ]
+        },
+        {
+          "id": "projection",
+          "label": "Projection",
+          "properties": [
+            {
+              "name": "perspective",
+              "type": "number",
+              "animatable": true,
+              "default": 900,
+              "min": 1,
+              "ui": {
+                "control": "number",
+                "unit": "px"
+              },
+              "notes": "Perspective distance for flat Layer3D projection."
+            },
+            {
+              "name": "zDepth",
+              "type": "number",
+              "animatable": true,
+              "default": 0,
+              "ui": {
+                "control": "number"
+              },
+              "notes": "Scene depth-sort value. Negative values are closer; track z remains draw-order tie-break."
+            }
+          ]
+        }
+      ],
+      "animationTarget": {
+        "recommended": true,
+        "properties": [
+          "x",
+          "y",
+          "z",
+          "rotationX",
+          "rotationY",
+          "rotationZ",
+          "scale",
+          "opacity",
+          "perspective",
+          "zDepth"
+        ],
+        "notes": "Use AnimationTarget + Key for frame-editable UI timelines, or curve(...) directly for hand-authored DSL."
+      }
+    }
+  ],
+  "namingRules": {
+    "preferred": {
+      "Camera": "Scene Camera",
+      "Layer3D": "Layer3D / 2.5D Layer",
+      "WorldCamera": "World Camera"
+    },
+    "avoid": [
+      "Camera2.5D",
+      "2.5D Camera"
+    ],
+    "notes": "Do not expose Layer3D as a camera. It is a 2.5D layer/object transform."
+  }
+}

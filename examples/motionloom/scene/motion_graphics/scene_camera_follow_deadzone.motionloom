@@ -1,8 +1,8 @@
-<!-- Scene Camera2D example. Scene cameras are Timeline nodes and do not use mode="2d". -->
+<!-- Scene Camera example. Scene cameras are Timeline nodes and do not use mode. -->
 <Graph fps={30} duration="6s" size={[1280,720]} renderSize={[1280,720]}>
   <Background color="#060A12" />
 
-  <Scene id="camera2d_follow_deadzone_level1">
+  <Scene id="scene_camera_follow_deadzone">
     <Defs>
       <LinearGradient id="world_bg" x1="0" y1="0" x2="1" y2="1"
                       stops="0:#0B1830, 0.55:#132A52, 1:#05070D" />
@@ -68,7 +68,7 @@
         <Sequence from="0s" duration="6s" out="hold">
           <Layer id="hud_layer">
             <Rect x="48" y="48" width="470" height="92" radius="24" color="#000000" opacity="0.30" />
-            <Text x="76" y="92" value="Camera2D follows a world-space target" fontSize="28" color="#EAFEFF" />
+            <Text x="76" y="92" value="Scene Camera follows a world-space target" fontSize="28" color="#EAFEFF" />
             <Text x="76" y="122" value="Timeline wrapped, dead-zone, offsets, shake, world bounds" fontSize="18" color="#65F7FF" opacity="0.84" />
           </Layer>
         </Sequence>
@@ -76,5 +76,5 @@
     </Timeline>
   </Scene>
 
-  <Present from="camera2d_follow_deadzone_level1" />
+  <Present from="scene_camera_follow_deadzone" />
 </Graph>

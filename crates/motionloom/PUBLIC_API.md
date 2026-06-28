@@ -334,6 +334,42 @@ Scene/model AST structs such as `RectNode`, `TexNode`, and `PassNode` remain
 visible through the crate root for compatibility and advanced tooling. They are
 not the recommended starting point for new integrations.
 
+Editor-oriented scene DSL structs are also re-exported at the crate root for
+tooling that needs to inspect or generate UI-editable scene graphs:
+
+- `AnimationTargetNode` and `AnimationKeyNode` for UI-editable keyframes with
+  `time` or `frame` timing.
+- `SkeletonNode`, `SkeletonBoneNode`, `ActionNode`, `ActionPoseNode`,
+  `ActionBoneNode`, `ApplyActionNode`, and IK data inside actions for rigs.
+- `CharacterNode` and `PartNode` for bone-attached or dense vector artwork.
+- `PuppetNode`, `PinNode`, `MeshTopologyNode`, `VertexNode`, `TriangleNode`,
+  `EdgeNode`, and `RegionNode` for AE-style pin deformation and optional manual
+  topology.
+- `FaceJawNode`, `MaskNode`, `CameraNode`, and `SceneLayerNode` for higher-level
+  scene helpers.
+
+These model structs are useful for editor/LLM tooling, but they follow the DSL
+runtime and may evolve faster than `motionloom::api`. If a host only needs to
+render or export scripts, prefer parsing/rendering through `motionloom::api`
+instead of constructing AST structs directly.
+
+For editor property panels, use `docs/acp/motionloom/scene-ui-schema.json` as
+the machine-readable metadata source for Scene Camera and Layer3D property
+labels, groups, value types, and animatability. Do not infer UI schema directly
+from the AST structs.
+
+Frame-key UI integrations can use:
+
+- `extract_editable_animation_timeline(script)` to parse `.motionloom` text into
+  `EditableAnimationTimeline`.
+- `upsert_editable_animation_target(script, target)` to update one
+  node/property channel.
+- `replace_editable_animation_targets(script, targets)` to replace the full
+  editor keyframe set.
+
+These helpers re-parse generated DSL after write-back, so UI saves fail fast
+instead of emitting invalid MotionLoom text.
+
 Low-level kernel resolution helpers such as `default_kernel_for_effect` and
 `resolve_pass_kernel` are also kept for compatibility. Prefer the process
 catalog APIs for effect discovery.
