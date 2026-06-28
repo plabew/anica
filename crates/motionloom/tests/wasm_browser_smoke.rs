@@ -141,6 +141,49 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
+    async fn scene_renderer_accepts_action_ik_children() {
+        let script = r##"<Graph fps={30} duration="1s" size={[96,64]}>
+  <Background color="#ffffff" />
+  <Skeleton id="arm">
+    <Bone id="shoulder" x="0" y="0" />
+    <Bone id="elbow" parent="shoulder" x="28" y="0" />
+    <Bone id="wrist" parent="elbow" x="24" y="0" />
+  </Skeleton>
+  <Action id="reach" skeleton="arm" duration="1s">
+    <Pose t="0">
+      <Bone id="shoulder" rotation="0" />
+      <Bone id="elbow" rotation="0" />
+    </Pose>
+    <IK root="shoulder" mid="elbow" end="wrist" targetX="42" targetY="18" bend="1" weight="1" />
+  </Action>
+  <Scene id="stage">
+    <Timeline>
+      <Track id="main" z="0">
+        <Sequence duration="1s">
+          <Layer>
+            <Character id="hero" rig="arm" x="24" y="24">
+              <Part id="upper" attachTo="shoulder">
+                <Path d="M 0 0 L 28 0" stroke="#111827" strokeWidth="6" lineCap="round" fill="none" />
+              </Part>
+              <Part id="lower" attachTo="elbow">
+                <Path d="M 0 0 L 24 0" stroke="#f97316" strokeWidth="5" lineCap="round" fill="none" />
+              </Part>
+            </Character>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <ApplyAction target="hero" action="reach" at="0s" />
+  <Present from="stage" />
+</Graph>"##;
+
+        let mut renderer = WasmSceneRenderer::new(script, "cpu").expect("ik scene renderer");
+        let buffer = renderer.render_frame(0).await.expect("render ik frame");
+        assert_eq!(buffer.len(), 96 * 64 * 4);
+    }
+
+    #[wasm_bindgen_test]
     async fn scene_renderer_owns_assets_independently() {
         let image_scene = r##"<Graph fps={30} duration="1s" size={[64,64]}>
   <Scene id="stage">
