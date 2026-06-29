@@ -2,16 +2,34 @@
 // =========================================
 // crates/motionloom/examples/wgpu_live_preview.rs
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
-use motionloom::{SceneRenderProfile, SceneRenderer, parse_graph_script};
+#[path = "wgpu_live_preview/preview_host_platform.rs"]
+mod preview_host_platform;
+
+use motionloom::{
+    PREVIEW_PROTOCOL_VERSION, PreviewCommand, PreviewEvent, PreviewInteractionMode,
+    PreviewInteractionNode, WgpuPreviewEngine, WgpuPreviewQuality, parse_graph_script,
+};
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
+
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSView, NSWindowCollectionBehavior};
+#[cfg(target_os = "macos")]
+use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+#[cfg(target_os = "macos")]
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 const BLIT_SHADER: &str = r#"
 @group(0) @binding(0) var scene_tex: texture_2d<f32>;
@@ -119,49 +137,96 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PreviewQuality {
-    Full,
-    Balanced,
-    Speed,
-    HighSpeed,
-    UltraSpeed,
+const PICK_SHADER: &str = r#"
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) local: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) shape_kind: f32,
+};
+
+@vertex
+fn vs_main(
+    @location(0) position: vec2<f32>,
+    @location(1) local: vec2<f32>,
+    @location(2) color: vec4<f32>,
+    @location(3) shape_kind: f32,
+) -> VertexOut {
+    var out: VertexOut;
+    out.position = vec4<f32>(position, 0.0, 1.0);
+    out.local = local;
+    out.color = color;
+    out.shape_kind = shape_kind;
+    return out;
 }
 
-impl PreviewQuality {
-    const fn label(self) -> &'static str {
-        match self {
-            PreviewQuality::Full => "Full",
-            PreviewQuality::Balanced => "Balanced 50%",
-            PreviewQuality::Speed => "Speed 25%",
-            PreviewQuality::HighSpeed => "High Speed 10%",
-            PreviewQuality::UltraSpeed => "Ultra Speed 5%",
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    if (in.shape_kind > 0.5) {
+        let centered = in.local * 2.0 - vec2<f32>(1.0, 1.0);
+        if (dot(centered, centered) > 1.0) {
+            discard;
         }
     }
+    return in.color;
+}
+"#;
 
-    const fn scale(self) -> f32 {
-        match self {
-            PreviewQuality::Full => 1.0,
-            PreviewQuality::Balanced => 0.5,
-            PreviewQuality::Speed => 0.25,
-            PreviewQuality::HighSpeed => 0.10,
-            PreviewQuality::UltraSpeed => 0.05,
-        }
+const WAITING_PLACEHOLDER_SCRIPT: &str = r##"
+<Graph fps={30} duration="1s" size={[1280,720]} renderSize={[1280,720]}>
+  <Background color="#0B1020" />
+  <Scene id="waiting_for_anica">
+    <Timeline>
+      <Track id="main" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Rect x="0" y="0" width="1280" height="720" color="#0B1020" />
+            <Text value="MotionLoom Preview Host" x="center" y="320" fontSize="52" color="#DDE8FF" />
+            <Text value="listening for Anica code block DSL..." x="center" y="382" fontSize="28" color="#7C8AA5" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="waiting_for_anica" />
+</Graph>
+"##;
+
+const HOST_ATTACH_HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(1500);
+
+#[derive(Clone, Debug)]
+enum PreviewHostUserEvent {
+    Command(PreviewCommand),
+}
+
+#[derive(Clone, Default)]
+struct PreviewEventBroadcaster {
+    clients: Arc<Mutex<Vec<TcpStream>>>,
+}
+
+impl PreviewEventBroadcaster {
+    fn add_client(&self, stream: TcpStream) {
+        let Ok(mut clients) = self.clients.lock() else {
+            return;
+        };
+        clients.push(stream);
     }
 
-    const fn index(self) -> u32 {
-        match self {
-            PreviewQuality::Full => 0,
-            PreviewQuality::Balanced => 1,
-            PreviewQuality::Speed => 2,
-            PreviewQuality::HighSpeed => 3,
-            PreviewQuality::UltraSpeed => 4,
-        }
+    fn broadcast(&self, event: PreviewEvent) {
+        let Ok(payload) = serde_json::to_string(&event) else {
+            return;
+        };
+        let line = format!("{payload}\n");
+        let Ok(mut clients) = self.clients.lock() else {
+            return;
+        };
+        clients.retain_mut(|client| client.write_all(line.as_bytes()).is_ok());
     }
 }
 
 struct LivePreviewApp {
     script_source: String,
+    base_script: String,
     base_graph: motionloom::GraphScript,
     graph: Option<motionloom::GraphScript>,
     window: Option<Arc<Window>>,
@@ -172,7 +237,7 @@ struct LivePreviewApp {
     queue: Option<wgpu::Queue>,
     surface_config: Option<wgpu::SurfaceConfiguration>,
     surface_format: Option<wgpu::TextureFormat>,
-    renderer: Option<SceneRenderer>,
+    preview_engine: Option<WgpuPreviewEngine>,
     target_texture: Option<wgpu::Texture>,
     target_width: u32,
     target_height: u32,
@@ -182,7 +247,8 @@ struct LivePreviewApp {
     overlay_buffer: Option<wgpu::Buffer>,
     overlay_bind_group: Option<wgpu::BindGroup>,
     overlay_pipeline: Option<wgpu::RenderPipeline>,
-    quality: PreviewQuality,
+    picking_pipeline: Option<wgpu::RenderPipeline>,
+    quality: WgpuPreviewQuality,
     last_cursor_pos: Option<(f64, f64)>,
     frame: u32,
     total_frames: u32,
@@ -190,16 +256,87 @@ struct LivePreviewApp {
     last_title_at: Instant,
     last_stats_at: Instant,
     print_stats_enabled: bool,
+    auto_advance: bool,
+    host_mode: bool,
+    host_events: Option<PreviewEventBroadcaster>,
+    controller_process_id: Option<u32>,
+    overrides: HashMap<(String, String), f32>,
+    last_render_ms: f32,
+    last_present_ms: f32,
     render_times: Vec<f32>,
     present_times: Vec<f32>,
+    requested_window_bounds: Option<PreviewWindowBounds>,
+    last_attach_heartbeat: Option<Instant>,
+    needs_redraw: bool,
+    window_visible: bool,
+    interaction_mode: PreviewInteractionMode,
+    interaction_graph_width: f32,
+    interaction_graph_height: f32,
+    interaction_targets: Vec<PreviewInteractionNode>,
+    interaction_drag: Option<PreviewInteractionDrag>,
+    mouse_left_down: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PickVertex {
+    position: [f32; 2],
+    local: [f32; 2],
+    color: [f32; 4],
+    shape_kind: f32,
+}
+
+impl PickVertex {
+    const STRIDE: wgpu::BufferAddress = 36;
+
+    fn write_bytes(&self, out: &mut Vec<u8>) {
+        for value in self
+            .position
+            .iter()
+            .chain(self.local.iter())
+            .chain(self.color.iter())
+            .chain(std::iter::once(&self.shape_kind))
+        {
+            out.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PreviewInteractionDrag {
+    target: PreviewInteractionNode,
+    mode: PreviewInteractionMode,
+    graph_width: f32,
+    graph_height: f32,
+    start_cursor_x: f64,
+    start_cursor_y: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PreviewWindowBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    decorations: bool,
 }
 
 impl LivePreviewApp {
     fn new(
-        script_source: String,
+        script_source: Option<String>,
         print_stats_enabled: bool,
+        auto_advance: bool,
+        host_mode: bool,
+        host_events: Option<PreviewEventBroadcaster>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let script = load_script_source(&script_source)?;
+        let (script_source, script) = if let Some(script_source) = script_source {
+            let script = load_script_source(&script_source)?;
+            (script_source, script)
+        } else {
+            (
+                "waiting-for-anica-code-block".to_string(),
+                WAITING_PLACEHOLDER_SCRIPT.to_string(),
+            )
+        };
         let graph = parse_graph_script(&script)?;
         let fps = graph.fps.max(1.0);
         let total_frames =
@@ -207,6 +344,7 @@ impl LivePreviewApp {
 
         Ok(Self {
             script_source,
+            base_script: script,
             base_graph: graph.clone(),
             graph: Some(graph),
             window: None,
@@ -217,7 +355,7 @@ impl LivePreviewApp {
             queue: None,
             surface_config: None,
             surface_format: None,
-            renderer: None,
+            preview_engine: None,
             target_texture: None,
             target_width: 0,
             target_height: 0,
@@ -227,7 +365,8 @@ impl LivePreviewApp {
             overlay_buffer: None,
             overlay_bind_group: None,
             overlay_pipeline: None,
-            quality: PreviewQuality::Full,
+            picking_pipeline: None,
+            quality: WgpuPreviewQuality::Full,
             last_cursor_pos: None,
             frame: 0,
             total_frames,
@@ -235,154 +374,47 @@ impl LivePreviewApp {
             last_title_at: Instant::now(),
             last_stats_at: Instant::now(),
             print_stats_enabled,
+            auto_advance,
+            host_mode,
+            host_events,
+            controller_process_id: None,
+            overrides: HashMap::new(),
+            last_render_ms: 0.0,
+            last_present_ms: 0.0,
             render_times: Vec::with_capacity(240),
             present_times: Vec::with_capacity(240),
+            requested_window_bounds: None,
+            last_attach_heartbeat: None,
+            needs_redraw: true,
+            window_visible: !host_mode,
+            interaction_mode: PreviewInteractionMode::Move,
+            interaction_graph_width: 1280.0,
+            interaction_graph_height: 720.0,
+            interaction_targets: Vec::new(),
+            interaction_drag: None,
+            mouse_left_down: false,
         })
     }
 
-    fn preview_size_for_quality(
-        graph: &motionloom::GraphScript,
-        quality: PreviewQuality,
-    ) -> (u32, u32) {
-        let (final_width, final_height) = graph.render_size.unwrap_or(graph.size);
-        let scale = quality.scale();
-        if scale >= 0.999 {
-            return (final_width.max(1), final_height.max(1));
-        }
-        (
-            (final_width.max(1) as f32 * scale).round().max(1.0) as u32,
-            (final_height.max(1) as f32 * scale).round().max(1.0) as u32,
-        )
-    }
-
-    fn graph_for_quality(
-        base_graph: &motionloom::GraphScript,
-        quality: PreviewQuality,
-    ) -> motionloom::GraphScript {
-        let mut graph = base_graph.clone();
-        let final_size = graph.render_size.unwrap_or(graph.size);
-        let preview_size = Self::preview_size_for_quality(&graph, quality);
-        if preview_size != final_size {
-            graph.render_size = Some(preview_size);
-            for texture in &mut graph.textures {
-                if texture.size == Some(final_size) {
-                    texture.size = Some(preview_size);
+    fn rebuild_graph_for_quality(&mut self) {
+        let base_graph = if self.overrides.is_empty() {
+            self.base_graph.clone()
+        } else {
+            match self.graph_with_overrides() {
+                Ok(graph) => graph,
+                Err(err) => {
+                    self.broadcast_event(PreviewEvent::Error { message: err });
+                    self.base_graph.clone()
                 }
             }
-            Self::scale_resolution_dependent_pass_params(&mut graph, quality.scale());
-        }
-        graph
-    }
-
-    fn scale_resolution_dependent_pass_params(graph: &mut motionloom::GraphScript, scale: f32) {
-        for pass in &mut graph.passes {
-            if pass.effect != "magnify_lens" {
-                continue;
-            }
-            for param in &mut pass.params {
-                if matches!(
-                    param.key.as_str(),
-                    "x" | "y" | "radius" | "feather" | "width"
-                ) {
-                    param.value = Self::scale_numeric_or_curve_param(&param.value, scale);
-                }
-            }
-        }
-    }
-
-    fn scale_numeric_or_curve_param(value: &str, scale: f32) -> String {
-        let trimmed = value.trim();
-        let unquoted = trimmed
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .unwrap_or(trimmed);
-        let normalized = unquoted.replace("\\\"", "\"");
-
-        if let Ok(number) = normalized.parse::<f32>() {
-            return Self::format_scaled_number(number, scale);
-        }
-
-        if let Some(inner) = normalized
-            .strip_prefix("curve(\"")
-            .and_then(|v| v.strip_suffix("\")"))
-        {
-            let scaled_points = inner
-                .split(',')
-                .map(|point| Self::scale_curve_point_value(point.trim(), scale))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return format!("curve(\"{scaled_points}\")");
-        }
-
-        normalized
-    }
-
-    fn scale_curve_point_value(point: &str, scale: f32) -> String {
-        let mut parts = point.splitn(3, ':');
-        let Some(time) = parts.next() else {
-            return point.to_string();
         };
-        let Some(value) = parts.next() else {
-            return point.to_string();
-        };
-        let Some(ease) = parts.next() else {
-            return point.to_string();
-        };
-        let Ok(number) = value.trim().parse::<f32>() else {
-            return point.to_string();
-        };
-        format!(
-            "{}:{}:{}",
-            time.trim(),
-            Self::format_scaled_number(number, scale),
-            ease.trim()
-        )
-    }
-
-    fn format_scaled_number(value: f32, scale: f32) -> String {
-        let scaled = value * scale;
-        if (scaled.round() - scaled).abs() < 0.001 {
-            return format!("{}", scaled.round() as i32);
-        }
-        let mut text = format!("{scaled:.3}");
-        while text.contains('.') && text.ends_with('0') {
-            text.pop();
-        }
-        if text.ends_with('.') {
-            text.pop();
-        }
-        text
-    }
-
-    fn create_target_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
-        device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("motionloom-live-preview-target-texture"),
-            size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        })
-    }
-
-    fn set_quality(&mut self, quality: PreviewQuality) {
-        if self.quality == quality {
-            return;
-        }
-        self.quality = quality;
-        let graph = Self::graph_for_quality(&self.base_graph, quality);
+        let graph = WgpuPreviewEngine::graph_for_quality(&base_graph, self.quality);
         let (target_width, target_height) = graph.render_size.unwrap_or(graph.size);
         self.graph = Some(graph);
         self.target_width = target_width.max(1);
         self.target_height = target_height.max(1);
         if let Some(device) = self.device.as_ref() {
-            self.target_texture = Some(Self::create_target_texture(
+            self.target_texture = Some(WgpuPreviewEngine::create_target_texture(
                 device,
                 self.target_width,
                 self.target_height,
@@ -393,40 +425,706 @@ impl LivePreviewApp {
         self.update_title_now();
     }
 
-    fn quality_button_at(position: (f64, f64)) -> Option<PreviewQuality> {
+    fn graph_with_overrides(&self) -> Result<motionloom::GraphScript, String> {
+        let mut script = self.base_script.clone();
+        let mut overrides = self
+            .overrides
+            .iter()
+            .map(|((node, property), value)| (node.clone(), property.clone(), *value))
+            .collect::<Vec<_>>();
+        overrides.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        for (node, property, value) in overrides {
+            script = patch_scene_tag_attr_number(&script, &node, &property, value)?;
+        }
+        parse_graph_script(&script).map_err(|err| format!("line {}: {}", err.line, err.message))
+    }
+
+    fn set_quality(&mut self, quality: WgpuPreviewQuality) {
+        if self.quality == quality {
+            return;
+        }
+        self.quality = quality;
+        self.rebuild_graph_for_quality();
+        self.request_redraw();
+    }
+
+    fn load_script_text(&mut self, script: String, source: Option<String>) -> Result<(), String> {
+        let graph = parse_graph_script(&script)
+            .map_err(|err| format!("line {}: {}", err.line, err.message))?;
+        let fps = graph.fps.max(1.0);
+        self.total_frames =
+            (((graph.duration_ms as f32 / 1000.0).max(1.0 / fps) * fps).round() as u32).max(1);
+        self.frame = self.frame.min(self.total_frames.saturating_sub(1));
+        self.script_source = source.unwrap_or_else(|| "preview-host-script".to_string());
+        self.base_script = script;
+        self.base_graph = graph;
+        self.overrides.clear();
+        self.rebuild_graph_for_quality();
+        Ok(())
+    }
+
+    fn handle_preview_command(&mut self, command: PreviewCommand) {
+        match command {
+            PreviewCommand::LoadScript { script, source } => {
+                if let Err(message) = self.load_script_text(script, source) {
+                    self.broadcast_event(PreviewEvent::Error { message });
+                } else {
+                    self.request_redraw();
+                }
+            }
+            PreviewCommand::SetFrame { frame } => {
+                let frame = frame.min(self.total_frames.saturating_sub(1));
+                self.keep_attached_visible();
+                if self.frame != frame {
+                    self.frame = frame;
+                    self.request_redraw();
+                }
+            }
+            PreviewCommand::SetQuality { quality } => self.set_quality(quality),
+            PreviewCommand::SetOverride {
+                node,
+                property,
+                value,
+            } => {
+                self.keep_attached_visible();
+                self.overrides.insert((node, property), value);
+                self.rebuild_graph_for_quality();
+                self.request_redraw();
+            }
+            PreviewCommand::ClearOverride { node, property } => {
+                self.keep_attached_visible();
+                self.overrides.remove(&(node, property));
+                self.rebuild_graph_for_quality();
+                self.request_redraw();
+            }
+            PreviewCommand::SetAssetRoots { roots } => {
+                if roots.is_empty() {
+                    motionloom::clear_scene_asset_roots();
+                } else {
+                    let roots = roots.into_iter().map(std::path::PathBuf::from).collect();
+                    motionloom::set_scene_asset_roots(roots);
+                }
+                self.request_redraw();
+            }
+            PreviewCommand::SetWindowBounds {
+                x,
+                y,
+                width,
+                height,
+                decorations,
+            } => {
+                let changed = self.set_requested_window_bounds(PreviewWindowBounds {
+                    x,
+                    y,
+                    width,
+                    height,
+                    decorations,
+                });
+                if changed {
+                    self.request_redraw();
+                }
+            }
+            PreviewCommand::SetWindowVisible { visible } => {
+                let visible = visible && self.frontmost_app_allows_visibility();
+                let changed = self.window_visible != visible;
+                self.window_visible = visible;
+                if let Some(window) = self.window.as_ref() {
+                    window.set_visible(visible);
+                }
+                self.last_attach_heartbeat = visible.then(Instant::now);
+                if visible && changed {
+                    self.request_redraw();
+                }
+            }
+            PreviewCommand::SetControllerProcessId { pid } => {
+                self.controller_process_id = Some(pid);
+            }
+            PreviewCommand::SetInteractionTarget {
+                node,
+                mode,
+                graph_width,
+                graph_height,
+                x,
+                y,
+                rotation,
+            } => {
+                self.keep_attached_visible();
+                self.interaction_mode = mode;
+                self.interaction_graph_width = graph_width.max(1.0);
+                self.interaction_graph_height = graph_height.max(1.0);
+                self.interaction_targets = vec![PreviewInteractionNode {
+                    node,
+                    tag: "selected".to_string(),
+                    x,
+                    y,
+                    width: 160.0,
+                    height: 100.0,
+                    rotation,
+                }];
+            }
+            PreviewCommand::SetInteractionTargets {
+                mode,
+                graph_width,
+                graph_height,
+                targets,
+            } => {
+                self.keep_attached_visible();
+                self.interaction_mode = mode;
+                self.interaction_graph_width = graph_width.max(1.0);
+                self.interaction_graph_height = graph_height.max(1.0);
+                self.interaction_targets = targets;
+            }
+        }
+    }
+
+    fn request_redraw(&mut self) {
+        self.needs_redraw = true;
+        if self.host_mode && !self.window_visible {
+            return;
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn keep_attached_visible(&mut self) {
+        if !self.host_mode {
+            return;
+        }
+        if !self.frontmost_app_allows_visibility() {
+            self.window_visible = false;
+            self.last_attach_heartbeat = None;
+            if let Some(window) = self.window.as_ref() {
+                window.set_visible(false);
+            }
+            return;
+        }
+        self.window_visible = true;
+        self.last_attach_heartbeat = Some(Instant::now());
+        if let Some(window) = self.window.as_ref() {
+            window.set_visible(true);
+            window.set_window_level(WindowLevel::AlwaysOnTop);
+        }
+        self.apply_requested_window_bounds();
+    }
+
+    fn frontmost_app_allows_visibility(&self) -> bool {
+        if !self.host_mode {
+            return true;
+        }
+        let Some(frontmost_pid) = preview_host_platform::frontmost_process_id() else {
+            return true;
+        };
+        frontmost_pid == std::process::id() || Some(frontmost_pid) == self.controller_process_id
+    }
+
+    fn set_requested_window_bounds(&mut self, bounds: PreviewWindowBounds) -> bool {
+        if bounds.width < 64.0 || bounds.height < 64.0 {
+            return false;
+        }
+        if self.requested_window_bounds == Some(bounds) {
+            return false;
+        }
+        self.requested_window_bounds = Some(bounds);
+        self.last_attach_heartbeat = Some(Instant::now());
+        self.apply_requested_window_bounds();
+        true
+    }
+
+    fn apply_requested_window_bounds(&self) {
+        let (Some(window), Some(bounds)) = (self.window.as_ref(), self.requested_window_bounds)
+        else {
+            return;
+        };
+        window.set_decorations(bounds.decorations);
+        window.set_outer_position(LogicalPosition::new(bounds.x, bounds.y));
+        let _ = window.request_inner_size(LogicalSize::new(bounds.width, bounds.height));
+        let inner_size = window.inner_size();
+        self.broadcast_event(PreviewEvent::WindowBounds {
+            x: bounds.x,
+            y: bounds.y,
+            width: f64::from(inner_size.width),
+            height: f64::from(inner_size.height),
+        });
+    }
+
+    fn broadcast_event(&self, event: PreviewEvent) {
+        if let Some(host_events) = self.host_events.as_ref() {
+            host_events.broadcast(event);
+        }
+    }
+
+    fn quality_button_at(position: (f64, f64)) -> Option<WgpuPreviewQuality> {
         let (x, y) = position;
         if !(12.0..=40.0).contains(&y) {
             return None;
         }
         if (12.0..=92.0).contains(&x) {
-            return Some(PreviewQuality::Full);
+            return Some(WgpuPreviewQuality::Full);
         }
         if (100.0..=212.0).contains(&x) {
-            return Some(PreviewQuality::Balanced);
+            return Some(WgpuPreviewQuality::Balanced);
         }
         if (220.0..=296.0).contains(&x) {
-            return Some(PreviewQuality::Speed);
+            return Some(WgpuPreviewQuality::Speed);
         }
         if (304.0..=422.0).contains(&x) {
-            return Some(PreviewQuality::HighSpeed);
+            return Some(WgpuPreviewQuality::HighSpeed);
         }
         if (430.0..=548.0).contains(&x) {
-            return Some(PreviewQuality::UltraSpeed);
+            return Some(WgpuPreviewQuality::UltraSpeed);
         }
         None
+    }
+
+    fn current_graph_fit_scale(&self) -> f32 {
+        let Some(window) = self.window.as_ref() else {
+            return 1.0;
+        };
+        let inner = window.inner_size();
+        let surface_w = inner.width.max(1) as f32;
+        let surface_h = inner.height.max(1) as f32;
+        (surface_w / self.interaction_graph_width)
+            .min(surface_h / self.interaction_graph_height)
+            .max(0.001)
+    }
+
+    fn cursor_to_graph_position(&self, position: (f64, f64)) -> (f32, f32) {
+        let Some(window) = self.window.as_ref() else {
+            return (position.0 as f32, position.1 as f32);
+        };
+        let inner = window.inner_size();
+        let scale = self.current_graph_fit_scale();
+        let image_w = self.interaction_graph_width * scale;
+        let image_h = self.interaction_graph_height * scale;
+        let image_left = ((inner.width as f32 - image_w) * 0.5).max(0.0);
+        let image_top = ((inner.height as f32 - image_h) * 0.5).max(0.0);
+        (
+            ((position.0 as f32 - image_left) / scale).clamp(0.0, self.interaction_graph_width),
+            ((position.1 as f32 - image_top) / scale).clamp(0.0, self.interaction_graph_height),
+        )
+    }
+
+    fn cursor_to_graph_pixel(&self, position: (f64, f64)) -> Option<(u32, u32)> {
+        let (graph_x, graph_y) = self.cursor_to_graph_position(position);
+        if graph_x < 0.0
+            || graph_y < 0.0
+            || graph_x > self.interaction_graph_width
+            || graph_y > self.interaction_graph_height
+        {
+            return None;
+        }
+        let target_scale_x = self.target_width as f32 / self.interaction_graph_width.max(1.0);
+        let target_scale_y = self.target_height as f32 / self.interaction_graph_height.max(1.0);
+        Some((
+            (graph_x * target_scale_x)
+                .round()
+                .clamp(0.0, (self.target_width.saturating_sub(1)) as f32) as u32,
+            (graph_y * target_scale_y)
+                .round()
+                .clamp(0.0, (self.target_height.saturating_sub(1)) as f32) as u32,
+        ))
+    }
+
+    fn pick_target_graph_bounds(target: &PreviewInteractionNode) -> (f32, f32, f32, f32) {
+        let width = target.width.abs().max(12.0);
+        let height = target.height.abs().max(12.0);
+        if matches!(target.tag.as_str(), "Circle" | "Ellipse") {
+            (
+                target.x - width * 0.5,
+                target.y - height * 0.5,
+                width,
+                height,
+            )
+        } else {
+            (target.x, target.y, width, height)
+        }
+    }
+
+    fn pick_shape_kind(target: &PreviewInteractionNode) -> f32 {
+        if matches!(target.tag.as_str(), "Circle" | "Ellipse") {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    fn encode_pick_color(index: usize) -> [f32; 4] {
+        let id = (index + 1).min(0x00FF_FFFF) as u32;
+        [
+            ((id & 0x0000_00FF) as f32) / 255.0,
+            (((id >> 8) & 0x0000_00FF) as f32) / 255.0,
+            (((id >> 16) & 0x0000_00FF) as f32) / 255.0,
+            1.0,
+        ]
+    }
+
+    fn decode_pick_color(bytes: &[u8]) -> Option<usize> {
+        if bytes.len() < 3 {
+            return None;
+        }
+        let id = u32::from(bytes[0]) | (u32::from(bytes[1]) << 8) | (u32::from(bytes[2]) << 16);
+        (id > 0).then_some((id - 1) as usize)
+    }
+
+    fn push_pick_quad(
+        vertices: &mut Vec<PickVertex>,
+        surface_width: f32,
+        surface_height: f32,
+        rect: (f32, f32, f32, f32),
+        color: [f32; 4],
+        shape_kind: f32,
+    ) {
+        let (left, top, width, height) = rect;
+        let right = left + width;
+        let bottom = top + height;
+        let to_ndc = |x: f32, y: f32| {
+            [
+                x / surface_width.max(1.0) * 2.0 - 1.0,
+                1.0 - y / surface_height.max(1.0) * 2.0,
+            ]
+        };
+        let corners = [
+            (left, top, [0.0, 0.0]),
+            (right, top, [1.0, 0.0]),
+            (left, bottom, [0.0, 1.0]),
+            (left, bottom, [0.0, 1.0]),
+            (right, top, [1.0, 0.0]),
+            (right, bottom, [1.0, 1.0]),
+        ];
+        for (x, y, local) in corners {
+            vertices.push(PickVertex {
+                position: to_ndc(x, y),
+                local,
+                color,
+                shape_kind,
+            });
+        }
+    }
+
+    fn build_pick_vertices(&self, surface_width: u32, surface_height: u32) -> Vec<PickVertex> {
+        let scale = self.current_graph_fit_scale();
+        let image_w = self.interaction_graph_width * scale;
+        let image_h = self.interaction_graph_height * scale;
+        let image_left = ((surface_width as f32 - image_w) * 0.5).max(0.0);
+        let image_top = ((surface_height as f32 - image_h) * 0.5).max(0.0);
+        let mut vertices = Vec::with_capacity(self.interaction_targets.len() * 6);
+        for (index, target) in self.interaction_targets.iter().enumerate() {
+            let (graph_x, graph_y, graph_w, graph_h) = Self::pick_target_graph_bounds(target);
+            let rect = (
+                image_left + graph_x * scale,
+                image_top + graph_y * scale,
+                graph_w * scale,
+                graph_h * scale,
+            );
+            Self::push_pick_quad(
+                &mut vertices,
+                surface_width as f32,
+                surface_height as f32,
+                rect,
+                Self::encode_pick_color(index),
+                Self::pick_shape_kind(target),
+            );
+        }
+        vertices
+    }
+
+    fn pick_interaction_target_gpu(&self, position: (f64, f64)) -> Option<PreviewInteractionNode> {
+        let (Some(window), Some(device), Some(queue), Some(picking_pipeline)) = (
+            self.window.as_ref(),
+            self.device.as_ref(),
+            self.queue.as_ref(),
+            self.picking_pipeline.as_ref(),
+        ) else {
+            return None;
+        };
+        let size = window.inner_size();
+        let width = size.width.max(1);
+        let height = size.height.max(1);
+        let x = (position.0.round() as i64).clamp(0, i64::from(width.saturating_sub(1))) as u32;
+        let y = (position.1.round() as i64).clamp(0, i64::from(height.saturating_sub(1))) as u32;
+        let vertices = self.build_pick_vertices(width, height);
+        if vertices.is_empty() {
+            return None;
+        }
+
+        let mut vertex_bytes = Vec::with_capacity(vertices.len() * PickVertex::STRIDE as usize);
+        for vertex in &vertices {
+            vertex.write_bytes(&mut vertex_bytes);
+        }
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("motionloom-live-preview-pick-vertices"),
+            size: vertex_bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX,
+            mapped_at_creation: true,
+        });
+        vertex_buffer
+            .slice(..)
+            .get_mapped_range_mut()
+            .copy_from_slice(&vertex_bytes);
+        vertex_buffer.unmap();
+
+        let pick_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("motionloom-live-preview-pick-id-texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let pick_view = pick_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("motionloom-live-preview-pick-readback"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("motionloom-live-preview-pick-command-encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("motionloom-live-preview-pick-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &pick_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(picking_pipeline);
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.draw(0..vertices.len() as u32, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &pick_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = queue.submit([encoder.finish()]);
+        device
+            .poll(wgpu::PollType::WaitForSubmissionIndex(submission))
+            .ok();
+
+        let slice = readback.slice(..);
+        let (sender, receiver) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device.poll(wgpu::PollType::Wait).ok();
+        if receiver
+            .recv_timeout(Duration::from_millis(50))
+            .ok()?
+            .is_err()
+        {
+            return None;
+        }
+        let mapped = slice.get_mapped_range();
+        let index = Self::decode_pick_color(&mapped[0..4])?;
+        drop(mapped);
+        readback.unmap();
+        self.interaction_targets.get(index).cloned()
+    }
+
+    fn pick_interaction_target_renderer_id(
+        &mut self,
+        position: (f64, f64),
+    ) -> Option<PreviewInteractionNode> {
+        let (x, y) = self.cursor_to_graph_pixel(position)?;
+        let graph = self.graph.clone()?;
+        let pick_ids = self
+            .interaction_targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| (target.node.clone(), (index + 1).min(0x00FF_FFFF) as u32))
+            .collect::<Vec<_>>();
+        if pick_ids.is_empty() {
+            return None;
+        }
+        let preview_engine = self.preview_engine.as_mut()?;
+        let pick_id = pollster::block_on(
+            preview_engine.pick_id_at_wgpu_position(&graph, self.frame, x, y, &pick_ids),
+        )
+        .ok()
+        .flatten()?;
+        let index = pick_id.checked_sub(1)? as usize;
+        self.interaction_targets.get(index).cloned()
+    }
+
+    fn pick_interaction_target(
+        &self,
+        graph_x: f32,
+        graph_y: f32,
+    ) -> Option<PreviewInteractionNode> {
+        self.interaction_targets
+            .iter()
+            .rev()
+            .find(|target| {
+                let width = target.width.abs().max(12.0);
+                let height = target.height.abs().max(12.0);
+                let centered = matches!(target.tag.as_str(), "Circle" | "Ellipse");
+                let left = if centered {
+                    target.x - width * 0.5
+                } else {
+                    target.x
+                };
+                let top = if centered {
+                    target.y - height * 0.5
+                } else {
+                    target.y
+                };
+                graph_x >= left
+                    && graph_x <= left + width
+                    && graph_y >= top
+                    && graph_y <= top + height
+            })
+            .cloned()
+    }
+
+    fn begin_interaction_drag(&mut self, position: (f64, f64)) {
+        let (graph_x, graph_y) = self.cursor_to_graph_position(position);
+        let Some(target) = self
+            .pick_interaction_target_gpu(position)
+            .or_else(|| self.pick_interaction_target(graph_x, graph_y))
+            .or_else(|| self.pick_interaction_target_renderer_id(position))
+        else {
+            self.broadcast_event(PreviewEvent::PickResult {
+                node: None,
+                x: graph_x,
+                y: graph_y,
+            });
+            return;
+        };
+        self.broadcast_event(PreviewEvent::PickResult {
+            node: Some(target.node.clone()),
+            x: graph_x,
+            y: graph_y,
+        });
+        self.interaction_drag = Some(PreviewInteractionDrag {
+            target,
+            mode: self.interaction_mode,
+            graph_width: self.interaction_graph_width,
+            graph_height: self.interaction_graph_height,
+            start_cursor_x: position.0,
+            start_cursor_y: position.1,
+        });
+    }
+
+    fn update_interaction_drag(&mut self, position: (f64, f64)) {
+        if self.mouse_left_down && self.interaction_drag.is_none() {
+            self.begin_interaction_drag(position);
+        }
+        let Some(drag) = self.interaction_drag.clone() else {
+            return;
+        };
+        self.keep_attached_visible();
+        let scale = (self
+            .window
+            .as_ref()
+            .map(|window| {
+                let inner = window.inner_size();
+                let surface_w = inner.width.max(1) as f32;
+                let surface_h = inner.height.max(1) as f32;
+                (surface_w / drag.graph_width)
+                    .min(surface_h / drag.graph_height)
+                    .max(0.001)
+            })
+            .unwrap_or(1.0))
+        .max(0.001);
+        let delta_x = (position.0 - drag.start_cursor_x) as f32 / scale;
+        let delta_y = (position.1 - drag.start_cursor_y) as f32 / scale;
+        match drag.mode {
+            PreviewInteractionMode::Move => {
+                let x = drag.target.x + delta_x;
+                let y = drag.target.y + delta_y;
+                self.overrides
+                    .insert((drag.target.node.clone(), "x".to_string()), x);
+                self.overrides
+                    .insert((drag.target.node.clone(), "y".to_string()), y);
+                self.broadcast_event(PreviewEvent::TransformDrag {
+                    node: drag.target.node.clone(),
+                    property: "x".to_string(),
+                    value: x,
+                });
+                self.broadcast_event(PreviewEvent::TransformDrag {
+                    node: drag.target.node,
+                    property: "y".to_string(),
+                    value: y,
+                });
+            }
+            PreviewInteractionMode::Rotate => {
+                let rotation = drag.target.rotation + delta_x * 0.5;
+                self.overrides
+                    .insert((drag.target.node.clone(), "rotation".to_string()), rotation);
+                self.broadcast_event(PreviewEvent::TransformDrag {
+                    node: drag.target.node,
+                    property: "rotation".to_string(),
+                    value: rotation,
+                });
+            }
+        }
+        self.request_redraw();
+    }
+
+    fn end_interaction_drag(&mut self) {
+        self.mouse_left_down = false;
+        let Some(drag) = self.interaction_drag.take() else {
+            return;
+        };
+        self.broadcast_event(PreviewEvent::TransformDragEnd {
+            node: drag.target.node,
+        });
     }
 
     fn init_wgpu(
         &mut self,
         event_loop: &ActiveEventLoop,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let window = Arc::new(
-            event_loop.create_window(
-                WindowAttributes::default()
-                    .with_title("MotionLoom wgpu live preview")
-                    .with_inner_size(PhysicalSize::new(1280, 720)),
-            )?,
-        );
+        let window_attributes = WindowAttributes::default()
+            .with_title("MotionLoom wgpu live preview")
+            .with_inner_size(PhysicalSize::new(1280, 720));
+        let window_attributes = if self.host_mode {
+            // Controller-owned host windows must stay visible while editing in Anica.
+            window_attributes
+                .with_window_level(WindowLevel::AlwaysOnTop)
+                .with_decorations(false)
+        } else {
+            window_attributes
+        };
+        let window = Arc::new(event_loop.create_window(window_attributes)?);
+        if self.host_mode {
+            configure_host_companion_window(&window);
+            window.set_visible(false);
+        }
+        self.window = Some(window.clone());
+        self.apply_requested_window_bounds();
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone())?;
@@ -470,15 +1168,17 @@ impl LivePreviewApp {
         };
         surface.configure(&device, &surface_config);
 
-        let renderer = pollster::block_on(SceneRenderer::new_with_device(
+        let preview_engine = pollster::block_on(WgpuPreviewEngine::new_with_device(
             device.clone(),
             queue.clone(),
-            SceneRenderProfile::Gpu,
         ))?;
-        let graph = Self::graph_for_quality(&self.base_graph, self.quality);
+        let graph = WgpuPreviewEngine::graph_for_quality(&self.base_graph, self.quality);
         let (target_width, target_height) = graph.render_size.unwrap_or(graph.size);
-        let target_texture =
-            Self::create_target_texture(&device, target_width.max(1), target_height.max(1));
+        let target_texture = WgpuPreviewEngine::create_target_texture(
+            &device,
+            target_width.max(1),
+            target_height.max(1),
+        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("motionloom-live-preview-sampler"),
@@ -605,8 +1305,68 @@ impl LivePreviewApp {
             multiview: None,
             cache: None,
         });
+        let picking_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("motionloom-live-preview-picking-pipeline-layout"),
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            });
+        let picking_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("motionloom-live-preview-picking-shader"),
+            source: wgpu::ShaderSource::Wgsl(PICK_SHADER.into()),
+        });
+        let picking_attributes = [
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 0,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 8,
+                shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 16,
+                shader_location: 2,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32,
+                offset: 32,
+                shader_location: 3,
+            },
+        ];
+        let picking_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("motionloom-live-preview-picking-pipeline"),
+            layout: Some(&picking_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &picking_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: PickVertex::STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &picking_attributes,
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &picking_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
 
-        self.window = Some(window);
         self.instance = Some(instance);
         self.surface = Some(surface);
         self.adapter = Some(adapter);
@@ -614,7 +1374,7 @@ impl LivePreviewApp {
         self.queue = Some(queue);
         self.surface_config = Some(surface_config);
         self.surface_format = Some(surface_format);
-        self.renderer = Some(renderer);
+        self.preview_engine = Some(preview_engine);
         self.graph = Some(graph);
         self.target_texture = Some(target_texture);
         self.target_width = target_width.max(1);
@@ -625,6 +1385,7 @@ impl LivePreviewApp {
         self.overlay_buffer = Some(overlay_buffer);
         self.overlay_bind_group = Some(overlay_bind_group);
         self.overlay_pipeline = Some(overlay_pipeline);
+        self.picking_pipeline = Some(picking_pipeline);
         Ok(())
     }
 
@@ -649,7 +1410,7 @@ impl LivePreviewApp {
             Some(surface),
             Some(device),
             Some(queue),
-            Some(renderer),
+            Some(preview_engine),
             Some(target_texture),
             Some(sampler),
             Some(bind_group_layout),
@@ -663,7 +1424,7 @@ impl LivePreviewApp {
             self.surface.as_ref(),
             self.device.as_ref(),
             self.queue.as_ref(),
-            self.renderer.as_mut(),
+            self.preview_engine.as_mut(),
             self.target_texture.as_ref(),
             self.sampler.as_ref(),
             self.bind_group_layout.as_ref(),
@@ -678,7 +1439,7 @@ impl LivePreviewApp {
         };
 
         let render_start = Instant::now();
-        if let Err(err) = pollster::block_on(renderer.render_frame_to_wgpu_target_texture(
+        if let Err(err) = pollster::block_on(preview_engine.render_frame_to_wgpu_target_texture(
             graph,
             self.frame,
             target_texture,
@@ -758,7 +1519,10 @@ impl LivePreviewApp {
         queue.submit(Some(encoder.finish()));
         surface_texture.present();
         let present_ms = present_start.elapsed().as_secs_f32() * 1000.0;
+        let rendered_frame = self.frame;
 
+        self.last_render_ms = render_ms;
+        self.last_present_ms = present_ms;
         self.render_times.push(render_ms);
         self.present_times.push(present_ms);
         if self.render_times.len() > 240 {
@@ -768,9 +1532,31 @@ impl LivePreviewApp {
             self.present_times.remove(0);
         }
 
-        self.frame = self.frame.saturating_add(1) % self.total_frames;
+        self.broadcast_event(PreviewEvent::Rendered {
+            frame: rendered_frame,
+        });
+        if self.auto_advance {
+            self.frame = self.frame.saturating_add(1) % self.total_frames;
+        }
         self.update_title();
         self.print_stats();
+    }
+
+    fn hide_stale_attached_window(&mut self) {
+        if !self.host_mode {
+            return;
+        }
+        let Some(last_heartbeat) = self.last_attach_heartbeat else {
+            return;
+        };
+        if last_heartbeat.elapsed() < HOST_ATTACH_HEARTBEAT_TIMEOUT {
+            return;
+        }
+        self.last_attach_heartbeat = None;
+        self.window_visible = false;
+        if let Some(window) = self.window.as_ref() {
+            window.set_visible(false);
+        }
     }
 
     fn update_title(&mut self) {
@@ -786,7 +1572,8 @@ impl LivePreviewApp {
             return;
         };
         let avg_render = avg(&self.render_times);
-        let avg_present = avg(&self.present_times);
+        let min_render = min_or_zero(&self.render_times);
+        let max_render = max_or_zero(&self.render_times);
         let fps = if self.last_frame_at.elapsed().as_secs_f32() > 0.0 {
             1.0 / self.last_frame_at.elapsed().as_secs_f32()
         } else {
@@ -794,11 +1581,14 @@ impl LivePreviewApp {
         };
         self.last_frame_at = Instant::now();
         window.set_title(&format!(
-            "MotionLoom wgpu live preview | frame {}/{} | render {:.2} ms | blit+present {:.2} ms | tick {:.1} fps | target {}x{} | surface {:?} | quality {} (1 Full, 2 Balanced, 3 Speed, 4 High Speed, 5 Ultra Speed) | {}",
+            "MotionLoom wgpu live preview | frame {}/{} | last {:.2} ms | avg {:.2} ms | min/max {:.2}/{:.2} ms | blit {:.2} ms | tick {:.1} fps | target {}x{} | surface {:?} | quality {} (1 Full, 2 Balanced, 3 Speed, 4 High Speed, 5 Ultra Speed) | {}",
             self.frame,
             self.total_frames,
+            self.last_render_ms,
             avg_render,
-            avg_present,
+            min_render,
+            max_render,
+            self.last_present_ms,
             fps,
             self.target_width,
             self.target_height,
@@ -817,19 +1607,48 @@ impl LivePreviewApp {
         }
         self.last_stats_at = Instant::now();
         println!(
-            "quality={} target={}x{} frame={}/{} render_ms={:.2} blit_present_ms={:.2}",
+            "quality={} target={}x{} frame={}/{} render_last_ms={:.2} render_avg_ms={:.2} render_min_ms={:.2} render_max_ms={:.2} blit_last_ms={:.2} blit_avg_ms={:.2}",
             self.quality.label(),
             self.target_width,
             self.target_height,
             self.frame,
             self.total_frames,
+            self.last_render_ms,
             avg(&self.render_times),
+            min_or_zero(&self.render_times),
+            max_or_zero(&self.render_times),
+            self.last_present_ms,
             avg(&self.present_times)
         );
     }
 }
 
-impl ApplicationHandler for LivePreviewApp {
+#[cfg(target_os = "macos")]
+fn configure_host_companion_window(window: &Window) {
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+
+    // Mission Control should treat the preview as an editor companion, not as a
+    // separate app window that moves to its own Space.
+    unsafe {
+        let view = handle.ns_view.as_ptr() as *mut NSView;
+        let Some(ns_window) = view.as_ref().and_then(NSView::window) else {
+            return;
+        };
+        ns_window.setCollectionBehavior(
+            NSWindowCollectionBehavior::Transient | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_host_companion_window(_window: &Window) {}
+
+impl ApplicationHandler<PreviewHostUserEvent> for LivePreviewApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none()
             && let Err(err) = self.init_wgpu(event_loop)
@@ -852,19 +1671,19 @@ impl ApplicationHandler for LivePreviewApp {
                     match event.physical_key {
                         PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
                         PhysicalKey::Code(KeyCode::Digit1) => {
-                            self.set_quality(PreviewQuality::Full);
+                            self.set_quality(WgpuPreviewQuality::Full);
                         }
                         PhysicalKey::Code(KeyCode::Digit2) => {
-                            self.set_quality(PreviewQuality::Balanced);
+                            self.set_quality(WgpuPreviewQuality::Balanced);
                         }
                         PhysicalKey::Code(KeyCode::Digit3) => {
-                            self.set_quality(PreviewQuality::Speed);
+                            self.set_quality(WgpuPreviewQuality::Speed);
                         }
                         PhysicalKey::Code(KeyCode::Digit4) => {
-                            self.set_quality(PreviewQuality::HighSpeed);
+                            self.set_quality(WgpuPreviewQuality::HighSpeed);
                         }
                         PhysicalKey::Code(KeyCode::Digit5) => {
-                            self.set_quality(PreviewQuality::UltraSpeed);
+                            self.set_quality(WgpuPreviewQuality::UltraSpeed);
                         }
                         _ => {}
                     }
@@ -872,32 +1691,61 @@ impl ApplicationHandler for LivePreviewApp {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor_pos = Some((position.x, position.y));
+                self.update_interaction_drag((position.x, position.y));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
+                self.mouse_left_down = true;
+                self.keep_attached_visible();
                 if let Some(position) = self.last_cursor_pos
                     && let Some(quality) = Self::quality_button_at(position)
                 {
                     self.set_quality(quality);
+                    self.mouse_left_down = false;
+                    return;
+                }
+                if let Some(position) = self.last_cursor_pos {
+                    self.begin_interaction_drag(position);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.end_interaction_drag(),
+            WindowEvent::Focused(focused) => {
+                if self.host_mode {
+                    self.broadcast_event(PreviewEvent::HostFocus { focused });
                 }
             }
             WindowEvent::Resized(size) => self.resize(size),
             WindowEvent::RedrawRequested => {
+                if self.host_mode && (!self.window_visible || !self.needs_redraw) {
+                    return;
+                }
+                self.needs_redraw = false;
                 self.render();
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
+                if self.auto_advance {
+                    self.request_redraw();
                 }
             }
             _ => {}
         }
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: PreviewHostUserEvent) {
+        match event {
+            PreviewHostUserEvent::Command(command) => self.handle_preview_command(command),
+        }
+    }
+
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+        self.hide_stale_attached_window();
+        if self.auto_advance || self.needs_redraw {
+            self.request_redraw();
         }
     }
 }
@@ -907,6 +1755,14 @@ fn avg(values: &[f32]) -> f32 {
         return 0.0;
     }
     values.iter().sum::<f32>() / values.len() as f32
+}
+
+fn min_or_zero(values: &[f32]) -> f32 {
+    values.iter().copied().reduce(f32::min).unwrap_or(0.0)
+}
+
+fn max_or_zero(values: &[f32]) -> f32 {
+    values.iter().copied().reduce(f32::max).unwrap_or(0.0)
 }
 
 fn is_http_url(value: &str) -> bool {
@@ -921,12 +1777,243 @@ fn load_script_source(source: &str) -> Result<String, Box<dyn std::error::Error>
     Ok(std::fs::read_to_string(source)?)
 }
 
+fn write_preview_event(stream: &mut TcpStream, event: PreviewEvent) -> std::io::Result<()> {
+    let payload = serde_json::to_string(&event).unwrap_or_else(|err| {
+        format!("{{\"type\":\"error\",\"message\":\"failed to serialize preview event: {err}\"}}")
+    });
+    stream.write_all(payload.as_bytes())?;
+    stream.write_all(b"\n")
+}
+
+fn handle_preview_client(stream: TcpStream, proxy: EventLoopProxy<PreviewHostUserEvent>) {
+    let mut writer = match stream.try_clone() {
+        Ok(writer) => writer,
+        Err(err) => {
+            eprintln!("preview host failed to clone client stream: {err}");
+            return;
+        }
+    };
+    let _ = write_preview_event(
+        &mut writer,
+        PreviewEvent::Ready {
+            protocol_version: PREVIEW_PROTOCOL_VERSION,
+        },
+    );
+    let reader = BufReader::new(stream);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(err) => {
+                eprintln!("preview host client read error: {err}");
+                break;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<PreviewCommand>(&line) {
+            Ok(command) => {
+                if proxy
+                    .send_event(PreviewHostUserEvent::Command(command))
+                    .is_err()
+                {
+                    let _ = write_preview_event(
+                        &mut writer,
+                        PreviewEvent::Error {
+                            message: "preview event loop is closed".to_string(),
+                        },
+                    );
+                    break;
+                }
+            }
+            Err(err) => {
+                let _ = write_preview_event(
+                    &mut writer,
+                    PreviewEvent::Error {
+                        message: format!("invalid preview command JSON: {err}"),
+                    },
+                );
+            }
+        }
+    }
+}
+
+fn start_preview_command_server(
+    addr: String,
+    proxy: EventLoopProxy<PreviewHostUserEvent>,
+    broadcaster: PreviewEventBroadcaster,
+) -> std::io::Result<()> {
+    let listener = TcpListener::bind(&addr)?;
+    println!("MotionLoom preview host listening on {addr}");
+    thread::Builder::new()
+        .name("motionloom-preview-host-tcp".to_string())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        let _ = stream.set_nodelay(true);
+                        if let Ok(writer) = stream.try_clone() {
+                            broadcaster.add_client(writer);
+                        }
+                        let proxy = proxy.clone();
+                        let _ = thread::Builder::new()
+                            .name("motionloom-preview-host-client".to_string())
+                            .spawn(move || handle_preview_client(stream, proxy));
+                    }
+                    Err(err) => eprintln!("preview host accept error: {err}"),
+                }
+            }
+        })?;
+    Ok(())
+}
+
+fn build_event_loop(
+    host_mode: bool,
+) -> Result<EventLoop<PreviewHostUserEvent>, winit::error::EventLoopError> {
+    let mut builder = EventLoop::<PreviewHostUserEvent>::with_user_event();
+    #[cfg(target_os = "macos")]
+    if host_mode {
+        // Accessory mode keeps the viewer as an editor companion instead of a
+        // separate Mission Control app, which reduces Space/focus disruption.
+        builder.with_activation_policy(ActivationPolicy::Accessory);
+        builder.with_default_menu(false);
+        builder.with_activate_ignoring_other_apps(false);
+    }
+    builder.build()
+}
+
+fn patch_scene_tag_attr_number(
+    script: &str,
+    node_id: &str,
+    attr: &str,
+    value: f32,
+) -> Result<String, String> {
+    let (tag_start, tag_end) = find_scene_tag_range_by_id(script, node_id)
+        .ok_or_else(|| format!("Preview override target id=\"{node_id}\" was not found."))?;
+    let tag = &script[tag_start..tag_end];
+
+    if let Some((value_start, value_end)) = find_attr_value_range_in_tag(tag, attr) {
+        let abs_start = tag_start + value_start;
+        let abs_end = tag_start + value_end;
+        let value_text = format_live_number(value);
+        let mut out = String::with_capacity(script.len() + value_text.len());
+        out.push_str(&script[..abs_start]);
+        out.push_str(&value_text);
+        out.push_str(&script[abs_end..]);
+        return Ok(out);
+    }
+
+    let insert_at = tag
+        .rfind("/>")
+        .map(|rel| tag_start + rel)
+        .unwrap_or(tag_end.saturating_sub(1));
+    let value_text = format_live_number(value);
+    let mut out = String::with_capacity(script.len() + attr.len() + value_text.len() + 4);
+    out.push_str(&script[..insert_at]);
+    out.push(' ');
+    out.push_str(attr);
+    out.push_str("=\"");
+    out.push_str(&value_text);
+    out.push('"');
+    out.push_str(&script[insert_at..]);
+    Ok(out)
+}
+
+fn find_scene_tag_range_by_id(script: &str, node_id: &str) -> Option<(usize, usize)> {
+    let id_pattern = format!("id=\"{node_id}\"");
+    let id_pos = script.find(&id_pattern)?;
+    let tag_start = script[..id_pos].rfind('<')?;
+    let tag_end = script[id_pos..]
+        .find('>')
+        .map(|offset| id_pos + offset + 1)?;
+    Some((tag_start, tag_end))
+}
+
+fn find_attr_value_range_in_tag(tag: &str, attr: &str) -> Option<(usize, usize)> {
+    let bytes = tag.as_bytes();
+    let attr_bytes = attr.as_bytes();
+    let mut index = 0usize;
+    while index + attr_bytes.len() <= bytes.len() {
+        if &bytes[index..index + attr_bytes.len()] != attr_bytes {
+            index += 1;
+            continue;
+        }
+        let before_ok = index == 0 || !is_ident_byte(bytes[index - 1]);
+        let after = index + attr_bytes.len();
+        let after_ok = after < bytes.len() && !is_ident_byte(bytes[after]);
+        if !before_ok || !after_ok {
+            index += 1;
+            continue;
+        }
+        let mut cursor = after;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() || bytes[cursor] != b'=' {
+            index += 1;
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() {
+            return None;
+        }
+        match bytes[cursor] {
+            b'"' | b'\'' => {
+                let quote = bytes[cursor];
+                let value_start = cursor + 1;
+                let value_end = tag[value_start..]
+                    .find(quote as char)
+                    .map(|offset| value_start + offset)?;
+                return Some((value_start, value_end));
+            }
+            b'{' => {
+                let value_start = cursor + 1;
+                let value_end = tag[value_start..]
+                    .find('}')
+                    .map(|offset| value_start + offset)?;
+                return Some((value_start, value_end));
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+}
+
+fn format_live_number(value: f32) -> String {
+    if value.is_finite() && (value.fract()).abs() < 0.0001 {
+        return format!("{}", value.round() as i64);
+    }
+    let mut text = format!("{value:.3}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut script_source = None;
     let mut print_stats = false;
-    for arg in std::env::args().skip(1) {
+    let mut listen_addr = None::<String>;
+    let mut args = std::env::args().skip(1).peekable();
+    while let Some(arg) = args.next() {
         if arg == "--stats" || arg == "--print-stats" {
             print_stats = true;
+        } else if arg == "--listen" {
+            let Some(addr) = args.next() else {
+                eprintln!("--listen requires an address, for example 127.0.0.1:49377");
+                std::process::exit(2);
+            };
+            listen_addr = Some(addr);
         } else if script_source.is_none() {
             script_source = Some(arg);
         } else {
@@ -934,38 +2021,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
     }
-    let Some(script_source) = script_source else {
+    if listen_addr.is_none() && script_source.is_none() {
         eprintln!(
-            "usage: cargo run -p motionloom --example wgpu_live_preview -- [--stats] path-or-url/to/main.motionloom"
+            "usage: cargo run -p motionloom --example wgpu_live_preview -- [--stats] path-or-url/to/main.motionloom\n       cargo run -p motionloom --example wgpu_live_preview -- --listen 127.0.0.1:49377 [optional/path.motionloom]"
         );
         std::process::exit(2);
-    };
-    let event_loop = EventLoop::new()?;
-    let mut app = LivePreviewApp::new(script_source, print_stats)?;
+    }
+    let host_mode = listen_addr.is_some();
+    let event_loop = build_event_loop(host_mode)?;
+    let host_events = listen_addr
+        .as_ref()
+        .map(|_| PreviewEventBroadcaster::default());
+    if let (Some(addr), Some(host_events)) = (listen_addr, host_events.clone()) {
+        start_preview_command_server(addr, event_loop.create_proxy(), host_events)?;
+    }
+    let auto_advance = host_events.is_none();
+    let mut app = LivePreviewApp::new(
+        script_source,
+        print_stats,
+        auto_advance,
+        host_mode,
+        host_events,
+    )?;
     event_loop.run_app(&mut app)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::LivePreviewApp;
-
-    #[test]
-    fn scales_quoted_numeric_lens_param() {
-        assert_eq!(
-            LivePreviewApp::scale_numeric_or_curve_param("\"520\"", 0.25),
-            "130"
-        );
-    }
-
-    #[test]
-    fn scales_quoted_escaped_curve_lens_param() {
-        assert_eq!(
-            LivePreviewApp::scale_numeric_or_curve_param(
-                "\"curve(\\\"0:300:ease_out, 3:650:ease_in_out, 6:560:linear\\\")\"",
-                0.25,
-            ),
-            "curve(\"0:75:ease_out, 3:162.5:ease_in_out, 6:140:linear\")"
-        );
-    }
 }

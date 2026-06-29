@@ -41,6 +41,7 @@ windows = { version = "0.61", features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -54,3 +55,10 @@ wasm-bindgen-test = "0.3.50"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 winit = "0.30"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSView", "NSWindow", "NSWorkspace", "libc"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = "0.13"

@@ -6,10 +6,13 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "macos")]
@@ -30,12 +33,13 @@ use gpui_component::{
 use image::{ImageBuffer, Rgba, RgbaImage};
 use motionloom::{
     EditableAnimationKey, EditableAnimationTarget, GraphScript, MotionLoomDocument,
-    MotionLoomRenderProgress, RuntimeProgram, ScenePlatformPreviewSurface, ScenePreviewBackend,
+    MotionLoomRenderProgress, PreviewCommand, PreviewEvent, PreviewInteractionMode,
+    PreviewInteractionNode, RuntimeProgram, ScenePlatformPreviewSurface, ScenePreviewBackend,
     ScenePreviewSurface, ScenePreviewSurfaceOptions, SceneRenderProfile, SceneRenderer,
-    WorldFrameRenderer, WorldGraph, WorldPathStyle, compile_runtime_program,
-    extract_editable_animation_timeline, is_graph_script, is_world_graph_script,
-    load_glb_mesh_data, next_scene_output_path_for_profile, parse_graph_script,
-    parse_motionloom_document, parse_world_graph_script,
+    WgpuPreviewEngine, WgpuPreviewGraphCache, WgpuPreviewQuality, WorldFrameRenderer, WorldGraph,
+    WorldPathStyle, compile_runtime_program, extract_editable_animation_timeline, is_graph_script,
+    is_world_graph_script, load_glb_mesh_data, next_scene_output_path_for_profile,
+    parse_graph_script, parse_motionloom_document, parse_world_graph_script,
     render_motionloom_document_to_video_with_progress_and_cancel, render_scene_graph_frame,
     replace_editable_animation_targets, upsert_editable_animation_target,
 };
@@ -72,6 +76,258 @@ const DEFAULT_SCENE_TEMPLATE_CATEGORY: &str = "showcase";
 const DEFAULT_SCENE_TEMPLATE_NUMBER: &str = "1";
 
 type SceneLivePreviewCacheKey = (u64, u32, SceneLivePreviewQuality, u32, u32);
+
+fn motionloom_external_preview_debug_enabled() -> bool {
+    std::env::var("ANICA_DEBUG_MOTIONLOOM_PREVIEW_ATTACH").is_ok_and(|value| {
+        let value = value.trim();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
+}
+
+fn motionloom_external_preview_offset() -> (f64, f64) {
+    let parse = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    (
+        parse("ANICA_MOTIONLOOM_PREVIEW_OFFSET_X"),
+        parse("ANICA_MOTIONLOOM_PREVIEW_OFFSET_Y"),
+    )
+}
+
+struct SceneExternalPreviewProcess {
+    child: Child,
+}
+
+impl Drop for SceneExternalPreviewProcess {
+    fn drop(&mut self) {
+        // The preview host is a UI helper owned by Anica in auto mode.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[derive(Clone)]
+struct SceneExternalPreviewHost {
+    tx: Sender<PreviewCommand>,
+    events: Arc<Mutex<VecDeque<PreviewEvent>>>,
+}
+
+impl SceneExternalPreviewHost {
+    fn from_env_or_auto_spawn() -> (Option<Self>, Option<SceneExternalPreviewProcess>) {
+        if let Ok(value) = std::env::var("ANICA_MOTIONLOOM_PREVIEW_HOST") {
+            let value = value.trim();
+            if value.eq_ignore_ascii_case("off")
+                || value.eq_ignore_ascii_case("false")
+                || value == "0"
+            {
+                return (None, None);
+            }
+            if !value.is_empty() && !value.eq_ignore_ascii_case("auto") {
+                return (Some(Self::spawn(value.to_string())), None);
+            }
+        }
+
+        match Self::spawn_preview_process() {
+            Ok((addr, process)) => (Some(Self::spawn(addr)), Some(process)),
+            Err(err) => {
+                eprintln!("external MotionLoom preview auto-spawn failed: {err}");
+                (None, None)
+            }
+        }
+    }
+
+    fn spawn(addr: String) -> Self {
+        let (tx, rx) = mpsc::channel::<PreviewCommand>();
+        let events = Arc::new(Mutex::new(VecDeque::new()));
+        let controller_events = events.clone();
+        let controller_pid = std::process::id();
+        let _ = std::thread::Builder::new()
+            .name("motionloom-external-preview-controller".to_string())
+            .spawn(move || {
+                let mut stream = None::<TcpStream>;
+                while let Ok(command) = rx.recv() {
+                    if stream.is_none() {
+                        stream = Self::connect_with_retry(&addr, controller_events.clone());
+                        if let Some(socket) = stream.as_mut()
+                            && !Self::write_command_line(
+                                socket,
+                                &PreviewCommand::SetControllerProcessId {
+                                    pid: controller_pid,
+                                },
+                            )
+                        {
+                            stream = None;
+                            continue;
+                        }
+                    }
+                    let Some(socket) = stream.as_mut() else {
+                        continue;
+                    };
+                    if !Self::write_command_line(socket, &command) {
+                        stream = None;
+                    }
+                }
+            });
+        Self { tx, events }
+    }
+
+    fn spawn_preview_process() -> std::io::Result<(String, SceneExternalPreviewProcess)> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?.to_string();
+        drop(listener);
+
+        let child = if let Some(helper) = Self::preview_host_binary() {
+            Command::new(helper)
+                .arg("--listen")
+                .arg(&addr)
+                .stdin(Stdio::null())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()?
+        } else {
+            // Development fallback: `cargo run` for Anica can still start the
+            // MotionLoom helper even when the example binary was not prebuilt.
+            Command::new("cargo")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .args([
+                    "run",
+                    "--release",
+                    "-p",
+                    "motionloom",
+                    "--example",
+                    "wgpu_live_preview",
+                    "--",
+                    "--listen",
+                ])
+                .arg(&addr)
+                .stdin(Stdio::null())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()?
+        };
+
+        Ok((addr, SceneExternalPreviewProcess { child }))
+    }
+
+    fn preview_host_binary() -> Option<PathBuf> {
+        if let Ok(value) = std::env::var("ANICA_MOTIONLOOM_PREVIEW_HOST_BIN") {
+            let path = PathBuf::from(value.trim());
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+
+        let current_exe = std::env::current_exe().ok()?;
+        let profile_dir = current_exe.parent()?;
+        let binary_name = if cfg!(windows) {
+            "wgpu_live_preview.exe"
+        } else {
+            "wgpu_live_preview"
+        };
+        let candidate = profile_dir.join("examples").join(binary_name);
+        candidate.is_file().then_some(candidate)
+    }
+
+    fn connect_with_retry(
+        addr: &str,
+        events: Arc<Mutex<VecDeque<PreviewEvent>>>,
+    ) -> Option<TcpStream> {
+        for _ in 0..1200 {
+            if let Some(stream) = Self::connect(addr, events.clone(), false) {
+                return Some(stream);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        Self::connect(addr, events, true)
+    }
+
+    fn connect(
+        addr: &str,
+        events: Arc<Mutex<VecDeque<PreviewEvent>>>,
+        log_error: bool,
+    ) -> Option<TcpStream> {
+        let stream = match TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(err) => {
+                if log_error {
+                    eprintln!("external MotionLoom preview connect failed ({addr}): {err}");
+                }
+                return None;
+            }
+        };
+        let _ = stream.set_nodelay(true);
+        if let Ok(reader) = stream.try_clone() {
+            let _ = std::thread::Builder::new()
+                .name("motionloom-external-preview-events".to_string())
+                .spawn(move || {
+                    let reader = BufReader::new(reader);
+                    for line in reader.lines() {
+                        let Ok(line) = line else {
+                            break;
+                        };
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        match serde_json::from_str::<PreviewEvent>(&line) {
+                            Ok(PreviewEvent::Error { message }) => {
+                                eprintln!("external MotionLoom preview error: {message}");
+                            }
+                            Ok(PreviewEvent::Ready { .. }) => {
+                                eprintln!("external MotionLoom preview connected");
+                            }
+                            Ok(PreviewEvent::WindowBounds {
+                                x,
+                                y,
+                                width,
+                                height,
+                            }) => {
+                                if motionloom_external_preview_debug_enabled() {
+                                    eprintln!(
+                                        "external MotionLoom preview host bounds: x={x:.1} y={y:.1} w={width:.1} h={height:.1}"
+                                    );
+                                }
+                            }
+                            Ok(event) => {
+                                if let Ok(mut queue) = events.lock() {
+                                    queue.push_back(event);
+                                    while queue.len() > 240 {
+                                        queue.pop_front();
+                                    }
+                                }
+                            }
+                            Err(_) => eprintln!("external MotionLoom preview event: {line}"),
+                        }
+                    }
+                });
+        }
+        Some(stream)
+    }
+
+    fn write_command_line(socket: &mut TcpStream, command: &PreviewCommand) -> bool {
+        let payload = match serde_json::to_string(command) {
+            Ok(payload) => payload,
+            Err(err) => {
+                eprintln!("external MotionLoom preview command encode error: {err}");
+                return true;
+            }
+        };
+        socket.write_all(payload.as_bytes()).is_ok() && socket.write_all(b"\n").is_ok()
+    }
+
+    fn send(&self, command: PreviewCommand) {
+        let _ = self.tx.send(command);
+    }
+
+    fn drain_events(&self) -> Vec<PreviewEvent> {
+        let Ok(mut queue) = self.events.lock() else {
+            return Vec::new();
+        };
+        queue.drain(..).collect()
+    }
+}
 
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
@@ -178,7 +434,9 @@ struct WorldLivePreviewRequest {
 }
 
 struct SceneLivePreviewRequest {
-    graph: GraphScript,
+    script: String,
+    script_hash: u64,
+    render_size: Option<(u32, u32)>,
     frame: u32,
     asset_roots: Vec<PathBuf>,
     response_tx: Sender<Result<(SceneLivePreviewFrame, Option<String>), String>>,
@@ -641,6 +899,166 @@ impl IntoElement for FitPreviewImageElement {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PreviewVisibilityPolicy {
+    overlay_open: bool,
+    app_active: bool,
+    host_focused: bool,
+}
+
+impl PreviewVisibilityPolicy {
+    fn should_show(self) -> bool {
+        !self.overlay_open && (self.app_active || self.host_focused)
+    }
+}
+
+struct ExternalPreviewAnchorElement {
+    host: SceneExternalPreviewHost,
+    graph_size: (u32, u32),
+    visibility: PreviewVisibilityPolicy,
+}
+
+impl ExternalPreviewAnchorElement {
+    fn new(
+        host: SceneExternalPreviewHost,
+        graph_size: (u32, u32),
+        visibility: PreviewVisibilityPolicy,
+    ) -> Self {
+        Self {
+            host,
+            graph_size,
+            visibility,
+        }
+    }
+
+    fn fitted_bounds(&self, bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Bounds<gpui::Pixels> {
+        let container_w: f32 = bounds.size.width.into();
+        let container_h: f32 = bounds.size.height.into();
+        let graph_w = self.graph_size.0.max(1) as f32;
+        let graph_h = self.graph_size.1.max(1) as f32;
+        let fit_scale = (container_w / graph_w)
+            .min(container_h / graph_h)
+            .max(0.001);
+        let dest_w = graph_w * fit_scale;
+        let dest_h = graph_h * fit_scale;
+        let offset_x = (container_w - dest_w) * 0.5;
+        let offset_y = (container_h - dest_h) * 0.5;
+
+        gpui::Bounds::new(
+            gpui::point(
+                bounds.origin.x + gpui::px(offset_x),
+                bounds.origin.y + gpui::px(offset_y),
+            ),
+            gpui::size(gpui::px(dest_w), gpui::px(dest_h)),
+        )
+    }
+}
+
+impl Element for ExternalPreviewAnchorElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let style = Style {
+            size: gpui::Size {
+                width: gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0)),
+                height: gpui::Length::Definite(gpui::DefiniteLength::Fraction(1.0)),
+            },
+            ..Default::default()
+        };
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: gpui::Bounds<gpui::Pixels>,
+        _state: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut gpui::App,
+    ) -> Self::PrepaintState {
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        _layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        _cx: &mut gpui::App,
+    ) {
+        if !self.visibility.should_show() {
+            self.host
+                .send(PreviewCommand::SetWindowVisible { visible: false });
+            return;
+        }
+
+        let bounds = self.fitted_bounds(bounds);
+        let window_bounds = window.bounds();
+        let content_offset_y = (f32::from(window_bounds.size.height)
+            - f32::from(window.viewport_size().height))
+        .max(0.0);
+        let (calibration_x, calibration_y) = motionloom_external_preview_offset();
+        let host_x = f64::from(window_bounds.origin.x) + f64::from(bounds.origin.x) + calibration_x;
+        let host_y = f64::from(window_bounds.origin.y)
+            + f64::from(content_offset_y)
+            + f64::from(bounds.origin.y)
+            + calibration_y;
+        let host_w = f64::from(bounds.size.width);
+        let host_h = f64::from(bounds.size.height);
+        if motionloom_external_preview_debug_enabled() {
+            eprintln!(
+                "external MotionLoom preview attach: window=({:.1},{:.1} {:.1}x{:.1}) viewport={:.1}x{:.1} content_offset_y={content_offset_y:.1} local=({:.1},{:.1} {:.1}x{:.1}) offset=({calibration_x:.1},{calibration_y:.1}) sent=({host_x:.1},{host_y:.1} {host_w:.1}x{host_h:.1}) scale={:.2}",
+                f64::from(window_bounds.origin.x),
+                f64::from(window_bounds.origin.y),
+                f64::from(window_bounds.size.width),
+                f64::from(window_bounds.size.height),
+                f64::from(window.viewport_size().width),
+                f64::from(window.viewport_size().height),
+                f64::from(bounds.origin.x),
+                f64::from(bounds.origin.y),
+                host_w,
+                host_h,
+                window.scale_factor(),
+            );
+        }
+        self.host
+            .send(PreviewCommand::SetWindowVisible { visible: true });
+        self.host.send(PreviewCommand::SetWindowBounds {
+            x: host_x,
+            y: host_y,
+            width: host_w,
+            height: host_h,
+            decorations: false,
+        });
+    }
+}
+
+impl IntoElement for ExternalPreviewAnchorElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
 pub struct MotionLoomPage {
     pub global: Entity<GlobalState>,
     clips: Vec<ImportedClip>,
@@ -670,6 +1088,13 @@ pub struct MotionLoomPage {
     scene_live_async_render_key: Option<SceneLivePreviewCacheKey>,
     scene_live_async_render_token: u64,
     scene_live_preview_tx: Sender<SceneLivePreviewRequest>,
+    scene_external_preview_host: Option<SceneExternalPreviewHost>,
+    _scene_external_preview_process: Option<SceneExternalPreviewProcess>,
+    scene_external_preview_script_hash: Option<u64>,
+    scene_external_preview_quality: Option<SceneLivePreviewQuality>,
+    scene_external_preview_asset_roots: Vec<PathBuf>,
+    scene_external_preview_heartbeat_scheduled: bool,
+    scene_external_preview_host_focused: bool,
     world_live_preview_tx: Sender<WorldLivePreviewRequest>,
     scene_live_prerender_token: u64,
     scene_live_prerendering: bool,
@@ -739,6 +1164,8 @@ impl MotionLoomPage {
                 gs.motionloom_scene_render_revision(),
             )
         };
+        let (scene_external_preview_host, scene_external_preview_process) =
+            SceneExternalPreviewHost::from_env_or_auto_spawn();
 
         Self {
             global,
@@ -770,6 +1197,13 @@ impl MotionLoomPage {
             scene_live_async_render_key: None,
             scene_live_async_render_token: 0,
             scene_live_preview_tx: Self::spawn_scene_live_preview_worker(),
+            scene_external_preview_host,
+            _scene_external_preview_process: scene_external_preview_process,
+            scene_external_preview_script_hash: None,
+            scene_external_preview_quality: None,
+            scene_external_preview_asset_roots: Vec::new(),
+            scene_external_preview_heartbeat_scheduled: false,
+            scene_external_preview_host_focused: false,
             world_live_preview_tx: Self::spawn_world_live_preview_worker(),
             scene_live_prerender_token: 0,
             scene_live_prerendering: false,
@@ -1030,6 +1464,31 @@ impl MotionLoomPage {
         }
     }
 
+    fn scene_preview_output_to_live_frame(
+        surface: ScenePreviewSurface,
+    ) -> Result<SceneLivePreviewFrame, String> {
+        match surface {
+            ScenePreviewSurface::PlatformSurface(surface) => {
+                Self::scene_preview_surface_to_live_frame(surface).ok_or_else(|| {
+                    "platform preview surface is not displayable on this target yet".to_string()
+                })
+            }
+            ScenePreviewSurface::CpuBgra {
+                width,
+                height,
+                data,
+                ..
+            } => Ok(SceneLivePreviewFrame::Bgra {
+                width,
+                height,
+                data: (*data).clone(),
+            }),
+            ScenePreviewSurface::WgpuTexture(_) => {
+                Err("wgpu texture preview is not wired to GPUI display yet".to_string())
+            }
+        }
+    }
+
     fn render_panic_message(panic: Box<dyn Any + Send>) -> String {
         if let Some(message) = panic.downcast_ref::<String>() {
             message.clone()
@@ -1046,135 +1505,80 @@ impl MotionLoomPage {
             .name("motionloom-scene-live-preview".to_string())
             .stack_size(SCENE_LIVE_RENDER_WORKER_STACK_SIZE)
             .spawn(move || {
-                let mut gpu_renderer = std::panic::catch_unwind(|| {
-                    pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).ok()
+                let mut preview_engine = std::panic::catch_unwind(|| {
+                    pollster::block_on(WgpuPreviewEngine::new_with_cpu_fallback())
                 })
-                .ok()
-                .flatten();
-                let mut cpu_renderer = std::panic::catch_unwind(|| {
-                    pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).ok()
-                })
-                .ok()
-                .flatten();
+                .unwrap_or_else(|_| pollster::block_on(WgpuPreviewEngine::new_cpu_only()));
+                let mut graph_cache = WgpuPreviewGraphCache::default();
                 while let Ok(mut request) = request_rx.recv() {
                     // Keep preview responsive by discarding stale queued frames.
                     while let Ok(next_request) = request_rx.try_recv() {
                         request = next_request;
                     }
-                    if gpu_renderer.is_none() {
-                        gpu_renderer = std::panic::catch_unwind(|| {
-                            pollster::block_on(SceneRenderer::new(SceneRenderProfile::Gpu)).ok()
+                    if !preview_engine.has_gpu_renderer() {
+                        preview_engine = std::panic::catch_unwind(|| {
+                            pollster::block_on(WgpuPreviewEngine::new_with_cpu_fallback())
                         })
-                        .ok()
-                        .flatten();
+                        .unwrap_or_else(|_| pollster::block_on(WgpuPreviewEngine::new_cpu_only()));
                     }
                     if request.asset_roots.is_empty() {
                         motionloom::clear_scene_asset_roots();
                     } else {
                         motionloom::set_scene_asset_roots(request.asset_roots.clone());
                     }
-                    let graph = request.graph.clone();
+                    let script = request.script.clone();
+                    let script_hash = request.script_hash;
+                    let render_size = request.render_size;
                     let frame = request.frame;
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let gpu_error = if let Some(renderer) = gpu_renderer.as_mut() {
-                            match pollster::block_on(renderer.render_frame_to_preview_surface(
-                                &request.graph,
+                        let preview = pollster::block_on(
+                            preview_engine.render_script_preview_surface_with_cpu_fallback(
+                                &mut graph_cache,
+                                &request.script,
+                                request.script_hash,
                                 request.frame,
+                                request.render_size,
                                 ScenePreviewSurfaceOptions {
                                     backend: ScenePreviewBackend::PlatformSurface,
                                     ..ScenePreviewSurfaceOptions::default()
                                 },
-                            )) {
-                                Ok(ScenePreviewSurface::PlatformSurface(surface)) => {
-                                    if let Some(frame) = Self::scene_preview_surface_to_live_frame(surface)
-                                    {
-                                        return Ok((frame, None));
-                                    }
-                                    Some(
-                                        "platform preview surface is not displayable on this target yet"
-                                            .to_string(),
-                                    )
-                                }
-                                Ok(ScenePreviewSurface::CpuBgra {
-                                    width,
-                                    height,
-                                    data,
-                                    ..
-                                }) => {
-                                    return Ok((
-                                        SceneLivePreviewFrame::Bgra {
-                                            width,
-                                            height,
-                                            data: (*data).clone(),
-                                        },
-                                        None,
-                                    ));
-                                }
-                                Ok(ScenePreviewSurface::WgpuTexture(_)) => {
-                                    Some("wgpu texture preview is not wired to GPUI display yet".to_string())
-                                }
-                                Err(err) => Some(err.to_string()),
-                            }
-                        } else {
-                            None
-                        };
-                        if let Some(renderer) = cpu_renderer.as_mut() {
-                            pollster::block_on(renderer.render_frame(&request.graph, request.frame))
-                                .map(Self::rgba_image_to_bgra)
-                                .map(|(w, h, bgra)| {
-                                    let warning = gpu_error.map(|err| {
-                                        format!("Scene live preview used CPU fallback: {err}")
-                                    });
-                                    (
-                                        SceneLivePreviewFrame::Bgra {
-                                            width: w,
-                                            height: h,
-                                            data: bgra,
-                                        },
-                                        warning,
-                                    )
-                                })
-                                .map_err(|err| {
-                                    format!("Scene live render error: CPU preview failed: {err}")
-                                })
-                        } else {
-                            Err("Scene live render error: no preview renderer initialized."
-                                .to_string())
-                        }
+                            ),
+                        )
+                        .map_err(|err| format!("Scene live render error: {err}"))?;
+                        Self::scene_preview_output_to_live_frame(preview.surface)
+                            .map(|frame| (frame, preview.warning))
                     }))
                     .unwrap_or_else(|panic| {
                         let panic_message = Self::render_panic_message(panic);
-                        gpu_renderer = None;
-                        cpu_renderer = std::panic::catch_unwind(|| {
-                            pollster::block_on(SceneRenderer::new(SceneRenderProfile::Cpu)).ok()
+                        preview_engine = pollster::block_on(WgpuPreviewEngine::new_cpu_only());
+                        pollster::block_on(
+                            preview_engine.render_script_preview_surface_with_cpu_fallback(
+                                &mut graph_cache,
+                                &script,
+                                script_hash,
+                                frame,
+                                render_size,
+                                ScenePreviewSurfaceOptions {
+                                    backend: ScenePreviewBackend::CpuBgra,
+                                    ..ScenePreviewSurfaceOptions::default()
+                                },
+                            ),
+                        )
+                        .map_err(|err| {
+                            format!(
+                                "Scene live render error: GPU panicked ({panic_message}); CPU fallback failed: {err}"
+                            )
                         })
-                        .ok()
-                        .flatten();
-                        if let Some(renderer) = cpu_renderer.as_mut() {
-                            pollster::block_on(renderer.render_frame(&graph, frame))
-                                .map(Self::rgba_image_to_bgra)
-                                .map(|(w, h, bgra)| {
-                                    (
-                                        SceneLivePreviewFrame::Bgra {
-                                            width: w,
-                                            height: h,
-                                            data: bgra,
-                                        },
-                                        Some(format!(
-                                            "Scene live preview used CPU fallback after GPU panic: {panic_message}"
-                                        )),
-                                    )
-                                })
-                                .map_err(|err| {
-                                    format!(
-                                        "Scene live render error: GPU panicked ({panic_message}); CPU fallback failed: {err}"
-                                    )
-                                })
-                        } else {
-                            Err(format!(
-                                "Scene live render error: GPU panicked ({panic_message}); CPU renderer could not initialize."
-                            ))
-                        }
+                        .and_then(|preview| {
+                            Self::scene_preview_output_to_live_frame(preview.surface).map(|frame| {
+                                (
+                                    frame,
+                                    Some(format!(
+                                        "Scene live preview used CPU fallback after GPU panic: {panic_message}"
+                                    )),
+                                )
+                            })
+                        })
                     });
                     let _ = request.response_tx.send(result);
                 }
@@ -1250,7 +1654,7 @@ impl MotionLoomPage {
         if let Some(cancel) = self.scene_live_prerender_cancel.take() {
             cancel.store(true, Ordering::Relaxed);
         }
-        self.scene_live_preview_overrides.clear();
+        self.clear_scene_live_preview_overrides();
         self.scene_live_gizmo_drag = None;
         self.clear_scene_live_preview_images();
         self.scene_live_parsed_script_hash = None;
@@ -1273,6 +1677,30 @@ impl MotionLoomPage {
         self.scene_live_parsed_graph = None;
         self.scene_live_render_defer_until = None;
         self.scene_live_render_defer_token = self.scene_live_render_defer_token.wrapping_add(1);
+    }
+
+    fn set_scene_live_preview_override(&mut self, node: String, property: String, value: f32) {
+        self.scene_live_preview_overrides
+            .insert((node.clone(), property.clone()), value);
+        if let Some(host) = self.scene_external_preview_host.as_ref() {
+            host.send(PreviewCommand::SetOverride {
+                node,
+                property,
+                value,
+            });
+        }
+    }
+
+    fn clear_scene_live_preview_overrides(&mut self) {
+        if let Some(host) = self.scene_external_preview_host.as_ref() {
+            for (node, property) in self.scene_live_preview_overrides.keys() {
+                host.send(PreviewCommand::ClearOverride {
+                    node: node.clone(),
+                    property: property.clone(),
+                });
+            }
+        }
+        self.scene_live_preview_overrides.clear();
     }
 
     fn clear_scene_live_preview_images(&mut self) {
@@ -1413,6 +1841,223 @@ impl MotionLoomPage {
         self.scene_live_preview_quality
     }
 
+    fn scene_external_preview_active(&self) -> bool {
+        self.scene_external_preview_host.is_some()
+    }
+
+    fn scene_external_preview_hidden_by_overlay(&self) -> bool {
+        self.import_modal_open
+            || self.asset_modal_open
+            || self.scene_template_modal_open
+            || self.scene_render_modal_open
+            || self.glb_inspector_modal_open
+            || self.template_modal_open
+            || self.asset_context_menu.is_some()
+    }
+
+    fn scene_external_preview_visibility_policy(&self, window: &Window) -> PreviewVisibilityPolicy {
+        PreviewVisibilityPolicy {
+            overlay_open: self.scene_external_preview_hidden_by_overlay(),
+            app_active: window.is_window_active(),
+            host_focused: self.scene_external_preview_host_focused,
+        }
+    }
+
+    fn scene_external_preview_quality(quality: SceneLivePreviewQuality) -> WgpuPreviewQuality {
+        match quality {
+            SceneLivePreviewQuality::P480 => WgpuPreviewQuality::Balanced,
+            SceneLivePreviewQuality::P360 => WgpuPreviewQuality::Speed,
+            SceneLivePreviewQuality::P240 => WgpuPreviewQuality::HighSpeed,
+            SceneLivePreviewQuality::P144 => WgpuPreviewQuality::UltraSpeed,
+        }
+    }
+
+    fn schedule_scene_external_preview_heartbeat(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.scene_external_preview_host.is_none()
+            || self.scene_external_preview_heartbeat_scheduled
+        {
+            return;
+        }
+        self.scene_external_preview_heartbeat_scheduled = true;
+        cx.spawn_in(window, async move |view, window| {
+            Timer::after(Duration::from_millis(100)).await;
+            view.update_in(window, |this, window, cx| {
+                this.scene_external_preview_heartbeat_scheduled = false;
+                let Some(host) = this.scene_external_preview_host.clone() else {
+                    return;
+                };
+                this.drain_scene_external_preview_events(&host, window, cx);
+                let policy = this.scene_external_preview_visibility_policy(window);
+                if !policy.should_show() {
+                    host.send(PreviewCommand::SetWindowVisible { visible: false });
+                } else {
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn sync_external_scene_preview(
+        &mut self,
+        script: &str,
+        script_hash: u64,
+        frame: u32,
+        quality: SceneLivePreviewQuality,
+        asset_roots: &[PathBuf],
+    ) {
+        let Some(host) = self.scene_external_preview_host.clone() else {
+            return;
+        };
+        if self.scene_external_preview_asset_roots != asset_roots {
+            self.scene_external_preview_asset_roots = asset_roots.to_vec();
+            host.send(PreviewCommand::SetAssetRoots {
+                roots: asset_roots
+                    .iter()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect(),
+            });
+        }
+        if self.scene_external_preview_script_hash != Some(script_hash) {
+            self.scene_external_preview_script_hash = Some(script_hash);
+            host.send(PreviewCommand::LoadScript {
+                script: script.to_string(),
+                source: Some("anica-code-block".to_string()),
+            });
+        }
+        if self.scene_external_preview_quality != Some(quality) {
+            self.scene_external_preview_quality = Some(quality);
+            host.send(PreviewCommand::SetQuality {
+                quality: Self::scene_external_preview_quality(quality),
+            });
+        }
+        host.send(PreviewCommand::SetFrame { frame });
+        for ((node, property), value) in &self.scene_live_preview_overrides {
+            host.send(PreviewCommand::SetOverride {
+                node: node.clone(),
+                property: property.clone(),
+                value: *value,
+            });
+        }
+        let graph_size = parse_graph_script(script)
+            .ok()
+            .map(|graph| graph.render_size.unwrap_or(graph.size))
+            .unwrap_or((1280, 720));
+        let mode = match self.scene_live_gizmo_mode {
+            SceneLiveGizmoMode::Move => PreviewInteractionMode::Move,
+            SceneLiveGizmoMode::Rotate => PreviewInteractionMode::Rotate,
+        };
+        let mut targets = Self::extract_scene_live_targets(script);
+        if !self.scene_live_tag_filters.is_empty() {
+            targets.retain(|target| self.scene_live_tag_filters.contains(target.tag.as_str()));
+        }
+        let interaction_nodes = self.scene_live_interaction_nodes(
+            &targets,
+            graph_size.0.max(1) as f32,
+            graph_size.1.max(1) as f32,
+        );
+        host.send(PreviewCommand::SetInteractionTargets {
+            mode,
+            graph_width: graph_size.0.max(1) as f32,
+            graph_height: graph_size.1.max(1) as f32,
+            targets: interaction_nodes,
+        });
+    }
+
+    fn drain_scene_external_preview_events(
+        &mut self,
+        host: &SceneExternalPreviewHost,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for event in host.drain_events() {
+            match event {
+                PreviewEvent::PickResult {
+                    node: Some(node),
+                    x,
+                    y,
+                } => {
+                    if Self::find_scene_tag_range_by_id(&self.script_text, &node).is_some() {
+                        self.scene_live_knob_node_id = node.clone();
+                    }
+                    self.status_line = format!(
+                        "External preview picked {node} at {}, {}.",
+                        Self::format_live_number(x),
+                        Self::format_live_number(y)
+                    );
+                }
+                PreviewEvent::PickResult { node: None, .. } => {
+                    self.status_line =
+                        "External preview pick missed any editable node.".to_string();
+                }
+                PreviewEvent::TransformDrag {
+                    node,
+                    property,
+                    value,
+                } => {
+                    if Self::find_scene_tag_range_by_id(&self.script_text, &node).is_none() {
+                        continue;
+                    }
+                    let value = Self::clamp_scene_live_attr_value(&property, value);
+                    self.scene_live_knob_node_id = node.clone();
+                    self.scene_live_knob_attr = property.clone();
+                    self.set_scene_live_preview_override(node.clone(), property.clone(), value);
+                    // The native host renders the drag immediately; avoid
+                    // invalidating the slower fallback preview on every mouse move.
+                    cx.notify();
+                    self.status_line = format!(
+                        "External preview drag: {node}.{property} = {}.",
+                        Self::format_live_number(value)
+                    );
+                }
+                PreviewEvent::TransformDragEnd { node } => {
+                    self.commit_scene_external_drag_keyframes(&node, window, cx);
+                }
+                PreviewEvent::HostFocus { focused } => {
+                    self.scene_external_preview_host_focused = focused;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn commit_scene_external_drag_keyframes(
+        &mut self,
+        node: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let frame = self.preview_frame;
+        let mut keyed = 0usize;
+        for property in ["x", "y", "rotation"] {
+            let Some(value) = self
+                .scene_live_preview_overrides
+                .get(&(node.to_string(), property.to_string()))
+                .copied()
+            else {
+                continue;
+            };
+            self.upsert_scene_live_keyframe_value_for_code_block(
+                node,
+                property,
+                frame,
+                Self::format_live_number(value),
+                window,
+                cx,
+            );
+            keyed += 1;
+        }
+        if keyed > 0 {
+            self.status_line =
+                format!("External preview drag wrote {keyed} keyframe channel(s) for {node}.");
+        }
+    }
+
     fn scene_live_preview_label(&self) -> String {
         let quality = self.scene_live_effective_preview_quality();
         let mut label = format!("Preview: {} <= {}px", quality.label(), quality.max_dim());
@@ -1429,7 +2074,12 @@ impl MotionLoomPage {
         frame: u32,
         cx: &mut Context<Self>,
     ) -> Result<Option<LoadedPreview>, String> {
-        let raw = self.scene_live_preview_script_text();
+        let external_active = self.scene_external_preview_active();
+        let raw = if external_active {
+            self.script_text.clone()
+        } else {
+            self.scene_live_preview_script_text()
+        };
         if raw.trim().is_empty() {
             if self.has_scene_live_preview_state() {
                 self.invalidate_scene_live_preview_cache();
@@ -1520,6 +2170,17 @@ impl MotionLoomPage {
             preview_size.0,
             preview_size.1,
         );
+        let render_size = (preview_size != final_size).then_some(preview_size);
+        let asset_roots = self.scene_live_asset_roots(cx);
+        self.sync_external_scene_preview(&raw, script_hash, frame, effective_quality, &asset_roots);
+
+        if external_active {
+            self.cancel_scene_live_prerender();
+            self.cancel_scene_live_async_render();
+            self.scene_live_preview_status = "Preview: external WGPU host".to_string();
+            return Ok(self.scene_live_preview_cache_image.clone());
+        }
+
         if self.scene_live_preview_cache_key == Some(key)
             && let Some(preview) = self.scene_live_preview_cache_image.as_ref()
         {
@@ -1541,11 +2202,6 @@ impl MotionLoomPage {
             return Ok(Some(preview.clone()));
         }
 
-        let mut preview_graph = graph.clone();
-        if preview_size != final_size {
-            preview_graph.render_size = Some(preview_size);
-        }
-
         if self.scene_live_async_render_key != Some(key) {
             self.scene_live_async_render_key = Some(key);
             self.scene_live_preview_status = "Preview: rendering...".to_string();
@@ -1553,9 +2209,10 @@ impl MotionLoomPage {
             let token = self.scene_live_async_render_token;
             let (tx, rx) =
                 mpsc::channel::<Result<(SceneLivePreviewFrame, Option<String>), String>>();
-            let asset_roots = self.scene_live_asset_roots(cx);
             let request = SceneLivePreviewRequest {
-                graph: preview_graph,
+                script: raw,
+                script_hash,
+                render_size,
                 frame,
                 asset_roots,
                 response_tx: tx,
@@ -2481,6 +3138,57 @@ impl MotionLoomPage {
         }
     }
 
+    fn scene_live_interaction_nodes(
+        &self,
+        targets: &[SceneLiveTarget],
+        graph_w: f32,
+        graph_h: f32,
+    ) -> Vec<PreviewInteractionNode> {
+        targets
+            .iter()
+            .filter_map(|target| {
+                let raw_x = self
+                    .scene_live_value_for_attr(&target.id, "x")
+                    .unwrap_or(graph_w * 0.5 - 80.0);
+                let raw_y = self
+                    .scene_live_value_for_attr(&target.id, "y")
+                    .unwrap_or(graph_h * 0.5 - 50.0);
+                let radius = self.scene_live_value_for_attr(&target.id, "radius");
+                let width = self
+                    .scene_live_value_for_attr(&target.id, "width")
+                    .or_else(|| radius.map(|r| r * 2.0))
+                    .or_else(|| {
+                        self.scene_live_value_for_attr(&target.id, "rx")
+                            .map(|r| r * 2.0)
+                    })
+                    .unwrap_or(160.0)
+                    .abs()
+                    .max(24.0);
+                let height = self
+                    .scene_live_value_for_attr(&target.id, "height")
+                    .or_else(|| radius.map(|r| r * 2.0))
+                    .or_else(|| {
+                        self.scene_live_value_for_attr(&target.id, "ry")
+                            .map(|r| r * 2.0)
+                    })
+                    .unwrap_or(100.0)
+                    .abs()
+                    .max(24.0);
+                Some(PreviewInteractionNode {
+                    node: target.id.clone(),
+                    tag: target.tag.clone(),
+                    x: raw_x,
+                    y: raw_y,
+                    width,
+                    height,
+                    rotation: self
+                        .scene_live_value_for_attr(&target.id, "rotation")
+                        .unwrap_or_else(|| Self::scene_live_attr_default_value("rotation")),
+                })
+            })
+            .collect()
+    }
+
     fn scene_live_knob_input_value(&self, cx: &Context<Self>) -> Option<f32> {
         self.scene_live_knob_input
             .as_ref()
@@ -2780,8 +3488,16 @@ impl MotionLoomPage {
             self.status_line = format!("Live knob target id=\"{node}\" was not found.");
             return;
         }
-        self.scene_live_preview_overrides
-            .insert((node.clone(), attr.clone()), next);
+        self.set_scene_live_preview_override(node.clone(), attr.clone(), next);
+        if self.scene_external_preview_active() {
+            self.scene_live_preview_status = "Preview: external WGPU host".to_string();
+            cx.notify();
+            self.status_line = format!(
+                "Preview override only: {node}.{attr} = {}. Press Key Frame to write DSL.",
+                Self::format_live_number(next)
+            );
+            return;
+        }
         if let Some(defer_ms) = defer_preview_ms {
             self.cancel_scene_live_prerender();
             self.cancel_scene_live_async_render();
@@ -2855,24 +3571,33 @@ impl MotionLoomPage {
                 start_x,
                 start_y,
             } => {
-                self.scene_live_preview_overrides.insert(
-                    (node.clone(), "x".to_string()),
+                self.set_scene_live_preview_override(
+                    node.clone(),
+                    "x".to_string(),
                     start_x + mouse_x - start_mouse_x,
                 );
-                self.scene_live_preview_overrides
-                    .insert((node, "y".to_string()), start_y + mouse_y - start_mouse_y);
+                self.set_scene_live_preview_override(
+                    node,
+                    "y".to_string(),
+                    start_y + mouse_y - start_mouse_y,
+                );
             }
             SceneLiveGizmoDrag::Rotate {
                 start_mouse_x,
                 start_rotation,
             } => {
-                self.scene_live_preview_overrides.insert(
-                    (node, "rotation".to_string()),
+                self.set_scene_live_preview_override(
+                    node,
+                    "rotation".to_string(),
                     start_rotation + (mouse_x - start_mouse_x) * 0.5,
                 );
             }
         }
-        self.invalidate_scene_live_preview_render_only();
+        if self.scene_external_preview_active() {
+            self.scene_live_preview_status = "Preview: external WGPU host".to_string();
+        } else {
+            self.invalidate_scene_live_preview_render_only();
+        }
     }
 
     fn commit_scene_live_gizmo_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3078,7 +3803,7 @@ impl MotionLoomPage {
                             break;
                         }
                         this.preview_frame = next_frame;
-                        this.scene_live_preview_overrides.clear();
+                        this.clear_scene_live_preview_overrides();
                         this.scene_live_gizmo_drag = None;
                         advanced += 1;
                         step -= 1;
@@ -3094,7 +3819,7 @@ impl MotionLoomPage {
                     this.preview_frame_accum -= step as f32;
                     let next_frame = this.preview_frame.saturating_add(step);
                     this.preview_frame = next_frame % frame_count;
-                    this.scene_live_preview_overrides.clear();
+                    this.clear_scene_live_preview_overrides();
                     this.scene_live_gizmo_drag = None;
                     cx.notify();
                 }
@@ -3539,7 +4264,7 @@ impl MotionLoomPage {
         let frame_count = self.playback_frame_count().max(1);
         let next_frame = frame.min(frame_count.saturating_sub(1));
         if self.preview_frame != next_frame {
-            self.scene_live_preview_overrides.clear();
+            self.clear_scene_live_preview_overrides();
             self.scene_live_gizmo_drag = None;
             self.invalidate_scene_live_preview_render_only();
         }
@@ -3619,7 +4344,7 @@ impl MotionLoomPage {
         self.preview_frame_accum = 0.0;
         let token = self.preview_play_token;
         self.status_line = format!("Loop playback started at {} fps.", self.playback_fps());
-        if self.has_scene_playback_graph() {
+        if self.has_scene_playback_graph() && !self.scene_external_preview_active() {
             self.start_scene_live_prerender(window, cx);
             self.schedule_preview_playback(token, window, cx);
         } else {
@@ -4811,7 +5536,7 @@ impl MotionLoomPage {
         cx: &mut Context<Self>,
     ) {
         self.script_text = text.clone();
-        self.scene_live_preview_overrides.clear();
+        self.clear_scene_live_preview_overrides();
         self.cancel_scene_live_prerender();
         self.cancel_scene_live_async_render();
         self.scene_live_preview_cache_key = None;
@@ -8911,6 +9636,10 @@ impl Render for MotionLoomPage {
             .unwrap_or_else(|| "Import an image or video clip to begin previewing.".to_string());
         let viewport_w = window.viewport_size().width / px(1.0);
         let viewport_h = window.viewport_size().height / px(1.0);
+        if let Some(host) = self.scene_external_preview_host.clone() {
+            self.drain_scene_external_preview_events(&host, window, cx);
+        }
+        self.schedule_scene_external_preview_heartbeat(window, cx);
         let content_max_w = if viewport_w >= 1800.0 {
             1560.0
         } else if viewport_w >= 1500.0 {
@@ -9282,8 +10011,15 @@ impl Render for MotionLoomPage {
                     }),
             )
         };
-        let scene_live_preview_card = match self.scene_live_preview_image(self.preview_frame, cx) {
-            Ok(Some(preview)) => div()
+        let scene_live_preview_result = self.scene_live_preview_image(self.preview_frame, cx);
+        let scene_live_external_graph_size =
+            parse_graph_script(&self.scene_live_preview_script_text())
+                .ok()
+                .map(|graph| graph.render_size.unwrap_or(graph.size))
+                .unwrap_or((1280, 720));
+        let scene_live_preview_card = if let Some(host) = self.scene_external_preview_host.clone() {
+            let external_preview_visibility = self.scene_external_preview_visibility_policy(window);
+            div()
                 .w_full()
                 .h(px(scene_live_preview_h))
                 .flex_shrink_0()
@@ -9292,45 +10028,63 @@ impl Render for MotionLoomPage {
                 .border_color(white().opacity(0.14))
                 .bg(rgb(0x05070c))
                 .overflow_hidden()
-                .child(FitPreviewImageElement::from_preview(preview))
-                .into_any_element(),
-            Ok(None) => div()
-                .w_full()
-                .h(px(scene_live_preview_h))
-                .flex_shrink_0()
-                .rounded_lg()
-                .border_1()
-                .border_color(white().opacity(0.14))
-                .bg(rgb(0x05070c))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(white().opacity(0.62))
-                        .child("Preview rendering..."),
-                )
-                .into_any_element(),
-            Err(message) => div()
-                .w_full()
-                .h(px(scene_live_preview_h))
-                .flex_shrink_0()
-                .rounded_lg()
-                .border_1()
-                .border_color(rgba(0xff6655cc))
-                .bg(rgb(0x12080a))
-                .p_3()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(white().opacity(0.78))
-                        .child(message),
-                )
-                .into_any_element(),
+                .child(ExternalPreviewAnchorElement::new(
+                    host,
+                    scene_live_external_graph_size,
+                    external_preview_visibility,
+                ))
+                .into_any_element()
+        } else {
+            match scene_live_preview_result {
+                Ok(Some(preview)) => div()
+                    .w_full()
+                    .h(px(scene_live_preview_h))
+                    .flex_shrink_0()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(white().opacity(0.14))
+                    .bg(rgb(0x05070c))
+                    .overflow_hidden()
+                    .child(FitPreviewImageElement::from_preview(preview))
+                    .into_any_element(),
+                Ok(None) => div()
+                    .w_full()
+                    .h(px(scene_live_preview_h))
+                    .flex_shrink_0()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(white().opacity(0.14))
+                    .bg(rgb(0x05070c))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(white().opacity(0.62))
+                            .child("Preview rendering..."),
+                    )
+                    .into_any_element(),
+                Err(message) => div()
+                    .w_full()
+                    .h(px(scene_live_preview_h))
+                    .flex_shrink_0()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgba(0xff6655cc))
+                    .bg(rgb(0x12080a))
+                    .p_3()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(white().opacity(0.78))
+                            .child(message),
+                    )
+                    .into_any_element(),
+            }
         };
         let scene_live_gizmo_bounds =
             self.scene_live_gizmo_bounds(scene_live_preview_w, scene_live_preview_h);
@@ -9399,7 +10153,9 @@ impl Render for MotionLoomPage {
             .h(px(scene_live_preview_h))
             .flex_shrink_0()
             .child(scene_live_preview_card)
-            .child(scene_live_gizmo_overlay)
+            .when(!self.scene_external_preview_active(), |el| {
+                el.child(scene_live_gizmo_overlay)
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, evt: &MouseDownEvent, _window, cx| {

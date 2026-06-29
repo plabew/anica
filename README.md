@@ -129,6 +129,21 @@ cargo run --release -p motionloom --example wgpu_live_preview -- \
   https://raw.githubusercontent.com/LOVELYZOMBIEYHO/motionloom-example/refs/heads/main/showcase/s-000007/main.motionloom
 ```
 
+When running Anica from this repository, the VFX Studio controller can start the
+same native wgpu preview host automatically:
+
+```bash
+cargo run
+```
+
+Set `ANICA_MOTIONLOOM_PREVIEW_HOST=off` to disable the helper, or set
+`ANICA_MOTIONLOOM_PREVIEW_HOST=127.0.0.1:49377` to connect to a host you started
+manually.
+The helper is a separate native wgpu window, but Anica starts it in host mode and
+anchors it over the VFX Studio preview panel. It follows the editor window while
+you adjust keyframes and gizmos, without using ffmpeg or the slower CPU preview
+path.
+
 ---
 
 ## Platform Support

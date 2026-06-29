@@ -294,6 +294,59 @@ This is the higher-level preview abstraction. It can return a GPU texture,
 platform surface, or CPU BGRA fallback depending on platform support and
 options.
 
+### `WgpuPreviewEngine`
+
+```rust
+let mut engine = WgpuPreviewEngine::new_with_cpu_fallback().await;
+let preview = engine
+    .render_preview_surface_with_cpu_fallback(&graph, frame, options)
+    .await?;
+
+let mut graph_cache = WgpuPreviewGraphCache::default();
+let preview = engine
+    .render_script_preview_surface_with_cpu_fallback(
+        &mut graph_cache,
+        script,
+        script_hash,
+        frame,
+        Some((640, 360)),
+        options,
+    )
+    .await?;
+```
+
+Reusable live-preview lifecycle for host applications and examples. It keeps GPU
+and CPU `SceneRenderer` instances alive, shares quality scaling through
+`WgpuPreviewQuality`, caches parsed script graphs through
+`WgpuPreviewGraphCache`, allocates reusable wgpu target textures, and exposes
+both high-level preview-surface rendering and caller-owned target-texture
+rendering. Window creation, event loops, keyboard controls, and final
+presentation remain the responsibility of the host.
+
+### Preview host protocol
+
+```rust
+use motionloom::{PreviewCommand, PreviewEvent};
+```
+
+`PreviewCommand` and `PreviewEvent` are serde-compatible controller/viewer
+messages for external preview hosts and future embedded viewers. Current
+commands cover `LoadScript`, `SetFrame`, `SetQuality`, `SetOverride`,
+`ClearOverride`, `SetAssetRoots`, `SetWindowBounds`, `SetWindowVisible`,
+`SetInteractionTarget`, and `SetInteractionTargets`;
+events cover `Ready`, `Rendered`, `WindowBounds`, `Error`, `PickResult`, and
+`TransformDrag`. `TransformDragEnd` marks release/commit boundaries for editor
+controllers that write keyframes after a native preview drag.
+`SetWindowBounds` lets an editor controller align a native external preview host
+over its own preview panel, while `SetWindowVisible` lets it hide the companion
+viewer when the editor loses focus. `SetInteractionTargets` lets the controller
+provide editable node bounds, graph size, and current transform values so an
+external viewer can hit-test and emit drag edits from its own GPU surface. The
+single-node `SetInteractionTarget` command is retained for simpler controllers.
+The protocol is transport-neutral: the
+standalone preview example uses newline-delimited JSON over local TCP, while an
+embedded host can reuse the same types with in-process channels.
+
 ## Diagnostics
 
 ### `inspect_root_graph`

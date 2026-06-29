@@ -102,6 +102,8 @@ mod compat;
 mod dsl;
 mod error;
 mod export;
+pub mod preview;
+pub mod preview_protocol;
 mod process;
 mod root;
 mod scene;
@@ -130,6 +132,14 @@ pub use dsl::{
     parse_graph_script,
 };
 pub use error::{GraphParseError, MotionLoomError, RootGraphError, RuntimeCompileError};
+pub use preview::{
+    WgpuPreviewEngine, WgpuPreviewEngineError, WgpuPreviewFrame, WgpuPreviewGraphCache,
+    WgpuPreviewQuality,
+};
+pub use preview_protocol::{
+    PREVIEW_PROTOCOL_VERSION, PreviewCommand, PreviewEvent, PreviewInteractionMode,
+    PreviewInteractionNode,
+};
 pub use process::adapters::clip::curve::sample_anim_f32;
 pub use process::adapters::clip::model::{
     AnimF32, ClipZoomSpec, ColorRgba, LayerEffectClip, LocalMaskLayer, MAX_LOCAL_MASK_LAYERS,

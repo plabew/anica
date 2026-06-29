@@ -1479,6 +1479,29 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         texture_layers: &[GpuSceneTextureLayer],
         clear: [u8; 4],
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        self.render_scene_content_to_texture_with_mode(primitives, texture_layers, clear, false)
+    }
+
+    pub(crate) fn render_scene_pick_ids_to_texture(
+        &mut self,
+        primitives: &[GpuScenePrimitive],
+        texture_layers: &[GpuSceneTextureLayer],
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        self.render_scene_content_to_texture_with_mode(
+            primitives,
+            texture_layers,
+            [0, 0, 0, 0],
+            true,
+        )
+    }
+
+    fn render_scene_content_to_texture_with_mode(
+        &mut self,
+        primitives: &[GpuScenePrimitive],
+        texture_layers: &[GpuSceneTextureLayer],
+        clear: [u8; 4],
+        pick_mode: bool,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
         let canvas_len = (self.width as usize)
             .saturating_mul(self.height as usize)
             .saturating_mul(4);
@@ -1516,6 +1539,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             let uniform = batch_shape_uniform(
                 self.width,
                 self.height,
+                pick_mode,
                 shape_batch.primitive_count,
                 shape_batch.tile_size,
                 shape_batch.tiles_x,
@@ -1643,6 +1667,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 matte_h,
                 matte_mode,
                 invert_matte,
+                pick_mode,
             )?;
             let uniform_buffer = self.make_matte_texture_uniform_buffer(&uniform);
             let (src_canvas, dst_canvas) = if current_is_a {
@@ -3487,6 +3512,62 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         );
         self.queue.submit([encoder.finish()]);
         self.readback_rgba_async().await
+    }
+
+    pub(crate) async fn readback_texture_pixel_rgba_async(
+        &self,
+        texture: &wgpu::Texture,
+        x: u32,
+        y: u32,
+    ) -> Result<[u8; 4], MotionLoomSceneRenderError> {
+        let x = x.min(self.width.saturating_sub(1));
+        let y = y.min(self.height.saturating_sub(1));
+        let bytes_per_row = 256_u32;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("anica-motionloom-scene-gpu-pick-pixel-readback"),
+            size: bytes_per_row as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-scene-gpu-pick-pixel-readback-encoder"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+        let slice = readback.slice(..);
+        BufferMapAsyncFuture::new(&self._poller, &readback)
+            .await
+            .map_err(|err| MotionLoomSceneRenderError::GpuRender {
+                message: format!("pick pixel readback map failed: {err}"),
+            })?;
+        let mapped = slice.get_mapped_range();
+        let mut pixel = [0_u8; 4];
+        pixel.copy_from_slice(&mapped[..4]);
+        drop(mapped);
+        readback.unmap();
+        Ok(pixel)
     }
 
     pub(crate) async fn readback_rgba_async(

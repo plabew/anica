@@ -58,6 +58,14 @@ fn blend_over(base: vec4<f32>, src_rgb: vec3<f32>, src_a: f32, mode: f32) -> vec
     return vec4<f32>(rgb, out_a);
 }
 
+fn encode_pick_id(id_f: f32) -> vec4<f32> {
+    let id = u32(round(id_f));
+    let r = f32(id & 255u) / 255.0;
+    let g = f32((id >> 8u) & 255u) / 255.0;
+    let b = f32((id >> 16u) & 255u) / 255.0;
+    return vec4<f32>(r, g, b, 1.0);
+}
+
 fn sample_source(local: vec2<f32>) -> vec4<f32> {
     if (params.canvas.z > 0.5) {
         let tx = clamp(i32(floor(local.x)), 0, i32(params.image.x) - 1);
@@ -183,7 +191,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
         let src_a = src.a * params.opacity.x * clamp(matte_factor, 0.0, 1.0);
-        out_color = blend_over(base, src.rgb, src_a, params.opacity.y);
+        if (params.quad1.w > 0.5) {
+            if (src_a > 0.001 && params.quad0.w > 0.5) {
+                out_color = encode_pick_id(params.quad0.w);
+            }
+        } else {
+            out_color = blend_over(base, src.rgb, src_a, params.opacity.y);
+        }
     }
 
     textureStore(out_tex, pos, out_color);

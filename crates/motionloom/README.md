@@ -323,6 +323,14 @@ for testing MotionLoom's direct wgpu preview path without Anica, ffmpeg, video
 encoding, or CPU readback. Use it to measure scene/process GPU render cost,
 surface format behavior, and preview quality tradeoffs.
 
+The example keeps CLI parsing, window creation, keyboard controls, and surface
+presentation local to the example. Renderer lifecycle, graph quality scaling,
+preview target texture allocation, parsed graph caching, and frame rendering are
+shared through `motionloom::preview::WgpuPreviewEngine` plus
+`WgpuPreviewGraphCache`, which are also suitable for embedded hosts such as
+Anica. This keeps standalone preview and app preview on the same render path
+without coupling host window/event-loop code to MotionLoom.
+
 Run the live preview:
 
 ```bash
@@ -334,6 +342,57 @@ Print copyable timing stats once per second with `--print-stats` or `--stats`:
 ```bash
 cargo run --release -p motionloom --example wgpu_live_preview -- --print-stats ../motionloom-example/showcase/s-000005/main.motionloom
 ```
+
+Run the same viewer as an external preview host for editor controllers:
+
+```bash
+cargo run --release -p motionloom --example wgpu_live_preview -- --listen 127.0.0.1:49377
+```
+
+The host speaks newline-delimited JSON over local TCP using
+`PreviewCommand`/`PreviewEvent`. It does not require FFmpeg; it keeps the same
+persistent wgpu window and render loop as standalone preview mode. A path can be
+passed after `--listen` for manual diagnostics, but normal Anica controller mode
+starts with an internal placeholder scene and waits for `LoadScript`. In host
+mode the viewer uses an always-on-top utility window; on macOS it also runs as
+an accessory companion that can join all Spaces, so Mission Control should keep
+it with the editor instead of treating it as a separate desktop app. Controllers
+can send `SetWindowBounds` to make the host window borderless and align it over
+their own preview panel, preserving the fast external render path while making
+the viewer behave like an attached panel.
+
+Anica can opt into this external host without changing its embedded preview by
+setting:
+
+```bash
+ANICA_MOTIONLOOM_PREVIEW_HOST=127.0.0.1:49377 cargo run -p anica
+```
+
+When running Anica from the repository root package, `cargo run` auto-starts a
+local MotionLoom wgpu preview host unless disabled:
+
+```bash
+cargo run
+```
+
+Use `ANICA_MOTIONLOOM_PREVIEW_HOST=off cargo run` to keep the helper closed.
+Use `ANICA_MOTIONLOOM_PREVIEW_HOST_BIN=/path/to/wgpu_live_preview cargo run` to
+force a packaged or prebuilt helper binary. If no helper binary is found during
+development, Anica falls back to spawning the same example through Cargo.
+
+When enabled, the VFX Studio controller sends `LoadScript`, `SetFrame`,
+`SetQuality`, `SetAssetRoots`, `SetWindowBounds`, `SetWindowVisible`,
+`SetInteractionTarget`, and `SetInteractionTargets`
+commands to the external viewer while keeping the existing in-app preview path
+available. Anica uses `SetWindowVisible` to hide the companion viewer when the
+editor window is no longer active. The host can emit `WindowBounds` events for
+attach diagnostics so controllers can compare requested and actual native
+window sizes during calibration. For direct preview editing, the controller can
+send editable node bounds plus graph bounds with `SetInteractionTargets`; the
+host hit-tests the native wgpu surface and returns `PickResult`,
+`TransformDrag`, and `TransformDragEnd` events while the user drags. The older
+single-node `SetInteractionTarget` command remains available for minimal
+controllers.
 
 Keyboard controls:
 

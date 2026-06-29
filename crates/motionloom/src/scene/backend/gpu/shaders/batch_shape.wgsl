@@ -132,6 +132,14 @@ fn blend_over(base: vec4<f32>, src_rgb: vec3<f32>, src_a: f32, mode: f32) -> vec
     return vec4<f32>(rgb, out_a);
 }
 
+fn encode_pick_id(id_f: f32) -> vec4<f32> {
+    let id = u32(round(id_f));
+    let r = f32(id & 255u) / 255.0;
+    let g = f32((id >> 8u) & 255u) / 255.0;
+    let b = f32((id >> 16u) & 255u) / 255.0;
+    return vec4<f32>(r, g, b, 1.0);
+}
+
 fn stop_offset(p: Primitive, index: i32) -> f32 {
     if (index == 0) { return p.stop_offsets0.x; }
     if (index == 1) { return p.stop_offsets0.y; }
@@ -303,6 +311,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tile = tile_range_buffer.items[tile_y * tiles_x + tile_x];
     let tile_start = tile.x;
     let tile_count = tile.y;
+    let pick_mode = params.canvas.z > 0.5;
 
     for (var local_i = 0u; local_i < tile_count; local_i = local_i + 1u) {
         let primitive_index = tile_index_buffer.items[tile_start + local_i];
@@ -320,6 +329,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let cover_replace = primitive_coverage(p, local);
         let coverage = cover_replace.x;
         if (coverage <= 0.0) {
+            continue;
+        }
+        if (pick_mode) {
+            if (p.info.z > 0.5) {
+                out_color = encode_pick_id(p.info.z);
+            }
             continue;
         }
         let paint_color = sample_shape_paint(p, local);

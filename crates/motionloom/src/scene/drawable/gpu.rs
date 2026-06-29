@@ -30,6 +30,7 @@ pub(crate) struct GpuScenePrimitive {
     pub(crate) color: [u8; 4],
     pub(crate) opacity: f32,
     pub(crate) blend: SceneBlendMode,
+    pub(crate) pick_id: u32,
     pub(crate) gradient: Option<GpuSceneGradientPaint>,
     pub(crate) line_t0: f32,
     pub(crate) line_t1: f32,
@@ -48,6 +49,7 @@ pub(crate) struct GpuSceneTextRequest {
     pub(crate) node: TextNode,
     pub(crate) transform: Affine2,
     pub(crate) opacity: f32,
+    pub(crate) pick_id: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +125,7 @@ pub(crate) struct GpuSceneTextureLayer {
     pub(crate) projected_quad: Option<[(f32, f32, f32); 4]>,
     pub(crate) opacity: f32,
     pub(crate) blend: SceneBlendMode,
+    pub(crate) pick_id: u32,
     pub(crate) matte: Option<GpuSceneTextureMatte>,
 }
 
@@ -148,6 +151,7 @@ pub(crate) fn gpu_solid_primitive(color: [u8; 4]) -> GpuScenePrimitive {
         color,
         opacity: 1.0,
         blend: SceneBlendMode::Normal,
+        pick_id: 0,
         gradient: None,
         line_t0: 0.0,
         line_t1: 1.0,
@@ -262,6 +266,7 @@ pub(crate) struct BatchedShapeData {
 pub(crate) fn batch_shape_uniform(
     canvas_w: u32,
     canvas_h: u32,
+    pick_mode: bool,
     primitive_count: u32,
     tile_size: u32,
     tiles_x: u32,
@@ -270,7 +275,7 @@ pub(crate) fn batch_shape_uniform(
     f32_bytes(&[
         canvas_w as f32,
         canvas_h as f32,
-        0.0,
+        if pick_mode { 1.0 } else { 0.0 },
         0.0,
         primitive_count as f32,
         tile_size as f32,
@@ -513,7 +518,7 @@ fn batch_shape_primitive_values(
     values[..28].copy_from_slice(&[
         primitive.kind,
         primitive.blend.gpu_code(),
-        0.0,
+        primitive.pick_id as f32,
         0.0,
         bounds_x as f32,
         bounds_y as f32,
@@ -671,6 +676,7 @@ pub(crate) fn raster_texture_layer(
         projected_quad: None,
         opacity,
         blend: SceneBlendMode::Normal,
+        pick_id: 0,
         matte: None,
     }))
 }
@@ -690,6 +696,7 @@ pub(crate) fn matte_texture_uniform(
     matte_h: u32,
     matte_mode: GpuSceneMatteMode,
     invert_matte: bool,
+    pick_mode: bool,
 ) -> Result<[u8; 160], MotionLoomSceneRenderError> {
     let inverse =
         layer
@@ -742,11 +749,11 @@ pub(crate) fn matte_texture_uniform(
         quad[0].0,
         quad[0].1,
         quad[0].2,
-        0.0,
+        layer.pick_id as f32,
         quad[1].0,
         quad[1].1,
         quad[1].2,
-        0.0,
+        if pick_mode { 1.0 } else { 0.0 },
         quad[2].0,
         quad[2].1,
         quad[2].2,

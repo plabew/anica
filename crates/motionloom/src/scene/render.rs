@@ -1010,6 +1010,26 @@ impl SceneRenderer {
             .await
     }
 
+    /// Return the renderer-level pick id at a graph-space pixel.
+    ///
+    /// The caller supplies a stable `(node_id, pick_id)` table; `0` is reserved
+    /// for empty pixels. The renderer draws a hidden ID pass through the same
+    /// scene GPU command pipeline used for preview rendering, then reads one
+    /// pixel back from GPU memory.
+    pub async fn pick_id_at_wgpu_position(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        x: u32,
+        y: u32,
+        pick_ids: &[(String, u32)],
+    ) -> Result<Option<u32>, SceneRenderError> {
+        validate_scene_graph(graph)?;
+        self.inner
+            .pick_id_at_wgpu_position(graph, frame, x, y, pick_ids)
+            .await
+    }
+
     /// Render a frame to the best preview surface requested by the host.
     ///
     /// `Auto` tries future platform-native surfaces first, then wgpu texture,
@@ -1269,6 +1289,7 @@ struct SceneFrameRenderer {
     scene_precompose_defs: HashMap<String, PrecomposeNode>,
     scene_precomposes: HashMap<String, RgbaImage>,
     scene_masks: HashMap<String, MaskNode>,
+    gpu_pick_ids: HashMap<String, u32>,
     world_renderer: WorldFrameRenderer,
     gpu_compositor: Option<WgpuSceneCompositor>,
     /// Optional externally-owned wgpu device/queue for shared-context rendering.
@@ -1495,6 +1516,32 @@ fn scene_node_id(node: &SceneNode) -> Option<&str> {
     }
 }
 
+fn apply_gpu_pick_id_to_empty_commands(
+    primitives: &mut [GpuScenePrimitive],
+    texture_layers: &mut [GpuSceneTextureLayer],
+    text_requests: &mut [GpuSceneTextRequest],
+    pick_id: u32,
+) {
+    if pick_id == 0 {
+        return;
+    }
+    for primitive in primitives {
+        if primitive.pick_id == 0 {
+            primitive.pick_id = pick_id;
+        }
+    }
+    for layer in texture_layers {
+        if layer.pick_id == 0 {
+            layer.pick_id = pick_id;
+        }
+    }
+    for request in text_requests {
+        if request.pick_id == 0 {
+            request.pick_id = pick_id;
+        }
+    }
+}
+
 impl SceneFrameRenderer {
     #[allow(dead_code)]
     async fn new() -> Self {
@@ -1531,6 +1578,7 @@ impl SceneFrameRenderer {
             scene_precompose_defs: HashMap::new(),
             scene_precomposes: HashMap::new(),
             scene_masks: HashMap::new(),
+            gpu_pick_ids: HashMap::new(),
             world_renderer: WorldFrameRenderer::with_resolver(Arc::new(PathAssetResolver)),
             gpu_compositor: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1569,6 +1617,7 @@ impl SceneFrameRenderer {
             scene_precompose_defs: HashMap::new(),
             scene_precomposes: HashMap::new(),
             scene_masks: HashMap::new(),
+            gpu_pick_ids: HashMap::new(),
             world_renderer: WorldFrameRenderer::with_resolver(Arc::new(PathAssetResolver)),
             gpu_compositor: None,
             external_device_queue: Some((device, queue)),
@@ -1687,6 +1736,42 @@ impl SceneFrameRenderer {
             height: native_texture.height,
             format: wgpu::TextureFormat::Rgba8Unorm,
         })
+    }
+
+    async fn pick_id_at_wgpu_position(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        x: u32,
+        y: u32,
+        pick_ids: &[(String, u32)],
+    ) -> Result<Option<u32>, MotionLoomSceneRenderError> {
+        if !self.profile.uses_gpu_compositor() {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "pick_id_at_wgpu_position requires a GPU profile".to_string(),
+            });
+        }
+
+        let fps = graph.fps.max(1.0);
+        let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / fps);
+        let time_sec = frame as f32 / fps;
+        let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
+        let animated_graph = apply_animation_targets_at_frame(graph, frame)?;
+        let graph = animated_graph.as_ref().unwrap_or(graph);
+        let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
+        let graph = applied_graph.as_ref().unwrap_or(graph);
+        self.prepare_frame_caches(graph);
+
+        let previous_pick_ids = std::mem::take(&mut self.gpu_pick_ids);
+        self.gpu_pick_ids = pick_ids
+            .iter()
+            .filter_map(|(node, id)| (*id > 0).then_some((node.clone(), *id)))
+            .collect();
+        let result = self
+            .render_scene_tree_pick_id_at(graph, time_norm, time_sec, x, y)
+            .await;
+        self.gpu_pick_ids = previous_pick_ids;
+        result
     }
 
     async fn render_frame_to_wgpu_target_texture(
@@ -2532,11 +2617,14 @@ impl SceneFrameRenderer {
         for request in text_requests {
             texture_layers.extend(self.rasterize_text_texture_layers_gpu_effects(
                 &request.node,
-                request.transform,
-                request.opacity,
-                time_norm,
-                time_sec,
-                logical_size,
+                TextTextureRasterContext {
+                    transform: request.transform,
+                    inherited_opacity: request.opacity,
+                    pick_id: request.pick_id,
+                    time_norm,
+                    time_sec,
+                    canvas_size: logical_size,
+                },
             )?);
         }
 
@@ -2613,11 +2701,14 @@ impl SceneFrameRenderer {
         for request in text_requests {
             texture_layers.extend(self.rasterize_text_texture_layers_gpu_effects(
                 &request.node,
-                request.transform,
-                request.opacity,
-                time_norm,
-                time_sec,
-                scene_canvas_size,
+                TextTextureRasterContext {
+                    transform: request.transform,
+                    inherited_opacity: request.opacity,
+                    pick_id: request.pick_id,
+                    time_norm,
+                    time_sec,
+                    canvas_size: scene_canvas_size,
+                },
             )?);
         }
 
@@ -2665,6 +2756,124 @@ impl SceneFrameRenderer {
             Some(background),
         )
         .await
+    }
+
+    async fn render_scene_tree_pick_id_at(
+        &mut self,
+        graph: &GraphScript,
+        time_norm: f32,
+        time_sec: f32,
+        x: u32,
+        y: u32,
+    ) -> Result<Option<u32>, MotionLoomSceneRenderError> {
+        let Some(nodes) = scene_nodes_for_present(graph) else {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "renderer ID picking needs a presentable scene tree".to_string(),
+            });
+        };
+        let output_size = graph_output_size(graph);
+        let logical_size = graph_logical_render_size(graph);
+        let root_transform = render_size_root_transform(output_size, logical_size);
+        let texture = self
+            .present_gpu_scene_nodes_pick_ids_to_texture(
+                nodes,
+                output_size,
+                logical_size,
+                root_transform,
+                time_norm,
+                time_sec,
+            )
+            .await?;
+        let compositor =
+            self.gpu_compositor
+                .as_ref()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        let rgba = compositor
+            .readback_texture_pixel_rgba_async(
+                texture.texture.as_ref(),
+                x.min(texture.width.saturating_sub(1)),
+                y.min(texture.height.saturating_sub(1)),
+            )
+            .await?;
+        let id = u32::from(rgba[0]) | (u32::from(rgba[1]) << 8) | (u32::from(rgba[2]) << 16);
+        Ok((id > 0).then_some(id))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn present_gpu_scene_nodes_pick_ids_to_texture(
+        &mut self,
+        nodes: &[SceneNode],
+        output_size: (u32, u32),
+        logical_size: (u32, u32),
+        root_transform: Affine2,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let scaled_scene = output_size != logical_size || !affine_is_identity(root_transform);
+        let scene_transform = if scaled_scene {
+            root_transform
+        } else {
+            Affine2::identity()
+        };
+        let scene_canvas_size = if scaled_scene {
+            logical_size
+        } else {
+            output_size
+        };
+
+        self.ensure_gpu_compositor_size(output_size.0.max(1), output_size.1.max(1))
+            .await?;
+        let mut assets = GpuSceneNativeAssets::default();
+        let mut primitives = Vec::<GpuScenePrimitive>::new();
+        let mut texture_layers = Vec::<GpuSceneTextureLayer>::new();
+        let mut text_requests = Vec::<GpuSceneTextRequest>::new();
+        let mut unsupported = false;
+        self.collect_gpu_scene_native_commands(
+            nodes,
+            scene_transform,
+            None,
+            1.0,
+            time_norm,
+            time_sec,
+            scene_canvas_size,
+            &mut assets,
+            &mut primitives,
+            &mut texture_layers,
+            &mut text_requests,
+            &mut unsupported,
+        )
+        .await?;
+        if unsupported {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: "renderer ID picking does not support this scene node set yet".to_string(),
+            });
+        }
+
+        for request in text_requests {
+            texture_layers.extend(self.rasterize_text_texture_layers_gpu_effects(
+                &request.node,
+                TextTextureRasterContext {
+                    transform: request.transform,
+                    inherited_opacity: request.opacity,
+                    pick_id: request.pick_id,
+                    time_norm,
+                    time_sec,
+                    canvas_size: scene_canvas_size,
+                },
+            )?);
+        }
+
+        self.ensure_gpu_compositor_size(output_size.0.max(1), output_size.1.max(1))
+            .await?;
+        let compositor =
+            self.gpu_compositor
+                .as_mut()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?;
+        compositor.render_scene_pick_ids_to_texture(&primitives, &texture_layers)
     }
 
     /// Collect and render scene nodes to a GPU texture without presenting to a surface.
@@ -2723,11 +2932,14 @@ impl SceneFrameRenderer {
         for request in text_requests {
             texture_layers.extend(self.rasterize_text_texture_layers_gpu_effects(
                 &request.node,
-                request.transform,
-                request.opacity,
-                time_norm,
-                time_sec,
-                scene_canvas_size,
+                TextTextureRasterContext {
+                    transform: request.transform,
+                    inherited_opacity: request.opacity,
+                    pick_id: request.pick_id,
+                    time_norm,
+                    time_sec,
+                    canvas_size: scene_canvas_size,
+                },
             )?);
         }
 
@@ -2843,11 +3055,14 @@ impl SceneFrameRenderer {
         for request in text_requests {
             texture_layers.extend(self.rasterize_text_texture_layers_gpu_effects(
                 &request.node,
-                request.transform,
-                request.opacity,
-                time_norm,
-                time_sec,
-                scene_canvas_size,
+                TextTextureRasterContext {
+                    transform: request.transform,
+                    inherited_opacity: request.opacity,
+                    pick_id: request.pick_id,
+                    time_norm,
+                    time_sec,
+                    canvas_size: scene_canvas_size,
+                },
             )?);
         }
 
@@ -2905,11 +3120,14 @@ impl SceneFrameRenderer {
         for request in text_requests {
             texture_layers.extend(self.rasterize_text_texture_layers_gpu_effects(
                 &request.node,
-                request.transform,
-                request.opacity,
-                time_norm,
-                time_sec,
-                canvas_size,
+                TextTextureRasterContext {
+                    transform: request.transform,
+                    inherited_opacity: request.opacity,
+                    pick_id: request.pick_id,
+                    time_norm,
+                    time_sec,
+                    canvas_size,
+                },
             )?);
         }
         self.ensure_gpu_compositor_size(canvas_size.0.max(1), canvas_size.1.max(1))
@@ -3412,6 +3630,7 @@ impl SceneFrameRenderer {
                                 projected_quad: None,
                                 opacity: 1.0,
                                 blend: SceneBlendMode::Normal,
+                                pick_id: 0,
                                 matte: Some(GpuSceneTextureMatte {
                                     texture: matte,
                                     mode: GpuSceneMatteMode::Alpha,
@@ -3425,6 +3644,11 @@ impl SceneFrameRenderer {
                             .insert(precompose.id.clone(), precompose.clone());
                     }
                     SceneNode::Layer(layer) => {
+                        let layer_pick_id = self
+                            .gpu_pick_ids
+                            .get(layer.id.as_deref().unwrap_or(""))
+                            .copied()
+                            .unwrap_or(0);
                         if layer.is_3d {
                             let opacity = (eval_scene_number(&layer.opacity, time_norm, time_sec)?
                                 * inherited_opacity)
@@ -3473,6 +3697,7 @@ impl SceneFrameRenderer {
                                 projected_quad: Some(projected_quad),
                                 opacity,
                                 blend,
+                                pick_id: layer_pick_id,
                                 matte: None,
                             });
                             continue;
@@ -3503,6 +3728,9 @@ impl SceneFrameRenderer {
                             && blend == SceneBlendMode::Normal
                             && (opacity - inherited_opacity).abs() <= 0.0001
                         {
+                            let primitive_start = primitives.len();
+                            let texture_start = texture_layers.len();
+                            let text_start = text_requests.len();
                             self.collect_gpu_scene_native_commands_with_depth(
                                 &layer.children,
                                 base_transform
@@ -3520,6 +3748,12 @@ impl SceneFrameRenderer {
                                 None,
                             )
                             .await?;
+                            apply_gpu_pick_id_to_empty_commands(
+                                &mut primitives[primitive_start..],
+                                &mut texture_layers[texture_start..],
+                                &mut text_requests[text_start..],
+                                layer_pick_id,
+                            );
                             continue;
                         }
                         if layer.source.is_some() && !layer.children.is_empty() {
@@ -3664,6 +3898,7 @@ impl SceneFrameRenderer {
                             projected_quad: None,
                             opacity,
                             blend,
+                            pick_id: layer_pick_id,
                             matte,
                         });
                     }
@@ -3672,7 +3907,7 @@ impl SceneFrameRenderer {
                             *unsupported = true;
                             continue;
                         }
-                        if let Some(layer) = self.gpu_image_texture_layer(
+                        if let Some(mut layer) = self.gpu_image_texture_layer(
                             image,
                             transform,
                             inherited_opacity,
@@ -3680,6 +3915,11 @@ impl SceneFrameRenderer {
                             time_sec,
                             canvas_size,
                         )? {
+                            layer.pick_id = self
+                                .gpu_pick_ids
+                                .get(image.id.as_deref().unwrap_or(""))
+                                .copied()
+                                .unwrap_or(0);
                             texture_layers.push(layer);
                         }
                     }
@@ -3688,7 +3928,7 @@ impl SceneFrameRenderer {
                             *unsupported = true;
                             continue;
                         }
-                        if let Some(layer) = self.gpu_svg_texture_layer(
+                        if let Some(mut layer) = self.gpu_svg_texture_layer(
                             svg,
                             transform,
                             inherited_opacity,
@@ -3696,10 +3936,20 @@ impl SceneFrameRenderer {
                             time_sec,
                             canvas_size,
                         )? {
+                            layer.pick_id = self
+                                .gpu_pick_ids
+                                .get(svg.id.as_deref().unwrap_or(""))
+                                .copied()
+                                .unwrap_or(0);
                             texture_layers.push(layer);
                         }
                     }
                     SceneNode::Group(group) => {
+                        let group_pick_id = self
+                            .gpu_pick_ids
+                            .get(group.id.as_deref().unwrap_or(""))
+                            .copied()
+                            .unwrap_or(0);
                         let opacity = (eval_scene_number(&group.opacity, time_norm, time_sec)?
                             * inherited_opacity)
                             .clamp(0.0, 1.0);
@@ -3743,6 +3993,7 @@ impl SceneFrameRenderer {
                                 projected_quad: None,
                                 opacity: 1.0,
                                 blend: SceneBlendMode::Normal,
+                                pick_id: group_pick_id,
                                 matte: Some(GpuSceneTextureMatte {
                                     texture: matte,
                                     mode: GpuSceneMatteMode::Alpha,
@@ -3788,6 +4039,7 @@ impl SceneFrameRenderer {
                                 projected_quad: None,
                                 opacity: 1.0,
                                 blend: SceneBlendMode::Normal,
+                                pick_id: 0,
                                 matte: Some(GpuSceneTextureMatte {
                                     texture: matte,
                                     mode: gpu_matte_mode(&group.mask_mode),
@@ -3799,6 +4051,9 @@ impl SceneFrameRenderer {
                                 .as_ref()
                                 .map(|grid| transform_deform_grid(grid, group_transform));
                             let child_deform = group_deform.as_ref().or(deform);
+                            let primitive_start = primitives.len();
+                            let texture_start = texture_layers.len();
+                            let text_start = text_requests.len();
                             self.collect_gpu_scene_native_commands(
                                 &group.children,
                                 group_transform,
@@ -3814,9 +4069,20 @@ impl SceneFrameRenderer {
                                 unsupported,
                             )
                             .await?;
+                            apply_gpu_pick_id_to_empty_commands(
+                                &mut primitives[primitive_start..],
+                                &mut texture_layers[texture_start..],
+                                &mut text_requests[text_start..],
+                                group_pick_id,
+                            );
                         }
                     }
                     SceneNode::Puppet(puppet) => {
+                        let puppet_pick_id = self
+                            .gpu_pick_ids
+                            .get(puppet.id.as_deref().unwrap_or(""))
+                            .copied()
+                            .unwrap_or(0);
                         let opacity = (eval_scene_number(&puppet.opacity, time_norm, time_sec)?
                             * inherited_opacity)
                             .clamp(0.0, 1.0);
@@ -3879,6 +4145,7 @@ impl SceneFrameRenderer {
                             projected_quad: None,
                             opacity: 1.0,
                             blend: SceneBlendMode::Normal,
+                            pick_id: puppet_pick_id,
                             matte: None,
                         });
                     }
@@ -3922,6 +4189,11 @@ impl SceneFrameRenderer {
                         .await?;
                     }
                     SceneNode::Character(character) => {
+                        let character_pick_id = self
+                            .gpu_pick_ids
+                            .get(character.id.as_deref().unwrap_or(""))
+                            .copied()
+                            .unwrap_or(0);
                         let opacity = (eval_scene_number(&character.opacity, time_norm, time_sec)?
                             * inherited_opacity)
                             .clamp(0.0, 1.0);
@@ -3931,6 +4203,9 @@ impl SceneFrameRenderer {
                         let character_transform = transform.mul(scene_character_local_transform(
                             character, time_norm, time_sec,
                         )?);
+                        let primitive_start = primitives.len();
+                        let texture_start = texture_layers.len();
+                        let text_start = text_requests.len();
                         self.collect_gpu_scene_native_commands(
                             &character.children,
                             character_transform,
@@ -3946,8 +4221,19 @@ impl SceneFrameRenderer {
                             unsupported,
                         )
                         .await?;
+                        apply_gpu_pick_id_to_empty_commands(
+                            &mut primitives[primitive_start..],
+                            &mut texture_layers[texture_start..],
+                            &mut text_requests[text_start..],
+                            character_pick_id,
+                        );
                     }
                     SceneNode::Part(part) => {
+                        let part_pick_id = self
+                            .gpu_pick_ids
+                            .get(part.id.as_deref().unwrap_or(""))
+                            .copied()
+                            .unwrap_or(0);
                         let opacity = (eval_scene_number(&part.opacity, time_norm, time_sec)?
                             * inherited_opacity)
                             .clamp(0.0, 1.0);
@@ -3966,6 +4252,9 @@ impl SceneFrameRenderer {
                             .mul(Affine2::rotate_deg(rotation))
                             .mul(Affine2::scale(scale))
                             .mul(Affine2::translate(-anchor_x, -anchor_y));
+                        let primitive_start = primitives.len();
+                        let texture_start = texture_layers.len();
+                        let text_start = text_requests.len();
                         self.collect_gpu_scene_native_commands(
                             &part.children,
                             part_transform,
@@ -3981,8 +4270,19 @@ impl SceneFrameRenderer {
                             unsupported,
                         )
                         .await?;
+                        apply_gpu_pick_id_to_empty_commands(
+                            &mut primitives[primitive_start..],
+                            &mut texture_layers[texture_start..],
+                            &mut text_requests[text_start..],
+                            part_pick_id,
+                        );
                     }
                     SceneNode::Repeat(repeat) => {
+                        let repeat_pick_id = self
+                            .gpu_pick_ids
+                            .get(repeat.id.as_deref().unwrap_or(""))
+                            .copied()
+                            .unwrap_or(0);
                         let count = eval_repeat_count(&repeat.count, time_norm, time_sec)?;
                         let x = eval_scene_number(&repeat.x, time_norm, time_sec)?;
                         let y = eval_scene_number(&repeat.y, time_norm, time_sec)?;
@@ -3998,6 +4298,9 @@ impl SceneFrameRenderer {
                             eval_scene_number(&repeat.scale_step, time_norm, time_sec)?;
                         let opacity_step =
                             eval_scene_number(&repeat.opacity_step, time_norm, time_sec)?;
+                        let primitive_start = primitives.len();
+                        let texture_start = texture_layers.len();
+                        let text_start = text_requests.len();
                         for index in 0..count {
                             let i = index as f32;
                             let copy_opacity =
@@ -4025,8 +4328,19 @@ impl SceneFrameRenderer {
                             )
                             .await?;
                         }
+                        apply_gpu_pick_id_to_empty_commands(
+                            &mut primitives[primitive_start..],
+                            &mut texture_layers[texture_start..],
+                            &mut text_requests[text_start..],
+                            repeat_pick_id,
+                        );
                     }
                     SceneNode::Use(use_node) => {
+                        let use_pick_id = self
+                            .gpu_pick_ids
+                            .get(use_node.id.as_deref().unwrap_or(""))
+                            .copied()
+                            .unwrap_or(0);
                         let opacity = (eval_scene_number(&use_node.opacity, time_norm, time_sec)?
                             * inherited_opacity)
                             .clamp(0.0, 1.0);
@@ -4057,6 +4371,12 @@ impl SceneFrameRenderer {
                             unsupported,
                         )
                         .await?;
+                        apply_gpu_pick_id_to_empty_commands(
+                            &mut primitives[primitive_start..],
+                            &mut texture_layers[texture_start..],
+                            &mut text_requests[text_start..],
+                            use_pick_id,
+                        );
 
                         let use_blend = parse_scene_blend(&use_node.blend)?;
                         if use_blend != SceneBlendMode::Normal {
@@ -4074,6 +4394,12 @@ impl SceneFrameRenderer {
                         }
                     }
                     _ => {
+                        let node_pick_id = scene_node_id(node)
+                            .and_then(|id| self.gpu_pick_ids.get(id).copied())
+                            .unwrap_or(0);
+                        let primitive_start = primitives.len();
+                        let texture_start = texture_layers.len();
+                        let text_start = text_requests.len();
                         let mut overlays = Vec::<CpuSceneOverlay>::new();
                         collect_gpu_scene_commands(
                             std::slice::from_ref(node),
@@ -4093,6 +4419,12 @@ impl SceneFrameRenderer {
                         if !overlays.is_empty() {
                             *unsupported = true;
                         }
+                        apply_gpu_pick_id_to_empty_commands(
+                            &mut primitives[primitive_start..],
+                            &mut texture_layers[texture_start..],
+                            &mut text_requests[text_start..],
+                            node_pick_id,
+                        );
                     }
                 }
             }
@@ -4219,6 +4551,7 @@ impl SceneFrameRenderer {
                         color,
                         opacity,
                         blend: SceneBlendMode::Normal,
+                        pick_id: 0,
                         gradient: None,
                         line_t0: 0.0,
                         line_t1: 1.0,
@@ -4315,6 +4648,7 @@ impl SceneFrameRenderer {
                         color,
                         opacity,
                         blend: SceneBlendMode::Normal,
+                        pick_id: 0,
                         gradient: None,
                         line_t0: 0.0,
                         line_t1: 1.0,
@@ -7911,6 +8245,7 @@ impl SceneFrameRenderer {
             projected_quad: None,
             opacity: 1.0,
             blend: SceneBlendMode::Normal,
+            pick_id: 0,
             matte: None,
         }))
     }
@@ -7918,19 +8253,15 @@ impl SceneFrameRenderer {
     fn rasterize_text_texture_layers_gpu_effects(
         &mut self,
         text: &TextNode,
-        transform: Affine2,
-        inherited_opacity: f32,
-        time_norm: f32,
-        time_sec: f32,
-        canvas_size: (u32, u32),
+        context: TextTextureRasterContext,
     ) -> Result<Vec<GpuSceneTextureLayer>, MotionLoomSceneRenderError> {
         let Some(base) = self.rasterize_text_base_layer(
             text,
-            transform,
-            inherited_opacity,
-            time_norm,
-            time_sec,
-            canvas_size,
+            context.transform,
+            context.inherited_opacity,
+            context.time_norm,
+            context.time_sec,
+            context.canvas_size,
         )?
         else {
             return Ok(Vec::new());
@@ -7943,6 +8274,7 @@ impl SceneFrameRenderer {
                 projected_quad: None,
                 opacity: 1.0,
                 blend: SceneBlendMode::Normal,
+                pick_id: context.pick_id,
                 matte: None,
             }]);
         }
@@ -7977,6 +8309,7 @@ impl SceneFrameRenderer {
                     projected_quad: None,
                     opacity: 1.0,
                     blend: SceneBlendMode::Normal,
+                    pick_id: 0,
                     matte: None,
                 });
             }
@@ -7993,6 +8326,7 @@ impl SceneFrameRenderer {
                     projected_quad: None,
                     opacity: 1.0,
                     blend: SceneBlendMode::Screen,
+                    pick_id: 0,
                     matte: None,
                 });
             }
@@ -8006,6 +8340,7 @@ impl SceneFrameRenderer {
                 projected_quad: None,
                 opacity: 1.0,
                 blend: SceneBlendMode::Normal,
+                pick_id: context.pick_id,
                 matte: None,
             });
         }
@@ -8032,6 +8367,7 @@ impl SceneFrameRenderer {
             projected_quad: None,
             opacity: 1.0,
             blend: SceneBlendMode::Normal,
+            pick_id: context.pick_id,
             matte: None,
         });
 
@@ -8188,6 +8524,16 @@ struct TextBoxStyle {
     padding_x: f32,
     padding_y: f32,
     radius: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TextTextureRasterContext {
+    transform: Affine2,
+    inherited_opacity: f32,
+    pick_id: u32,
+    time_norm: f32,
+    time_sec: f32,
+    canvas_size: (u32, u32),
 }
 
 fn eval_text_box_style(
@@ -8572,6 +8918,7 @@ fn collect_gpu_scene_commands_with_depth(
                         node: text.as_ref().clone(),
                         transform,
                         opacity: inherited_opacity,
+                        pick_id: 0,
                     });
                 }
                 pending_shadow = None;
@@ -9176,6 +9523,7 @@ fn push_gpu_pixel_grid_commands(
                 color,
                 opacity,
                 blend,
+                pick_id: 0,
                 gradient: None,
                 line_t0: 0.0,
                 line_t1: 1.0,
@@ -9346,10 +9694,13 @@ fn push_gpu_rect_commands(
             primitives,
             Affine2::identity(),
             &subpaths,
-            color,
-            opacity,
-            gradient,
-            fill_blend,
+            GpuFilledPathStyle {
+                color,
+                opacity,
+                gradient,
+                blend: fill_blend,
+                pick_id: 0,
+            },
         );
 
         if let Some(stroke_value) = rect
@@ -9391,6 +9742,7 @@ fn push_gpu_rect_commands(
             color: shadow.color,
             opacity: 1.0,
             blend: SceneBlendMode::Normal,
+            pick_id: 0,
             gradient: None,
             line_t0: 0.0,
             line_t1: 1.0,
@@ -9410,6 +9762,7 @@ fn push_gpu_rect_commands(
         color,
         opacity,
         blend: fill_blend,
+        pick_id: 0,
         gradient,
         line_t0: 0.0,
         line_t1: 1.0,
@@ -9436,6 +9789,7 @@ fn push_gpu_rect_commands(
                 color: stroke,
                 opacity,
                 blend: SceneBlendMode::Normal,
+                pick_id: 0,
                 gradient,
                 line_t0: 0.0,
                 line_t1: 1.0,
@@ -9496,10 +9850,13 @@ fn push_gpu_circle_commands(
             primitives,
             Affine2::identity(),
             &subpaths,
-            color,
-            opacity,
-            gradient,
-            blend,
+            GpuFilledPathStyle {
+                color,
+                opacity,
+                gradient,
+                blend,
+                pick_id: 0,
+            },
         );
 
         if let Some(stroke_value) = circle
@@ -9541,6 +9898,7 @@ fn push_gpu_circle_commands(
             color: shadow.color,
             opacity: 1.0,
             blend: SceneBlendMode::Normal,
+            pick_id: 0,
             gradient: None,
             line_t0: 0.0,
             line_t1: 1.0,
@@ -9560,6 +9918,7 @@ fn push_gpu_circle_commands(
         color,
         opacity,
         blend,
+        pick_id: 0,
         gradient,
         line_t0: 0.0,
         line_t1: 1.0,
@@ -9586,6 +9945,7 @@ fn push_gpu_circle_commands(
                 color: stroke,
                 opacity,
                 blend,
+                pick_id: 0,
                 gradient,
                 line_t0: 0.0,
                 line_t1: 1.0,
@@ -9664,6 +10024,7 @@ fn push_gpu_line_command(
         1.0,
         style,
         blend,
+        0,
     );
     Ok(())
 }
@@ -9767,10 +10128,13 @@ fn push_gpu_path_commands(
             primitives,
             primitive_transform,
             &subpaths,
-            color,
-            opacity,
-            gradient,
-            blend,
+            GpuFilledPathStyle {
+                color,
+                opacity,
+                gradient,
+                blend,
+                pick_id: 0,
+            },
         );
     }
 
@@ -9808,21 +10172,29 @@ fn push_gpu_filled_path_triangles(
         primitives,
         transform,
         subpaths,
-        color,
-        opacity,
-        gradient,
-        SceneBlendMode::Normal,
+        GpuFilledPathStyle {
+            color,
+            opacity,
+            gradient,
+            blend: SceneBlendMode::Normal,
+            pick_id: 0,
+        },
     );
+}
+
+struct GpuFilledPathStyle {
+    color: [u8; 4],
+    opacity: f32,
+    gradient: Option<GpuSceneGradientPaint>,
+    blend: SceneBlendMode,
+    pick_id: u32,
 }
 
 fn push_gpu_filled_path_triangles_with_blend(
     primitives: &mut Vec<GpuScenePrimitive>,
     transform: Affine2,
     subpaths: &[Vec<Point2>],
-    color: [u8; 4],
-    opacity: f32,
-    gradient: Option<GpuSceneGradientPaint>,
-    blend: SceneBlendMode,
+    style: GpuFilledPathStyle,
 ) {
     for subpath in subpaths {
         for [a, b, c] in triangulate_polygon(subpath) {
@@ -9833,10 +10205,11 @@ fn push_gpu_filled_path_triangles_with_blend(
                 radius: c.x,
                 stroke_width: c.y,
                 blur: 0.0,
-                color,
-                opacity,
-                blend,
-                gradient: gradient.clone(),
+                color: style.color,
+                opacity: style.opacity,
+                blend: style.blend,
+                pick_id: style.pick_id,
+                gradient: style.gradient.clone(),
                 line_t0: 0.0,
                 line_t1: 1.0,
                 taper_start: 0.0,
@@ -9983,6 +10356,7 @@ fn push_gpu_styled_line_primitives(
     line_t1: f32,
     style: StrokeStyle,
     blend: SceneBlendMode,
+    pick_id: u32,
 ) {
     let copies = stroke_texture_copy_count(style);
     for copy_ix in 0..copies {
@@ -10004,6 +10378,7 @@ fn push_gpu_styled_line_primitives(
                 line_t1,
                 style,
                 blend,
+                pick_id,
             );
         } else {
             push_gpu_line_primitive(
@@ -10020,6 +10395,7 @@ fn push_gpu_styled_line_primitives(
                 style.taper_start,
                 style.taper_end,
                 blend,
+                pick_id,
             );
         }
     }
@@ -10043,6 +10419,7 @@ fn push_gpu_line_primitive(
     taper_start: f32,
     taper_end: f32,
     blend: SceneBlendMode,
+    pick_id: u32,
 ) {
     primitives.push(GpuScenePrimitive {
         kind: GPU_SHAPE_LINE,
@@ -10054,6 +10431,7 @@ fn push_gpu_line_primitive(
         color,
         opacity: opacity.clamp(0.0, 1.0),
         blend,
+        pick_id,
         gradient,
         line_t0,
         line_t1,
@@ -10076,6 +10454,7 @@ fn push_gpu_pressure_line_primitives(
     line_t1: f32,
     style: StrokeStyle,
     blend: SceneBlendMode,
+    pick_id: u32,
 ) {
     let len = point_distance(p0, p1);
     if len <= 0.0001 {
@@ -10102,6 +10481,7 @@ fn push_gpu_pressure_line_primitives(
             0.0,
             0.0,
             blend,
+            pick_id,
         );
     }
 }
@@ -10130,7 +10510,7 @@ fn push_gpu_stroke_overlay_primitives(
     }
     if style.bristles > 0 {
         push_gpu_stroke_bristle_primitives(
-            primitives, transform, p0, p1, width, color, opacity, line_t0, line_t1, style, blend,
+            primitives, transform, p0, p1, width, color, opacity, line_t0, line_t1, style, blend, 0,
         );
     }
 }
@@ -10207,6 +10587,7 @@ fn push_gpu_stroke_stamp_primitives(
             color,
             opacity: (opacity * strength * alpha_scale).clamp(0.0, 1.0),
             blend,
+            pick_id: 0,
             gradient: None,
             line_t0: 0.0,
             line_t1: 1.0,
@@ -10229,6 +10610,7 @@ fn push_gpu_stroke_bristle_primitives(
     line_t1: f32,
     style: StrokeStyle,
     blend: SceneBlendMode,
+    pick_id: u32,
 ) {
     let len = point_distance(p0, p1);
     if len <= 0.0001 {
@@ -10277,6 +10659,7 @@ fn push_gpu_stroke_bristle_primitives(
             0.0,
             0.0,
             blend,
+            pick_id,
         );
     }
 }
@@ -10308,6 +10691,7 @@ fn push_gpu_stroke_segments(
             segment.t1,
             style,
             blend,
+            0,
         );
     }
 }
