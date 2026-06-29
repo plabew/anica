@@ -528,7 +528,7 @@ impl LivePreviewApp {
                 let visible = visible && self.frontmost_app_allows_visibility();
                 let changed = self.window_visible != visible;
                 self.window_visible = visible;
-                if let Some(window) = self.window.as_ref() {
+                if changed && let Some(window) = self.window.as_ref() {
                     window.set_visible(visible);
                 }
                 self.last_attach_heartbeat = visible.then(Instant::now);
@@ -599,17 +599,27 @@ impl LivePreviewApp {
             }
             return;
         }
+        let changed = !self.window_visible;
         self.window_visible = true;
         self.last_attach_heartbeat = Some(Instant::now());
         if let Some(window) = self.window.as_ref() {
-            window.set_visible(true);
-            window.set_window_level(WindowLevel::AlwaysOnTop);
+            if changed {
+                window.set_visible(true);
+            }
+            if preview_host_platform::should_raise_attached_window_on_heartbeat() {
+                window.set_window_level(WindowLevel::AlwaysOnTop);
+            }
         }
-        self.apply_requested_window_bounds();
+        if preview_host_platform::should_reapply_bounds_on_heartbeat() {
+            self.apply_requested_window_bounds();
+        }
     }
 
     fn frontmost_app_allows_visibility(&self) -> bool {
         if !self.host_mode {
+            return true;
+        }
+        if !preview_host_platform::should_gate_visibility_by_frontmost_process() {
             return true;
         }
         let Some(frontmost_pid) = preview_host_platform::frontmost_process_id() else {

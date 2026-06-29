@@ -75,3 +75,15 @@ fn frontmost_process_id_x11() -> Option<u32> {
 pub fn frontmost_process_id() -> Option<u32> {
     None
 }
+
+pub fn should_gate_visibility_by_frontmost_process() -> bool {
+    cfg!(any(target_os = "macos", target_os = "linux"))
+}
+
+pub fn should_raise_attached_window_on_heartbeat() -> bool {
+    cfg!(target_os = "macos")
+}
+
+pub fn should_reapply_bounds_on_heartbeat() -> bool {
+    cfg!(target_os = "macos")
+}
