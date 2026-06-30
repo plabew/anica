@@ -138,7 +138,7 @@ impl MotionLoomExternalPreviewProtocol {
 
 #[cfg(target_os = "windows")]
 fn default_motionloom_external_preview_protocol() -> &'static str {
-    "script"
+    "window"
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1875,7 +1875,11 @@ impl MotionLoomPage {
     fn set_scene_live_preview_override(&mut self, node: String, property: String, value: f32) {
         self.scene_live_preview_overrides
             .insert((node.clone(), property.clone()), value);
-        if let Some(host) = self.scene_external_preview_host.as_ref() {
+        let protocol = MotionLoomExternalPreviewProtocol::current();
+        if protocol.allows_interaction()
+            && self.scene_external_preview_script_hash.is_some()
+            && let Some(host) = self.scene_external_preview_host.as_ref()
+        {
             host.send(PreviewCommand::SetOverride {
                 node,
                 property,
@@ -1885,7 +1889,11 @@ impl MotionLoomPage {
     }
 
     fn clear_scene_live_preview_overrides(&mut self) {
-        if let Some(host) = self.scene_external_preview_host.as_ref() {
+        let protocol = MotionLoomExternalPreviewProtocol::current();
+        if protocol.allows_interaction()
+            && self.scene_external_preview_script_hash.is_some()
+            && let Some(host) = self.scene_external_preview_host.as_ref()
+        {
             for (node, property) in self.scene_live_preview_overrides.keys() {
                 host.send(PreviewCommand::ClearOverride {
                     node: node.clone(),
