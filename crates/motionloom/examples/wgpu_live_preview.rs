@@ -285,6 +285,8 @@ struct LivePreviewApp {
     requested_window_bounds: Option<PreviewWindowBounds>,
     last_attach_heartbeat: Option<Instant>,
     needs_redraw: bool,
+    // Controller visibility is a hard gate; frame updates must not re-show a hidden host window.
+    controller_window_visible_allowed: bool,
     window_visible: bool,
     interaction_mode: PreviewInteractionMode,
     interaction_graph_width: f32,
@@ -403,6 +405,7 @@ impl LivePreviewApp {
             requested_window_bounds: None,
             last_attach_heartbeat: None,
             needs_redraw: true,
+            controller_window_visible_allowed: !host_mode,
             window_visible: !host_mode,
             interaction_mode: PreviewInteractionMode::Move,
             interaction_graph_width: 1280.0,
@@ -546,6 +549,7 @@ impl LivePreviewApp {
                 }
             }
             PreviewCommand::SetWindowVisible { visible } => {
+                self.controller_window_visible_allowed = visible;
                 let visible = visible && self.frontmost_app_allows_visibility();
                 let changed = self.window_visible != visible;
                 self.window_visible = visible;
@@ -610,6 +614,14 @@ impl LivePreviewApp {
 
     fn keep_attached_visible(&mut self) {
         if !self.host_mode {
+            return;
+        }
+        if !self.controller_window_visible_allowed {
+            self.window_visible = false;
+            self.last_attach_heartbeat = None;
+            if let Some(window) = self.window.as_ref() {
+                window.set_visible(false);
+            }
             return;
         }
         if !self.frontmost_app_allows_visibility() {
