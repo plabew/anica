@@ -1280,6 +1280,7 @@ pub struct MotionLoomPage {
     scene_external_preview_asset_roots: Vec<PathBuf>,
     scene_external_preview_heartbeat_scheduled: bool,
     scene_external_preview_host_focused: bool,
+    scene_external_preview_render_debug_count: u32,
     scene_external_preview_desired_window: Arc<Mutex<SceneExternalPreviewDesiredWindow>>,
     scene_external_preview_last_window: Option<SceneExternalPreviewDesiredWindow>,
     world_live_preview_tx: Sender<WorldLivePreviewRequest>,
@@ -1391,6 +1392,7 @@ impl MotionLoomPage {
             scene_external_preview_asset_roots: Vec::new(),
             scene_external_preview_heartbeat_scheduled: false,
             scene_external_preview_host_focused: false,
+            scene_external_preview_render_debug_count: 0,
             scene_external_preview_desired_window: Arc::new(Mutex::new(
                 SceneExternalPreviewDesiredWindow::default(),
             )),
@@ -2034,6 +2036,20 @@ impl MotionLoomPage {
 
     fn scene_external_preview_active(&self) -> bool {
         self.scene_external_preview_host.is_some()
+    }
+
+    fn log_scene_external_render_checkpoint(&mut self, label: &str) {
+        // Windows stack overflows happen before panic hooks run, so keep early render breadcrumbs.
+        if !cfg!(target_os = "windows") || self.scene_external_preview_render_debug_count >= 80 {
+            return;
+        }
+        self.scene_external_preview_render_debug_count += 1;
+        motionloom_external_preview_log(format!(
+            "render checkpoint {label} frame={} host={} protocol={:?}",
+            self.preview_frame,
+            self.scene_external_preview_host.is_some(),
+            MotionLoomExternalPreviewProtocol::current()
+        ));
     }
 
     fn scene_external_preview_hidden_by_overlay(&self) -> bool {
@@ -9877,6 +9893,7 @@ impl MotionLoomPage {
 
 impl Render for MotionLoomPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.log_scene_external_render_checkpoint("enter");
         self.sync_script_from_global(window, cx);
         self.sync_render_request_from_global(window, cx);
         self.ensure_script_input(window, cx);
@@ -9884,6 +9901,7 @@ impl Render for MotionLoomPage {
         self.ensure_preview_frame_input(window, cx);
         self.sync_script_input_if_needed(window, cx);
         self.sync_preview_frame_to_global(cx);
+        self.log_scene_external_render_checkpoint("after_input_sync");
         let scene_template_modal = if self.scene_template_modal_open {
             Some(self.render_scene_template_modal_overlay(cx))
         } else {
@@ -10292,7 +10310,9 @@ impl Render for MotionLoomPage {
                     }),
             )
         };
+        self.log_scene_external_render_checkpoint("before_scene_preview_image");
         let scene_live_preview_result = self.scene_live_preview_image(self.preview_frame, cx);
+        self.log_scene_external_render_checkpoint("after_scene_preview_image");
         let scene_live_external_graph_size =
             parse_graph_script(&self.scene_live_preview_script_text())
                 .ok()
@@ -10367,6 +10387,7 @@ impl Render for MotionLoomPage {
                     .into_any_element(),
             }
         };
+        self.log_scene_external_render_checkpoint("after_scene_preview_card");
         let scene_live_gizmo_bounds =
             self.scene_live_gizmo_bounds(scene_live_preview_w, scene_live_preview_h);
         let rotate_handle_x =
