@@ -1197,7 +1197,6 @@ pub struct MotionLoomPage {
     _scene_external_preview_process: Option<SceneExternalPreviewProcess>,
     scene_external_preview_script_hash: Option<u64>,
     scene_external_preview_quality: Option<SceneLivePreviewQuality>,
-    scene_external_preview_frame: Option<u32>,
     scene_external_preview_asset_roots: Vec<PathBuf>,
     scene_external_preview_heartbeat_scheduled: bool,
     scene_external_preview_host_focused: bool,
@@ -1309,7 +1308,6 @@ impl MotionLoomPage {
             _scene_external_preview_process: scene_external_preview_process,
             scene_external_preview_script_hash: None,
             scene_external_preview_quality: None,
-            scene_external_preview_frame: None,
             scene_external_preview_asset_roots: Vec::new(),
             scene_external_preview_heartbeat_scheduled: false,
             scene_external_preview_host_focused: false,
@@ -2090,7 +2088,6 @@ impl MotionLoomPage {
         }
         if self.scene_external_preview_script_hash != Some(script_hash) {
             self.scene_external_preview_script_hash = Some(script_hash);
-            self.scene_external_preview_frame = None;
             host.send(PreviewCommand::LoadScript {
                 script: script.to_string(),
                 source: Some("anica-code-block".to_string()),
@@ -2102,10 +2099,7 @@ impl MotionLoomPage {
                 quality: Self::scene_external_preview_quality(quality),
             });
         }
-        if self.scene_external_preview_frame != Some(frame) {
-            self.scene_external_preview_frame = Some(frame);
-            host.send(PreviewCommand::SetFrame { frame });
-        }
+        host.send(PreviewCommand::SetFrame { frame });
         for ((node, property), value) in &self.scene_live_preview_overrides {
             host.send(PreviewCommand::SetOverride {
                 node: node.clone(),
@@ -2136,40 +2130,6 @@ impl MotionLoomPage {
             graph_height: graph_size.1.max(1) as f32,
             targets: interaction_nodes,
         });
-    }
-
-    fn sync_external_scene_preview_from_current_script(
-        &mut self,
-        frame: u32,
-        cx: &Context<Self>,
-    ) -> Result<(u32, u32), String> {
-        let raw = self.script_text.clone();
-        if raw.trim().is_empty() {
-            return Ok((1280, 720));
-        }
-        if !is_graph_script(&raw) {
-            return Err(
-                "Scene live preview requires a <Graph ...> MotionLoom DSL block.".to_string(),
-            );
-        }
-        let graph = parse_graph_script(&raw).map_err(|err| {
-            format!(
-                "Scene live parse error at line {}: {}",
-                err.line, err.message
-            )
-        })?;
-        if !graph.has_scene_nodes() {
-            return Err("Scene live preview needs at least one scene node.".to_string());
-        }
-        let graph_size = graph.render_size.unwrap_or(graph.size);
-        let script_hash = Self::script_hash(&raw);
-        let quality = self.scene_live_effective_preview_quality();
-        let asset_roots = self.scene_live_asset_roots(cx);
-        self.sync_external_scene_preview(&raw, script_hash, frame, quality, &asset_roots);
-        self.cancel_scene_live_prerender();
-        self.cancel_scene_live_async_render();
-        self.scene_live_preview_status = "Preview: external WGPU host".to_string();
-        Ok(graph_size)
     }
 
     fn drain_scene_external_preview_events(
@@ -10216,23 +10176,13 @@ impl Render for MotionLoomPage {
                     }),
             )
         };
-        let external_preview_active = self.scene_external_preview_host.is_some();
-        let mut scene_live_external_graph_size = (1280, 720);
-        let scene_live_preview_result = if external_preview_active {
-            match self.sync_external_scene_preview_from_current_script(self.preview_frame, cx) {
-                Ok(graph_size) => {
-                    scene_live_external_graph_size = graph_size;
-                    Ok(None)
-                }
-                Err(message) => {
-                    self.scene_live_preview_status = message.clone();
-                    Err(message)
-                }
-            }
-        } else {
-            self.scene_live_preview_image(self.preview_frame, cx)
-        };
-        let scene_live_preview_card = if external_preview_active {
+        let scene_live_preview_result = self.scene_live_preview_image(self.preview_frame, cx);
+        let scene_live_external_graph_size =
+            parse_graph_script(&self.scene_live_preview_script_text())
+                .ok()
+                .map(|graph| graph.render_size.unwrap_or(graph.size))
+                .unwrap_or((1280, 720));
+        let scene_live_preview_card = if self.scene_external_preview_host.is_some() {
             let external_preview_visibility = self.scene_external_preview_visibility_policy(window);
             div()
                 .w_full()
