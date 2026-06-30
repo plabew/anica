@@ -194,6 +194,13 @@ const WAITING_PLACEHOLDER_SCRIPT: &str = r##"
 
 const HOST_ATTACH_HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(1500);
 
+fn preview_host_debug_enabled() -> bool {
+    std::env::var("MOTIONLOOM_PREVIEW_HOST_DEBUG").is_ok_and(|value| {
+        let value = value.trim();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
+}
+
 #[derive(Clone, Debug)]
 enum PreviewHostUserEvent {
     Command(PreviewCommand),
@@ -464,6 +471,9 @@ impl LivePreviewApp {
     }
 
     fn handle_preview_command(&mut self, command: PreviewCommand) {
+        if preview_host_debug_enabled() {
+            eprintln!("preview host command: {command:?}");
+        }
         match command {
             PreviewCommand::LoadScript { script, source } => {
                 if let Err(message) = self.load_script_text(script, source) {
@@ -592,6 +602,9 @@ impl LivePreviewApp {
             return;
         }
         if !self.frontmost_app_allows_visibility() {
+            if preview_host_debug_enabled() {
+                eprintln!("preview host hide: frontmost app is not controller/host");
+            }
             self.window_visible = false;
             self.last_attach_heartbeat = None;
             if let Some(window) = self.window.as_ref() {
@@ -646,6 +659,9 @@ impl LivePreviewApp {
         else {
             return;
         };
+        if preview_host_debug_enabled() {
+            eprintln!("preview host apply bounds: {bounds:?}");
+        }
         window.set_decorations(bounds.decorations);
         window.set_outer_position(LogicalPosition::new(bounds.x, bounds.y));
         let _ = window.request_inner_size(LogicalSize::new(bounds.width, bounds.height));
@@ -1878,8 +1894,7 @@ fn start_preview_command_server(
 }
 
 fn build_event_loop(
-    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
-    host_mode: bool,
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] host_mode: bool,
 ) -> Result<EventLoop<PreviewHostUserEvent>, winit::error::EventLoopError> {
     let mut builder = EventLoop::<PreviewHostUserEvent>::with_user_event();
     #[cfg(target_os = "macos")]

@@ -77,7 +77,7 @@ pub fn frontmost_process_id() -> Option<u32> {
 }
 
 pub fn should_gate_visibility_by_frontmost_process() -> bool {
-    cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux"))
+    cfg!(target_os = "macos")
 }
 
 pub fn should_emit_host_focus_events() -> bool {
