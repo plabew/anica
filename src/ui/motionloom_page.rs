@@ -231,6 +231,8 @@ impl SceneExternalPreviewHost {
     }
 
     fn build_preview_host_binary() -> std::io::Result<Option<PathBuf>> {
+        Self::stop_stale_preview_host_before_build();
+
         let status = Command::new("cargo")
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .args([
@@ -251,6 +253,18 @@ impl SceneExternalPreviewHost {
         }
 
         Ok(Self::preview_host_binary())
+    }
+
+    fn stop_stale_preview_host_before_build() {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = Command::new("taskkill")
+                .args(["/IM", "wgpu_live_preview.exe", "/F"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
 
     fn preview_host_binary_name() -> &'static str {
