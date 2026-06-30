@@ -91,3 +91,11 @@ pub fn should_raise_attached_window_on_heartbeat() -> bool {
 pub fn should_reapply_bounds_on_heartbeat() -> bool {
     cfg!(target_os = "macos")
 }
+
+pub fn host_window_starts_visible() -> bool {
+    cfg!(target_os = "windows")
+}
+
+pub fn should_apply_window_visibility_commands() -> bool {
+    !cfg!(target_os = "windows")
+}

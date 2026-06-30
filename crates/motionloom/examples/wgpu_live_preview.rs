@@ -393,7 +393,7 @@ impl LivePreviewApp {
             requested_window_bounds: None,
             last_attach_heartbeat: None,
             needs_redraw: true,
-            window_visible: !host_mode,
+            window_visible: !host_mode || preview_host_platform::host_window_starts_visible(),
             interaction_mode: PreviewInteractionMode::Move,
             interaction_graph_width: 1280.0,
             interaction_graph_height: 720.0,
@@ -538,7 +538,10 @@ impl LivePreviewApp {
                 let visible = visible && self.frontmost_app_allows_visibility();
                 let changed = self.window_visible != visible;
                 self.window_visible = visible;
-                if changed && let Some(window) = self.window.as_ref() {
+                if changed
+                    && preview_host_platform::should_apply_window_visibility_commands()
+                    && let Some(window) = self.window.as_ref()
+                {
                     window.set_visible(visible);
                 }
                 self.last_attach_heartbeat = visible.then(Instant::now);
@@ -607,7 +610,9 @@ impl LivePreviewApp {
             }
             self.window_visible = false;
             self.last_attach_heartbeat = None;
-            if let Some(window) = self.window.as_ref() {
+            if preview_host_platform::should_apply_window_visibility_commands()
+                && let Some(window) = self.window.as_ref()
+            {
                 window.set_visible(false);
             }
             return;
@@ -616,7 +621,7 @@ impl LivePreviewApp {
         self.window_visible = true;
         self.last_attach_heartbeat = Some(Instant::now());
         if let Some(window) = self.window.as_ref() {
-            if changed {
+            if changed && preview_host_platform::should_apply_window_visibility_commands() {
                 window.set_visible(true);
             }
             if preview_host_platform::should_raise_attached_window_on_heartbeat() {
@@ -1147,7 +1152,9 @@ impl LivePreviewApp {
         let window = Arc::new(event_loop.create_window(window_attributes)?);
         if self.host_mode {
             configure_host_companion_window(&window);
-            window.set_visible(false);
+            if !preview_host_platform::host_window_starts_visible() {
+                window.set_visible(false);
+            }
         }
         self.window = Some(window.clone());
         self.apply_requested_window_bounds();
@@ -1580,7 +1587,9 @@ impl LivePreviewApp {
         }
         self.last_attach_heartbeat = None;
         self.window_visible = false;
-        if let Some(window) = self.window.as_ref() {
+        if preview_host_platform::should_apply_window_visibility_commands()
+            && let Some(window) = self.window.as_ref()
+        {
             window.set_visible(false);
         }
     }
