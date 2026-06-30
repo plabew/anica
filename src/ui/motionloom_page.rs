@@ -179,35 +179,22 @@ impl SceneExternalPreviewHost {
         let addr = listener.local_addr()?.to_string();
         drop(listener);
 
-        let child = if let Some(helper) = Self::preview_host_binary() {
-            Command::new(helper)
-                .arg("--listen")
-                .arg(&addr)
-                .stdin(Stdio::null())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .spawn()?
-        } else {
-            // Development fallback: `cargo run` for Anica can still start the
-            // MotionLoom helper even when the example binary was not prebuilt.
-            Command::new("cargo")
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .args([
-                    "run",
-                    "--release",
-                    "-p",
-                    "motionloom",
-                    "--example",
-                    "wgpu_live_preview",
-                    "--",
-                    "--listen",
-                ])
-                .arg(&addr)
-                .stdin(Stdio::null())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .spawn()?
-        };
+        let helper = Self::preview_host_binary()
+            .or_else(|| Self::build_preview_host_binary().ok().flatten())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "MotionLoom preview host binary was not found and could not be built",
+                )
+            })?;
+
+        let child = Command::new(helper)
+            .arg("--listen")
+            .arg(&addr)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()?;
 
         Ok((addr, SceneExternalPreviewProcess { child }))
     }
@@ -220,15 +207,56 @@ impl SceneExternalPreviewHost {
             }
         }
 
-        let current_exe = std::env::current_exe().ok()?;
-        let profile_dir = current_exe.parent()?;
-        let binary_name = if cfg!(windows) {
+        let binary_name = Self::preview_host_binary_name();
+        let mut candidates = Vec::new();
+
+        if let Ok(current_exe) = std::env::current_exe()
+            && let Some(profile_dir) = current_exe.parent()
+        {
+            candidates.push(profile_dir.join("examples").join(binary_name));
+        }
+
+        let target_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        candidates.push(
+            target_dir
+                .join("release")
+                .join("examples")
+                .join(binary_name),
+        );
+        candidates.push(target_dir.join("debug").join("examples").join(binary_name));
+
+        candidates.into_iter().find(|candidate| candidate.is_file())
+    }
+
+    fn build_preview_host_binary() -> std::io::Result<Option<PathBuf>> {
+        let status = Command::new("cargo")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .args([
+                "build",
+                "--release",
+                "-p",
+                "motionloom",
+                "--example",
+                "wgpu_live_preview",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()?;
+
+        if !status.success() {
+            return Ok(None);
+        }
+
+        Ok(Self::preview_host_binary())
+    }
+
+    fn preview_host_binary_name() -> &'static str {
+        if cfg!(windows) {
             "wgpu_live_preview.exe"
         } else {
             "wgpu_live_preview"
-        };
-        let candidate = profile_dir.join("examples").join(binary_name);
-        candidate.is_file().then_some(candidate)
+        }
     }
 
     fn connect_with_retry(

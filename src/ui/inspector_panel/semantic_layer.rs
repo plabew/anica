@@ -2651,6 +2651,34 @@ impl InspectorPanel {
                         ),
                 )
                 .into_any_element();
+            let global_for_delete_semantic = self.global.clone();
+            let delete_semantic_button = div()
+                .w(px(24.0))
+                .h(px(24.0))
+                .rounded_md()
+                .border_1()
+                .border_color(rgba(0xef444466))
+                .bg(rgba(0xef444422))
+                .hover(|s| s.bg(rgba(0xef444444)))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_xs()
+                .font_weight(gpui::FontWeight::BOLD)
+                .text_color(rgb(0xfecaca))
+                .child("X")
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |_this, _evt, _win, cx| {
+                        global_for_delete_semantic.update(cx, |gs, cx| {
+                            if gs.remove_selected_semantic_clip() {
+                                gs.ui_notice = Some("Semantic removed.".to_string());
+                            }
+                            cx.notify();
+                        });
+                    }),
+                );
             return Some(
                 div()
                     .flex()
@@ -2658,9 +2686,14 @@ impl InspectorPanel {
                     .gap_2()
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
                             .text_xs()
                             .text_color(white().opacity(0.5))
-                            .child("SEMANTIC LAYER"),
+                            .child("SEMANTIC LAYER")
+                            .child(delete_semantic_button),
                     )
                     .child(
                         div()

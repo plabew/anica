@@ -1878,6 +1878,7 @@ fn start_preview_command_server(
 }
 
 fn build_event_loop(
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     host_mode: bool,
 ) -> Result<EventLoop<PreviewHostUserEvent>, winit::error::EventLoopError> {
     let mut builder = EventLoop::<PreviewHostUserEvent>::with_user_event();

@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::core::audio_recording::AudioRecorder;
 use gpui::{
     Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Render,
@@ -245,6 +246,9 @@ pub struct TimelinePanel {
     playback_track_db_summary: String,
     timeline_body_cache: TimelineBodyCache,
     timeline_load_mode: TimelineLoadMode,
+    audio_recorder: Option<AudioRecorder>,
+    audio_recording_track: Option<usize>,
+    audio_recording_start: Option<Duration>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -643,6 +647,92 @@ fn timeline_panel_sig(gs: &GlobalState) -> u64 {
 }
 
 impl TimelinePanel {
+    fn recording_output_dir(gs: &GlobalState) -> PathBuf {
+        if let Some(project_path) = gs.project_file_path.as_ref()
+            && let Some(parent) = project_path.parent()
+        {
+            return parent.join("recordings");
+        }
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            return PathBuf::from(home).join("Movies").join("Anica Recordings");
+        }
+        std::env::temp_dir().join("anica_recordings")
+    }
+
+    fn toggle_audio_recording(&mut self, track_index: usize, cx: &mut Context<TimelinePanel>) {
+        if self.audio_recorder.is_some() {
+            self.stop_audio_recording(cx);
+            return;
+        }
+
+        let (output_dir, start_time) = {
+            let gs = self.global.read(cx);
+            (Self::recording_output_dir(gs), gs.playhead)
+        };
+
+        match AudioRecorder::start(&output_dir) {
+            Ok(recorder) => {
+                self.audio_recorder = Some(recorder);
+                self.audio_recording_track = Some(track_index);
+                self.audio_recording_start = Some(start_time);
+                self.global.update(cx, |gs, cx| {
+                    gs.is_playing = true;
+                    gs.ui_notice = Some(format!(
+                        "Recording microphone to A{} from {:.2}s.",
+                        track_index.saturating_add(1),
+                        start_time.as_secs_f32()
+                    ));
+                    cx.notify();
+                });
+            }
+            Err(err) => {
+                self.global.update(cx, |gs, cx| {
+                    gs.ui_notice = Some(format!("Audio recording failed: {err}"));
+                    cx.notify();
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    fn stop_audio_recording(&mut self, cx: &mut Context<TimelinePanel>) {
+        let Some(recorder) = self.audio_recorder.take() else {
+            return;
+        };
+        let track_index = self.audio_recording_track.take().unwrap_or(0);
+        let start = self.audio_recording_start.take().unwrap_or(Duration::ZERO);
+
+        match recorder.stop() {
+            Ok(result) => {
+                self.global.update(cx, |gs, cx| {
+                    gs.is_playing = false;
+                    let inserted = gs.insert_recorded_audio_clip(
+                        track_index,
+                        result.path,
+                        start,
+                        result.duration,
+                        result.device_name,
+                    );
+                    if !inserted {
+                        gs.ui_notice = Some(
+                            "Audio recording stopped, but target track was missing.".to_string(),
+                        );
+                    }
+                    cx.emit(MediaPoolUiEvent::StateChanged);
+                    cx.notify();
+                });
+            }
+            Err(err) => {
+                self.global.update(cx, |gs, cx| {
+                    gs.is_playing = false;
+                    gs.ui_notice = Some(format!("Audio recording stop failed: {err}"));
+                    cx.notify();
+                });
+            }
+        }
+        cx.notify();
+    }
+
     fn should_notify_for_playback_ui(&mut self) -> bool {
         let now = Instant::now();
         let should_notify = self
@@ -875,6 +965,9 @@ impl TimelinePanel {
             playback_track_db_summary: String::new(),
             timeline_body_cache: TimelineBodyCache::default(),
             timeline_load_mode: TimelineLoadMode::Normal,
+            audio_recorder: None,
+            audio_recording_track: None,
+            audio_recording_start: None,
         }
     }
 
@@ -1823,6 +1916,7 @@ impl TimelinePanel {
         track: &TrackUi,
         cx: &mut Context<TimelinePanel>,
         global: &Entity<GlobalState>,
+        recording_track: Option<usize>,
     ) -> gpui::Div {
         let mute_key = match track.kind {
             TrackHeaderKind::V1 => Some("v1".to_string()),
@@ -1868,12 +1962,51 @@ impl TimelinePanel {
                     .child(track.name.clone()),
             );
 
-        let mut right = div().ml_auto().flex().items_center().gap_2();
+        let mut side_controls = div()
+            .ml_auto()
+            .w(px(52.0))
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap_2();
 
-        if !matches!(track.kind, TrackHeaderKind::V1 | TrackHeaderKind::Semantic) {
+        if let TrackHeaderKind::Audio(idx) = track.kind {
+            let is_recording = recording_track == Some(idx);
+            side_controls = side_controls.child(
+                div()
+                    .w(px(22.0))
+                    .h(px(18.0))
+                    .rounded_sm()
+                    .bg(if is_recording {
+                        rgba(0xb91c1cff)
+                    } else {
+                        rgba(0xffffff14)
+                    })
+                    .text_color(if is_recording {
+                        white().opacity(0.98)
+                    } else {
+                        white().opacity(0.78)
+                    })
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .child(if is_recording { "■" } else { "●" })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.toggle_audio_recording(idx, cx);
+                        }),
+                    ),
+            );
+        }
+
+        if !matches!(track.kind, TrackHeaderKind::V1) {
             let kind = track.kind;
             let global_for_delete = global.clone();
-            right = right.child(
+            side_controls = side_controls.child(
                 div()
                     .w(px(18.0))
                     .h(px(18.0))
@@ -1900,7 +2033,29 @@ impl TimelinePanel {
                                     TrackHeaderKind::Subtitle(idx) => {
                                         gs.delete_subtitle_track(idx);
                                     }
-                                    TrackHeaderKind::Semantic => {}
+                                    TrackHeaderKind::Semantic => {
+                                        if gs.selected_semantic_clip_id().is_none() {
+                                            let playhead = gs.playhead;
+                                            let candidate = gs
+                                                .semantic_clips()
+                                                .iter()
+                                                .find(|clip| {
+                                                    clip.start <= playhead && clip.end() >= playhead
+                                                })
+                                                .map(|clip| clip.id);
+                                            if let Some(id) = candidate {
+                                                gs.select_semantic_clip(id);
+                                            }
+                                        }
+                                        if gs.remove_selected_semantic_clip() {
+                                            gs.ui_notice = Some("Semantic removed.".to_string());
+                                        } else {
+                                            gs.ui_notice = Some(
+                                                "Select a semantic clip or move playhead over one."
+                                                    .to_string(),
+                                            );
+                                        }
+                                    }
                                     TrackHeaderKind::V1 => {}
                                 }
                                 cx.notify();
@@ -1913,42 +2068,50 @@ impl TimelinePanel {
         if let Some(mute_key) = mute_key {
             let global_for_toggle_mute = global.clone();
             let track_name = track.name.clone();
-            right = right.child(
+            let visibility_button = div()
+                .w(px(18.0))
+                .h(px(18.0))
+                .rounded_sm()
+                .bg(white().opacity(if is_muted { 0.18 } else { 0.08 }))
+                .text_color(white().opacity(if is_muted { 0.95 } else { 0.75 }))
+                .text_xs()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .child(if is_muted { "⊘" } else { "👁" })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |_this, _, _, cx| {
+                        let key = mute_key.clone();
+                        global_for_toggle_mute.update(cx, |gs, cx| {
+                            let current = gs.track_mute.get(&key).copied().unwrap_or(false);
+                            let next = !current;
+                            if next {
+                                gs.track_mute.insert(key.clone(), true);
+                                gs.ui_notice = Some(format!("{track_name} muted."));
+                            } else {
+                                gs.track_mute.remove(&key);
+                                gs.ui_notice = Some(format!("{track_name} unmuted."));
+                            }
+                            cx.notify();
+                        });
+                    }),
+                );
+            row = row.child(side_controls).child(visibility_button);
+        } else {
+            row = row.child(side_controls).child(
                 div()
                     .w(px(18.0))
                     .h(px(18.0))
-                    .rounded_sm()
-                    .bg(white().opacity(if is_muted { 0.18 } else { 0.08 }))
-                    .text_color(white().opacity(if is_muted { 0.95 } else { 0.75 }))
                     .text_xs()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .cursor_pointer()
-                    .child(if is_muted { "⊘" } else { "👁" })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |_this, _, _, cx| {
-                            let key = mute_key.clone();
-                            global_for_toggle_mute.update(cx, |gs, cx| {
-                                let current = gs.track_mute.get(&key).copied().unwrap_or(false);
-                                let next = !current;
-                                if next {
-                                    gs.track_mute.insert(key.clone(), true);
-                                    gs.ui_notice = Some(format!("{track_name} muted."));
-                                } else {
-                                    gs.track_mute.remove(&key);
-                                    gs.ui_notice = Some(format!("{track_name} unmuted."));
-                                }
-                                cx.notify();
-                            });
-                        }),
-                    ),
+                    .text_color(white().opacity(0.35))
+                    .child("👁"),
             );
-        } else {
-            right = right.child(div().text_xs().text_color(white().opacity(0.35)).child("👁"));
         }
-        row = row.child(right);
         row
     }
     fn start_scrubbing(
@@ -2814,7 +2977,7 @@ impl TimelinePanel {
         window_start_sec: f32,
         window_end_sec: f32,
         cx: &mut Context<TimelinePanel>,
-        active_tool: ActiveTool,
+        _active_tool: ActiveTool,
         global_entity: Entity<GlobalState>,
     ) -> gpui::Div {
         let t_start = Duration::from_secs_f32(window_start_sec.max(0.0));
@@ -2877,16 +3040,8 @@ impl TimelinePanel {
             .text_color(fg)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, evt: &MouseDownEvent, _win, cx| {
+                cx.listener(move |this, evt: &MouseDownEvent, win, cx| {
                     cx.stop_propagation();
-                    if let Some(forward) =
-                        Self::track_sweep_direction(active_tool, evt.modifiers.alt)
-                    {
-                        let pivot = this.timeline_time_from_mouse_x(evt.position.x);
-                        this.sweep_select_from_anchor(TrackType::V1, pivot, forward, true, cx);
-                        this.arm_track_sweep_pending_drag(evt.position.x, pivot, forward, cx);
-                        return;
-                    }
                     this.clip_link_menu = None;
                     this.timeline_clip_menu = None;
                     this.layer_clip_menu = None;
@@ -2901,6 +3056,7 @@ impl TimelinePanel {
                         gs.select_semantic_clip(clip_id);
                         cx.notify();
                     });
+                    cx.focus_self(win);
                     cx.notify();
                 }),
             )
@@ -5981,6 +6137,7 @@ impl Render for TimelinePanel {
         self.ensure_audio_gain_sliders(cx);
 
         let mut subtitle_header_rows = Vec::new();
+        let recording_track = self.audio_recording_track;
         for idx in (0..subtitle_tracks_data.len()).rev() {
             let track = &subtitle_tracks_data[idx];
             subtitle_header_rows.push(TimelinePanel::track_header_row(
@@ -5990,6 +6147,7 @@ impl Render for TimelinePanel {
                 },
                 cx,
                 &self.global,
+                recording_track,
             ));
         }
 
@@ -6003,6 +6161,7 @@ impl Render for TimelinePanel {
                 },
                 cx,
                 &self.global,
+                recording_track,
             ));
         }
 
@@ -6015,6 +6174,7 @@ impl Render for TimelinePanel {
                 },
                 cx,
                 &self.global,
+                recording_track,
             ));
         }
 
@@ -6026,6 +6186,7 @@ impl Render for TimelinePanel {
                 },
                 cx,
                 &self.global,
+                recording_track,
             ))
         } else {
             None
@@ -7349,6 +7510,7 @@ impl Render for TimelinePanel {
                                                 },
                                                 cx,
                                                 &self.global,
+                                                recording_track,
                                             ))
                                             .children(audio_header_rows)
                                     )

@@ -26,12 +26,19 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 fn motionloom_runtime_cache() -> &'static Mutex<HashMap<u64, Option<RuntimeProgram>>> {
     static CACHE: OnceLock<Mutex<HashMap<u64, Option<RuntimeProgram>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn motionloom_script_hash(script: &str) -> u64 {
@@ -1957,6 +1964,14 @@ pub struct MediaPoolItem {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct AudioRecordingClipMetadata {
+    pub source: String,
+    pub recorded_at_unix_ms: u64,
+    pub device_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct MediaPoolDragState {
     pub path: String,
     pub name: String,
@@ -2022,6 +2037,7 @@ pub struct GlobalState {
     pub active_source_name: String,
     pub active_source_duration: Duration,
     pub media_pool: Vec<MediaPoolItem>,
+    pub audio_recording_metadata: HashMap<u64, AudioRecordingClipMetadata>,
     pub pending_media_pool_path: Option<String>,
     pub media_pool_drag: Option<MediaPoolDragState>,
     pub media_pool_context_menu: Option<MediaPoolContextMenuState>,
@@ -2132,6 +2148,7 @@ impl Default for GlobalState {
             active_source_name: "No Source Loaded".to_string(),
             active_source_duration: Duration::ZERO,
             media_pool: Vec::new(),
+            audio_recording_metadata: HashMap::new(),
             pending_media_pool_path: None,
             media_pool_drag: None,
             media_pool_context_menu: None,
@@ -9113,6 +9130,81 @@ impl GlobalState {
             self.selected_subtitle_id = None;
             self.selected_subtitle_ids.clear();
         }
+    }
+
+    pub fn insert_recorded_audio_clip(
+        &mut self,
+        track_index: usize,
+        path: PathBuf,
+        start: Duration,
+        duration: Duration,
+        device_name: Option<String>,
+    ) -> bool {
+        let Some(_) = self.audio_tracks.get(track_index) else {
+            return false;
+        };
+        let duration = duration.max(Duration::from_millis(1));
+        let path_str = path.to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "voice_recording.wav".to_string());
+
+        self.save_for_undo_with_media_pool();
+        self.add_media_pool_item(path, duration);
+        self.active_source_path = path_str.clone();
+        self.active_source_name = name.clone();
+        self.active_source_duration = duration;
+
+        let new_id = self.next_clip_id;
+        self.next_clip_id = self.next_clip_id.saturating_add(1);
+        if let Some(track) = self.audio_tracks.get_mut(track_index) {
+            track.clips.push(Clip {
+                id: new_id,
+                label: format!("(Recording) {name}"),
+                file_path: path_str,
+                start,
+                duration,
+                source_in: Duration::ZERO,
+                media_duration: duration,
+                link_group_id: None,
+                audio_gain_db: 0.0,
+                dissolve_trim_in: Duration::ZERO,
+                dissolve_trim_out: Duration::ZERO,
+                video_effects: VideoEffect::standard_set(),
+                local_mask_layers: vec![LocalMaskLayer::default()],
+                pos_x_keyframes: Vec::new(),
+                pos_y_keyframes: Vec::new(),
+                scale_keyframes: Vec::new(),
+                brightness_keyframes: Vec::new(),
+                contrast_keyframes: Vec::new(),
+                saturation_keyframes: Vec::new(),
+                opacity_keyframes: Vec::new(),
+                blur_keyframes: Vec::new(),
+                rotation_keyframes: Vec::new(),
+            });
+            track.clips.sort_by_key(|clip| clip.start);
+        }
+
+        self.audio_recording_metadata.insert(
+            new_id,
+            AudioRecordingClipMetadata {
+                source: "microphone".to_string(),
+                recorded_at_unix_ms: now_unix_ms(),
+                device_name,
+            },
+        );
+        self.selected_clip_id = Some(new_id);
+        self.selected_clip_ids = vec![new_id];
+        self.selected_subtitle_id = None;
+        self.selected_subtitle_ids.clear();
+        self.ui_notice = Some(format!(
+            "Recorded audio placed on A{} at {:.2}s.",
+            track_index.saturating_add(1),
+            start.as_secs_f32()
+        ));
+        true
     }
     // Video v2 to more operation (not v1)
     pub fn ripple_insert_active_source_video(

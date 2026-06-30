@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="Anica Editor"
+APP_NAME="Anica"
 BUNDLE_ID="com.lovelyzombieyho.anica"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_DIR="${REPO_ROOT}/target/release"
@@ -72,11 +72,14 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>anica</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
   <key>CFBundleName</key><string>${APP_NAME}</string>
+  <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.1</string>
   <key>CFBundleVersion</key><string>0.1.1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Anica uses the microphone to record voiceover audio directly onto audio timeline tracks.</string>
 </dict>
 </plist>
 PLIST

@@ -24,6 +24,8 @@ gpui-component = "0.5.0"
 smol = "2.0.2"
 regex = "1.12.2"
 rodio = "0.19"
+cpal = "0.15.3"
+hound = "3.5"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.133"
 thiserror = "2.0.17"
@@ -60,7 +62,7 @@ members = [
 gpui = { git = "https://github.com/LOVELYZOMBIEYHO/zed.git", branch = "anica-edition" }
 
 [package.metadata.bundle]
-name = "Anica Editor"
+name = "Anica"
 identifier = "com.lovelyzombieyho.anica"
 icon = ["assets/logo/icon.icns", "assets/logo/icon.ico"]
 version = "0.1.1"

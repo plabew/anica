@@ -1,6 +1,7 @@
 // =========================================
 // =========================================
 // src/core/mod.rs
+pub mod audio_recording;
 pub mod effects;
 pub mod export;
 pub mod global_state;
