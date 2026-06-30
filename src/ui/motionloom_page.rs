@@ -1825,6 +1825,8 @@ impl MotionLoomPage {
             return;
         }
 
+        self.hide_external_scene_preview();
+
         let had_preview_work = self.preview_playing
             || self.scene_live_prerendering
             || self.scene_live_async_render_key.is_some()
@@ -1838,6 +1840,24 @@ impl MotionLoomPage {
         self.cancel_scene_live_async_render();
         self.scene_live_render_defer_until = None;
         self.scene_live_render_defer_token = self.scene_live_render_defer_token.wrapping_add(1);
+    }
+
+    pub fn hide_external_scene_preview(&mut self) {
+        if let Ok(mut desired) = self.scene_external_preview_desired_window.lock() {
+            *desired = SceneExternalPreviewDesiredWindow::default();
+        }
+
+        let hidden = SceneExternalPreviewDesiredWindow::default();
+        if self.scene_external_preview_last_window == Some(hidden) {
+            return;
+        }
+
+        // Page-level navigation must hard-hide the native WGPU host even when playback stops.
+        if let Some(host) = self.scene_external_preview_host.as_ref() {
+            motionloom_external_preview_log("send SetWindowVisible false on page leave");
+            host.send(PreviewCommand::SetWindowVisible { visible: false });
+        }
+        self.scene_external_preview_last_window = Some(hidden);
     }
 
     fn script_hash(script: &str) -> u64 {

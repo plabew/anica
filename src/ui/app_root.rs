@@ -253,6 +253,7 @@ impl AppRoot {
         }
         if active_page != AppPage::MotionLoom {
             self.motionloom_page.update(cx, |page, cx| {
+                page.hide_external_scene_preview();
                 page.suspend_background_rendering(cx);
             });
         }
