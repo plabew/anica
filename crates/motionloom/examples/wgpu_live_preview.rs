@@ -1727,7 +1727,7 @@ impl ApplicationHandler<PreviewHostUserEvent> for LivePreviewApp {
                 ..
             } => self.end_interaction_drag(),
             WindowEvent::Focused(focused) => {
-                if self.host_mode {
+                if self.host_mode && preview_host_platform::should_emit_host_focus_events() {
                     self.broadcast_event(PreviewEvent::HostFocus { focused });
                 }
             }

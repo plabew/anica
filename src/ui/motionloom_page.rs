@@ -225,7 +225,9 @@ impl SceneExternalPreviewHost {
         );
         candidates.push(target_dir.join("debug").join("examples").join(binary_name));
 
-        candidates.into_iter().find(|candidate| candidate.is_file())
+        candidates
+            .into_iter()
+            .find(|candidate| candidate.is_file() && Self::preview_host_binary_is_fresh(candidate))
     }
 
     fn build_preview_host_binary() -> std::io::Result<Option<PathBuf>> {
@@ -257,6 +259,26 @@ impl SceneExternalPreviewHost {
         } else {
             "wgpu_live_preview"
         }
+    }
+
+    fn preview_host_binary_is_fresh(binary: &Path) -> bool {
+        let Ok(binary_modified) = binary.metadata().and_then(|meta| meta.modified()) else {
+            return false;
+        };
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let sources = [
+            manifest_dir.join("crates/motionloom/examples/wgpu_live_preview.rs"),
+            manifest_dir
+                .join("crates/motionloom/examples/wgpu_live_preview/preview_host_platform.rs"),
+            manifest_dir.join("crates/motionloom/src/preview_protocol.rs"),
+        ];
+        sources.into_iter().all(|source| {
+            source
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map(|modified| modified <= binary_modified)
+                .unwrap_or(true)
+        })
     }
 
     fn connect_with_retry(
