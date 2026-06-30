@@ -1082,6 +1082,7 @@ struct SceneExternalPreviewWindowBounds {
 struct SceneExternalPreviewDesiredWindow {
     visible: bool,
     bounds: Option<SceneExternalPreviewWindowBounds>,
+    painted_at: Option<Instant>,
 }
 
 impl Default for SceneExternalPreviewDesiredWindow {
@@ -1089,6 +1090,7 @@ impl Default for SceneExternalPreviewDesiredWindow {
         Self {
             visible: false,
             bounds: None,
+            painted_at: None,
         }
     }
 }
@@ -1231,6 +1233,7 @@ impl Element for ExternalPreviewAnchorElement {
                     height: host_h,
                     decorations: false,
                 }),
+                painted_at: Some(Instant::now()),
             };
         }
     }
@@ -2090,10 +2093,20 @@ impl MotionLoomPage {
         }
 
         let desired = if policy.should_show() {
-            self.scene_external_preview_desired_window
+            let desired = self
+                .scene_external_preview_desired_window
                 .lock()
                 .map(|desired| *desired)
-                .unwrap_or_default()
+                .unwrap_or_default();
+            if desired
+                .painted_at
+                .map(|painted_at| painted_at.elapsed() <= Duration::from_millis(300))
+                .unwrap_or(false)
+            {
+                desired
+            } else {
+                SceneExternalPreviewDesiredWindow::default()
+            }
         } else {
             SceneExternalPreviewDesiredWindow::default()
         };
