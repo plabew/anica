@@ -97,6 +97,72 @@ fn motionloom_external_preview_offset() -> (f64, f64) {
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MotionLoomExternalPreviewProtocol {
+    Script,
+    Frame,
+    Interaction,
+    Window,
+    Full,
+}
+
+impl MotionLoomExternalPreviewProtocol {
+    fn current() -> Self {
+        let raw = std::env::var("ANICA_MOTIONLOOM_PREVIEW_PROTOCOL")
+            .unwrap_or_else(|_| default_motionloom_external_preview_protocol().to_string());
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "script" | "loadscript" | "load_script" => Self::Script,
+            "frame" => Self::Frame,
+            "interaction" | "targets" => Self::Interaction,
+            "window" | "bounds" | "visible" => Self::Window,
+            "full" | "all" => Self::Full,
+            _ => default_motionloom_external_preview_protocol_enum(),
+        }
+    }
+
+    fn allows_frame(self) -> bool {
+        matches!(
+            self,
+            Self::Frame | Self::Interaction | Self::Window | Self::Full
+        )
+    }
+
+    fn allows_interaction(self) -> bool {
+        matches!(self, Self::Interaction | Self::Window | Self::Full)
+    }
+
+    fn allows_window(self) -> bool {
+        matches!(self, Self::Window | Self::Full)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn default_motionloom_external_preview_protocol() -> &'static str {
+    "script"
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_motionloom_external_preview_protocol() -> &'static str {
+    "full"
+}
+
+fn default_motionloom_external_preview_protocol_enum() -> MotionLoomExternalPreviewProtocol {
+    match default_motionloom_external_preview_protocol() {
+        "script" => MotionLoomExternalPreviewProtocol::Script,
+        _ => MotionLoomExternalPreviewProtocol::Full,
+    }
+}
+
+fn motionloom_external_preview_log(message: impl AsRef<str>) {
+    if cfg!(target_os = "windows") || motionloom_external_preview_debug_enabled() {
+        eprintln!(
+            "[anica-preview pid={}] {}",
+            std::process::id(),
+            message.as_ref()
+        );
+    }
+}
+
 struct SceneExternalPreviewProcess {
     child: Child,
 }
@@ -150,6 +216,7 @@ impl SceneExternalPreviewHost {
                 let mut stream = None::<TcpStream>;
                 while let Ok(command) = rx.recv() {
                     if stream.is_none() {
+                        motionloom_external_preview_log(format!("connect host addr={addr}"));
                         stream = Self::connect_with_retry(&addr, controller_events.clone());
                         if let Some(socket) = stream.as_mut()
                             && !Self::write_command_line(
@@ -166,6 +233,7 @@ impl SceneExternalPreviewHost {
                     let Some(socket) = stream.as_mut() else {
                         continue;
                     };
+                    motionloom_external_preview_log(format!("write command {command:?}"));
                     if !Self::write_command_line(socket, &command) {
                         stream = None;
                     }
@@ -188,13 +256,25 @@ impl SceneExternalPreviewHost {
                 )
             })?;
 
-        let child = Command::new(helper)
+        motionloom_external_preview_log(format!(
+            "spawn host listen={addr} protocol={:?}",
+            MotionLoomExternalPreviewProtocol::current()
+        ));
+
+        let mut command = Command::new(helper);
+        if cfg!(target_os = "windows") || motionloom_external_preview_debug_enabled() {
+            command.env("MOTIONLOOM_PREVIEW_HOST_DEBUG", "1");
+        }
+
+        let child = command
             .arg("--listen")
             .arg(&addr)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()?;
+
+        motionloom_external_preview_log(format!("spawned host pid={}", child.id()));
 
         Ok((addr, SceneExternalPreviewProcess { child }))
     }
@@ -1979,6 +2059,12 @@ impl MotionLoomPage {
         host: &SceneExternalPreviewHost,
         policy: PreviewVisibilityPolicy,
     ) {
+        let protocol = MotionLoomExternalPreviewProtocol::current();
+        if !protocol.allows_window() {
+            self.scene_external_preview_last_window = None;
+            return;
+        }
+
         let desired = if policy.should_show() {
             self.scene_external_preview_desired_window
                 .lock()
@@ -2002,6 +2088,7 @@ impl MotionLoomPage {
 
         if !desired.visible {
             if last_visible {
+                motionloom_external_preview_log("send SetWindowVisible false");
                 host.send(PreviewCommand::SetWindowVisible { visible: false });
             }
             self.scene_external_preview_last_window = Some(desired);
@@ -2010,6 +2097,7 @@ impl MotionLoomPage {
 
         if desired.bounds != last_bounds {
             if let Some(bounds) = desired.bounds {
+                motionloom_external_preview_log(format!("send SetWindowBounds {bounds:?}"));
                 host.send(PreviewCommand::SetWindowBounds {
                     x: bounds.x,
                     y: bounds.y,
@@ -2021,6 +2109,7 @@ impl MotionLoomPage {
         }
 
         if !last_visible {
+            motionloom_external_preview_log("send SetWindowVisible true");
             host.send(PreviewCommand::SetWindowVisible { visible: true });
         }
 
@@ -2077,8 +2166,15 @@ impl MotionLoomPage {
         let Some(host) = self.scene_external_preview_host.clone() else {
             return;
         };
-        if self.scene_external_preview_asset_roots != asset_roots {
+        let protocol = MotionLoomExternalPreviewProtocol::current();
+        if protocol != MotionLoomExternalPreviewProtocol::Script
+            && self.scene_external_preview_asset_roots != asset_roots
+        {
             self.scene_external_preview_asset_roots = asset_roots.to_vec();
+            motionloom_external_preview_log(format!(
+                "send SetAssetRoots count={}",
+                asset_roots.len()
+            ));
             host.send(PreviewCommand::SetAssetRoots {
                 roots: asset_roots
                     .iter()
@@ -2088,19 +2184,33 @@ impl MotionLoomPage {
         }
         if self.scene_external_preview_script_hash != Some(script_hash) {
             self.scene_external_preview_script_hash = Some(script_hash);
+            motionloom_external_preview_log(format!(
+                "send LoadScript bytes={} hash={script_hash}",
+                script.len()
+            ));
             host.send(PreviewCommand::LoadScript {
                 script: script.to_string(),
                 source: Some("anica-code-block".to_string()),
             });
         }
-        if self.scene_external_preview_quality != Some(quality) {
+        if protocol != MotionLoomExternalPreviewProtocol::Script
+            && self.scene_external_preview_quality != Some(quality)
+        {
             self.scene_external_preview_quality = Some(quality);
+            motionloom_external_preview_log(format!("send SetQuality {quality:?}"));
             host.send(PreviewCommand::SetQuality {
                 quality: Self::scene_external_preview_quality(quality),
             });
         }
-        host.send(PreviewCommand::SetFrame { frame });
+        if protocol.allows_frame() {
+            motionloom_external_preview_log(format!("send SetFrame {frame}"));
+            host.send(PreviewCommand::SetFrame { frame });
+        }
         for ((node, property), value) in &self.scene_live_preview_overrides {
+            if protocol == MotionLoomExternalPreviewProtocol::Script {
+                continue;
+            }
+            motionloom_external_preview_log(format!("send SetOverride {node}.{property}={value}"));
             host.send(PreviewCommand::SetOverride {
                 node: node.clone(),
                 property: property.clone(),
@@ -2124,12 +2234,18 @@ impl MotionLoomPage {
             graph_size.0.max(1) as f32,
             graph_size.1.max(1) as f32,
         );
-        host.send(PreviewCommand::SetInteractionTargets {
-            mode,
-            graph_width: graph_size.0.max(1) as f32,
-            graph_height: graph_size.1.max(1) as f32,
-            targets: interaction_nodes,
-        });
+        if protocol.allows_interaction() {
+            motionloom_external_preview_log(format!(
+                "send SetInteractionTargets count={}",
+                interaction_nodes.len()
+            ));
+            host.send(PreviewCommand::SetInteractionTargets {
+                mode,
+                graph_width: graph_size.0.max(1) as f32,
+                graph_height: graph_size.1.max(1) as f32,
+                targets: interaction_nodes,
+            });
+        }
     }
 
     fn drain_scene_external_preview_events(

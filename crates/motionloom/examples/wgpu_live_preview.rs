@@ -201,6 +201,16 @@ fn preview_host_debug_enabled() -> bool {
     })
 }
 
+fn preview_host_debug_log(message: impl AsRef<str>) {
+    if preview_host_debug_enabled() {
+        eprintln!(
+            "[wgpu-preview pid={}] {}",
+            std::process::id(),
+            message.as_ref()
+        );
+    }
+}
+
 #[derive(Clone, Debug)]
 enum PreviewHostUserEvent {
     Command(PreviewCommand),
@@ -471,14 +481,15 @@ impl LivePreviewApp {
     }
 
     fn handle_preview_command(&mut self, command: PreviewCommand) {
-        if preview_host_debug_enabled() {
-            eprintln!("preview host command: {command:?}");
-        }
+        preview_host_debug_log(format!("command: {command:?}"));
         match command {
             PreviewCommand::LoadScript { script, source } => {
+                preview_host_debug_log(format!("LoadScript start bytes={}", script.len()));
                 if let Err(message) = self.load_script_text(script, source) {
+                    preview_host_debug_log(format!("LoadScript error: {message}"));
                     self.broadcast_event(PreviewEvent::Error { message });
                 } else {
+                    preview_host_debug_log("LoadScript ok");
                     self.request_redraw();
                 }
             }
@@ -1870,7 +1881,10 @@ fn start_preview_command_server(
     broadcaster: PreviewEventBroadcaster,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(&addr)?;
-    println!("MotionLoom preview host listening on {addr}");
+    println!(
+        "MotionLoom preview host pid={} listening on {addr}",
+        std::process::id()
+    );
     thread::Builder::new()
         .name("motionloom-preview-host-tcp".to_string())
         .spawn(move || {

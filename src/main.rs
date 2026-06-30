@@ -32,7 +32,7 @@ fn main() {
     configure_bundled_media_runtime_environment();
     runtime_paths::apply_common_agent_cli_env_overrides();
 
-    println!("--- Starting Anica Editor ---");
+    println!("--- Starting Anica Editor pid={} ---", std::process::id());
 
     // Run environment checks
     let media_tools = detect_or_bootstrap_media_dependencies(None);
