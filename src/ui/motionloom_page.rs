@@ -976,22 +976,46 @@ impl PreviewVisibilityPolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SceneExternalPreviewWindowBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    decorations: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SceneExternalPreviewDesiredWindow {
+    visible: bool,
+    bounds: Option<SceneExternalPreviewWindowBounds>,
+}
+
+impl Default for SceneExternalPreviewDesiredWindow {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            bounds: None,
+        }
+    }
+}
+
 struct ExternalPreviewAnchorElement {
-    host: SceneExternalPreviewHost,
     graph_size: (u32, u32),
     visibility: PreviewVisibilityPolicy,
+    desired_window: Arc<Mutex<SceneExternalPreviewDesiredWindow>>,
 }
 
 impl ExternalPreviewAnchorElement {
     fn new(
-        host: SceneExternalPreviewHost,
         graph_size: (u32, u32),
         visibility: PreviewVisibilityPolicy,
+        desired_window: Arc<Mutex<SceneExternalPreviewDesiredWindow>>,
     ) -> Self {
         Self {
-            host,
             graph_size,
             visibility,
+            desired_window,
         }
     }
 
@@ -1069,8 +1093,9 @@ impl Element for ExternalPreviewAnchorElement {
         _cx: &mut gpui::App,
     ) {
         if !self.visibility.should_show() {
-            self.host
-                .send(PreviewCommand::SetWindowVisible { visible: false });
+            if let Ok(mut desired) = self.desired_window.lock() {
+                *desired = SceneExternalPreviewDesiredWindow::default();
+            }
             return;
         }
 
@@ -1103,15 +1128,18 @@ impl Element for ExternalPreviewAnchorElement {
                 window.scale_factor(),
             );
         }
-        self.host
-            .send(PreviewCommand::SetWindowVisible { visible: true });
-        self.host.send(PreviewCommand::SetWindowBounds {
-            x: host_x,
-            y: host_y,
-            width: host_w,
-            height: host_h,
-            decorations: false,
-        });
+        if let Ok(mut desired) = self.desired_window.lock() {
+            *desired = SceneExternalPreviewDesiredWindow {
+                visible: true,
+                bounds: Some(SceneExternalPreviewWindowBounds {
+                    x: host_x,
+                    y: host_y,
+                    width: host_w,
+                    height: host_h,
+                    decorations: false,
+                }),
+            };
+        }
     }
 }
 
@@ -1159,6 +1187,8 @@ pub struct MotionLoomPage {
     scene_external_preview_asset_roots: Vec<PathBuf>,
     scene_external_preview_heartbeat_scheduled: bool,
     scene_external_preview_host_focused: bool,
+    scene_external_preview_desired_window: Arc<Mutex<SceneExternalPreviewDesiredWindow>>,
+    scene_external_preview_last_window: Option<SceneExternalPreviewDesiredWindow>,
     world_live_preview_tx: Sender<WorldLivePreviewRequest>,
     scene_live_prerender_token: u64,
     scene_live_prerendering: bool,
@@ -1268,6 +1298,10 @@ impl MotionLoomPage {
             scene_external_preview_asset_roots: Vec::new(),
             scene_external_preview_heartbeat_scheduled: false,
             scene_external_preview_host_focused: false,
+            scene_external_preview_desired_window: Arc::new(Mutex::new(
+                SceneExternalPreviewDesiredWindow::default(),
+            )),
+            scene_external_preview_last_window: None,
             world_live_preview_tx: Self::spawn_world_live_preview_worker(),
             scene_live_prerender_token: 0,
             scene_live_prerendering: false,
@@ -1927,6 +1961,59 @@ impl MotionLoomPage {
         }
     }
 
+    fn flush_scene_external_preview_window_state(
+        &mut self,
+        host: &SceneExternalPreviewHost,
+        policy: PreviewVisibilityPolicy,
+    ) {
+        let desired = if policy.should_show() {
+            self.scene_external_preview_desired_window
+                .lock()
+                .map(|desired| *desired)
+                .unwrap_or_default()
+        } else {
+            SceneExternalPreviewDesiredWindow::default()
+        };
+
+        if self.scene_external_preview_last_window == Some(desired) {
+            return;
+        }
+
+        let last_visible = self
+            .scene_external_preview_last_window
+            .map(|last| last.visible)
+            .unwrap_or(false);
+        let last_bounds = self
+            .scene_external_preview_last_window
+            .and_then(|last| last.bounds);
+
+        if !desired.visible {
+            if last_visible {
+                host.send(PreviewCommand::SetWindowVisible { visible: false });
+            }
+            self.scene_external_preview_last_window = Some(desired);
+            return;
+        }
+
+        if desired.bounds != last_bounds {
+            if let Some(bounds) = desired.bounds {
+                host.send(PreviewCommand::SetWindowBounds {
+                    x: bounds.x,
+                    y: bounds.y,
+                    width: bounds.width,
+                    height: bounds.height,
+                    decorations: bounds.decorations,
+                });
+            }
+        }
+
+        if !last_visible {
+            host.send(PreviewCommand::SetWindowVisible { visible: true });
+        }
+
+        self.scene_external_preview_last_window = Some(desired);
+    }
+
     fn scene_external_preview_quality(quality: SceneLivePreviewQuality) -> WgpuPreviewQuality {
         match quality {
             SceneLivePreviewQuality::P480 => WgpuPreviewQuality::Balanced,
@@ -1956,9 +2043,8 @@ impl MotionLoomPage {
                 };
                 this.drain_scene_external_preview_events(&host, window, cx);
                 let policy = this.scene_external_preview_visibility_policy(window);
-                if !policy.should_show() {
-                    host.send(PreviewCommand::SetWindowVisible { visible: false });
-                } else {
+                this.flush_scene_external_preview_window_state(&host, policy);
+                if policy.should_show() {
                     cx.notify();
                 }
             })
@@ -9702,6 +9788,8 @@ impl Render for MotionLoomPage {
         let viewport_h = window.viewport_size().height / px(1.0);
         if let Some(host) = self.scene_external_preview_host.clone() {
             self.drain_scene_external_preview_events(&host, window, cx);
+            let policy = self.scene_external_preview_visibility_policy(window);
+            self.flush_scene_external_preview_window_state(&host, policy);
         }
         self.schedule_scene_external_preview_heartbeat(window, cx);
         let content_max_w = if viewport_w >= 1800.0 {
@@ -10081,7 +10169,7 @@ impl Render for MotionLoomPage {
                 .ok()
                 .map(|graph| graph.render_size.unwrap_or(graph.size))
                 .unwrap_or((1280, 720));
-        let scene_live_preview_card = if let Some(host) = self.scene_external_preview_host.clone() {
+        let scene_live_preview_card = if self.scene_external_preview_host.is_some() {
             let external_preview_visibility = self.scene_external_preview_visibility_policy(window);
             div()
                 .w_full()
@@ -10093,9 +10181,9 @@ impl Render for MotionLoomPage {
                 .bg(rgb(0x05070c))
                 .overflow_hidden()
                 .child(ExternalPreviewAnchorElement::new(
-                    host,
                     scene_live_external_graph_size,
                     external_preview_visibility,
+                    self.scene_external_preview_desired_window.clone(),
                 ))
                 .into_any_element()
         } else {
