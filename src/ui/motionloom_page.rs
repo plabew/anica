@@ -972,7 +972,20 @@ struct PreviewVisibilityPolicy {
 
 impl PreviewVisibilityPolicy {
     fn should_show(self) -> bool {
-        !self.overlay_open && (self.app_active || self.host_focused)
+        if self.overlay_open {
+            return false;
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            self.app_active || self.host_focused
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (self.app_active, self.host_focused);
+            true
+        }
     }
 }
 
