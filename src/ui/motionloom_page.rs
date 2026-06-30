@@ -154,7 +154,7 @@ fn default_motionloom_external_preview_protocol_enum() -> MotionLoomExternalPrev
 }
 
 fn motionloom_external_preview_log(message: impl AsRef<str>) {
-    if cfg!(target_os = "windows") || motionloom_external_preview_debug_enabled() {
+    if motionloom_external_preview_debug_enabled() {
         eprintln!(
             "[anica-preview pid={}] {}",
             std::process::id(),
@@ -262,7 +262,7 @@ impl SceneExternalPreviewHost {
         ));
 
         let mut command = Command::new(helper);
-        if cfg!(target_os = "windows") || motionloom_external_preview_debug_enabled() {
+        if motionloom_external_preview_debug_enabled() {
             command.env("MOTIONLOOM_PREVIEW_HOST_DEBUG", "1");
         }
 
@@ -1056,12 +1056,12 @@ impl PreviewVisibilityPolicy {
             return false;
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             self.app_active || self.host_focused
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             let _ = (self.app_active, self.host_focused);
             true

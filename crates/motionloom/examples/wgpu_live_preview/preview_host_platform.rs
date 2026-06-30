@@ -77,11 +77,11 @@ pub fn frontmost_process_id() -> Option<u32> {
 }
 
 pub fn should_gate_visibility_by_frontmost_process() -> bool {
-    cfg!(target_os = "macos")
+    cfg!(any(target_os = "macos", target_os = "windows"))
 }
 
 pub fn should_emit_host_focus_events() -> bool {
-    cfg!(target_os = "macos")
+    cfg!(any(target_os = "macos", target_os = "windows"))
 }
 
 pub fn should_raise_attached_window_on_heartbeat() -> bool {
