@@ -2,6 +2,7 @@
 // =========================================
 // crates/motionloom/src/preview.rs
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -179,6 +180,7 @@ impl WgpuPreviewEngine {
     }
 
     /// Build a GPU preview engine around a host-owned wgpu device and queue.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn new_with_device(
         device: Arc<wgpu::Device>,
         queue: wgpu::Queue,

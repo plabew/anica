@@ -14,6 +14,8 @@ This guide is for AI agents and contributors generating MotionLoom DSL. Prefer s
 - Do not generate anonymous `<Group>` nodes. If the scene has parts, split them into semantic groups such as `background_group`, `eye_main`, `sclera_group`, `iris_group`, `highlight_group`, `lash_group`, `character_left`, or `chart_bars`.
 - Prefer modifying one localized group over replacing the whole graph when attaching Vector Lab output.
 - For exported vector drawing, use brush/stroke attributes on fewer semantic paths when possible instead of many repeated one-off paths.
+- If the full-frame background is static, use `<Background color="..."/>` only. Do not add a full-canvas `<Rect>` that duplicates the same background color.
+- Only use a full-canvas `<Rect>` for a background when it needs timeline animation, blend mode, opacity animation, masking, clipping, or scene-local layering.
 
 ## Curve Patterns
 

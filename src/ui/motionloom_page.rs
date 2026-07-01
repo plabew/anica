@@ -1135,6 +1135,18 @@ impl ExternalPreviewAnchorElement {
             gpui::size(gpui::px(dest_w), gpui::px(dest_h)),
         )
     }
+
+    fn clear_desired_window(&self) {
+        if let Ok(mut desired) = self.desired_window.lock() {
+            *desired = SceneExternalPreviewDesiredWindow::default();
+        }
+    }
+
+    fn minimum_visible_top(viewport_h: f32) -> f32 {
+        // The WGPU preview is an OS window, so GPUI scroll clipping cannot mask it.
+        // Hide it once the slot scrolls into the fixed header/control area.
+        (viewport_h * 0.16).max(170.0)
+    }
 }
 
 impl Element for ExternalPreviewAnchorElement {
@@ -1188,14 +1200,32 @@ impl Element for ExternalPreviewAnchorElement {
         _cx: &mut gpui::App,
     ) {
         if !self.visibility.should_show() {
-            if let Ok(mut desired) = self.desired_window.lock() {
-                *desired = SceneExternalPreviewDesiredWindow::default();
-            }
+            self.clear_desired_window();
             return;
         }
 
         let bounds = self.fitted_bounds(bounds);
         let window_bounds = window.bounds();
+        let viewport_w = f32::from(window.viewport_size().width);
+        let viewport_h = f32::from(window.viewport_size().height);
+        let local_x = f32::from(bounds.origin.x);
+        let local_y = f32::from(bounds.origin.y);
+        let local_w = f32::from(bounds.size.width);
+        let local_h = f32::from(bounds.size.height);
+        let minimum_visible_top = Self::minimum_visible_top(viewport_h);
+        let fully_in_viewport = local_x >= 0.0
+            && local_y >= minimum_visible_top
+            && local_x + local_w <= viewport_w
+            && local_y + local_h <= viewport_h;
+        if !fully_in_viewport {
+            if motionloom_external_preview_debug_enabled() {
+                eprintln!(
+                    "external MotionLoom preview hidden outside slot viewport: local=({local_x:.1},{local_y:.1} {local_w:.1}x{local_h:.1}) viewport={viewport_w:.1}x{viewport_h:.1} min_top={minimum_visible_top:.1}"
+                );
+            }
+            self.clear_desired_window();
+            return;
+        }
         let content_offset_y = (f32::from(window_bounds.size.height)
             - f32::from(window.viewport_size().height))
         .max(0.0);

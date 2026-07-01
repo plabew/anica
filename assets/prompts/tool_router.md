@@ -38,6 +38,8 @@ Rules:
   - Preferred skeleton: `<Graph scope="scene" ...>`, `<Scene id="scene0">...</Scene>`, `<Present from="scene0" />`.
   - Simple direct scene nodes remain valid (`<Solid>`, `<Text>`, `<Image>`, `<Svg>`, `<Present from="scene" />`), but prefer `<Scene id="scene0">` for new scripts.
   - `<Scene>` children should use `<Timeline><Track><Sequence><Layer>...`; visual layers may include `<Text>`, `<Image>`, `<Svg>`, `<Group>`, `<Mask>`, `<Character>`, `<Rect>`, `<Circle>`, `<Line>`, `<Polyline>`, `<Path>`, `<Shadow>`, and `<Repeat>`.
+  - If the full-frame background is static, use `<Background color="..."/>` only; do not add a full-canvas `<Rect>` that duplicates the same background color.
+  - Only use a full-canvas `<Rect>` as a background when it needs timeline animation, blend mode, opacity animation, masking, clipping, or scene-local layering.
   - Use `<Group x="..." y="..." rotation="..." scale="..." opacity="...">...</Group>` for card/layout transforms.
   - Use `<Character x="..." y="..." rotation="..." scale="..." opacity="...">...</Character>` for dense vector character/face/hair rigs; inside it, prefer `<Group>`, `<Mask>`, `<Path>`, `<Polyline>`, `<Line>`, `<Circle>`, `<Rect>`, and `<Text>`.
   - Use `<Mask shape="circle" x="..." y="..." radius="...">...</Mask>` or `<Mask shape="rect" x="..." y="..." width="..." height="..." radius="...">...</Mask>` to clip child nodes.
