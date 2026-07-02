@@ -903,6 +903,7 @@ pub struct VideoPreview {
     present_refresh_interval_estimate_s: f32,
     present_dropped_frames_total: u64,
     last_present_sample_playhead: Option<Duration>,
+    last_timeline_edit_token: u64,
     memory_tuning: PreviewMemoryTuning,
     audio_track_time_indices: HashMap<usize, AudioTrackTimeIndex>,
     audio_track_index_token: u64,
@@ -1131,6 +1132,7 @@ impl VideoPreview {
         .detach();
 
         let configured_budget_mb = global.read(cx).preview_memory_budget_mb;
+        let initial_timeline_edit_token = global.read(cx).timeline_edit_token();
         let memory_tuning = PreviewMemoryTuning::load(configured_budget_mb);
         Self {
             visual_players: HashMap::new(),
@@ -1189,6 +1191,7 @@ impl VideoPreview {
             present_refresh_interval_estimate_s: 0.0,
             present_dropped_frames_total: 0,
             last_present_sample_playhead: None,
+            last_timeline_edit_token: initial_timeline_edit_token,
             memory_tuning,
             audio_track_time_indices: HashMap::new(),
             audio_track_index_token: 0,
@@ -3575,6 +3578,7 @@ impl VideoPreview {
         let mut active_video_ids = HashSet::new();
         let mut active_image_ids = HashSet::new();
         let mut next_order = Vec::new();
+        let mut visual_seek_refresh_needed = false;
         let full_preview_max_dim =
             (canvas_w.max(canvas_h) as u32).clamp(1, DEFAULT_IMAGE_MAX_DIM_FULL);
         let preview_target_max_dim = preview_resolution.max_dim_for_canvas(canvas_w, canvas_h);
@@ -3713,10 +3717,6 @@ impl VideoPreview {
                 let opacity = Self::get_clip_opacity(gs, id).unwrap_or(1.0);
                 let lut_mix = Self::get_clip_lut_mix(gs, id).unwrap_or(0.0);
                 let bloom = gs.layer_bloom_at(playhead).unwrap_or((1.0, 0.0, 0.0));
-                let (_, _, _, tint_alpha) =
-                    Self::get_clip_tint(gs, id).unwrap_or((0.0, 0.0, 0.0, 0.0));
-                let (transform_scale, pos_x, pos_y, rotation_deg) =
-                    Self::get_clip_transform(gs, id, playhead).unwrap_or((1.0, 0.0, 0.0, 0.0));
                 let local_mask_layers = Self::get_clip_local_mask_layers(gs, id);
                 let manual_surface_mode = if gs.mac_preview_render_mode
                     == MacPreviewRenderMode::FullBgra
@@ -3732,19 +3732,10 @@ impl VideoPreview {
                 } else {
                     true
                 };
-                // Opacity is supported on the NV12 surface path via `paint_surface_anica`
-                // parameters; keep BGRA fallback only for features not yet supported there.
-                let force_bgra_for_global_effects = b.abs() > 0.001
-                    || (c - 1.0).abs() > 0.001
-                    || (s - 1.0).abs() > 0.001
-                    || (opacity - 1.0).abs() > 0.001
-                    || lut_mix.abs() > 0.001
-                    || blur_sigma.abs() > 0.001
-                    || tint_alpha.abs() > 0.001;
-                let force_bgra_for_transform = (transform_scale - 1.0).abs() > 0.001
-                    || pos_x.abs() > 0.001
-                    || pos_y.abs() > 0.001
-                    || rotation_deg.abs() > 0.001;
+                // The macOS NV12 surface renderer handles global color, opacity, blur,
+                // LUT/tint, and transform through shader params. Do not switch decode
+                // mode for inspector edits, otherwise the paused player reloads and
+                // briefly has no frame until a seek/play produces one.
                 let force_bgra_for_local_mask = local_mask_layers.iter().any(|layer| {
                     let has_shape = layer.enabled
                         && layer.strength >= 0.001
@@ -3762,11 +3753,7 @@ impl VideoPreview {
                     opacity,
                     lut_mix,
                     bloom,
-                    manual_surface_mode
-                        && !force_bgra_for_global_effects
-                        && !force_bgra_for_transform
-                        && !force_bgra_for_local_mask
-                        && !force_bgra_for_bloom,
+                    manual_surface_mode && !force_bgra_for_local_mask && !force_bgra_for_bloom,
                 )
             };
             let path_changed = self.video_cache_paths.get(&id) != Some(&clip_path);
@@ -3790,6 +3777,7 @@ impl VideoPreview {
                 #[cfg(target_os = "macos")]
                 self.mac_surface_mode_keys.remove(&id);
                 changed = true;
+                visual_seek_refresh_needed = true;
             }
 
             if !self.visual_players.contains_key(&id) {
@@ -3849,6 +3837,7 @@ impl VideoPreview {
                         #[cfg(target_os = "macos")]
                         self.mac_surface_mode_keys.insert(id, target_prefer_surface);
                         changed = true;
+                        visual_seek_refresh_needed = true;
                     }
                 }
             } else {
@@ -3975,6 +3964,10 @@ impl VideoPreview {
         self.log_cache_growth_if_needed();
 
         self.maybe_log_runtime_state(playhead, active_visual_ids.len(), active_audio_ids.len());
+        if visual_seek_refresh_needed && !self.global.read(cx).is_playing {
+            self.scrub_refresh_until =
+                Some(Instant::now() + Duration::from_millis(SCRUB_REFRESH_TAIL_MS));
+        }
         let sync_elapsed_ms = sync_started.elapsed().as_millis();
         if sync_elapsed_ms >= SYNC_SLOW_MS {
             log::debug!(
@@ -4688,6 +4681,18 @@ impl Render for VideoPreview {
         }
 
         let is_playing = self.global.read(cx).is_playing;
+        let timeline_edit_token = self.global.read(cx).timeline_edit_token();
+        if self.last_timeline_edit_token != timeline_edit_token {
+            // Inspector edits do not move the playhead, so invalidate paused seek de-dupe
+            // and request a short refresh tail to redraw the current frame immediately.
+            self.last_timeline_edit_token = timeline_edit_token;
+            self.last_seek_requests.clear();
+            self.last_present_sample_playhead = None;
+            if !is_playing {
+                self.scrub_refresh_until =
+                    Some(Instant::now() + Duration::from_millis(SCRUB_REFRESH_TAIL_MS));
+            }
+        }
         if is_playing {
             // Keep playback updates in a single pump path to avoid duplicate sync work
             // from both `render()` and the on-next-frame playback callback.

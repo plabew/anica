@@ -3980,6 +3980,22 @@ fn ffmpeg_preview_debug_enabled() -> bool {
     })
 }
 
+fn video_transform_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ANICA_DEBUG_VIDEO_TRANSFORM")
+            .ok()
+            .map(|raw| {
+                let value = raw.trim();
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+                    || value.eq_ignore_ascii_case("on")
+            })
+            .unwrap_or(false)
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn nv12_pixel_format_tag(pixel_format: u32) -> &'static str {
     if pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
@@ -5251,17 +5267,18 @@ impl VideoElement {
             return;
         }
 
+        // Geometry transforms are applied once by the final surface shader.
+        // Pixel processing must not rotate/scale the frame again when effects are active.
         let source = data.to_vec();
         let mut transformed = vec![0_u8; source.len()];
         let width_f = width as f32;
         let height_f = height as f32;
         let aspect = width_f / height_f.max(1e-6);
-        let ref_w = self.transform_ref_width.max(1.0);
-        let ref_h = self.transform_ref_height.max(1.0);
-        let pos_x_norm = self.transform_pos_x * (ref_w / width_f.max(1.0));
-        let pos_y_norm = self.transform_pos_y * (ref_h / height_f.max(1.0));
-        let inv_scale = 1.0 / self.transform_scale.clamp(0.01, 5.0).max(1e-6);
-        let angle = self.rotation_deg.clamp(-180.0, 180.0);
+        // X/Y translation, scale, and rotation are applied once at the final surface draw bounds.
+        let pos_x_norm = 0.0;
+        let pos_y_norm = 0.0;
+        let inv_scale = 1.0;
+        let angle = 0.0_f32;
         let rotation_enabled = angle.abs() >= 0.001;
         let theta = angle.to_radians();
         let sin_t = theta.sin();
@@ -5652,10 +5669,12 @@ impl VideoElement {
             saturation: self.saturation,
             lut_mix: self.lut_mix,
             opacity: self.opacity,
-            rotation_deg: self.rotation_deg,
-            transform_scale: self.transform_scale,
-            transform_pos_x: self.transform_pos_x,
-            transform_pos_y: self.transform_pos_y,
+            // Geometry transforms are applied once by the final surface shader.
+            // Passing them into the effect shader distorts the rectangular frame.
+            rotation_deg: 0.0,
+            transform_scale: 1.0,
+            transform_pos_x: 0.0,
+            transform_pos_y: 0.0,
             transform_ref_width: self.transform_ref_width,
             transform_ref_height: self.transform_ref_height,
             tint_hue: self.tint_hue,
@@ -5828,13 +5847,24 @@ impl VideoElement {
         &self,
         dest_bounds: &gpui::Bounds<gpui::Pixels>,
     ) -> gpui::SurfaceExParams_anica {
+        self.build_surface_params_anica_with_position(dest_bounds, true)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn build_surface_params_anica_with_position(
+        &self,
+        dest_bounds: &gpui::Bounds<gpui::Pixels>,
+        include_position: bool,
+    ) -> gpui::SurfaceExParams_anica {
         let dest_w: f32 = dest_bounds.size.width.into();
         let dest_h: f32 = dest_bounds.size.height.into();
-        let ref_w = self.transform_ref_width.max(1.0);
-        let ref_h = self.transform_ref_height.max(1.0);
-        // Map reference-space position to destination pixel offset.
-        let translate_x = self.transform_pos_x * (dest_w / ref_w);
-        let translate_y = self.transform_pos_y * (dest_h / ref_h);
+        // Inspector position is normalized in graph space, matching the pixel/effect
+        // shader path. Native surface translation needs destination pixels.
+        let (translate_x, translate_y) = if include_position {
+            (self.transform_pos_x * dest_w, self.transform_pos_y * dest_h)
+        } else {
+            (0.0, 0.0)
+        };
         gpui::SurfaceExParams_anica {
             opacity: self.opacity.clamp(0.0, 1.0),
             scale: self.transform_scale.clamp(0.01, 5.0),
@@ -5844,6 +5874,19 @@ impl VideoElement {
                 gpui::ScaledPixels::from(translate_y),
             ),
         }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn positioned_surface_bounds_anica(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        let dest_w: f32 = bounds.size.width.into();
+        let dest_h: f32 = bounds.size.height.into();
+        Bounds::new(
+            gpui::point(
+                bounds.origin.x + gpui::px(self.transform_pos_x * dest_w),
+                bounds.origin.y + gpui::px(self.transform_pos_y * dest_h),
+            ),
+            bounds.size,
+        )
     }
 
     fn has_frame_render_effects(&self) -> bool {
@@ -6354,14 +6397,48 @@ impl Element for VideoElement {
                     let width = surface.get_width() as u32;
                     let height = surface.get_height() as u32;
                     let dest_bounds = self.fitted_bounds(bounds, width.max(1), height.max(1));
-                    let params = if bgra_needs_pixel_surface {
-                        gpui::SurfaceExParams_anica::default()
-                    } else {
-                        self.build_surface_params_anica(&dest_bounds)
-                    };
+                    // Use the same draw-bounds translation for both raw and effect-processed BGRA.
+                    // Effect processing keeps only scale/rotation/color so X/Y does not drift.
+                    let draw_bounds = self.positioned_surface_bounds_anica(dest_bounds);
+                    let params = self.build_surface_params_anica_with_position(&dest_bounds, false);
+                    if video_transform_debug_enabled() {
+                        static BGRA_TRANSFORM_DEBUG_COUNT: AtomicU64 = AtomicU64::new(0);
+                        let hit = BGRA_TRANSFORM_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                        if hit <= 20 || hit % 30 == 0 {
+                            let dest_x: f32 = dest_bounds.origin.x.into();
+                            let dest_y: f32 = dest_bounds.origin.y.into();
+                            let draw_x: f32 = draw_bounds.origin.x.into();
+                            let draw_y: f32 = draw_bounds.origin.y.into();
+                            let dest_w: f32 = dest_bounds.size.width.into();
+                            let dest_h: f32 = dest_bounds.size.height.into();
+                            log::info!(
+                                "[VideoElement][TransformDebug] path=mac_bgra hit={} video_id={} effects={} pos=({:.4},{:.4}) scale={:.4} rot={:.2} opacity={:.3} dest=({:.1},{:.1},{:.1},{:.1}) draw=({:.1},{:.1},{:.1},{:.1}) brightness={:.3} contrast={:.3} saturation={:.3} blur={:.3}",
+                                hit,
+                                self.video.id(),
+                                bgra_needs_pixel_surface,
+                                self.transform_pos_x,
+                                self.transform_pos_y,
+                                self.transform_scale,
+                                self.rotation_deg,
+                                self.opacity,
+                                dest_x,
+                                dest_y,
+                                dest_w,
+                                dest_h,
+                                draw_x,
+                                draw_y,
+                                dest_w,
+                                dest_h,
+                                self.brightness,
+                                self.contrast,
+                                self.saturation,
+                                self.effective_signed_blur_sigma(),
+                            );
+                        }
+                    }
                     let draw_started = Instant::now();
                     window.paint_bgra_frame_anica(
-                        dest_bounds,
+                        draw_bounds,
                         gpui::BgraFrameSurface::CvPixelBuffer(surface),
                         params,
                     );
@@ -6623,8 +6700,44 @@ impl Element for VideoElement {
                         let _ = pending_nv12_blur.update(cx, |state, _| state.take());
                         let _ = nv12_effect_fail_streak.update(cx, |streak, _| *streak = 0);
                         // Use anica extended surface path for opacity/transform on NV12.
-                        let params = self.build_surface_params_anica(&dest_bounds);
-                        window.paint_surface_anica(dest_bounds, surface, params);
+                        // On the no-effect native surface fast path, apply inspector x/y to the
+                        // draw bounds directly. Some platform surface shaders ignore translate
+                        // unless an effect pass is active, while bounds movement is always honored.
+                        let positioned_bounds = self.positioned_surface_bounds_anica(dest_bounds);
+                        let params =
+                            self.build_surface_params_anica_with_position(&dest_bounds, false);
+                        if video_transform_debug_enabled() {
+                            static NV12_TRANSFORM_DEBUG_COUNT: AtomicU64 = AtomicU64::new(0);
+                            let hit =
+                                NV12_TRANSFORM_DEBUG_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                            if hit <= 20 || hit % 30 == 0 {
+                                let dest_x: f32 = dest_bounds.origin.x.into();
+                                let dest_y: f32 = dest_bounds.origin.y.into();
+                                let draw_x: f32 = positioned_bounds.origin.x.into();
+                                let draw_y: f32 = positioned_bounds.origin.y.into();
+                                let dest_w: f32 = dest_bounds.size.width.into();
+                                let dest_h: f32 = dest_bounds.size.height.into();
+                                log::info!(
+                                    "[VideoElement][TransformDebug] path=mac_nv12_no_effect hit={} video_id={} pos=({:.4},{:.4}) scale={:.4} rot={:.2} opacity={:.3} dest=({:.1},{:.1},{:.1},{:.1}) draw=({:.1},{:.1},{:.1},{:.1})",
+                                    hit,
+                                    self.video.id(),
+                                    self.transform_pos_x,
+                                    self.transform_pos_y,
+                                    self.transform_scale,
+                                    self.rotation_deg,
+                                    self.opacity,
+                                    dest_x,
+                                    dest_y,
+                                    dest_w,
+                                    dest_h,
+                                    draw_x,
+                                    draw_y,
+                                    dest_w,
+                                    dest_h,
+                                );
+                            }
+                        }
+                        window.paint_surface_anica(positioned_bounds, surface, params);
                         rendered_on_surface = true;
                     }
                     if rendered_on_surface {

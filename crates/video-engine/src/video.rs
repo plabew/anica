@@ -517,7 +517,7 @@ impl Video {
             width = (width.max(2) + 1) & !1;
             height = (height.max(2) + 1) & !1;
         }
-        let duration = if source_duration.is_zero() && Self::is_image_uri(uri) {
+        let duration = if source_duration.is_zero() && Self::is_still_image_uri(uri) {
             Duration::from_secs(24 * 60 * 60)
         } else {
             source_duration
@@ -561,7 +561,7 @@ impl Video {
         let paused_ref = Arc::clone(&paused);
         let position_ns_ref = Arc::clone(&position_ns);
         let seek_request_ns_ref = Arc::clone(&seek_request_ns);
-        let is_image = Self::is_image_uri(uri);
+        let is_image = Self::is_still_image_uri(uri);
         let frame_bytes = width as usize * height as usize * 4;
         let frame_duration = Duration::from_secs_f64(1.0 / f64::from(fps));
         let duration_ns = duration.as_nanos().min(u128::from(u64::MAX)) as u64;
@@ -876,15 +876,15 @@ impl Video {
         Ok(())
     }
 
-    fn is_image_uri(uri: &url::Url) -> bool {
+    fn is_still_image_uri(uri: &url::Url) -> bool {
         if let Some(path) = uri.path_segments().and_then(|mut segs| segs.next_back()) {
             let lower = path.to_ascii_lowercase();
+            // Animated GIFs must stay on the video decode path so frame timing advances normally.
             return lower.ends_with(".jpg")
                 || lower.ends_with(".jpeg")
                 || lower.ends_with(".png")
                 || lower.ends_with(".webp")
                 || lower.ends_with(".bmp")
-                || lower.ends_with(".gif")
                 || lower.ends_with(".tif")
                 || lower.ends_with(".tiff");
         }

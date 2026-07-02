@@ -1893,9 +1893,9 @@ impl ProxyRenderMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacPreviewRenderMode {
-    // Default macOS mode: keep NV12 surface path when possible.
+    // Legacy macOS mode: keep NV12 surface path when explicitly requested.
     HybridNv12,
-    // Force all visual preview clips through BGRA decode/image path.
+    // Default macOS mode: force visual preview clips through BGRA/CVPixelBuffer path.
     FullBgra,
 }
 
@@ -2197,10 +2197,10 @@ impl Default for GlobalState {
             preview_present_dropped_frames: 0,
             preview_resolution: PreviewResolution::P480,
             preview_quality: PreviewQuality::Full,
-            proxy_render_mode_high: ProxyRenderMode::Nv12Surface,
-            proxy_render_mode_medium: ProxyRenderMode::Nv12Surface,
-            proxy_render_mode_low: ProxyRenderMode::Nv12Surface,
-            mac_preview_render_mode: MacPreviewRenderMode::HybridNv12,
+            proxy_render_mode_high: ProxyRenderMode::BgraImage,
+            proxy_render_mode_medium: ProxyRenderMode::BgraImage,
+            proxy_render_mode_low: ProxyRenderMode::BgraImage,
+            mac_preview_render_mode: MacPreviewRenderMode::FullBgra,
             v1_move_mode: V1MoveMode::Magnetic,
             inspector_expanded: false,
             pending_transition: None,
@@ -4217,7 +4217,7 @@ impl GlobalState {
             PreviewQuality::High => self.proxy_render_mode_high,
             PreviewQuality::Medium => self.proxy_render_mode_medium,
             PreviewQuality::Low => self.proxy_render_mode_low,
-            PreviewQuality::Full => ProxyRenderMode::Nv12Surface,
+            PreviewQuality::Full => ProxyRenderMode::BgraImage,
         }
     }
 
