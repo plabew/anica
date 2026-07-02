@@ -3585,6 +3585,49 @@ impl BgraGpuEffectParams {
                         .unwrap_or(0.0);
                     self.brightness = (self.brightness + amount).clamp(-1.0, 1.0);
                 }
+                "contrast" => {
+                    let amount = effect
+                        .float("amount")
+                        .or_else(|| effect.float("contrast"))
+                        .or_else(|| effect.float("value"))
+                        .unwrap_or(1.0);
+                    self.contrast = (self.contrast * amount).clamp(0.0, 4.0);
+                }
+                "saturation" | "saturate" => {
+                    let amount = effect
+                        .float("amount")
+                        .or_else(|| effect.float("saturation"))
+                        .or_else(|| effect.float("value"))
+                        .unwrap_or(1.0);
+                    self.saturation = (self.saturation * amount).clamp(0.0, 4.0);
+                }
+                "opacity" | "alpha" => {
+                    let amount = effect
+                        .float("amount")
+                        .or_else(|| effect.float("opacity"))
+                        .or_else(|| effect.float("alpha"))
+                        .or_else(|| effect.float("value"))
+                        .unwrap_or(1.0);
+                    self.opacity = (self.opacity * amount).clamp(0.0, 1.0);
+                }
+                "blur" | "gaussian_blur" | "gaussian_5tap_blur" => {
+                    let sigma = effect
+                        .float("sigma")
+                        .or_else(|| effect.float("radius"))
+                        .or_else(|| effect.float("amount"))
+                        .or_else(|| effect.float("value"))
+                        .unwrap_or(0.0);
+                    self.blur_sigma = (self.blur_sigma + sigma).clamp(-64.0, 64.0);
+                }
+                "sharpen" | "unsharp" => {
+                    let amount = effect
+                        .float("amount")
+                        .or_else(|| effect.float("sigma"))
+                        .or_else(|| effect.float("radius"))
+                        .or_else(|| effect.float("value"))
+                        .unwrap_or(0.0);
+                    self.blur_sigma = (self.blur_sigma - amount.abs()).clamp(-64.0, 64.0);
+                }
                 "bloom" | "glow" | "glow_bloom" | "glow_stack" => {
                     self.bloom_threshold =
                         effect.float("threshold").unwrap_or(self.bloom_threshold);
@@ -3929,6 +3972,64 @@ mod tests {
 
         assert!(unsupported.is_empty());
         assert!((params.brightness + 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn process_inspector_color_aliases_map_to_bgra_gpu_params() {
+        let mut params = BgraGpuEffectParams::default();
+        let effects = [
+            BgraProcessEffectInstance {
+                effect_id: "contrast".to_string(),
+                params: BTreeMap::from([(
+                    "contrast".to_string(),
+                    BgraProcessParamValue::Float(1.35),
+                )]),
+            },
+            BgraProcessEffectInstance {
+                effect_id: "saturation".to_string(),
+                params: BTreeMap::from([(
+                    "saturation".to_string(),
+                    BgraProcessParamValue::Float(0.72),
+                )]),
+            },
+            BgraProcessEffectInstance {
+                effect_id: "opacity".to_string(),
+                params: BTreeMap::from([(
+                    "opacity".to_string(),
+                    BgraProcessParamValue::Float(0.44),
+                )]),
+            },
+        ];
+
+        let unsupported = params.apply_process_effects(&effects);
+
+        assert!(unsupported.is_empty());
+        assert!((params.contrast - 1.35).abs() < 1e-6);
+        assert!((params.saturation - 0.72).abs() < 1e-6);
+        assert!((params.opacity - 0.44).abs() < 1e-6);
+    }
+
+    #[test]
+    fn process_blur_and_sharpen_aliases_map_to_signed_blur_sigma() {
+        let mut params = BgraGpuEffectParams::default();
+        let effects = [
+            BgraProcessEffectInstance {
+                effect_id: "gaussian_5tap_blur".to_string(),
+                params: BTreeMap::from([("sigma".to_string(), BgraProcessParamValue::Float(3.0))]),
+            },
+            BgraProcessEffectInstance {
+                effect_id: "sharpen".to_string(),
+                params: BTreeMap::from([(
+                    "amount".to_string(),
+                    BgraProcessParamValue::Float(1.25),
+                )]),
+            },
+        ];
+
+        let unsupported = params.apply_process_effects(&effects);
+
+        assert!(unsupported.is_empty());
+        assert!((params.blur_sigma - 1.75).abs() < 1e-6);
     }
 }
 
@@ -5334,6 +5435,101 @@ impl VideoElement {
         sigma
     }
 
+    fn inspector_motionloom_process_effects(&self) -> Vec<BgraProcessEffectInstance> {
+        let mut effects = Vec::new();
+        let float = |value| BgraProcessParamValue::Float(value);
+
+        if self.brightness.abs() >= 0.001 {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "brightness".to_string(),
+                params: BTreeMap::from([("brightness".to_string(), float(self.brightness))]),
+            });
+        }
+        if (self.contrast - 1.0).abs() >= 0.001 {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "contrast".to_string(),
+                params: BTreeMap::from([("contrast".to_string(), float(self.contrast))]),
+            });
+        }
+        if (self.saturation - 1.0).abs() >= 0.001 {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "saturation".to_string(),
+                params: BTreeMap::from([("saturation".to_string(), float(self.saturation))]),
+            });
+        }
+        if (self.opacity - 1.0).abs() >= 0.001 {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "opacity".to_string(),
+                params: BTreeMap::from([("opacity".to_string(), float(self.opacity))]),
+            });
+        }
+
+        let signed_blur_sigma = self.effective_signed_blur_sigma();
+        if signed_blur_sigma > 0.001 {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "gaussian_5tap_blur".to_string(),
+                params: BTreeMap::from([("sigma".to_string(), float(signed_blur_sigma))]),
+            });
+        } else if signed_blur_sigma < -0.001 {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "sharpen".to_string(),
+                params: BTreeMap::from([("amount".to_string(), float(signed_blur_sigma.abs()))]),
+            });
+        }
+
+        if self.tint_alpha.abs() >= 0.001 {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "hsla_overlay".to_string(),
+                params: BTreeMap::from([
+                    ("hue".to_string(), float(self.tint_hue)),
+                    ("saturation".to_string(), float(self.tint_saturation)),
+                    ("lightness".to_string(), float(self.tint_lightness)),
+                    ("alpha".to_string(), float(self.tint_alpha)),
+                ]),
+            });
+        }
+        if self.bloom_intensity > 0.001 && self.bloom_sigma > 0.001 {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "glow_bloom".to_string(),
+                params: BTreeMap::from([
+                    ("threshold".to_string(), float(self.bloom_threshold)),
+                    ("intensity".to_string(), float(self.bloom_intensity)),
+                    ("sigma".to_string(), float(self.bloom_sigma)),
+                ]),
+            });
+        }
+        if self.tone_map_enabled {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "tone_map".to_string(),
+                params: BTreeMap::from([
+                    ("exposure".to_string(), float(self.tone_map_exposure)),
+                    ("contrast".to_string(), float(self.tone_map_contrast)),
+                    ("shoulder".to_string(), float(self.tone_map_shoulder)),
+                    ("gamma".to_string(), float(self.tone_map_gamma)),
+                    ("saturation".to_string(), float(self.tone_map_saturation)),
+                ]),
+            });
+        }
+        if self.light_sweep_enabled && self.light_sweep_intensity > 0.001 {
+            effects.push(BgraProcessEffectInstance {
+                effect_id: "light_sweep".to_string(),
+                params: BTreeMap::from([
+                    ("position".to_string(), float(self.light_sweep_position)),
+                    ("angle".to_string(), float(self.light_sweep_angle)),
+                    ("width".to_string(), float(self.light_sweep_width)),
+                    ("softness".to_string(), float(self.light_sweep_softness)),
+                    ("intensity".to_string(), float(self.light_sweep_intensity)),
+                    (
+                        "color".to_string(),
+                        BgraProcessParamValue::Color(self.light_sweep_color),
+                    ),
+                ]),
+            });
+        }
+
+        effects
+    }
+
     #[cfg(target_os = "macos")]
     fn has_nv12_color_processing(&self) -> bool {
         // Transform is now handled by the anica render shader (surface_vertex_anica),
@@ -5661,14 +5857,9 @@ impl VideoElement {
             return false;
         }
 
-        let sigma = self.effective_signed_blur_sigma();
         let local_layers = self.effective_local_mask_layers();
         let mut params = BgraGpuEffectParams {
-            brightness: self.brightness,
-            contrast: self.contrast,
-            saturation: self.saturation,
             lut_mix: self.lut_mix,
-            opacity: self.opacity,
             // Geometry transforms are applied once by the final surface shader.
             // Passing them into the effect shader distorts the rectangular frame.
             rotation_deg: 0.0,
@@ -5677,38 +5868,12 @@ impl VideoElement {
             transform_pos_y: 0.0,
             transform_ref_width: self.transform_ref_width,
             transform_ref_height: self.transform_ref_height,
-            tint_hue: self.tint_hue,
-            tint_saturation: self.tint_saturation,
-            tint_lightness: self.tint_lightness,
-            tint_alpha: self.tint_alpha,
-            blur_sigma: sigma,
             blur_mode: self.blur_mode,
-            bloom_threshold: self.bloom_threshold,
-            bloom_intensity: self.bloom_intensity,
-            bloom_sigma: self.bloom_sigma,
-            tone_map_enabled: self.tone_map_enabled,
-            tone_map_exposure: self.tone_map_exposure,
-            tone_map_contrast: self.tone_map_contrast,
-            tone_map_shoulder: self.tone_map_shoulder,
-            tone_map_gamma: self.tone_map_gamma,
-            tone_map_saturation: self.tone_map_saturation,
-            light_sweep_enabled: self.light_sweep_enabled,
-            light_sweep_position: self.light_sweep_position,
-            light_sweep_angle: self.light_sweep_angle,
-            light_sweep_width: self.light_sweep_width,
-            light_sweep_softness: self.light_sweep_softness,
-            light_sweep_intensity: self.light_sweep_intensity,
-            light_sweep_color: self.light_sweep_color,
-            texture_overlay_enabled: false,
-            texture_overlay_kind: 1.0,
-            texture_overlay_scale: 72.0,
-            texture_overlay_strength: 0.0,
-            texture_overlay_contrast: 1.0,
-            texture_overlay_seed: 0.0,
-            texture_overlay_bump_strength: 0.0,
-            texture_overlay_relief: 0.0,
+            ..BgraGpuEffectParams::default()
         };
-        let unsupported_effects = params.apply_process_effects(&self.process_effects);
+        let inspector_effects = self.inspector_motionloom_process_effects();
+        let mut unsupported_effects = params.apply_process_effects(&inspector_effects);
+        unsupported_effects.extend(params.apply_process_effects(&self.process_effects));
         if !unsupported_effects.is_empty() {
             log::debug!(
                 "[VideoElement][LayerFX] skipped unsupported MotionLoom process effects: {}",
