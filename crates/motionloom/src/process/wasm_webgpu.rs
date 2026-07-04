@@ -436,6 +436,36 @@ impl ProcessWebGpuRenderer {
                 0.0,
                 1.0,
             ),
+            Some(crate::process::effect_kind::ProcessEffect::Opacity) => (
+                process_param_f32(pass, &["opacity", "alpha", "a"], time_norm, time_sec, 1.0)
+                    .clamp(0.0, 1.0),
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ),
+            Some(
+                crate::process::effect_kind::ProcessEffect::GlowBloom
+                | crate::process::effect_kind::ProcessEffect::GlowStack,
+            ) => (
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                process_param_f32(
+                    pass,
+                    &[
+                        "sigma",
+                        "radius",
+                        "radiusLarge",
+                        "radiusMedium",
+                        "radiusSmall",
+                    ],
+                    time_norm,
+                    time_sec,
+                    18.0,
+                ),
+            ),
             Some(crate::process::effect_kind::ProcessEffect::ToneMap) => (
                 process_param_f32(pass, &["exposure"], time_norm, time_sec, 0.0),
                 process_param_f32(pass, &["contrast"], time_norm, time_sec, 1.0),
@@ -515,7 +545,19 @@ impl ProcessWebGpuRenderer {
                     1.0,
                 )
             },
-            process_param_f32(pass, &["sigma", "radius"], time_norm, time_sec, 18.0),
+            process_param_f32(
+                pass,
+                &[
+                    "sigma",
+                    "radius",
+                    "radiusLarge",
+                    "radiusMedium",
+                    "radiusSmall",
+                ],
+                time_norm,
+                time_sec,
+                18.0,
+            ),
             color[0],
             color[1],
             color[2],
@@ -831,6 +873,7 @@ fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderEr
         Some(crate::process::effect_kind::ProcessEffect::TextureOverlay) => Ok(vec![8]),
         Some(crate::process::effect_kind::ProcessEffect::MagnifyLens) => Ok(vec![9]),
         Some(crate::process::effect_kind::ProcessEffect::Brightness) => Ok(vec![11]),
+        Some(crate::process::effect_kind::ProcessEffect::Opacity) => Ok(vec![12]),
         None => Err(ProcessWebGpuRenderError::UnsupportedEffect(
             pass.effect.clone(),
         )),
@@ -1033,6 +1076,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     );
     let base = textureSampleLevel(src_tex, src_samp, uv, 0.0);
     var rgb = base.rgb;
+    var out_alpha = base.a;
     if params.effect_id < 1.5 {
         // HSLA overlay
         rgb = ml_hsla_overlay(rgb, params.hue, params.saturation, params.lightness, params.alpha);
@@ -1100,6 +1144,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     } else if params.effect_id > 10.5 && params.effect_id < 11.5 {
         // Brightness: hue is additive brightness amount. -1=black, 0=normal, +1=white.
         rgb = clamp(rgb + vec3<f32>(params.hue), vec3<f32>(0.0), vec3<f32>(1.0));
+    } else if params.effect_id > 11.5 && params.effect_id < 12.5 {
+        // Opacity: hue is alpha multiplier.
+        out_alpha = base.a * clamp(params.hue, 0.0, 1.0);
     } else if params.effect_id > 7.5 && params.effect_id < 8.5 {
         // Texture overlay: hue=kind, saturation=scale, lightness=strength, alpha=contrast, sigma=seed.
         let kind = i32(round(params.hue));
@@ -1143,7 +1190,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let texture_rgb = mix(vec3<f32>(1.0), params.color.rgb * (0.55 + centered_tex * 0.9) * bump_shade, strength * params.color.a);
         rgb = mix(rgb, clamp(rgb * texture_rgb, vec3<f32>(0.0), vec3<f32>(1.0)), strength);
     }
-    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), base.a);
+    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(out_alpha, 0.0, 1.0));
 }
 "#
 );

@@ -20,6 +20,7 @@ pub enum ProcessEffect {
     GaussianBlurVertical,
     GlowBloom,
     GlowStack,
+    Opacity,
     ToneMap,
     LightSweep,
     TextureOverlay,
@@ -53,6 +54,7 @@ pub fn resolve_process_effect(effect: &str) -> Option<ProcessEffect> {
         | "post_glow_stack"
         | "light_atmosphere_glow_stack"
         | "light_atmosphere_stack_glow" => Some(ProcessEffect::GlowStack),
+        "opacity" | "composite_opacity" => Some(ProcessEffect::Opacity),
         "tone_map" | "tonemap" | "post_tone_map" | "color_tone_tone_map" | "color_tone_tonemap" => {
             Some(ProcessEffect::ToneMap)
         }
@@ -102,6 +104,7 @@ pub fn is_wasm_webgpu_compatible_effect(effect: &str) -> bool {
                 | ProcessEffect::Brightness
                 | ProcessEffect::GlowBloom
                 | ProcessEffect::GlowStack
+                | ProcessEffect::Opacity
                 | ProcessEffect::ToneMap
                 | ProcessEffect::LightSweep
                 | ProcessEffect::TextureOverlay
@@ -135,6 +138,14 @@ mod tests {
         assert_eq!(
             resolve_process_effect("glow_stack"),
             Some(ProcessEffect::GlowStack)
+        );
+        assert_eq!(
+            resolve_process_effect("opacity"),
+            Some(ProcessEffect::Opacity)
+        );
+        assert_eq!(
+            resolve_process_effect("composite.opacity"),
+            Some(ProcessEffect::Opacity)
         );
     }
 
@@ -189,6 +200,8 @@ mod tests {
         assert!(is_wasm_webgpu_compatible_effect("bloom"));
         assert!(is_wasm_webgpu_compatible_effect("glow_bloom"));
         assert!(is_wasm_webgpu_compatible_effect("glow_stack"));
+        assert!(is_wasm_webgpu_compatible_effect("opacity"));
+        assert!(is_wasm_webgpu_compatible_effect("composite.opacity"));
         assert!(is_wasm_webgpu_compatible_effect("tone_map"));
         assert!(is_wasm_webgpu_compatible_effect("light_sweep"));
         assert!(is_wasm_webgpu_compatible_effect("texture_overlay"));

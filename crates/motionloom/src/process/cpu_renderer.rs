@@ -126,12 +126,29 @@ fn apply_process_pass(
                 time_sec,
                 1.0,
             );
-            let sigma = process_param_f32(pass, &["sigma", "radius"], time_norm, time_sec, 18.0);
+            let sigma = process_param_f32(
+                pass,
+                &[
+                    "sigma",
+                    "radius",
+                    "radiusLarge",
+                    "radiusMedium",
+                    "radiusSmall",
+                ],
+                time_norm,
+                time_sec,
+                18.0,
+            );
             apply_glow_bloom(&image, threshold, intensity, sigma)
         }
         Some(ProcessEffect::Brightness) => {
             let amount = process_brightness_amount(pass, time_norm, time_sec).clamp(-1.0, 1.0);
             apply_brightness(&image, amount)
+        }
+        Some(ProcessEffect::Opacity) => {
+            let opacity =
+                process_param_f32(pass, &["opacity", "alpha", "a"], time_norm, time_sec, 1.0);
+            apply_opacity(&image, opacity)
         }
         Some(ProcessEffect::ToneMap)
         | Some(ProcessEffect::LightSweep)
@@ -142,6 +159,15 @@ fn apply_process_pass(
         }
         None => image,
     }
+}
+
+fn apply_opacity(input: &RgbaImage, opacity: f32) -> RgbaImage {
+    let opacity = opacity.clamp(0.0, 1.0);
+    let mut out = input.clone();
+    for pixel in out.pixels_mut() {
+        pixel[3] = ((pixel[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+    }
+    out
 }
 
 fn process_brightness_amount(pass: &PassNode, time_norm: f32, time_sec: f32) -> f32 {
@@ -181,4 +207,29 @@ fn process_param_f32(
                 .and_then(|param| eval_time_expr(&param.value, time_norm, time_sec).ok())
         })
         .unwrap_or(fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_cpu_renderer_applies_opacity_alpha() {
+        let script = r##"
+<Graph fps={30} size={[1,1]}>
+  <Process id="layer_fx">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[1,1]} />
+    <Pass id="fx_opacity" kind="compute"
+          effect="opacity"
+          in={["src"]} out={["out"]}
+          params={{ opacity: "0.5" }} />
+  </Process>
+  <Present from="layer_fx" />
+</Graph>
+"##;
+        let out = render_process_frame_cpu(script, 0, 1, 1, &[20, 40, 60, 200]).unwrap();
+        assert_eq!(out.get_pixel(0, 0).0, [20, 40, 60, 100]);
+    }
 }
