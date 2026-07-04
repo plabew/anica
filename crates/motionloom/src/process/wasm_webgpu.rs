@@ -331,17 +331,15 @@ impl ProcessWebGpuRenderer {
 
         for pass in passes {
             let effect_ids = process_effect_ids(pass)?;
-            let is_bloom_pass = effect_ids.contains(&4);
-            if is_bloom_pass {
-                // Preserve the original image before the bloom pipeline mutates it.
-                let src = if current_is_a { &tex_a } else { &tex_b };
-                self.copy_texture_to_texture(&mut encoder, src, &tex_backup);
-            }
             for effect_id in effect_ids {
                 let uniform_buffer = self.make_uniform_buffer(pass, effect_id, time_norm, time_sec);
                 let src = if current_is_a { &tex_a } else { &tex_b };
                 let dst = if current_is_a { &tex_b } else { &tex_a };
-                if effect_id == 5 {
+                if matches!(effect_id, 4 | 14 | 16 | 18) {
+                    // Preserve the current image before a bloom/glow stage mutates it.
+                    self.copy_texture_to_texture(&mut encoder, src, &tex_backup);
+                }
+                if matches!(effect_id, 5 | 15 | 17 | 19) {
                     // Composite pass: blend the blurred image (src) with the
                     // preserved original (tex_backup).
                     self.encode_composite_pass(
@@ -452,19 +450,7 @@ impl ProcessWebGpuRenderer {
                 0.0,
                 0.0,
                 0.0,
-                process_param_f32(
-                    pass,
-                    &[
-                        "sigma",
-                        "radius",
-                        "radiusLarge",
-                        "radiusMedium",
-                        "radiusSmall",
-                    ],
-                    time_norm,
-                    time_sec,
-                    18.0,
-                ),
+                process_bloom_sigma(pass, effect_id, time_norm, time_sec),
             ),
             Some(crate::process::effect_kind::ProcessEffect::ToneMap) => (
                 process_param_f32(pass, &["exposure"], time_norm, time_sec, 0.0),
@@ -514,11 +500,14 @@ impl ProcessWebGpuRenderer {
                 process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0),
             ),
         };
-        let color = process_param_color(pass, &["color"], [255, 255, 255, 255]);
+        let color = process_param_color(pass, &["tint", "color"], [255, 255, 255, 255]);
         let is_magnify_lens = matches!(
             resolved,
             Some(crate::process::effect_kind::ProcessEffect::MagnifyLens)
         );
+        let bloom_threshold = process_bloom_threshold(pass, effect_id, time_norm, time_sec);
+        let bloom_intensity = process_bloom_intensity(pass, effect_id, time_norm, time_sec);
+        let bloom_sigma = process_bloom_sigma(pass, effect_id, time_norm, time_sec);
         let values = [
             self.width as f32,
             self.height as f32,
@@ -532,32 +521,14 @@ impl ProcessWebGpuRenderer {
             if is_magnify_lens {
                 process_param_f32(pass, &["feather"], time_norm, time_sec, 10.0)
             } else {
-                process_param_f32(pass, &["threshold"], time_norm, time_sec, 0.72)
+                bloom_threshold
             },
             if is_magnify_lens {
                 process_param_f32(pass, &["glass"], time_norm, time_sec, 0.32)
             } else {
-                process_param_f32(
-                    pass,
-                    &["intensity", "strength", "amount"],
-                    time_norm,
-                    time_sec,
-                    1.0,
-                )
+                bloom_intensity
             },
-            process_param_f32(
-                pass,
-                &[
-                    "sigma",
-                    "radius",
-                    "radiusLarge",
-                    "radiusMedium",
-                    "radiusSmall",
-                ],
-                time_norm,
-                time_sec,
-                18.0,
-            ),
+            bloom_sigma,
             color[0],
             color[1],
             color[2],
@@ -867,7 +838,9 @@ fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderEr
         Some(crate::process::effect_kind::ProcessEffect::GaussianBlurHorizontal) => Ok(vec![2]),
         Some(crate::process::effect_kind::ProcessEffect::GaussianBlurVertical) => Ok(vec![3]),
         Some(crate::process::effect_kind::ProcessEffect::GlowBloom) => Ok(vec![4, 2, 3, 5]),
-        Some(crate::process::effect_kind::ProcessEffect::GlowStack) => Ok(vec![4, 2, 3, 5]),
+        Some(crate::process::effect_kind::ProcessEffect::GlowStack) => {
+            Ok(vec![14, 2, 3, 15, 16, 2, 3, 17, 18, 2, 3, 19])
+        }
         Some(crate::process::effect_kind::ProcessEffect::ToneMap) => Ok(vec![6]),
         Some(crate::process::effect_kind::ProcessEffect::LightSweep) => Ok(vec![7]),
         Some(crate::process::effect_kind::ProcessEffect::TextureOverlay) => Ok(vec![8]),
@@ -894,6 +867,76 @@ fn wasm_brightness_amount(pass: &PassNode, time_norm: f32, time_sec: f32) -> f32
     }
 }
 
+fn process_bloom_threshold(pass: &PassNode, effect_id: u32, time_norm: f32, time_sec: f32) -> f32 {
+    let threshold = process_param_f32(
+        pass,
+        &["threshold", "glowThreshold", "glow_threshold"],
+        time_norm,
+        time_sec,
+        0.72,
+    )
+    .clamp(0.0, 1.0);
+    match effect_id {
+        16 | 17 => threshold * 0.85,
+        18 | 19 => threshold * 0.65,
+        _ => threshold,
+    }
+}
+
+fn process_bloom_intensity(pass: &PassNode, effect_id: u32, time_norm: f32, time_sec: f32) -> f32 {
+    let intensity = process_param_f32(
+        pass,
+        &[
+            "intensity",
+            "strength",
+            "amount",
+            "glowIntensity",
+            "glow_intensity",
+        ],
+        time_norm,
+        time_sec,
+        1.0,
+    )
+    .clamp(0.0, 8.0);
+    match effect_id {
+        14 | 15 => intensity * 0.45,
+        16 | 17 => intensity * 0.35,
+        18 | 19 => intensity * 0.20,
+        _ => intensity,
+    }
+}
+
+fn process_bloom_sigma(pass: &PassNode, effect_id: u32, time_norm: f32, time_sec: f32) -> f32 {
+    match effect_id {
+        14 | 15 => process_param_f32(
+            pass,
+            &["radiusSmall", "radius_small", "small"],
+            time_norm,
+            time_sec,
+            6.0,
+        )
+        .clamp(0.0, 64.0),
+        16 | 17 => process_param_f32(
+            pass,
+            &["radiusMedium", "radius_medium", "medium"],
+            time_norm,
+            time_sec,
+            18.0,
+        )
+        .clamp(0.0, 96.0),
+        18 | 19 => process_param_f32(
+            pass,
+            &["radiusLarge", "radius_large", "large"],
+            time_norm,
+            time_sec,
+            48.0,
+        )
+        .clamp(0.0, 160.0),
+        _ => process_param_f32(pass, &["sigma", "radius"], time_norm, time_sec, 18.0)
+            .clamp(0.0, 64.0),
+    }
+}
+
 fn process_param_f32(
     pass: &PassNode,
     keys: &[&str],
@@ -917,7 +960,7 @@ fn process_param_color(pass: &PassNode, keys: &[&str], fallback: [u8; 4]) -> [f3
         .find_map(|key| {
             pass.params
                 .iter()
-                .find(|param| param.key == *key)
+                .find(|param| param.key.eq_ignore_ascii_case(key))
                 .and_then(|param| {
                     parse_color(param.value.trim().trim_matches('"').trim_matches('\'')).ok()
                 })
@@ -1086,7 +1129,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     } else if params.effect_id < 3.5 {
         // Gaussian blur vertical
         rgb = ml_blur_sharpen_detail_gaussian_5tap_v(src_tex, src_samp, uv, texel);
-    } else if params.effect_id < 4.5 {
+    } else if params.effect_id < 4.5 || (params.effect_id > 13.5 && params.effect_id < 14.5) || (params.effect_id > 15.5 && params.effect_id < 16.5) || (params.effect_id > 17.5 && params.effect_id < 18.5) {
         // Bloom prefilter: extract bright pixels
         rgb = ml_light_atmosphere_bloom_prefilter(rgb, params.bloom_threshold, 0.5);
     } else if params.effect_id > 5.5 && params.effect_id < 6.5 {
@@ -1244,7 +1287,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let uv = clamp(in.uv, vec2<f32>(0.0), vec2<f32>(1.0));
     let blurred = textureSampleLevel(blurred_tex, src_samp, uv, 0.0);
     let original = textureSampleLevel(original_tex, src_samp, uv, 0.0);
-    let rgb = ml_glow_bloom(original.rgb, blurred.rgb, params.bloom_threshold, params.bloom_intensity);
+    let lum = ml_luma(original.rgb);
+    let mask = smoothstep(params.bloom_threshold - 0.1, params.bloom_threshold + 0.1, lum);
+    let glow = blurred.rgb * params.color.rgb * mask * max(params.bloom_intensity, 0.0) * params.color.a;
+    let rgb = original.rgb + glow;
     return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), original.a);
 }
 "#

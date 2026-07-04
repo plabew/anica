@@ -7,9 +7,11 @@ use image::RgbaImage;
 use crate::dsl::{GraphScript, PassNode, parse_graph_script};
 use crate::error::{GraphParseError, RuntimeCompileError};
 use crate::process::cpu_effects::{
-    apply_gaussian_blur, apply_glow_bloom, apply_hsla_overlay, apply_separable_gaussian_blur,
+    apply_gaussian_blur, apply_glow_bloom, apply_glow_stack, apply_hsla_overlay,
+    apply_separable_gaussian_blur,
 };
 use crate::process::runtime::{RuntimeProgram, compile_runtime_program, eval_time_expr};
+use crate::scene::drawable::parse_color;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessCpuRenderError {
@@ -117,7 +119,7 @@ fn apply_process_pass(
             let sigma = process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0);
             apply_separable_gaussian_blur(&image, sigma.clamp(0.0, 64.0), false)
         }
-        Some(ProcessEffect::GlowBloom | ProcessEffect::GlowStack) => {
+        Some(ProcessEffect::GlowBloom) => {
             let threshold = process_param_f32(pass, &["threshold"], time_norm, time_sec, 0.72);
             let intensity = process_param_f32(
                 pass,
@@ -141,6 +143,47 @@ fn apply_process_pass(
             );
             apply_glow_bloom(&image, threshold, intensity, sigma)
         }
+        Some(ProcessEffect::GlowStack) => {
+            let threshold = process_param_f32(pass, &["threshold"], time_norm, time_sec, 0.62);
+            let intensity = process_param_f32(
+                pass,
+                &["intensity", "strength", "amount"],
+                time_norm,
+                time_sec,
+                1.5,
+            );
+            let radius_small = process_param_f32(
+                pass,
+                &["radiusSmall", "radius_small", "small"],
+                time_norm,
+                time_sec,
+                6.0,
+            );
+            let radius_medium = process_param_f32(
+                pass,
+                &["radiusMedium", "radius_medium", "medium"],
+                time_norm,
+                time_sec,
+                18.0,
+            );
+            let radius_large = process_param_f32(
+                pass,
+                &["radiusLarge", "radius_large", "large"],
+                time_norm,
+                time_sec,
+                48.0,
+            );
+            let tint = process_param_color(pass, &["tint", "color"], [255, 255, 255, 255]);
+            apply_glow_stack(
+                &image,
+                threshold,
+                intensity,
+                radius_small,
+                radius_medium,
+                radius_large,
+                tint,
+            )
+        }
         Some(ProcessEffect::Brightness) => {
             let amount = process_brightness_amount(pass, time_norm, time_sec).clamp(-1.0, 1.0);
             apply_brightness(&image, amount)
@@ -159,6 +202,19 @@ fn apply_process_pass(
         }
         None => image,
     }
+}
+
+fn process_param_color(pass: &PassNode, keys: &[&str], fallback: [u8; 4]) -> [u8; 4] {
+    keys.iter()
+        .find_map(|key| {
+            pass.params
+                .iter()
+                .find(|param| param.key.eq_ignore_ascii_case(key))
+                .and_then(|param| {
+                    parse_color(param.value.trim().trim_matches('"').trim_matches('\'')).ok()
+                })
+        })
+        .unwrap_or(fallback)
 }
 
 fn apply_opacity(input: &RgbaImage, opacity: f32) -> RgbaImage {

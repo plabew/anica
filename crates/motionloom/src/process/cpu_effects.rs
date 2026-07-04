@@ -120,6 +120,69 @@ pub(crate) fn apply_glow_bloom(
     out
 }
 
+pub(crate) fn apply_glow_stack(
+    input: &RgbaImage,
+    threshold: f32,
+    intensity: f32,
+    radius_small: f32,
+    radius_medium: f32,
+    radius_large: f32,
+    tint: [u8; 4],
+) -> RgbaImage {
+    let mut current = input.clone();
+    for (threshold, intensity, radius) in [
+        (threshold, intensity * 0.45, radius_small),
+        (threshold * 0.85, intensity * 0.35, radius_medium),
+        (threshold * 0.65, intensity * 0.20, radius_large),
+    ] {
+        let prefiltered = build_glow_prefilter(&current, threshold, tint);
+        let blurred = apply_gaussian_blur(&prefiltered, radius);
+        current = composite_additive_glow(&current, &blurred, intensity);
+    }
+    current
+}
+
+fn build_glow_prefilter(input: &RgbaImage, threshold: f32, tint: [u8; 4]) -> RgbaImage {
+    let threshold = threshold.clamp(0.0, 1.0);
+    let tint = [
+        tint[0] as f32 / 255.0,
+        tint[1] as f32 / 255.0,
+        tint[2] as f32 / 255.0,
+        tint[3] as f32 / 255.0,
+    ];
+    let mut out = RgbaImage::from_pixel(input.width(), input.height(), Rgba([0, 0, 0, 0]));
+    for (src, dst) in input.pixels().zip(out.pixels_mut()) {
+        let rgb = [
+            src[0] as f32 / 255.0,
+            src[1] as f32 / 255.0,
+            src[2] as f32 / 255.0,
+        ];
+        let mask = smoothstep(threshold - 0.1, threshold + 0.1, luma(rgb));
+        for channel in 0..3 {
+            dst[channel] = (rgb[channel] * tint[channel] * mask * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
+        dst[3] = ((src[3] as f32 / 255.0) * tint[3] * mask * 255.0)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+fn composite_additive_glow(base: &RgbaImage, glow: &RgbaImage, intensity: f32) -> RgbaImage {
+    let intensity = intensity.max(0.0);
+    let mut out = base.clone();
+    for (dst, glow) in out.pixels_mut().zip(glow.pixels()) {
+        for channel in 0..3 {
+            dst[channel] = (dst[channel] as f32 + glow[channel] as f32 * intensity)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
 fn luma(rgb: [f32; 3]) -> f32 {
     rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
 }
@@ -185,5 +248,17 @@ mod tests {
 
         assert!(center[0] > 240);
         assert_eq!(center[3], 200);
+    }
+
+    #[test]
+    fn glow_stack_applies_tint() {
+        let mut input = RgbaImage::from_pixel(5, 5, Rgba([8, 8, 8, 255]));
+        *input.get_pixel_mut(2, 2) = Rgba([240, 240, 240, 255]);
+
+        let out = apply_glow_stack(&input, 0.2, 2.0, 1.0, 1.0, 1.0, [255, 0, 0, 255]);
+        let center = out.get_pixel(2, 2);
+
+        assert!(center[0] > center[1]);
+        assert!(center[0] > center[2]);
     }
 }
