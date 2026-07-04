@@ -2470,7 +2470,14 @@ impl SceneFrameRenderer {
                 .apply_scene_post_pass_multi(&inputs, pass, time_norm, time_sec)
                 .await?;
             output = self
-                .apply_process_pass_mask(output, pass, &resources, time_norm, time_sec)
+                .apply_process_pass_mask(
+                    output,
+                    inputs.first(),
+                    pass,
+                    &resources,
+                    time_norm,
+                    time_sec,
+                )
                 .await?;
             for output_ref in &pass.outputs {
                 resources.insert(output_ref.resource_id().to_string(), output.clone());
@@ -4825,6 +4832,7 @@ impl SceneFrameRenderer {
     async fn apply_process_pass_mask(
         &mut self,
         output: GraphTextureSource,
+        original: Option<&GraphTextureSource>,
         pass: &PassNode,
         resources: &HashMap<String, GraphTextureSource>,
         time_norm: f32,
@@ -4841,8 +4849,15 @@ impl SceneFrameRenderer {
         let invert = scene_mask_mode_inverts(&pass.mask_mode)
             || eval_scene_bool_like(&pass.mask_invert, time_norm, time_sec)?;
         let mode = pass.mask_mode.trim().to_ascii_lowercase().replace('_', "-");
-        if mode == "luma" || mode == "luminance" || mode == "brightness" {
-            apply_luma_process_mask(&mut image, &mask, invert);
+        if let Some(original) = original {
+            let original = self.graph_source_to_cpu(original).await?;
+            if mode == "luma" || mode == "luminance" || mode == "brightness" {
+                apply_luma_process_mask_mix(&mut image, &original, &mask, invert);
+            } else {
+                apply_alpha_process_mask_mix(&mut image, &original, &mask, invert);
+            }
+        } else if mode == "luma" || mode == "luminance" || mode == "brightness" {
+            apply_luma_process_mask_alpha(&mut image, &mask, invert);
         } else {
             apply_alpha_mask_with_invert(&mut image, &mask, invert);
         }
@@ -10841,7 +10856,7 @@ fn eval_scene_bool_like(
     }
 }
 
-fn apply_luma_process_mask(layer: &mut RgbaImage, mask: &RgbaImage, invert: bool) {
+fn apply_luma_process_mask_alpha(layer: &mut RgbaImage, mask: &RgbaImage, invert: bool) {
     let w = layer.width().min(mask.width());
     let h = layer.height().min(mask.height());
     for y in 0..h {
@@ -10859,6 +10874,68 @@ fn apply_luma_process_mask(layer: &mut RgbaImage, mask: &RgbaImage, invert: bool
             let pixel = layer.get_pixel_mut(x, y);
             pixel[3] = ((pixel[3] as f32) * mask_amount).round().clamp(0.0, 255.0) as u8;
         }
+    }
+}
+
+fn apply_luma_process_mask_mix(
+    effected: &mut RgbaImage,
+    original: &RgbaImage,
+    mask: &RgbaImage,
+    invert: bool,
+) {
+    let w = effected.width().min(original.width()).min(mask.width());
+    let h = effected.height().min(original.height()).min(mask.height());
+    for y in 0..h {
+        for x in 0..w {
+            let mask_pixel = mask.get_pixel(x, y);
+            let luma = (0.2126 * mask_pixel[0] as f32
+                + 0.7152 * mask_pixel[1] as f32
+                + 0.0722 * mask_pixel[2] as f32)
+                / 255.0;
+            let alpha = mask_pixel[3] as f32 / 255.0;
+            let mut mask_amount = luma * alpha;
+            if invert {
+                mask_amount = 1.0 - mask_amount;
+            }
+            mix_process_pixel(
+                effected.get_pixel_mut(x, y),
+                original.get_pixel(x, y),
+                mask_amount,
+            );
+        }
+    }
+}
+
+fn apply_alpha_process_mask_mix(
+    effected: &mut RgbaImage,
+    original: &RgbaImage,
+    mask: &RgbaImage,
+    invert: bool,
+) {
+    let w = effected.width().min(original.width()).min(mask.width());
+    let h = effected.height().min(original.height()).min(mask.height());
+    for y in 0..h {
+        for x in 0..w {
+            let mask_pixel = mask.get_pixel(x, y);
+            let mut mask_amount = mask_pixel[3] as f32 / 255.0;
+            if invert {
+                mask_amount = 1.0 - mask_amount;
+            }
+            mix_process_pixel(
+                effected.get_pixel_mut(x, y),
+                original.get_pixel(x, y),
+                mask_amount,
+            );
+        }
+    }
+}
+
+fn mix_process_pixel(effected: &mut Rgba<u8>, original: &Rgba<u8>, mask_amount: f32) {
+    let t = mask_amount.clamp(0.0, 1.0);
+    for channel in 0..4 {
+        effected[channel] = (original[channel] as f32 * (1.0 - t) + effected[channel] as f32 * t)
+            .round()
+            .clamp(0.0, 255.0) as u8;
     }
 }
 
@@ -13457,7 +13534,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_renderer_applies_process_pass_luma_mask() {
+    fn scene_renderer_limits_process_effect_with_luma_mask() {
         let graph = parse_graph_script(
             r##"
 <Graph fps={30} duration="1s" size={[64,48]}>
@@ -13467,7 +13544,7 @@ mod tests {
       <Track id="main" space="world" z="0">
         <Sequence from="0s" duration="1s" out="hold">
           <Layer>
-            <Rect x="0" y="0" width="64" height="48" color="#ff0000" />
+            <Rect x="0" y="0" width="64" height="48" color="#202020" />
           </Layer>
         </Sequence>
       </Track>
@@ -13488,12 +13565,12 @@ mod tests {
     <Tex id="src" fmt="rgba16f" from="scene:source_scene" />
     <Tex id="mask_tex" fmt="rgba16f" from="scene:mask_scene" />
     <Tex id="out" fmt="rgba16f" size={[64,48]} />
-    <Pass id="masked_opacity" kind="compute"
-          effect="opacity"
+    <Pass id="masked_brightness" kind="compute"
+          effect="brightness"
           in={["src"]} out={["out"]}
           mask="mask_tex"
           maskMode="luma"
-          params={{ opacity: "1.0" }} />
+          params={{ brightness: "0.5" }} />
   </Process>
   <Present from="masked_post" />
 </Graph>
@@ -13509,10 +13586,13 @@ mod tests {
         let left = rendered.get_pixel(12, 24);
         let right = rendered.get_pixel(48, 24);
 
-        assert!(left[3] < 8, "expected masked-out left pixel, got {left:?}");
         assert!(
-            right[0] > 200 && right[3] > 240,
-            "expected red right pixel to remain, got {right:?}"
+            (28..=36).contains(&left[0]) && left[3] > 240,
+            "expected left pixel to keep original source, got {left:?}"
+        );
+        assert!(
+            right[0] > left[0] + 90 && right[3] > 240,
+            "expected right pixel to receive masked brightness, got left={left:?} right={right:?}"
         );
     }
 
