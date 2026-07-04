@@ -7,7 +7,7 @@ use image::RgbaImage;
 use crate::dsl::{GraphScript, PassNode, parse_graph_script};
 use crate::error::{GraphParseError, RuntimeCompileError};
 use crate::process::cpu_effects::{
-    apply_gaussian_blur, apply_hsla_overlay, apply_separable_gaussian_blur,
+    apply_gaussian_blur, apply_glow_bloom, apply_hsla_overlay, apply_separable_gaussian_blur,
 };
 use crate::process::runtime::{RuntimeProgram, compile_runtime_program, eval_time_expr};
 
@@ -117,16 +117,23 @@ fn apply_process_pass(
             let sigma = process_param_f32(pass, &["sigma"], time_norm, time_sec, 1.0);
             apply_separable_gaussian_blur(&image, sigma.clamp(0.0, 64.0), false)
         }
-        Some(ProcessEffect::GlowBloom) => {
-            // CPU renderer does not implement bloom yet; pass through unchanged.
-            image
+        Some(ProcessEffect::GlowBloom | ProcessEffect::GlowStack) => {
+            let threshold = process_param_f32(pass, &["threshold"], time_norm, time_sec, 0.72);
+            let intensity = process_param_f32(
+                pass,
+                &["intensity", "strength", "amount"],
+                time_norm,
+                time_sec,
+                1.0,
+            );
+            let sigma = process_param_f32(pass, &["sigma", "radius"], time_norm, time_sec, 18.0);
+            apply_glow_bloom(&image, threshold, intensity, sigma)
         }
         Some(ProcessEffect::Brightness) => {
             let amount = process_brightness_amount(pass, time_norm, time_sec).clamp(-1.0, 1.0);
             apply_brightness(&image, amount)
         }
-        Some(ProcessEffect::GlowStack)
-        | Some(ProcessEffect::ToneMap)
+        Some(ProcessEffect::ToneMap)
         | Some(ProcessEffect::LightSweep)
         | Some(ProcessEffect::TextureOverlay)
         | Some(ProcessEffect::MagnifyLens) => {
