@@ -378,9 +378,7 @@ impl ProcessWebGpuRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_DST,
+            usage: process_render_texture_usages(),
             view_formats: &[],
         })
     }
@@ -812,6 +810,13 @@ impl MappedBufferWrite for wgpu::Buffer {
     }
 }
 
+fn process_render_texture_usages() -> wgpu::TextureUsages {
+    wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::RENDER_ATTACHMENT
+        | wgpu::TextureUsages::COPY_SRC
+        | wgpu::TextureUsages::COPY_DST
+}
+
 fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderError> {
     use crate::process::effect_kind::resolve_process_effect;
     match resolve_process_effect(&pass.effect) {
@@ -915,6 +920,20 @@ fn texture_kind_id(kind: &str) -> f32 {
 impl From<ProcessWebGpuRenderError> for JsValue {
     fn from(err: ProcessWebGpuRenderError) -> Self {
         JsValue::from_str(&err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_render_textures_support_copy_for_bloom_backup() {
+        let usage = process_render_texture_usages();
+        assert!(usage.contains(wgpu::TextureUsages::COPY_SRC));
+        assert!(usage.contains(wgpu::TextureUsages::COPY_DST));
+        assert!(usage.contains(wgpu::TextureUsages::TEXTURE_BINDING));
+        assert!(usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT));
     }
 }
 
