@@ -2368,6 +2368,7 @@ impl FfmpegExporter {
                     bloom_threshold: layer_fx.bloom_threshold,
                     bloom_intensity: layer_fx.bloom_intensity,
                     bloom_sigma: layer_fx.bloom_sigma,
+                    bloom_tint_color: [1.0, 1.0, 1.0, 1.0],
                     tone_map_enabled: layer_fx.tone_map_enabled,
                     tone_map_exposure: layer_fx.tone_map_exposure,
                     tone_map_contrast: layer_fx.tone_map_contrast,
