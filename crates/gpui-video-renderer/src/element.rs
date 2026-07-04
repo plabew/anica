@@ -864,7 +864,12 @@ fn bloom_composite(@builtin(global_invocation_id) gid: vec3<u32>) {
     let bloom = textureLoad(src_tex, coord, 0);
     let base = textureLoad(orig_tex, coord, 0);
     let intensity = clamp(color_params.bloom_intensity, 0.0, 8.0);
-    let out_rgb = clamp(base.rgb + bloom.rgb * intensity, vec3<f32>(0.0), vec3<f32>(1.0));
+    let tint_bgra = vec3<f32>(color_params.tint_b, color_params.tint_g, color_params.tint_r);
+    let out_rgb = clamp(
+        base.rgb + bloom.rgb * tint_bgra * intensity * clamp(color_params.tint_alpha, 0.0, 1.0),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+    );
     textureStore(dst_tex, coord, vec4<f32>(out_rgb, base.a));
 }
 "#;
@@ -2589,6 +2594,7 @@ impl WgpuBgraEffectContext {
         bloom_threshold: f32,
         bloom_intensity: f32,
         bloom_sigma: f32,
+        bloom_tint_color: [f32; 4],
         tone_map_enabled: bool,
         tone_map_exposure: f32,
         tone_map_contrast: f32,
@@ -3247,7 +3253,12 @@ impl WgpuBgraEffectContext {
                 0.0,
                 0.0,
                 false,
-                (0.0, 0.0, 0.0, 0.0),
+                (
+                    bloom_tint_color[0],
+                    bloom_tint_color[1],
+                    bloom_tint_color[2],
+                    bloom_tint_color[3],
+                ),
                 (bloom_threshold, bloom_intensity),
                 false,
                 None,
@@ -3444,6 +3455,7 @@ pub struct BgraGpuEffectParams {
     pub bloom_threshold: f32,
     pub bloom_intensity: f32,
     pub bloom_sigma: f32,
+    pub bloom_tint_color: [f32; 4],
     pub tone_map_enabled: bool,
     pub tone_map_exposure: f32,
     pub tone_map_contrast: f32,
@@ -3490,6 +3502,7 @@ impl Default for BgraGpuEffectParams {
             bloom_threshold: 1.0,
             bloom_intensity: 0.0,
             bloom_sigma: 0.0,
+            bloom_tint_color: [1.0, 1.0, 1.0, 1.0],
             tone_map_enabled: false,
             tone_map_exposure: 0.0,
             tone_map_contrast: 1.0,
@@ -3638,6 +3651,10 @@ impl BgraGpuEffectParams {
                         .or_else(|| effect.float("radiusMedium"))
                         .or_else(|| effect.float("radius"))
                         .unwrap_or(self.bloom_sigma);
+                    self.bloom_tint_color = effect
+                        .color("tint")
+                        .or_else(|| effect.color("color"))
+                        .unwrap_or(self.bloom_tint_color);
                 }
                 "tone_map" => {
                     self.tone_map_enabled = true;
@@ -3764,6 +3781,7 @@ pub fn process_bgra_effects_with_params(
         params.bloom_threshold,
         params.bloom_intensity,
         params.bloom_sigma,
+        params.bloom_tint_color,
         params.tone_map_enabled,
         params.tone_map_exposure,
         params.tone_map_contrast,
@@ -3884,6 +3902,10 @@ mod tests {
                     "radiusMedium".to_string(),
                     BgraProcessParamValue::Float(18.0),
                 ),
+                (
+                    "tint".to_string(),
+                    BgraProcessParamValue::Color([0.86, 0.15, 0.15, 1.0]),
+                ),
             ]),
         };
 
@@ -3893,6 +3915,7 @@ mod tests {
         assert_eq!(params.bloom_threshold, 0.56);
         assert_eq!(params.bloom_intensity, 1.8);
         assert_eq!(params.bloom_sigma, 18.0);
+        assert_eq!(params.bloom_tint_color, [0.86, 0.15, 0.15, 1.0]);
     }
 
     #[test]
@@ -4199,6 +4222,7 @@ struct PixelProcessKey {
     bloom_threshold: i16,
     bloom_intensity: i16,
     bloom_sigma: i16,
+    bloom_tint_color: [i16; 4],
     tone_map_enabled: bool,
     tone_map_exposure: i16,
     tone_map_contrast: i16,
@@ -4240,6 +4264,7 @@ impl PixelProcessKey {
         bloom_threshold: f32,
         bloom_intensity: f32,
         bloom_sigma: f32,
+        bloom_tint_color: [f32; 4],
         tone_map_enabled: bool,
         tone_map_exposure: f32,
         tone_map_contrast: f32,
@@ -4309,6 +4334,12 @@ impl PixelProcessKey {
             bloom_threshold: (bloom_threshold * SCALE).round() as i16,
             bloom_intensity: (bloom_intensity * SCALE).round() as i16,
             bloom_sigma: (bloom_sigma * BLUR_SCALE).round() as i16,
+            bloom_tint_color: [
+                (bloom_tint_color[0] * SCALE).round() as i16,
+                (bloom_tint_color[1] * SCALE).round() as i16,
+                (bloom_tint_color[2] * SCALE).round() as i16,
+                (bloom_tint_color[3] * SCALE).round() as i16,
+            ],
             tone_map_enabled,
             tone_map_exposure: (tone_map_exposure * SCALE).round() as i16,
             tone_map_contrast: (tone_map_contrast * SCALE).round() as i16,
@@ -5920,6 +5951,7 @@ impl VideoElement {
                     params.bloom_threshold,
                     params.bloom_intensity,
                     params.bloom_sigma,
+                    params.bloom_tint_color,
                     params.tone_map_enabled,
                     params.tone_map_exposure,
                     params.tone_map_contrast,
@@ -6210,6 +6242,7 @@ impl Element for VideoElement {
             self.bloom_threshold,
             self.bloom_intensity,
             self.bloom_sigma,
+            [1.0, 1.0, 1.0, 1.0],
             self.tone_map_enabled,
             self.tone_map_exposure,
             self.tone_map_contrast,
