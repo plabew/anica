@@ -85,6 +85,14 @@ enum RuntimePass {
         intensity_expr: String,
         sigma_expr: String,
     },
+    ColorCoreGlowStack {
+        threshold_expr: String,
+        intensity_expr: String,
+        radius_small_expr: String,
+        radius_medium_expr: String,
+        radius_large_expr: String,
+        tint: [u8; 4],
+    },
     ColorCoreToneMap {
         exposure_expr: String,
         contrast_expr: String,
@@ -369,6 +377,65 @@ impl RuntimeProgram {
                         continue;
                     }
                     if is_bloom_effect(&normalized_effect) {
+                        if is_glow_stack_effect(&normalized_effect) {
+                            let threshold_expr = pass_param(pass, "threshold")
+                                .or_else(|| pass_param(pass, "glowThreshold"))
+                                .or_else(|| pass_param(pass, "glow_threshold"))
+                                .map(normalize_param_expr)
+                                .unwrap_or_else(|| "0.62".to_string());
+                            let intensity_expr = pass_param(pass, "intensity")
+                                .or_else(|| pass_param(pass, "glowIntensity"))
+                                .or_else(|| pass_param(pass, "glow_intensity"))
+                                .or_else(|| pass_param(pass, "strength"))
+                                .or_else(|| pass_param(pass, "amount"))
+                                .map(normalize_param_expr)
+                                .unwrap_or_else(|| "1.5".to_string());
+                            let radius_small_expr = pass_param(pass, "radiusSmall")
+                                .or_else(|| pass_param(pass, "radius_small"))
+                                .or_else(|| pass_param(pass, "small"))
+                                .map(normalize_param_expr)
+                                .unwrap_or_else(|| "6.0".to_string());
+                            let radius_medium_expr = pass_param(pass, "radiusMedium")
+                                .or_else(|| pass_param(pass, "radius_medium"))
+                                .or_else(|| pass_param(pass, "medium"))
+                                .map(normalize_param_expr)
+                                .unwrap_or_else(|| "18.0".to_string());
+                            let radius_large_expr = pass_param(pass, "radiusLarge")
+                                .or_else(|| pass_param(pass, "radius_large"))
+                                .or_else(|| pass_param(pass, "large"))
+                                .map(normalize_param_expr)
+                                .unwrap_or_else(|| "48.0".to_string());
+                            let tint = pass_param(pass, "tint")
+                                .or_else(|| pass_param(pass, "color"))
+                                .and_then(parse_runtime_color)
+                                .unwrap_or([255, 255, 255, 255]);
+
+                            for (name, expr) in [
+                                ("threshold", &threshold_expr),
+                                ("intensity", &intensity_expr),
+                                ("radiusSmall", &radius_small_expr),
+                                ("radiusMedium", &radius_medium_expr),
+                                ("radiusLarge", &radius_large_expr),
+                            ] {
+                                validate_expr(expr).map_err(|e| RuntimeCompileError {
+                                    message: format!(
+                                        "pass {} invalid glow_stack {} expression: {}",
+                                        pass.id, name, e
+                                    ),
+                                })?;
+                            }
+
+                            passes.push(RuntimePass::ColorCoreGlowStack {
+                                threshold_expr,
+                                intensity_expr,
+                                radius_small_expr,
+                                radius_medium_expr,
+                                radius_large_expr,
+                                tint,
+                            });
+                            continue;
+                        }
+
                         let threshold_expr = pass_param(pass, "threshold")
                             .map(normalize_param_expr)
                             .unwrap_or_else(|| "0.72".to_string());
@@ -877,6 +944,43 @@ impl RuntimeProgram {
                             .with_float("sigma", sigma.clamp(0.0, 64.0)),
                     );
                 }
+                RuntimePass::ColorCoreGlowStack {
+                    threshold_expr,
+                    intensity_expr,
+                    radius_small_expr,
+                    radius_medium_expr,
+                    radius_large_expr,
+                    tint,
+                } => {
+                    let Ok(threshold) = eval_expr(threshold_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(intensity) = eval_expr(intensity_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(radius_small) = eval_expr(radius_small_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    let Ok(radius_medium) = eval_expr(radius_medium_expr, time_norm, time_sec)
+                    else {
+                        continue;
+                    };
+                    let Ok(radius_large) = eval_expr(radius_large_expr, time_norm, time_sec) else {
+                        continue;
+                    };
+                    out.layer_bloom_threshold = Some(threshold.clamp(0.0, 1.0));
+                    out.layer_bloom_intensity = Some(intensity.clamp(0.0, 8.0));
+                    out.layer_bloom_sigma = Some(radius_medium.clamp(0.0, 96.0));
+                    out.process_effects.push(
+                        RuntimeProcessEffectInstance::new("glow_stack")
+                            .with_float("threshold", threshold.clamp(0.0, 1.0))
+                            .with_float("intensity", intensity.clamp(0.0, 8.0))
+                            .with_float("radiusSmall", radius_small.clamp(0.0, 64.0))
+                            .with_float("radiusMedium", radius_medium.clamp(0.0, 96.0))
+                            .with_float("radiusLarge", radius_large.clamp(0.0, 160.0))
+                            .with_color("tint", *tint),
+                    );
+                }
                 RuntimePass::ColorCoreToneMap {
                     exposure_expr,
                     contrast_expr,
@@ -1041,6 +1145,13 @@ fn pass_param_f32(pass: &PassNode, keys: &[&str]) -> Option<f32> {
 
 fn is_bloom_effect(effect: &str) -> bool {
     crate::process::effect_kind::is_bloom_family(effect)
+}
+
+fn is_glow_stack_effect(effect: &str) -> bool {
+    matches!(
+        crate::process::effect_kind::resolve_process_effect(effect),
+        Some(crate::process::effect_kind::ProcessEffect::GlowStack)
+    )
 }
 
 fn is_brightness_effect(effect: &str) -> bool {
@@ -2508,6 +2619,48 @@ mod tests {
         assert_eq!(effect.float("softness"), Some(0.08));
         assert_eq!(effect.float("intensity"), Some(1.6));
         assert_eq!(effect.color("color"), Some([128, 199, 255, 255]));
+    }
+
+    #[test]
+    fn runtime_glow_stack_preserves_tint_and_radii_for_process_effect() {
+        let script = r##"
+<Graph fps={30} size={[800,450]} renderSize={[800,450]}>
+  <Process id="GlowStackProcess">
+    <Input id="clip0" type="video" from="input:clip0" />
+    <Tex id="src" fmt="rgba16f" from="clip0" />
+    <Tex id="out" fmt="rgba16f" size={[800,450]} />
+    <Pass id="post_glow_stack" kind="compute"
+          effect="glow_stack"
+          in={["src"]} out={["out"]}
+          params={{
+            threshold: "0.76",
+            intensity: "0.2",
+            radiusSmall: "6.0",
+            radiusMedium: "1.0",
+            radiusLarge: "4.0",
+            tint: "#DB2626"
+          }} />
+  </Process>
+  <Present from="GlowStackProcess" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script).expect("graph parse");
+        let runtime = compile_runtime_program(graph).expect("runtime compile");
+        let out = runtime.evaluate_frame(0);
+        assert_eq!(out.layer_bloom_threshold, Some(0.76));
+        assert_eq!(out.layer_bloom_intensity, Some(0.2));
+        assert_eq!(out.layer_bloom_sigma, Some(1.0));
+        let effect = out
+            .process_effects
+            .iter()
+            .find(|effect| effect.effect_id == "glow_stack")
+            .expect("generic glow_stack effect");
+        assert_eq!(effect.float("threshold"), Some(0.76));
+        assert_eq!(effect.float("intensity"), Some(0.2));
+        assert_eq!(effect.float("radiusSmall"), Some(6.0));
+        assert_eq!(effect.float("radiusMedium"), Some(1.0));
+        assert_eq!(effect.float("radiusLarge"), Some(4.0));
+        assert_eq!(effect.color("tint"), Some([219, 38, 38, 255]));
     }
 
     #[test]
