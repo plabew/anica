@@ -12,6 +12,7 @@ use crate::common::gpu_async::{DevicePoller, request_adapter_async, request_devi
 use crate::dsl::{PassNode, parse_graph_script};
 use crate::process::runtime::{compile_runtime_program, eval_time_expr};
 use crate::scene::drawable::parse_color;
+use crate::scene::render::{SceneRenderProfile, render_scene_graph_frame};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessWebGpuRenderError {
@@ -34,6 +35,10 @@ pub enum ProcessWebGpuRenderError {
     SurfaceFrame(String),
     #[error("unsupported WebGPU process effect: {0}")]
     UnsupportedEffect(String),
+    #[error("process pass mask source not found: {0}")]
+    MissingMaskSource(String),
+    #[error("process pass mask render failed for {id}: {message}")]
+    MaskRender { id: String, message: String },
     #[error(transparent)]
     Parse(#[from] crate::error::GraphParseError),
     #[error(transparent)]
@@ -65,7 +70,9 @@ pub async fn render_process_frame_to_canvas_gpu(
     let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
 
     let renderer = ProcessWebGpuRenderer::new(width, height).await?;
-    renderer.render_to_canvas(&graph.passes, time_norm, time_sec, rgba, canvas)
+    renderer
+        .render_to_canvas(&graph, frame, time_norm, time_sec, rgba, canvas)
+        .await
 }
 
 struct ProcessWebGpuRenderer {
@@ -151,6 +158,16 @@ impl ProcessWebGpuRenderer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
                             min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
                         },
                         count: None,
                     },
@@ -308,21 +325,29 @@ impl ProcessWebGpuRenderer {
         })
     }
 
-    fn render_to_canvas(
+    async fn render_to_canvas(
         &self,
-        passes: &[PassNode],
+        graph: &crate::dsl::GraphScript,
+        frame: u32,
         time_norm: f32,
         time_sec: f32,
         rgba: &[u8],
         canvas: HtmlCanvasElement,
     ) -> Result<(), ProcessWebGpuRenderError> {
+        let passes = &graph.passes;
         let tex_a = self.create_render_texture("anica-motionloom-process-webgpu-tex-a");
         let tex_b = self.create_render_texture("anica-motionloom-process-webgpu-tex-b");
         let tex_backup = self.create_render_texture("anica-motionloom-process-webgpu-tex-backup");
+        let white_mask = self.create_render_texture("anica-motionloom-process-webgpu-white-mask");
         self.write_texture_rgba(&tex_a, rgba);
+        self.write_texture_rgba(
+            &white_mask,
+            &solid_rgba(self.width, self.height, [255, 255, 255, 255]),
+        );
 
         let mut current_is_a = true;
         let mut uniform_buffers = Vec::with_capacity(passes.len().saturating_mul(4));
+        let mut mask_textures = Vec::<wgpu::Texture>::new();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -333,8 +358,14 @@ impl ProcessWebGpuRenderer {
             let effect_ids = process_effect_ids(pass)?;
             for effect_id in effect_ids {
                 let uniform_buffer = self.make_uniform_buffer(pass, effect_id, time_norm, time_sec);
+                let mask_texture = if pass.mask.is_some() {
+                    Some(self.create_pass_mask_texture(graph, frame, pass).await?)
+                } else {
+                    None
+                };
                 let src = if current_is_a { &tex_a } else { &tex_b };
                 let dst = if current_is_a { &tex_b } else { &tex_a };
+                let mask = mask_texture.as_ref().unwrap_or(&white_mask);
                 if matches!(effect_id, 4 | 14 | 16 | 18) {
                     // Preserve the current image before a bloom/glow stage mutates it.
                     self.copy_texture_to_texture(&mut encoder, src, &tex_backup);
@@ -350,9 +381,12 @@ impl ProcessWebGpuRenderer {
                         &uniform_buffer,
                     );
                 } else {
-                    self.encode_process_pass(&mut encoder, src, dst, &uniform_buffer);
+                    self.encode_process_pass(&mut encoder, src, dst, mask, &uniform_buffer);
                 }
                 uniform_buffers.push(uniform_buffer);
+                if let Some(mask_texture) = mask_texture {
+                    mask_textures.push(mask_texture);
+                }
                 current_is_a = !current_is_a;
             }
         }
@@ -361,7 +395,57 @@ impl ProcessWebGpuRenderer {
         self.present_texture_to_canvas(&mut encoder, final_texture, &canvas)?;
         self.queue.submit([encoder.finish()]);
         drop(uniform_buffers);
+        drop(mask_textures);
         Ok(())
+    }
+
+    async fn create_pass_mask_texture(
+        &self,
+        graph: &crate::dsl::GraphScript,
+        frame: u32,
+        pass: &PassNode,
+    ) -> Result<wgpu::Texture, ProcessWebGpuRenderError> {
+        let mask_id = pass.mask.as_deref().unwrap_or_default();
+        let Some(tex) = graph.textures.iter().find(|tex| tex.id == mask_id) else {
+            return Err(ProcessWebGpuRenderError::MissingMaskSource(
+                mask_id.to_string(),
+            ));
+        };
+        let Some(from) = tex.from.as_deref() else {
+            return Err(ProcessWebGpuRenderError::MissingMaskSource(
+                mask_id.to_string(),
+            ));
+        };
+        let Some(scene_id) = from.strip_prefix("scene:") else {
+            return Err(ProcessWebGpuRenderError::MissingMaskSource(
+                mask_id.to_string(),
+            ));
+        };
+
+        let mut mask_graph = graph.clone();
+        mask_graph.textures.clear();
+        mask_graph.passes.clear();
+        mask_graph.outputs.clear();
+        mask_graph.present.from = format!("scene:{scene_id}");
+        let image = render_scene_graph_frame(&mask_graph, frame, SceneRenderProfile::Cpu)
+            .await
+            .map_err(|err| ProcessWebGpuRenderError::MaskRender {
+                id: mask_id.to_string(),
+                message: err.to_string(),
+            })?;
+        let resized = if image.width() == self.width && image.height() == self.height {
+            image
+        } else {
+            image::imageops::resize(
+                &image,
+                self.width,
+                self.height,
+                image::imageops::FilterType::Triangle,
+            )
+        };
+        let texture = self.create_render_texture("anica-motionloom-process-webgpu-pass-mask");
+        self.write_texture_rgba(&texture, resized.as_raw());
+        Ok(texture)
     }
 
     fn create_render_texture(&self, label: &'static str) -> wgpu::Texture {
@@ -542,7 +626,7 @@ impl ProcessWebGpuRenderer {
                 0.35,
             ),
             process_param_f32(pass, &["relief"], time_norm, time_sec, 0.45),
-            0.0,
+            pass_mask_mode_id(pass),
         ];
         let mut bytes = Vec::with_capacity(values.len() * 4);
         for value in values {
@@ -563,10 +647,12 @@ impl ProcessWebGpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         src: &wgpu::Texture,
         dst: &wgpu::Texture,
+        mask: &wgpu::Texture,
         uniform_buffer: &wgpu::Buffer,
     ) {
         let src_view = src.create_view(&wgpu::TextureViewDescriptor::default());
         let dst_view = dst.create_view(&wgpu::TextureViewDescriptor::default());
+        let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("anica-motionloom-process-webgpu-pass-bg"),
             layout: &self.pass_bind_group_layout,
@@ -582,6 +668,10 @@ impl ProcessWebGpuRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&mask_view),
                 },
             ],
         });
@@ -830,6 +920,31 @@ fn process_render_texture_usages() -> wgpu::TextureUsages {
         | wgpu::TextureUsages::COPY_DST
 }
 
+fn solid_rgba(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+    let mut rgba = vec![0; width as usize * height as usize * 4];
+    for px in rgba.chunks_exact_mut(4) {
+        px.copy_from_slice(&color);
+    }
+    rgba
+}
+
+fn pass_mask_mode_id(pass: &PassNode) -> f32 {
+    if pass.mask.is_none() {
+        return 0.0;
+    }
+    let mode = pass.mask_mode.trim().to_ascii_lowercase().replace('_', "-");
+    let invert = pass.mask_invert.trim().eq_ignore_ascii_case("true")
+        || mode == "inverse"
+        || mode == "invert"
+        || mode == "inverted"
+        || mode == "inverse-luma"
+        || mode == "inverted-luma"
+        || mode == "inverse-alpha"
+        || mode == "inverted-alpha";
+    let base = if mode.contains("luma") { 2.0 } else { 1.0 };
+    if invert { -base } else { base }
+}
+
 fn process_effect_ids(pass: &PassNode) -> Result<Vec<u32>, ProcessWebGpuRenderError> {
     use crate::process::effect_kind::resolve_process_effect;
     match resolve_process_effect(&pass.effect) {
@@ -1051,6 +1166,7 @@ struct ProcessParams {
 @group(0) @binding(0) var src_tex: texture_2d<f32>;
 @group(0) @binding(1) var src_samp: sampler;
 @group(0) @binding(2) var<uniform> params: ProcessParams;
+@group(0) @binding(3) var mask_tex: texture_2d<f32>;
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -1120,6 +1236,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let base = textureSampleLevel(src_tex, src_samp, uv, 0.0);
     var rgb = base.rgb;
     var out_alpha = base.a;
+    let base_rgb = base.rgb;
+    let base_alpha = base.a;
     if params.effect_id < 1.5 {
         // HSLA overlay
         rgb = ml_hsla_overlay(rgb, params.hue, params.saturation, params.lightness, params.alpha);
@@ -1233,7 +1351,22 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let texture_rgb = mix(vec3<f32>(1.0), params.color.rgb * (0.55 + centered_tex * 0.9) * bump_shade, strength * params.color.a);
         rgb = mix(rgb, clamp(rgb * texture_rgb, vec3<f32>(0.0), vec3<f32>(1.0)), strength);
     }
-    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(out_alpha, 0.0, 1.0));
+    var mask_factor = 1.0;
+    if abs(params.extra.w) > 0.5 {
+        let mask_sample = textureSampleLevel(mask_tex, src_samp, uv, 0.0);
+        if abs(params.extra.w) > 1.5 {
+            mask_factor = dot(mask_sample.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        } else {
+            mask_factor = mask_sample.a;
+        }
+        if params.extra.w < 0.0 {
+            mask_factor = 1.0 - mask_factor;
+        }
+    }
+    mask_factor = clamp(mask_factor, 0.0, 1.0);
+    let effected = vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(out_alpha, 0.0, 1.0));
+    let original = vec4<f32>(base_rgb, base_alpha);
+    return mix(original, effected, mask_factor);
 }
 "#
 );
