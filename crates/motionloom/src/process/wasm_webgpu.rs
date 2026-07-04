@@ -1275,6 +1275,6 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let max_px = dims - vec2<u32>(1u, 1u);
     let px = min(vec2<u32>(u32(in.position.x), u32(in.position.y)), max_px);
     let color = textureLoad(src_tex, vec2<i32>(px), 0);
-    return vec4<f32>(color.rgb, 1.0);
+    return vec4<f32>(color.rgb * color.a, 1.0);
 }
 "#;
