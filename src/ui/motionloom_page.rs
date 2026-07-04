@@ -1,6 +1,6 @@
 // =========================================
 // =========================================
-// src/ui/motionloom_page.rs — MotionLoom VFX Studio page with graph preview and template picker
+// src/ui/motionloom_page.rs — MotionLoom Studio page with graph preview and template picker
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
@@ -6431,7 +6431,7 @@ impl MotionLoomPage {
             let result = cx
                 .background_spawn(async move {
                     let response = ureq::get(&fetch_url)
-                        .set("User-Agent", "Anica MotionLoom VFX Studio")
+                        .set("User-Agent", "Anica MotionLoom Studio")
                         .call()
                         .map_err(|err| err.to_string())?;
                     response.into_string().map_err(|err| err.to_string())
@@ -11427,7 +11427,7 @@ impl Render for MotionLoomPage {
                                 div()
                                     .text_lg()
                                     .text_color(white().opacity(0.96))
-                                    .child("MotionLoom · VFX Studio"),
+                                    .child("MotionLoom · Studio"),
                             )
                             .child(
                                 div()

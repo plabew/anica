@@ -20,7 +20,7 @@ $ErrorActionPreference = "Stop"
 
 # Resolve script directory and repo root.
 $scriptDir = Split-Path -Parent $PSCommandPath
-$repoRoot = Resolve-Path (Join-Path $scriptDir "..")
+$repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 
 # Determine profile (debug or release) from the executable path.
 $profileDir = "debug"
@@ -40,7 +40,42 @@ if ($exeDirName -eq $profileDir) {
 }
 
 # Only auto-build when launching the main app binary (not anica-acp itself).
+function Ensure-WgpuPreviewHostBuilt {
+    param(
+        [string]$ExePath,
+        [string]$RepoRoot,
+        [string]$TargetDir,
+        [string]$ProfileDir
+    )
+
+    $exeName = Split-Path -Leaf $ExePath
+    if ($exeName -ne "anica.exe") {
+        return
+    }
+    if ($env:ANICA_WGPU_PREVIEW_AUTO_BUILD -eq "0") {
+        return
+    }
+
+    $cargoArgs = @(
+        "build",
+        "-p", "motionloom",
+        "--example", "wgpu_live_preview",
+        "--manifest-path", (Join-Path $RepoRoot "Cargo.toml"),
+        "--target-dir", $TargetDir
+    )
+    if ($ProfileDir -eq "release") {
+        $cargoArgs += "--release"
+    }
+
+    Write-Host "[anica-runner] Ensuring MotionLoom WGPU preview host is built via Cargo incremental ($ProfileDir)." -ForegroundColor DarkGray
+    & cargo @cargoArgs
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+
 $exeName = Split-Path -Leaf $ExePath
+Ensure-WgpuPreviewHostBuilt -ExePath $ExePath -RepoRoot $repoRoot -TargetDir $targetDir -ProfileDir $profileDir
 if ($exeName -eq "anica.exe" -and $env:ANICA_ACP_AUTO_BUILD -ne "0") {
     $acpBin = Join-Path $binDir "anica-acp.exe"
     $needsBuild = $false

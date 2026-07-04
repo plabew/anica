@@ -901,6 +901,23 @@ pub async fn render_scene_graph_frame_with_resolver(
     renderer.render_frame(graph, frame).await
 }
 
+/// Render a scene/process graph using caller-provided CPU input images.
+///
+/// Hosts can use this to run the same MotionLoom process graph used by exports
+/// while supplying decoded preview frames from their own media pipeline.
+pub async fn render_scene_graph_frame_with_cpu_inputs(
+    graph: &GraphScript,
+    frame: u32,
+    profile: SceneRenderProfile,
+    cpu_inputs: &HashMap<String, RgbaImage>,
+) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+    validate_scene_graph(graph)?;
+    let mut renderer = SceneFrameRenderer::new_for_profile(profile).await;
+    renderer
+        .render_frame_with_cpu_inputs(graph, frame, Some(cpu_inputs))
+        .await
+}
+
 pub struct SceneRenderer {
     inner: SceneFrameRenderer,
 }
@@ -970,6 +987,18 @@ impl SceneRenderer {
     ) -> Result<RgbaImage, SceneRenderError> {
         validate_scene_graph(graph)?;
         self.inner.render_frame(graph, frame).await
+    }
+
+    pub async fn render_frame_with_cpu_inputs(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        cpu_inputs: &HashMap<String, RgbaImage>,
+    ) -> Result<RgbaImage, SceneRenderError> {
+        validate_scene_graph(graph)?;
+        self.inner
+            .render_frame_with_cpu_inputs(graph, frame, Some(cpu_inputs))
+            .await
     }
 
     pub fn load_font_data(&mut self, bytes: Vec<u8>) {
@@ -1631,6 +1660,15 @@ impl SceneFrameRenderer {
         graph: &GraphScript,
         frame: u32,
     ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
+        self.render_frame_with_cpu_inputs(graph, frame, None).await
+    }
+
+    async fn render_frame_with_cpu_inputs(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+        cpu_inputs: Option<&HashMap<String, RgbaImage>>,
+    ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
         let fps = graph.fps.max(1.0);
         let duration_sec = (graph.duration_ms as f32 / 1000.0).max(1.0 / fps);
         let time_sec = frame as f32 / fps;
@@ -1640,9 +1678,13 @@ impl SceneFrameRenderer {
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
         self.prepare_frame_caches(graph);
-        if graph_has_rich_scene_tree(graph) {
+        let has_process_pipeline = !graph.inputs.is_empty()
+            || !graph.textures.is_empty()
+            || !graph.passes.is_empty()
+            || !graph.outputs.is_empty();
+        if graph_has_rich_scene_tree(graph) || has_process_pipeline || cpu_inputs.is_some() {
             return self
-                .render_scene_tree_frame(graph, time_norm, time_sec)
+                .render_scene_tree_frame_with_cpu_inputs(graph, time_norm, time_sec, cpu_inputs)
                 .await;
         }
 
@@ -1704,7 +1746,7 @@ impl SceneFrameRenderer {
             // Mixed graph with composition: run the full resource pipeline
             // keeping textures on GPU whenever possible.
             let source = self
-                .render_scene_tree_frame_gpu(graph, time_norm, time_sec)
+                .render_scene_tree_frame_gpu(graph, time_norm, time_sec, None)
                 .await?;
             match source {
                 GraphTextureSource::Gpu(texture) => texture,
@@ -2222,6 +2264,7 @@ impl SceneFrameRenderer {
         graph: &GraphScript,
         time_norm: f32,
         time_sec: f32,
+        cpu_inputs: Option<&HashMap<String, RgbaImage>>,
     ) -> Result<GraphTextureSource, MotionLoomSceneRenderError> {
         let (w, h) = graph_output_size(graph);
         let output_size = (w, h);
@@ -2255,6 +2298,9 @@ impl SceneFrameRenderer {
             if let Some(id) = background_node.id.as_deref() {
                 resources.insert(id.to_string(), background_source.clone());
             }
+        }
+        if let Some(cpu_inputs) = cpu_inputs {
+            Self::insert_cpu_input_resources(&mut resources, graph, cpu_inputs);
         }
 
         if !graph.world_sources.is_empty() {
@@ -2474,14 +2520,53 @@ impl SceneFrameRenderer {
         Ok(source)
     }
 
-    async fn render_scene_tree_frame(
+    fn insert_cpu_input_resources(
+        resources: &mut HashMap<String, GraphTextureSource>,
+        graph: &GraphScript,
+        cpu_inputs: &HashMap<String, RgbaImage>,
+    ) {
+        for (id, image) in cpu_inputs {
+            let source = GraphTextureSource::Cpu(image.clone());
+            resources.insert(id.clone(), source.clone());
+            resources.insert(format!("input:{id}"), source);
+        }
+
+        for input in &graph.inputs {
+            let source = resources
+                .get(&input.id)
+                .cloned()
+                .or_else(|| {
+                    input
+                        .from
+                        .as_deref()
+                        .and_then(|from| resources.get(from).cloned())
+                })
+                .or_else(|| {
+                    input
+                        .from
+                        .as_deref()
+                        .and_then(|from| from.strip_prefix("input:"))
+                        .and_then(|raw| resources.get(raw).cloned())
+                });
+            if let Some(source) = source {
+                resources.insert(input.id.clone(), source.clone());
+                resources.insert(format!("input:{}", input.id), source.clone());
+                if let Some(from) = input.from.as_deref() {
+                    resources.insert(from.to_string(), source);
+                }
+            }
+        }
+    }
+
+    async fn render_scene_tree_frame_with_cpu_inputs(
         &mut self,
         graph: &GraphScript,
         time_norm: f32,
         time_sec: f32,
+        cpu_inputs: Option<&HashMap<String, RgbaImage>>,
     ) -> Result<RgbaImage, MotionLoomSceneRenderError> {
         let source = self
-            .render_scene_tree_frame_gpu(graph, time_norm, time_sec)
+            .render_scene_tree_frame_gpu(graph, time_norm, time_sec, cpu_inputs)
             .await?;
         let (w, h) = graph_output_size(graph);
         let image = self.graph_source_to_cpu(&source).await?;
@@ -3820,15 +3905,34 @@ impl SceneFrameRenderer {
                             continue;
                         }
                         let matte = if let Some(mask_id) = layer.mask.as_deref() {
-                            assets
-                                .masks
-                                .get(mask_id)
-                                .cloned()
-                                .map(|texture| GpuSceneTextureMatte {
+                            if let Some(mask) = self.scene_masks.get(mask_id).cloned() {
+                                let Some(texture) = self
+                                    .render_gpu_mask_texture(
+                                        &mask,
+                                        Affine2::identity(),
+                                        time_norm,
+                                        time_sec,
+                                        canvas_size,
+                                    )
+                                    .await?
+                                else {
+                                    *unsupported = true;
+                                    continue;
+                                };
+                                Some(GpuSceneTextureMatte {
                                     texture,
                                     mode: GpuSceneMatteMode::Alpha,
                                     invert: scene_mask_mode_inverts(&layer.mask_mode),
                                 })
+                            } else {
+                                assets.masks.get(mask_id).cloned().map(|texture| {
+                                    GpuSceneTextureMatte {
+                                        texture,
+                                        mode: GpuSceneMatteMode::Alpha,
+                                        invert: scene_mask_mode_inverts(&layer.mask_mode),
+                                    }
+                                })
+                            }
                         } else if let Some(mask_from) = layer.mask_from.as_deref() {
                             self.render_gpu_node_matte_texture(
                                 mask_from,

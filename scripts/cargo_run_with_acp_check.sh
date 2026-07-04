@@ -92,7 +92,34 @@ setup_repo_media_runtime() {
   fi
 }
 
+ensure_wgpu_preview_host_built() {
+  local exe_name script_dir repo_root profile_dir candidate_bin_dir target_dir
+  exe_name="$(basename "${exe_path}")"
+  [[ "${exe_name}" == "anica" ]] || return 0
+  [[ "${ANICA_WGPU_PREVIEW_AUTO_BUILD:-1}" != "0" ]] || return 0
+
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  repo_root="$(cd "${script_dir}/.." && pwd)"
+  profile_dir="debug"
+  [[ "${exe_path}" == *"/release/"* ]] && profile_dir="release"
+
+  candidate_bin_dir="$(cd "$(dirname "${exe_path}")" && pwd)"
+  if [[ "$(basename "${candidate_bin_dir}")" == "${profile_dir}" ]]; then
+    target_dir="$(cd "${candidate_bin_dir}/.." && pwd)"
+  else
+    target_dir="${repo_root}/target"
+  fi
+
+  echo "[anica-runner] Ensuring MotionLoom WGPU preview host is built via Cargo incremental (${profile_dir})." >&2
+  if [[ "${profile_dir}" == "release" ]]; then
+    cargo build -p motionloom --example wgpu_live_preview --release --manifest-path "${repo_root}/Cargo.toml" --target-dir "${target_dir}"
+  else
+    cargo build -p motionloom --example wgpu_live_preview --manifest-path "${repo_root}/Cargo.toml" --target-dir "${target_dir}"
+  fi
+}
+
 setup_repo_media_runtime
+ensure_wgpu_preview_host_built
 
 # Skip when disabled explicitly.
 if [[ "${ANICA_ACP_AUTO_BUILD:-1}" != "0" ]]; then

@@ -35,7 +35,7 @@ use gpui::{
 };
 use gpui_component::{black, white};
 use image::{
-    ImageBuffer, Rgba,
+    ImageBuffer, Rgba, RgbaImage,
     imageops::{self, FilterType},
 };
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
@@ -61,7 +61,10 @@ use gpui_video_renderer::{
 use motionloom::{
     BlurSharpenMode, GraphScript, RuntimeProcessEffectInstance, RuntimeProcessParamValue,
 };
-use motionloom::{SceneRenderProfile, parse_graph_script, render_scene_graph_frame};
+use motionloom::{
+    SceneRenderProfile, parse_graph_script, render_scene_graph_frame,
+    render_scene_graph_frame_with_cpu_inputs,
+};
 use video_engine::{Position, Video, VideoOptions};
 
 const PREVIEW_BASE_HEIGHT: f32 = 450.0;
@@ -2249,10 +2252,34 @@ impl VideoPreview {
             let target_clip_id = clip_id;
 
             cx.spawn(async move |view, cx| {
-                // Run effect processing via WGPU GPU compute in background thread.
-                // Falls back to CPU only when GPU is unavailable (safe mode).
+                // Prefer the MotionLoom graph path so inspector preview and
+                // MotionLoom export share the same effect semantics. Unsupported
+                // legacy-only effects fall back to the native preview backend.
                 let result = cx
                     .background_spawn(async move {
+                        if let Some(rendered) = Self::render_image_effects_with_motionloom_graph(
+                            &base_data,
+                            width,
+                            height,
+                            brightness,
+                            contrast,
+                            saturation,
+                            lut_mix,
+                            effective_blur_sigma,
+                            blur_mode,
+                            tint_hue,
+                            tint_saturation,
+                            tint_lightness,
+                            tint_alpha,
+                            tone_map,
+                            light_sweep,
+                            &process_effects,
+                        ) {
+                            return rendered;
+                        }
+
+                        // Native fast preview fallback for effects not yet
+                        // represented in the MotionLoom process graph.
                         let mut data = base_data;
                         let renderer_blur_mode = Self::to_renderer_blur_mode(blur_mode);
                         let mut effect_params = BgraGpuEffectParams {
@@ -2394,6 +2421,104 @@ impl VideoPreview {
             }
         }
         Some(())
+    }
+
+    fn render_image_effects_with_motionloom_graph(
+        base_bgra: &[u8],
+        width: u32,
+        height: u32,
+        brightness: f32,
+        contrast: f32,
+        saturation: f32,
+        lut_mix: f32,
+        blur_sigma: f32,
+        blur_mode: BlurSharpenMode,
+        tint_hue: f32,
+        tint_saturation: f32,
+        tint_lightness: f32,
+        tint_alpha: f32,
+        tone_map: Option<LayerToneMapParams>,
+        light_sweep: Option<LayerLightSweepParams>,
+        process_effects: &[BgraProcessEffectInstance],
+    ) -> Option<(Vec<u8>, u32, u32)> {
+        if base_bgra.len() != width as usize * height as usize * 4 {
+            return None;
+        }
+        if lut_mix.abs() > 0.01
+            || tint_hue.abs() > 0.01
+            || tint_saturation.abs() > 0.01
+            || tint_lightness.abs() > 0.01
+            || tint_alpha.abs() > 0.01
+            || tone_map.is_some()
+            || light_sweep.is_some()
+            || !process_effects.is_empty()
+            || blur_sigma < -0.001
+            || matches!(blur_mode, BlurSharpenMode::Unsharp)
+        {
+            return None;
+        }
+
+        let mut rgba = Vec::with_capacity(base_bgra.len());
+        for px in base_bgra.chunks_exact(4) {
+            rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+        }
+        let input = RgbaImage::from_raw(width, height, rgba)?;
+
+        let mut graph = format!(
+            r##"<Graph fps={{30}} duration="1s" size={{[{width},{height}]}} renderSize={{[{width},{height}]}}>
+  <Process id="image_preview_fx">
+    <Input id="clip0" type="image" from="input:clip0" />
+    <Tex id="src" fmt="rgba8" from="clip0" />
+    <Tex id="color" fmt="rgba8" size={{[{width},{height}]}} />
+    <Pass id="preview_color_core" kind="compute" effect="color_core"
+          in={{["src"]}} out={{["color"]}}
+          params={{{{ brightness: "{brightness:.6}", contrast: "{contrast:.6}", saturation: "{saturation:.6}" }}}} />
+"##
+        );
+
+        let mut current = "color".to_string();
+        if blur_sigma > 0.001 {
+            let effect = match blur_mode {
+                BlurSharpenMode::Gaussian5tapH => "gaussian_5tap_h",
+                BlurSharpenMode::Gaussian5tapV => "gaussian_5tap_v",
+                BlurSharpenMode::Gaussian5tapBlur | BlurSharpenMode::Box => "gaussian_5tap_blur",
+                BlurSharpenMode::Unsharp => return None,
+            };
+            graph.push_str(&format!(
+                r##"    <Tex id="blurred" fmt="rgba8" size={{[{width},{height}]}} />
+    <Pass id="preview_blur" kind="compute" effect="{effect}"
+          in={{["{current}"]}} out={{["blurred"]}}
+          params={{{{ sigma: "{blur_sigma:.6}" }}}} />
+"##
+            ));
+            current = "blurred".to_string();
+        }
+
+        graph.push_str(&format!(
+            r##"    <Output id="final" from="{current}" to="screen" fmt="rgba8" size={{[{width},{height}]}} />
+  </Process>
+  <Present from="image_preview_fx" />
+</Graph>
+"##
+        ));
+
+        let graph = parse_graph_script(&graph).ok()?;
+        let mut inputs = HashMap::new();
+        inputs.insert("clip0".to_string(), input);
+        let rendered = pollster::block_on(render_scene_graph_frame_with_cpu_inputs(
+            &graph,
+            0,
+            SceneRenderProfile::Gpu,
+            &inputs,
+        ))
+        .ok()?;
+
+        let raw = rendered.into_raw();
+        let mut bgra = Vec::with_capacity(raw.len());
+        for px in raw.chunks_exact(4) {
+            bgra.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+        }
+        Some((bgra, width, height))
     }
 
     /// Non-blocking BGRA image renderer used by Windows/Linux and macOS Full BGRA mode.
