@@ -44,7 +44,9 @@ pub(crate) fn scene_nodes_require_cpu_scene_compositing(nodes: &[SceneNode]) -> 
             layer.is_3d
                 || layer.source.is_some()
                 || layer.mask.is_some()
+                || layer.mask_from.is_some()
                 || layer.matte.is_some()
+                || layer.matte_from.is_some()
                 || layer.effect.is_some()
                 || !is_default_scene_number(&layer.opacity)
                 || !is_normal_blend_name(&layer.blend)
@@ -59,7 +61,9 @@ pub(crate) fn scene_nodes_require_cpu_scene_compositing(nodes: &[SceneNode]) -> 
         }
         SceneNode::Chain(chain) => scene_nodes_require_cpu_scene_compositing(&chain.children),
         SceneNode::Group(group) => {
-            group.mask.is_some() || scene_nodes_require_cpu_scene_compositing(&group.children)
+            group.mask.is_some()
+                || group.mask_from.is_some()
+                || scene_nodes_require_cpu_scene_compositing(&group.children)
         }
         SceneNode::Puppet(_) => true,
         SceneNode::Mask(mask) => {
@@ -98,6 +102,7 @@ fn scene_node_is_rich(node: &SceneNode) -> bool {
         SceneNode::Rect(_)
         | SceneNode::PixelGrid(_)
         | SceneNode::Circle(_)
+        | SceneNode::Ellipse(_)
         | SceneNode::Line(_)
         | SceneNode::Polyline(_)
         | SceneNode::Path(_)

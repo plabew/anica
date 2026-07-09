@@ -78,6 +78,7 @@ pub enum SceneNode {
     Svg(SvgNode),
     Rect(RectNode),
     Circle(CircleNode),
+    Ellipse(EllipseNode),
     Line(LineNode),
     Polyline(PolylineNode),
     Path(PathNode),
@@ -425,6 +426,38 @@ pub struct CircleNode {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EllipseNode {
+    pub id: Option<String>,
+    pub x: String,
+    pub y: String,
+    pub radius_x: String,
+    pub radius_y: String,
+    pub color: String,
+    pub stroke: Option<String>,
+    pub stroke_width: String,
+    pub opacity: String,
+    #[serde(default = "default_scene_zero")]
+    pub rotation: String,
+    #[serde(default = "default_scene_one")]
+    pub scale: String,
+    #[serde(default = "default_scene_one")]
+    pub scale_x: String,
+    #[serde(default = "default_scene_one")]
+    pub scale_y: String,
+    #[serde(default = "default_scene_zero")]
+    pub skew_x: String,
+    #[serde(default = "default_scene_zero")]
+    pub skew_y: String,
+    #[serde(default = "default_scene_zero")]
+    pub transform_origin_x: String,
+    #[serde(default = "default_scene_zero")]
+    pub transform_origin_y: String,
+    #[serde(default = "default_scene_blend")]
+    pub blend: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LineNode {
     pub id: Option<String>,
     #[serde(default = "default_scene_zero")]
@@ -559,6 +592,8 @@ pub struct PathNode {
     pub d: String,
     pub stroke: String,
     pub fill: Option<String>,
+    #[serde(default = "default_path_fill_rule")]
+    pub fill_rule: String,
     pub stroke_width: String,
     pub opacity: String,
     pub trim_start: String,
@@ -593,6 +628,10 @@ pub struct PathNode {
     pub texture_scale: String,
     #[serde(default = "default_scene_zero")]
     pub texture_mask: String,
+}
+
+fn default_path_fill_rule() -> String {
+    "nonzero".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

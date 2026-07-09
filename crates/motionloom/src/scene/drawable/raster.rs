@@ -7,11 +7,26 @@ use crate::scene::spatial::Affine2;
 
 use super::{
     PaintBounds, Point2, ResolvedPaint, SceneBlendMode, StrokeCap, StrokeJoin, StrokeStyle,
-    StrokeTexture, parse_color, point_distance, point_in_subpaths_even_odd, polyline_bounds,
-    polyline_total_length, sample_paint, stroke_hash_signed, stroke_taper_pressure,
-    stroke_texture_copy_count, stroke_texture_seed, stroke_texture_variant,
-    trimmed_polyline_segments_with_progress,
+    StrokeTexture, parse_color, point_distance, point_in_subpaths_even_odd,
+    point_in_subpaths_nonzero, polyline_bounds, polyline_total_length, sample_paint,
+    stroke_hash_signed, stroke_taper_pressure, stroke_texture_copy_count, stroke_texture_seed,
+    stroke_texture_variant, trimmed_polyline_segments_with_progress,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FillRule {
+    NonZero,
+    EvenOdd,
+}
+
+impl FillRule {
+    pub(crate) fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "evenodd" | "even-odd" => Self::EvenOdd,
+            _ => Self::NonZero,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct EvaluatedShadow {
@@ -266,6 +281,73 @@ pub(crate) fn draw_circle_stroke(
             let dy = py as f32 + 0.5 - y;
             let d2 = dx * dx + dy * dy;
             if d2 <= outer && d2 >= inner {
+                blend_pixel(canvas, px, py, color);
+            }
+        }
+    }
+}
+
+pub(crate) fn draw_ellipse_paint(
+    canvas: &mut RgbaImage,
+    x: f32,
+    y: f32,
+    radius_x: f32,
+    radius_y: f32,
+    paint: &ResolvedPaint,
+    opacity: f32,
+    blend: SceneBlendMode,
+) {
+    if radius_x <= 0.0 || radius_y <= 0.0 || opacity <= 0.0 {
+        return;
+    }
+    let min_x = (x - radius_x).floor().max(0.0) as u32;
+    let min_y = (y - radius_y).floor().max(0.0) as u32;
+    let max_x = (x + radius_x).ceil().min(canvas.width() as f32) as u32;
+    let max_y = (y + radius_y).ceil().min(canvas.height() as f32) as u32;
+    let bounds = PaintBounds {
+        min_x: x - radius_x,
+        min_y: y - radius_y,
+        max_x: x + radius_x,
+        max_y: y + radius_y,
+    };
+    for py in min_y..max_y {
+        for px in min_x..max_x {
+            let point = Point2::new(px as f32 + 0.5, py as f32 + 0.5);
+            let dx = (point.x - x) / radius_x;
+            let dy = (point.y - y) / radius_y;
+            if dx * dx + dy * dy <= 1.0
+                && let Some(src) = sample_paint(paint, point, bounds, opacity)
+            {
+                blend_pixel_with_mode(canvas, px, py, src, blend);
+            }
+        }
+    }
+}
+
+pub(crate) fn draw_ellipse_stroke(
+    canvas: &mut RgbaImage,
+    x: f32,
+    y: f32,
+    radius_x: f32,
+    radius_y: f32,
+    stroke_width: f32,
+    color: [u8; 4],
+) {
+    if radius_x <= 0.0 || radius_y <= 0.0 || stroke_width <= 0.0 || color[3] == 0 {
+        return;
+    }
+    let min_radius = radius_x.min(radius_y).max(0.0001);
+    let pad = stroke_width.ceil();
+    let min_x = (x - radius_x - pad).floor().max(0.0) as u32;
+    let min_y = (y - radius_y - pad).floor().max(0.0) as u32;
+    let max_x = (x + radius_x + pad).ceil().min(canvas.width() as f32) as u32;
+    let max_y = (y + radius_y + pad).ceil().min(canvas.height() as f32) as u32;
+    for py in min_y..max_y {
+        for px in min_x..max_x {
+            let dx = (px as f32 + 0.5 - x) / radius_x;
+            let dy = (py as f32 + 0.5 - y) / radius_y;
+            let signed_dist = ((dx * dx + dy * dy).sqrt() - 1.0) * min_radius;
+            if signed_dist <= 0.0 && signed_dist >= -stroke_width {
                 blend_pixel(canvas, px, py, color);
             }
         }
@@ -685,10 +767,15 @@ pub(crate) fn draw_transformed_filled_polylines(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    draw_filled_polylines_impl(canvas, &transformed, color);
+    draw_filled_polylines_impl(canvas, &transformed, color, FillRule::EvenOdd);
 }
 
-fn draw_filled_polylines_impl(canvas: &mut RgbaImage, subpaths: &[Vec<Point2>], color: [u8; 4]) {
+fn draw_filled_polylines_impl(
+    canvas: &mut RgbaImage,
+    subpaths: &[Vec<Point2>],
+    color: [u8; 4],
+    fill_rule: FillRule,
+) {
     if color[3] == 0 {
         return;
     }
@@ -702,19 +789,20 @@ fn draw_filled_polylines_impl(canvas: &mut RgbaImage, subpaths: &[Vec<Point2>], 
     for py in min_y..max_y {
         for px in min_x..max_x {
             let point = Point2::new(px as f32 + 0.5, py as f32 + 0.5);
-            if point_in_subpaths_even_odd(point, subpaths) {
+            if point_in_subpaths(point, subpaths, fill_rule) {
                 blend_pixel(canvas, px, py, color);
             }
         }
     }
 }
 
-pub(crate) fn draw_filled_polylines_paint(
+pub(crate) fn draw_filled_polylines_paint_with_rule(
     canvas: &mut RgbaImage,
     subpaths: &[Vec<Point2>],
     paint: &ResolvedPaint,
     opacity: f32,
     blend: SceneBlendMode,
+    fill_rule: FillRule,
 ) {
     let Some((min_x, min_y, max_x, max_y)) = polyline_bounds(subpaths) else {
         return;
@@ -732,7 +820,7 @@ pub(crate) fn draw_filled_polylines_paint(
     for py in min_y..max_y {
         for px in min_x..max_x {
             let point = Point2::new(px as f32 + 0.5, py as f32 + 0.5);
-            if point_in_subpaths_even_odd(point, subpaths)
+            if point_in_subpaths(point, subpaths, fill_rule)
                 && let Some(src) = sample_paint(paint, point, bounds, opacity)
             {
                 blend_pixel_with_mode(canvas, px, py, src, blend);
@@ -741,13 +829,14 @@ pub(crate) fn draw_filled_polylines_paint(
     }
 }
 
-pub(crate) fn draw_transformed_filled_polylines_paint(
+pub(crate) fn draw_transformed_filled_polylines_paint_with_rule(
     canvas: &mut RgbaImage,
     subpaths: &[Vec<Point2>],
     paint: &ResolvedPaint,
     opacity: f32,
     blend: SceneBlendMode,
     transform: Affine2,
+    fill_rule: FillRule,
 ) {
     let transformed = subpaths
         .iter()
@@ -761,7 +850,14 @@ pub(crate) fn draw_transformed_filled_polylines_paint(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    draw_filled_polylines_paint(canvas, &transformed, paint, opacity, blend);
+    draw_filled_polylines_paint_with_rule(canvas, &transformed, paint, opacity, blend, fill_rule);
+}
+
+fn point_in_subpaths(point: Point2, subpaths: &[Vec<Point2>], fill_rule: FillRule) -> bool {
+    match fill_rule {
+        FillRule::NonZero => point_in_subpaths_nonzero(point, subpaths),
+        FillRule::EvenOdd => point_in_subpaths_even_odd(point, subpaths),
+    }
 }
 
 pub(crate) fn draw_line_segment(

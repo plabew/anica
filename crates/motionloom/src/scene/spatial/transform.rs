@@ -1,6 +1,6 @@
 use crate::scene::model::{
-    CharacterNode, CircleNode, GroupNode, LineNode, PathNode, PolylineNode, PuppetNode, RectNode,
-    SceneLayerNode, UseNode,
+    CharacterNode, CircleNode, EllipseNode, GroupNode, LineNode, PathNode, PolylineNode,
+    PuppetNode, RectNode, SceneLayerNode, UseNode,
 };
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 use crate::scene::text::TextNode;
@@ -381,6 +381,27 @@ pub(crate) fn scene_circle_local_transform(
         &circle.skew_y,
         &circle.transform_origin_x,
         &circle.transform_origin_y,
+        time_norm,
+        time_sec,
+    )
+}
+
+pub(crate) fn scene_ellipse_local_transform(
+    ellipse: &EllipseNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Affine2, MotionLoomSceneRenderError> {
+    scene_local_transform(
+        "0",
+        "0",
+        &ellipse.rotation,
+        &ellipse.scale,
+        &ellipse.scale_x,
+        &ellipse.scale_y,
+        &ellipse.skew_x,
+        &ellipse.skew_y,
+        &ellipse.transform_origin_x,
+        &ellipse.transform_origin_y,
         time_norm,
         time_sec,
     )

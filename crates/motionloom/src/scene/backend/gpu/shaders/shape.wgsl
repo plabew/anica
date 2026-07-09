@@ -277,6 +277,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         coverage = inside_coverage(dist);
     } else if (shape_kind == 9) {
         coverage = triangle_coverage(local, params.shape.xy, params.shape.zw, params.style.xy);
+    } else if (shape_kind == 10) {
+        let radii = max(params.shape.zw, vec2<f32>(0.0001, 0.0001));
+        let q = (local - params.shape.xy) / radii;
+        let dist = (length(q) - 1.0) * min(radii.x, radii.y);
+        coverage = inside_coverage(dist);
+    } else if (shape_kind == 11) {
+        let radii = max(params.shape.zw, vec2<f32>(0.0001, 0.0001));
+        let q = (local - params.shape.xy) / radii;
+        let dist = (length(q) - 1.0) * min(radii.x, radii.y);
+        let sw = max(params.style.y, 0.0);
+        coverage = inside_coverage(dist) * (1.0 - inside_coverage(dist + sw));
     }
 
     coverage = clamp(coverage, 0.0, 1.0);

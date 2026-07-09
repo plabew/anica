@@ -223,6 +223,10 @@ pub(crate) fn parse_color(value: &str) -> Result<[u8; 4], MotionLoomSceneRenderE
         _ => {}
     }
 
+    if lower.starts_with("rgb(") || lower.starts_with("rgba(") {
+        return parse_css_rgb_color(trimmed, value);
+    }
+
     let hex = lower
         .strip_prefix('#')
         .or_else(|| lower.strip_prefix("0x"))
@@ -289,6 +293,79 @@ fn parse_bgra_array_color(
     let r = to_byte(parts[2]);
     let a = to_byte(parts[3]);
     Ok([r, g, b, a])
+}
+
+fn parse_css_rgb_color(value: &str, original: &str) -> Result<[u8; 4], MotionLoomSceneRenderError> {
+    let lower = value.trim().to_ascii_lowercase();
+    let (prefix, expected_min, expected_max) = if lower.starts_with("rgba(") {
+        ("rgba(", 4, 4)
+    } else {
+        ("rgb(", 3, 4)
+    };
+    let inner = lower
+        .strip_prefix(prefix)
+        .and_then(|text| text.strip_suffix(')'))
+        .ok_or_else(|| MotionLoomSceneRenderError::InvalidColor {
+            value: original.to_string(),
+        })?;
+    let normalized = inner.replace('/', ",");
+    let parts = normalized
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < expected_min || parts.len() > expected_max {
+        return Err(MotionLoomSceneRenderError::InvalidColor {
+            value: original.to_string(),
+        });
+    }
+
+    let r = parse_css_rgb_channel(parts[0], original)?;
+    let g = parse_css_rgb_channel(parts[1], original)?;
+    let b = parse_css_rgb_channel(parts[2], original)?;
+    let a = if parts.len() >= 4 {
+        parse_css_alpha_channel(parts[3], original)?
+    } else {
+        255
+    };
+    Ok([r, g, b, a])
+}
+
+fn parse_css_rgb_channel(value: &str, original: &str) -> Result<u8, MotionLoomSceneRenderError> {
+    let text = value.trim();
+    let parsed = if let Some(percent) = text.strip_suffix('%') {
+        percent.trim().parse::<f32>().map(|value| value * 2.55)
+    } else {
+        text.parse::<f32>()
+    }
+    .map_err(|_| MotionLoomSceneRenderError::InvalidColor {
+        value: original.to_string(),
+    })?;
+    if !parsed.is_finite() {
+        return Err(MotionLoomSceneRenderError::InvalidColor {
+            value: original.to_string(),
+        });
+    }
+    Ok(parsed.round().clamp(0.0, 255.0) as u8)
+}
+
+fn parse_css_alpha_channel(value: &str, original: &str) -> Result<u8, MotionLoomSceneRenderError> {
+    let text = value.trim();
+    let parsed = if let Some(percent) = text.strip_suffix('%') {
+        percent.trim().parse::<f32>().map(|value| value * 2.55)
+    } else {
+        text.parse::<f32>()
+            .map(|value| if value <= 1.0 { value * 255.0 } else { value })
+    }
+    .map_err(|_| MotionLoomSceneRenderError::InvalidColor {
+        value: original.to_string(),
+    })?;
+    if !parsed.is_finite() {
+        return Err(MotionLoomSceneRenderError::InvalidColor {
+            value: original.to_string(),
+        });
+    }
+    Ok(parsed.round().clamp(0.0, 255.0) as u8)
 }
 
 fn parse_hex_byte(

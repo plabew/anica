@@ -13,11 +13,126 @@ use crate::dsl::{GraphScript, is_graph_script, parse_graph_script};
 use crate::process::cpu_renderer::render_process_frame_cpu;
 #[cfg(target_arch = "wasm32")]
 use crate::process::wasm_webgpu::render_process_frame_to_canvas_gpu as render_process_frame_to_canvas_gpu_impl;
+use crate::scene::model::{GroupNode, SceneNode};
 use crate::scene::render::{SceneRenderProfile, SceneRenderer, render_scene_graph_frame};
 use crate::world::{WorldFrameRenderer, is_world_graph_script, parse_world_graph_script};
 
 fn js_error(message: String) -> JsValue {
     js_sys::Error::new(&message).into()
+}
+
+fn set_group_numeric_attr(group: &mut GroupNode, attr: &str, value: &str) -> bool {
+    match attr {
+        "x" => group.x = value.to_string(),
+        "y" => group.y = value.to_string(),
+        "rotation" => group.rotation = value.to_string(),
+        "scale" => group.scale = value.to_string(),
+        "scaleX" | "scale_x" => group.scale_x = value.to_string(),
+        "scaleY" | "scale_y" => group.scale_y = value.to_string(),
+        "skewX" | "skew_x" => group.skew_x = value.to_string(),
+        "skewY" | "skew_y" => group.skew_y = value.to_string(),
+        "transformOriginX" | "transform_origin_x" => group.transform_origin_x = value.to_string(),
+        "transformOriginY" | "transform_origin_y" => group.transform_origin_y = value.to_string(),
+        "opacity" => group.opacity = value.to_string(),
+        _ => return false,
+    }
+    true
+}
+
+fn set_group_attr_in_nodes(
+    nodes: &mut [SceneNode],
+    group_id: &str,
+    attr: &str,
+    value: &str,
+) -> bool {
+    for node in nodes {
+        match node {
+            SceneNode::Timeline(timeline) => {
+                if set_group_attr_in_nodes(&mut timeline.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Track(track) => {
+                if set_group_attr_in_nodes(&mut track.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Sequence(sequence) => {
+                if set_group_attr_in_nodes(&mut sequence.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Chain(chain) => {
+                if set_group_attr_in_nodes(&mut chain.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Group(group) => {
+                if group.id.as_deref() == Some(group_id) {
+                    return set_group_numeric_attr(group, attr, value);
+                }
+                if set_group_attr_in_nodes(&mut group.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Part(part) => {
+                if set_group_attr_in_nodes(&mut part.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Repeat(repeat) => {
+                if set_group_attr_in_nodes(&mut repeat.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Mask(mask) => {
+                if set_group_attr_in_nodes(&mut mask.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Precompose(precompose) => {
+                if set_group_attr_in_nodes(&mut precompose.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Layer(layer) => {
+                if set_group_attr_in_nodes(&mut layer.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Camera(camera) => {
+                if set_group_attr_in_nodes(&mut camera.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Character(character) => {
+                if set_group_attr_in_nodes(&mut character.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::Puppet(puppet) => {
+                if set_group_attr_in_nodes(&mut puppet.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            SceneNode::MeshTopology(mesh) => {
+                if set_group_attr_in_nodes(&mut mesh.children, group_id, attr, value) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn set_graph_group_attr(graph: &mut GraphScript, group_id: &str, attr: &str, value: &str) -> bool {
+    for scene in &mut graph.scenes {
+        if set_group_attr_in_nodes(&mut scene.children, group_id, attr, value) {
+            return true;
+        }
+    }
+    set_group_attr_in_nodes(&mut graph.scene_nodes, group_id, attr, value)
 }
 
 /// Parse a MotionLoom script and return a short diagnostic summary.
@@ -320,6 +435,36 @@ impl WasmSceneRenderer {
     /// Clear all assets previously registered on this renderer.
     pub fn clear_assets(&mut self) {
         self.resolver.clear();
+    }
+
+    /// Update a numeric `<Group id="...">` attribute without reparsing the DSL.
+    ///
+    /// This is intended for editor scrubbing (x/y/rotation/scale/opacity). It
+    /// keeps the persistent renderer and its vector/GPU caches alive.
+    pub fn set_group_attr(
+        &mut self,
+        group_id: &str,
+        attr: &str,
+        value: &str,
+    ) -> Result<bool, JsValue> {
+        if group_id.trim().is_empty() {
+            return Err(js_error("group id is required".to_string()));
+        }
+        let value_num = value
+            .trim()
+            .parse::<f32>()
+            .map_err(|_| js_error(format!("group attr value must be numeric: {value}")))?;
+        if !value_num.is_finite() {
+            return Err(js_error(format!(
+                "group attr value must be finite: {value}"
+            )));
+        }
+        Ok(set_graph_group_attr(
+            &mut self.graph,
+            group_id,
+            attr,
+            value.trim(),
+        ))
     }
 
     /// Render `frame` to an RGBA byte buffer.

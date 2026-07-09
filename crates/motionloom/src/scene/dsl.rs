@@ -1572,6 +1572,12 @@ fn parse_scene_nodes(
             i = end_ix + 1;
             continue;
         }
+        if starts_open_tag(line, "Ellipse") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Ellipse(parse_ellipse_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
         if starts_open_tag(line, "Line") {
             let (tag, end_ix) = collect_self_closing_block(lines, i)?;
             nodes.push(SceneNode::Line(parse_line_node(&tag, i + 1)?));
@@ -2965,6 +2971,76 @@ pub(crate) fn parse_circle_node(block: &str, line: usize) -> Result<CircleNode, 
     })
 }
 
+pub(crate) fn parse_ellipse_node(block: &str, line: usize) -> Result<EllipseNode, GraphParseError> {
+    let id = attr_value(block, "id").map(|v| strip_wrappers(&v).to_string());
+    let x = attr_value(block, "x")
+        .or_else(|| attr_value(block, "cx"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let y = attr_value(block, "y")
+        .or_else(|| attr_value(block, "cy"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let radius_x = attr_value(block, "radiusX")
+        .or_else(|| attr_value(block, "radius_x"))
+        .or_else(|| attr_value(block, "rx"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .ok_or_else(|| GraphParseError {
+            line,
+            message: "<Ellipse> requires radiusX/rx".to_string(),
+        })?;
+    let radius_y = attr_value(block, "radiusY")
+        .or_else(|| attr_value(block, "radius_y"))
+        .or_else(|| attr_value(block, "ry"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .ok_or_else(|| GraphParseError {
+            line,
+            message: "<Ellipse> requires radiusY/ry".to_string(),
+        })?;
+    let color = attr_value(block, "color")
+        .or_else(|| attr_value(block, "fill"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "#ffffff".to_string());
+    let stroke = attr_value(block, "stroke").map(|v| strip_wrappers(&v).to_string());
+    let stroke_width = attr_value(block, "strokeWidth")
+        .or_else(|| attr_value(block, "stroke_width"))
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "0".to_string());
+    let opacity = attr_value(block, "opacity")
+        .map(|v| strip_wrappers(&v).to_string())
+        .unwrap_or_else(|| "1.0".to_string());
+    Ok(EllipseNode {
+        id,
+        x,
+        y,
+        radius_x,
+        radius_y,
+        color,
+        stroke,
+        stroke_width,
+        opacity,
+        rotation: scene_attr_or_default(block, &["rotation"], "0"),
+        scale: scene_attr_or_default(block, &["scale"], "1"),
+        scale_x: scene_attr_or_default(block, &["scaleX", "scale_x"], "1"),
+        scale_y: scene_attr_or_default(block, &["scaleY", "scale_y"], "1"),
+        skew_x: scene_attr_or_default(block, &["skewX", "skew_x"], "0"),
+        skew_y: scene_attr_or_default(block, &["skewY", "skew_y"], "0"),
+        transform_origin_x: scene_attr_or_default(
+            block,
+            &["transformOriginX", "transform_origin_x"],
+            "0",
+        ),
+        transform_origin_y: scene_attr_or_default(
+            block,
+            &["transformOriginY", "transform_origin_y"],
+            "0",
+        ),
+        blend: attr_value(block, "blend")
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "normal".to_string()),
+    })
+}
+
 #[derive(Debug, Clone)]
 struct StrokeAttrs {
     style: String,
@@ -3286,6 +3362,10 @@ pub(crate) fn parse_path_node(
         d,
         stroke,
         fill,
+        fill_rule: attr_value(block, "fillRule")
+            .or_else(|| attr_value(block, "fill_rule"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .unwrap_or_else(|| "nonzero".to_string()),
         stroke_width,
         opacity,
         trim_start,
@@ -4016,8 +4096,6 @@ fn parse_scene_layer_node(
         .filter(|v| !v.trim().is_empty());
     let matte_from = attr_value(block, "matteFrom")
         .or_else(|| attr_value(block, "matte_from"))
-        .or_else(|| attr_value(block, "maskFrom"))
-        .or_else(|| attr_value(block, "mask_from"))
         .map(|v| strip_wrappers(&v).to_string())
         .filter(|v| !v.trim().is_empty());
     let matte_mode = attr_value(block, "matteMode")

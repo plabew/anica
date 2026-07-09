@@ -18,6 +18,8 @@ pub(crate) const GPU_SHAPE_CIRCLE_SHADOW: f32 = 6.0;
 pub(crate) const GPU_SHAPE_SOLID: f32 = 7.0;
 pub(crate) const GPU_SHAPE_LINE: f32 = 8.0;
 pub(crate) const GPU_SHAPE_TRIANGLE_FILL: f32 = 9.0;
+pub(crate) const GPU_SHAPE_ELLIPSE_FILL: f32 = 10.0;
+pub(crate) const GPU_SHAPE_ELLIPSE_STROKE: f32 = 11.0;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GpuScenePrimitive {
@@ -201,6 +203,7 @@ fn describe_scene_node_for_gpu(node: &SceneNode) -> String {
         SceneNode::Svg(svg) => format!("Svg{}", id_suffix(svg.id.as_deref())),
         SceneNode::Rect(rect) => format!("Rect{}", id_suffix(rect.id.as_deref())),
         SceneNode::Circle(circle) => format!("Circle{}", id_suffix(circle.id.as_deref())),
+        SceneNode::Ellipse(ellipse) => format!("Ellipse{}", id_suffix(ellipse.id.as_deref())),
         SceneNode::Line(line) => format!("Line{}", id_suffix(line.id.as_deref())),
         SceneNode::Polyline(polyline) => {
             format!("Polyline{}", id_suffix(polyline.id.as_deref()))

@@ -111,6 +111,7 @@ pub(crate) fn face_jaw_to_path_node(
         d,
         stroke: face_jaw.stroke.clone(),
         fill: face_jaw.fill.clone(),
+        fill_rule: "nonzero".to_string(),
         stroke_width: face_jaw.stroke_width.clone(),
         opacity: face_jaw.opacity.clone(),
         trim_start: face_jaw.trim_start.clone(),

@@ -1,9 +1,10 @@
 // =========================================
 // crates/motionloom/src/scene/render.rs
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::fs;
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{
@@ -49,31 +50,31 @@ use crate::scene::composition::{
 use crate::scene::domain::apply_action_graph_at_time;
 
 use crate::scene::drawable::{
-    CpuSceneOverlay, EvaluatedShadow, GPU_SHAPE_CIRCLE_FILL, GPU_SHAPE_CIRCLE_SHADOW,
-    GPU_SHAPE_CIRCLE_STROKE, GPU_SHAPE_LINE, GPU_SHAPE_RECT_FILL, GPU_SHAPE_RECT_SHADOW,
-    GPU_SHAPE_RECT_STROKE, GPU_SHAPE_TRIANGLE_FILL, GpuSceneGradientPaint, GpuSceneMatteMode,
-    GpuSceneNativeAssets, GpuSceneNativeTexture, GpuScenePrimitive, GpuSceneTextRequest,
-    GpuSceneTextureLayer, GpuSceneTextureMatte, GpuSceneTextureSource, GraphTextureSource,
-    PaintBounds, Point2, ResolvedPaint, SceneBlendMode, StrokeStyle, StrokeTexture,
-    affine_uniform_scale, describe_cpu_scene_overlays, draw_circle, draw_circle_paint,
-    draw_circle_shadow, draw_circle_stroke, draw_line_segment_styled, draw_rect_shadow,
-    draw_rounded_rect, draw_rounded_rect_paint, draw_rounded_rect_stroke,
-    draw_transformed_filled_polylines, draw_transformed_filled_polylines_paint,
-    draw_transformed_trimmed_polylines_styled, eval_line_stroke_style, eval_path_d,
-    eval_path_stroke_style, eval_polyline_stroke_style, evaluate_shadow, evaluate_trim,
-    face_jaw_to_path_node, gpu_matte_mode, gpu_solid_primitive, gradient_ref_id, id_suffix,
-    is_gpu_native_blend, is_none_paint, parse_color, parse_paint, parse_path_subpaths,
-    parse_polyline_points, parse_scene_blend, point_distance, raster_texture_layer,
-    resolve_gradient_paint, scene_mask_mode_inverts, solid_canvas, stroke_hash_signed,
-    stroke_taper_pressure, stroke_texture_copy_count, stroke_texture_seed, stroke_texture_variant,
-    trimmed_polyline_segments_with_progress,
+    CpuSceneOverlay, EvaluatedShadow, FillRule, GPU_SHAPE_CIRCLE_FILL, GPU_SHAPE_CIRCLE_SHADOW,
+    GPU_SHAPE_CIRCLE_STROKE, GPU_SHAPE_ELLIPSE_FILL, GPU_SHAPE_ELLIPSE_STROKE, GPU_SHAPE_LINE,
+    GPU_SHAPE_RECT_FILL, GPU_SHAPE_RECT_SHADOW, GPU_SHAPE_RECT_STROKE, GPU_SHAPE_TRIANGLE_FILL,
+    GpuSceneGradientPaint, GpuSceneMatteMode, GpuSceneNativeAssets, GpuSceneNativeTexture,
+    GpuScenePrimitive, GpuSceneTextRequest, GpuSceneTextureLayer, GpuSceneTextureMatte,
+    GpuSceneTextureSource, GraphTextureSource, PaintBounds, Point2, ResolvedPaint, SceneBlendMode,
+    StrokeStyle, StrokeTexture, affine_uniform_scale, describe_cpu_scene_overlays, draw_circle,
+    draw_circle_paint, draw_circle_shadow, draw_circle_stroke, draw_ellipse_paint,
+    draw_ellipse_stroke, draw_line_segment_styled, draw_rect_shadow, draw_rounded_rect,
+    draw_rounded_rect_paint, draw_rounded_rect_stroke, draw_transformed_filled_polylines,
+    draw_transformed_filled_polylines_paint_with_rule, draw_transformed_trimmed_polylines_styled,
+    eval_line_stroke_style, eval_path_d, eval_path_stroke_style, eval_polyline_stroke_style,
+    evaluate_shadow, evaluate_trim, face_jaw_to_path_node, gpu_matte_mode, gpu_solid_primitive,
+    gradient_ref_id, id_suffix, is_gpu_native_blend, is_none_paint, parse_color, parse_paint,
+    parse_path_subpaths, parse_polyline_points, parse_scene_blend, point_distance,
+    raster_texture_layer, resolve_gradient_paint, scene_mask_mode_inverts, solid_canvas,
+    stroke_hash_signed, stroke_taper_pressure, stroke_texture_copy_count, stroke_texture_seed,
+    stroke_texture_variant, trimmed_polyline_segments_with_progress,
 };
 use crate::scene::dsl::{ImageNode, SvgNode};
 use crate::scene::model::{
-    CameraNode, CharacterNode, CircleNode, DefsNode, FaceJawNode, FilterDef, FontDef, GradientDef,
-    GroupNode, LineNode, MaskNode, PaletteNode, PartNode, PathNode, PixelGridNode, PolylineNode,
-    PrecomposeNode, PuppetNode, RectNode, RepeatNode, SceneLayerNode, SceneNode, TextureDef,
-    UseNode,
+    CameraNode, CharacterNode, CircleNode, DefsNode, EllipseNode, FaceJawNode, FilterDef, FontDef,
+    GradientDef, GroupNode, LineNode, MaskNode, PaletteNode, PartNode, PathNode, PixelGridNode,
+    PolylineNode, PrecomposeNode, PuppetNode, RectNode, RepeatNode, SceneLayerNode, SceneNode,
+    TextureDef, UseNode,
 };
 pub use crate::scene::resource::{clear_scene_asset_roots, set_scene_asset_roots};
 use crate::scene::resource::{
@@ -87,11 +88,11 @@ use crate::scene::spatial::{
     camera_transform, camera_viewport, camera_world_bounds, clamp_nonzero_signed_scale,
     eval_group_deform_grid, eval_puppet_deform_grid, find_scene_node_anchor, is_scene_camera_track,
     is_scene_world_track, resolve_axis, scene_character_local_transform,
-    scene_circle_local_transform, scene_group_local_transform, scene_layer_local_transform,
-    scene_line_local_transform, scene_path_local_transform, scene_polyline_local_transform,
-    scene_puppet_local_transform, scene_rect_local_transform, scene_text_local_transform,
-    scene_use_local_transform, transform_and_deform_point, transform_and_deform_subpaths,
-    transform_deform_grid,
+    scene_circle_local_transform, scene_ellipse_local_transform, scene_group_local_transform,
+    scene_layer_local_transform, scene_line_local_transform, scene_path_local_transform,
+    scene_polyline_local_transform, scene_puppet_local_transform, scene_rect_local_transform,
+    scene_text_local_transform, scene_use_local_transform, transform_and_deform_point,
+    transform_and_deform_subpaths, transform_deform_grid,
 };
 use crate::scene::text::TextNode;
 
@@ -286,6 +287,25 @@ fn apply_animation_property_to_nodes(
                     Some(&mut circle.transform_origin_x),
                     Some(&mut circle.transform_origin_y),
                     &mut circle.opacity,
+                    node_id,
+                    property,
+                    value,
+                );
+            }
+            SceneNode::Ellipse(ellipse) => {
+                apply_animation_property_to_transform(
+                    ellipse.id.as_deref(),
+                    &mut ellipse.x,
+                    &mut ellipse.y,
+                    Some(&mut ellipse.rotation),
+                    &mut ellipse.scale,
+                    Some(&mut ellipse.scale_x),
+                    Some(&mut ellipse.scale_y),
+                    Some(&mut ellipse.skew_x),
+                    Some(&mut ellipse.skew_y),
+                    Some(&mut ellipse.transform_origin_x),
+                    Some(&mut ellipse.transform_origin_y),
+                    &mut ellipse.opacity,
                     node_id,
                     property,
                     value,
@@ -1187,6 +1207,10 @@ fn collect_scene_gradient_refs(nodes: &[SceneNode], out: &mut Vec<(String, Strin
                 collect_paint_gradient_ref(&circle.color, out);
                 collect_optional_paint_gradient_ref(circle.stroke.as_deref(), out);
             }
+            SceneNode::Ellipse(ellipse) => {
+                collect_paint_gradient_ref(&ellipse.color, out);
+                collect_optional_paint_gradient_ref(ellipse.stroke.as_deref(), out);
+            }
             SceneNode::Line(line) => collect_paint_gradient_ref(&line.color, out),
             SceneNode::Polyline(polyline) => collect_paint_gradient_ref(&polyline.stroke, out),
             SceneNode::Path(path) => {
@@ -1307,6 +1331,7 @@ struct SceneFrameRenderer {
     svg_cache: HashMap<String, RgbaImage>,
     path_cache: HashMap<String, Vec<Vec<Point2>>>,
     polyline_cache: HashMap<String, Vec<Point2>>,
+    vector_overlay_cache: HashMap<String, CachedVectorOverlay>,
     gradient_defs: HashMap<String, GradientDef>,
     palette_defs: HashMap<String, PaletteNode>,
     font_defs: HashMap<String, FontDef>,
@@ -1327,6 +1352,34 @@ struct SceneFrameRenderer {
     /// Cached D3D11 device/context used to allocate Windows shared preview surfaces.
     #[cfg(target_os = "windows")]
     windows_d3d11: Option<WindowsD3D11Context>,
+}
+
+const VECTOR_OVERLAY_CACHE_LIMIT: usize = 64;
+
+#[derive(Clone)]
+struct CachedVectorOverlay {
+    image: RgbaImage,
+    offset_x: f32,
+    offset_y: f32,
+    gpu_texture: Option<GpuSceneNativeTexture>,
+}
+
+impl CachedVectorOverlay {
+    fn texture_layer(&self, transform: Affine2) -> GpuSceneTextureLayer {
+        GpuSceneTextureLayer {
+            source: self
+                .gpu_texture
+                .clone()
+                .map(GpuSceneTextureSource::Gpu)
+                .unwrap_or_else(|| GpuSceneTextureSource::Cpu(self.image.clone())),
+            transform: transform.mul(Affine2::translate(self.offset_x, self.offset_y)),
+            projected_quad: None,
+            opacity: 1.0,
+            blend: SceneBlendMode::Normal,
+            pick_id: 0,
+            matte: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1368,6 +1421,75 @@ fn crop_layer_alpha_bounds(layer: &RgbaImage) -> Option<(RgbaImage, u32, u32)> {
         }
     }
     Some((cropped, min_x, min_y))
+}
+
+fn vector_overlay_nodes_are_static(nodes: &[SceneNode]) -> bool {
+    let debug = format!("{nodes:?}").to_ascii_lowercase();
+    !debug.contains("curve(")
+        && !debug.contains("morph(")
+        && !debug.contains("time")
+        && !debug.contains("frame")
+        && !debug.contains("random")
+        && !debug.contains("noise")
+}
+
+fn vector_overlay_cache_key(
+    nodes: &[SceneNode],
+    raster_transform: Affine2,
+    inherited_opacity: f32,
+    canvas_size: (u32, u32),
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    canvas_size.hash(&mut hasher);
+    for value in [
+        raster_transform.m00,
+        raster_transform.m01,
+        raster_transform.m02,
+        raster_transform.m10,
+        raster_transform.m11,
+        raster_transform.m12,
+        inherited_opacity,
+    ] {
+        value.to_bits().hash(&mut hasher);
+    }
+    format!("{nodes:?}").hash(&mut hasher);
+    format!("vector-overlay:{:016x}", hasher.finish())
+}
+
+fn cache_vector_overlay(
+    cache: &mut HashMap<String, CachedVectorOverlay>,
+    key: String,
+    value: CachedVectorOverlay,
+) {
+    if cache.len() >= VECTOR_OVERLAY_CACHE_LIMIT && !cache.contains_key(&key) {
+        cache.clear();
+    }
+    cache.insert(key, value);
+}
+
+fn vector_overlay_raster_transform(transform: Affine2) -> Affine2 {
+    Affine2 {
+        m02: 0.0,
+        m12: 0.0,
+        ..transform
+    }
+}
+
+fn vector_overlay_present_transform(transform: Affine2) -> Affine2 {
+    Affine2::translate(transform.m02, transform.m12)
+}
+
+fn path_has_default_local_transform(path: &PathNode) -> bool {
+    path.x.trim() == "0"
+        && path.y.trim() == "0"
+        && path.rotation.trim() == "0"
+        && path.scale.trim() == "1"
+        && path.scale_x.trim() == "1"
+        && path.scale_y.trim() == "1"
+        && path.skew_x.trim() == "0"
+        && path.skew_y.trim() == "0"
+        && path.transform_origin_x.trim() == "0"
+        && path.transform_origin_y.trim() == "0"
 }
 
 fn scene_layer_3d_projected_quad(
@@ -1521,6 +1643,7 @@ fn scene_node_id(node: &SceneNode) -> Option<&str> {
         SceneNode::Svg(node) => node.id.as_deref(),
         SceneNode::Rect(node) => node.id.as_deref(),
         SceneNode::Circle(node) => node.id.as_deref(),
+        SceneNode::Ellipse(node) => node.id.as_deref(),
         SceneNode::Line(node) => node.id.as_deref(),
         SceneNode::Polyline(node) => node.id.as_deref(),
         SceneNode::Path(node) => node.id.as_deref(),
@@ -1596,6 +1719,7 @@ impl SceneFrameRenderer {
             svg_cache: HashMap::new(),
             path_cache: HashMap::new(),
             polyline_cache: HashMap::new(),
+            vector_overlay_cache: HashMap::new(),
             gradient_defs: HashMap::new(),
             palette_defs: HashMap::new(),
             font_defs: HashMap::new(),
@@ -1635,6 +1759,7 @@ impl SceneFrameRenderer {
             svg_cache: HashMap::new(),
             path_cache: HashMap::new(),
             polyline_cache: HashMap::new(),
+            vector_overlay_cache: HashMap::new(),
             gradient_defs: HashMap::new(),
             palette_defs: HashMap::new(),
             font_defs: HashMap::new(),
@@ -2596,6 +2721,7 @@ impl SceneFrameRenderer {
         if !self.profile.uses_gpu_compositor() {
             return Ok(None);
         }
+        self.prepare_frame_caches(graph);
 
         let Some(nodes) = scene_nodes_for_present(graph) else {
             return Ok(None);
@@ -3814,7 +3940,9 @@ impl SceneFrameRenderer {
                         };
                         if layer.source.is_none()
                             && layer.mask.is_none()
+                            && layer.mask_from.is_none()
                             && layer.matte.is_none()
+                            && layer.matte_from.is_none()
                             && layer.effect.is_none()
                             && !layer.children.is_empty()
                             && blend == SceneBlendMode::Normal
@@ -3941,19 +4069,46 @@ impl SceneFrameRenderer {
                                 })
                             }
                         } else if let Some(mask_from) = layer.mask_from.as_deref() {
-                            self.render_gpu_node_matte_texture(
-                                mask_from,
-                                time_norm,
-                                time_sec,
-                                canvas_size,
-                                assets,
-                            )
-                            .await?
-                            .map(|texture| GpuSceneTextureMatte {
-                                texture,
-                                mode: gpu_matte_mode(&layer.mask_mode),
-                                invert: scene_mask_mode_inverts(&layer.mask_mode),
-                            })
+                            if let Some(precompose) = self.scene_precompose_defs.get(mask_from)
+                                && precompose.size.unwrap_or(canvas_size) != canvas_size
+                            {
+                                *unsupported = true;
+                                continue;
+                            }
+                            if self.scene_precompose_defs.contains_key(mask_from) {
+                                self.render_gpu_precompose_instance(
+                                    mask_from,
+                                    layer,
+                                    canvas_size,
+                                    assets,
+                                    time_norm,
+                                    time_sec,
+                                )
+                                .await?
+                                .map(|texture| {
+                                    GpuSceneTextureMatte {
+                                        texture,
+                                        mode: gpu_matte_mode(&layer.mask_mode),
+                                        invert: scene_mask_mode_inverts(&layer.mask_mode),
+                                    }
+                                })
+                            } else {
+                                self.render_gpu_node_matte_texture(
+                                    mask_from,
+                                    time_norm,
+                                    time_sec,
+                                    canvas_size,
+                                    assets,
+                                )
+                                .await?
+                                .map(|texture| {
+                                    GpuSceneTextureMatte {
+                                        texture,
+                                        mode: gpu_matte_mode(&layer.mask_mode),
+                                        invert: scene_mask_mode_inverts(&layer.mask_mode),
+                                    }
+                                })
+                            }
                         } else if let Some(matte_id) = layer.matte.as_deref() {
                             if let Some(mask) = assets.masks.get(matte_id).cloned() {
                                 Some(GpuSceneTextureMatte {
@@ -4055,6 +4210,59 @@ impl SceneFrameRenderer {
                             texture_layers.push(layer);
                         }
                     }
+                    SceneNode::Path(path) => {
+                        let path_pick_id = self
+                            .gpu_pick_ids
+                            .get(path.id.as_deref().unwrap_or(""))
+                            .copied()
+                            .unwrap_or(0);
+                        if path_requires_cpu_overlay(path) {
+                            if deform.is_some() || !is_gpu_native_blend(&path.blend) {
+                                *unsupported = true;
+                                continue;
+                            }
+                            let mut overlay_layer = self.gpu_path_overlay_texture_layer(
+                                path,
+                                transform,
+                                inherited_opacity,
+                                time_norm,
+                                time_sec,
+                            )?;
+                            if overlay_layer.is_none() {
+                                overlay_layer = self.gpu_vector_overlay_texture_layer(
+                                    std::slice::from_ref(node),
+                                    transform,
+                                    inherited_opacity,
+                                    time_norm,
+                                    time_sec,
+                                    canvas_size,
+                                )?;
+                            }
+                            if let Some(mut layer) = overlay_layer {
+                                layer.pick_id = path_pick_id;
+                                texture_layers.push(layer);
+                            }
+                        } else {
+                            let primitive_start = primitives.len();
+                            push_gpu_path_commands(
+                                path,
+                                transform,
+                                deform,
+                                inherited_opacity,
+                                time_norm,
+                                time_sec,
+                                &self.gradient_defs,
+                                primitives,
+                            )?;
+                            if path_pick_id != 0 {
+                                for primitive in &mut primitives[primitive_start..] {
+                                    if primitive.pick_id == 0 {
+                                        primitive.pick_id = path_pick_id;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     SceneNode::Group(group) => {
                         let group_pick_id = self
                             .gpu_pick_ids
@@ -4075,7 +4283,7 @@ impl SceneFrameRenderer {
                             continue;
                         }
                         if let Some(mask_id) = group.mask.as_deref() {
-                            if !affine_is_identity(group_local) || group_deform.is_some() {
+                            if group_deform.is_some() {
                                 *unsupported = true;
                                 continue;
                             }
@@ -4086,7 +4294,7 @@ impl SceneFrameRenderer {
                             let Some(source) = self
                                 .render_gpu_scene_texture_from_nodes(
                                     &group.children,
-                                    group_transform,
+                                    Affine2::identity(),
                                     opacity,
                                     time_norm,
                                     time_sec,
@@ -4100,7 +4308,7 @@ impl SceneFrameRenderer {
                             };
                             texture_layers.push(GpuSceneTextureLayer {
                                 source: GpuSceneTextureSource::Gpu(source),
-                                transform: Affine2::identity(),
+                                transform: group_transform,
                                 projected_quad: None,
                                 opacity: 1.0,
                                 blend: SceneBlendMode::Normal,
@@ -4112,7 +4320,7 @@ impl SceneFrameRenderer {
                                 }),
                             });
                         } else if let Some(mask_from) = group.mask_from.as_deref() {
-                            if !affine_is_identity(group_local) || group_deform.is_some() {
+                            if group_deform.is_some() {
                                 *unsupported = true;
                                 continue;
                             }
@@ -4132,7 +4340,7 @@ impl SceneFrameRenderer {
                             let Some(source) = self
                                 .render_gpu_scene_texture_from_nodes(
                                     &group.children,
-                                    group_transform,
+                                    Affine2::identity(),
                                     opacity,
                                     time_norm,
                                     time_sec,
@@ -4146,11 +4354,11 @@ impl SceneFrameRenderer {
                             };
                             texture_layers.push(GpuSceneTextureLayer {
                                 source: GpuSceneTextureSource::Gpu(source),
-                                transform: Affine2::identity(),
+                                transform: group_transform,
                                 projected_quad: None,
                                 opacity: 1.0,
                                 blend: SceneBlendMode::Normal,
-                                pick_id: 0,
+                                pick_id: group_pick_id,
                                 matte: Some(GpuSceneTextureMatte {
                                     texture: matte,
                                     mode: gpu_matte_mode(&group.mask_mode),
@@ -4698,6 +4906,7 @@ impl SceneFrameRenderer {
                         id: mask.id.clone(),
                         d: d.to_string(),
                         fill: Some("#ffffff".to_string()),
+                        fill_rule: "nonzero".to_string(),
                         stroke: "none".to_string(),
                         stroke_width: "0".to_string(),
                         line_cap: "round".to_string(),
@@ -5665,6 +5874,10 @@ impl SceneFrameRenderer {
                         inherited_opacity,
                     )?;
                 }
+                SceneNode::Ellipse(ellipse) => {
+                    self.draw_ellipse(canvas, ellipse, time_norm, time_sec, inherited_opacity)?;
+                    pending_shadow = None;
+                }
                 SceneNode::Line(line) => {
                     self.draw_line(canvas, line, time_norm, time_sec, inherited_opacity)?;
                     pending_shadow = None;
@@ -6547,6 +6760,8 @@ impl SceneFrameRenderer {
         };
         let matte = if let Some(precompose_layer) = layer {
             self.render_precompose_instance(id, size, precompose_layer, time_norm, time_sec)?
+        } else if let Some(precompose) = self.scene_precompose_defs.get(id).cloned() {
+            Some(self.render_precompose_image(&precompose, size, time_norm, time_sec)?)
         } else {
             self.scene_precomposes.get(id).cloned()
         };
@@ -7284,13 +7499,14 @@ impl SceneFrameRenderer {
                     if let Some(fill) = path.fill.as_deref() {
                         let paint = self.resolve_paint(fill)?;
                         let blend = parse_scene_blend(&path.blend)?;
-                        draw_transformed_filled_polylines_paint(
+                        draw_transformed_filled_polylines_paint_with_rule(
                             canvas,
                             &subpaths,
                             &paint,
                             opacity,
                             blend,
                             node_transform,
+                            FillRule::parse(&path.fill_rule),
                         );
                     }
                     let width = eval_scene_number(&path.stroke_width, time_norm, time_sec)?
@@ -7357,6 +7573,76 @@ impl SceneFrameRenderer {
                         stroke,
                         stroke_width,
                     );
+                }
+                SceneNode::Ellipse(ellipse) => {
+                    let node_transform =
+                        transform.mul(scene_ellipse_local_transform(ellipse, time_norm, time_sec)?);
+                    let opacity = (eval_scene_number(&ellipse.opacity, time_norm, time_sec)?
+                        * inherited_opacity)
+                        .clamp(0.0, 1.0);
+                    if opacity <= 0.0001 {
+                        continue;
+                    }
+                    let x = eval_scene_number(&ellipse.x, time_norm, time_sec)?;
+                    let y = eval_scene_number(&ellipse.y, time_norm, time_sec)?;
+                    let radius_x =
+                        eval_scene_number(&ellipse.radius_x, time_norm, time_sec)?.max(0.0);
+                    let radius_y =
+                        eval_scene_number(&ellipse.radius_y, time_norm, time_sec)?.max(0.0);
+                    if radius_x <= 0.0001 || radius_y <= 0.0001 {
+                        continue;
+                    }
+                    let paint = self.resolve_paint(&ellipse.color)?;
+                    let blend = parse_scene_blend(&ellipse.blend)?;
+                    let stroke = ellipse
+                        .stroke
+                        .as_deref()
+                        .filter(|stroke| !is_none_paint(stroke))
+                        .map(parse_color)
+                        .transpose()?;
+                    let stroke_width =
+                        eval_scene_number(&ellipse.stroke_width, time_norm, time_sec)?.max(0.0);
+                    if affine_is_identity(node_transform) {
+                        draw_ellipse_paint(
+                            canvas, x, y, radius_x, radius_y, &paint, opacity, blend,
+                        );
+                        if let Some(mut stroke) = stroke {
+                            stroke[3] =
+                                ((stroke[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+                            draw_ellipse_stroke(
+                                canvas,
+                                x,
+                                y,
+                                radius_x,
+                                radius_y,
+                                stroke_width,
+                                stroke,
+                            );
+                        }
+                    } else {
+                        let mut layer = RgbaImage::from_pixel(
+                            canvas.width(),
+                            canvas.height(),
+                            Rgba([0, 0, 0, 0]),
+                        );
+                        draw_ellipse_paint(
+                            &mut layer, x, y, radius_x, radius_y, &paint, opacity, blend,
+                        );
+                        if let Some(mut stroke) = stroke {
+                            stroke[3] =
+                                ((stroke[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+                            draw_ellipse_stroke(
+                                &mut layer,
+                                x,
+                                y,
+                                radius_x,
+                                radius_y,
+                                stroke_width,
+                                stroke,
+                            );
+                        }
+                        composite_layer_affine(canvas, &layer, node_transform);
+                    }
                 }
                 SceneNode::Rect(rect) => {
                     let node_transform =
@@ -7729,6 +8015,58 @@ impl SceneFrameRenderer {
         Ok(())
     }
 
+    fn draw_ellipse(
+        &mut self,
+        canvas: &mut RgbaImage,
+        ellipse: &EllipseNode,
+        time_norm: f32,
+        time_sec: f32,
+        inherited_opacity: f32,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        let opacity = (eval_scene_number(&ellipse.opacity, time_norm, time_sec)?
+            * inherited_opacity)
+            .clamp(0.0, 1.0);
+        if opacity <= 0.0001 {
+            return Ok(());
+        }
+        let x = eval_scene_number(&ellipse.x, time_norm, time_sec)?;
+        let y = eval_scene_number(&ellipse.y, time_norm, time_sec)?;
+        let radius_x = eval_scene_number(&ellipse.radius_x, time_norm, time_sec)?.max(0.0);
+        let radius_y = eval_scene_number(&ellipse.radius_y, time_norm, time_sec)?.max(0.0);
+        if radius_x <= 0.0001 || radius_y <= 0.0001 {
+            return Ok(());
+        }
+        let paint = self.resolve_paint(&ellipse.color)?;
+        let blend = parse_scene_blend(&ellipse.blend)?;
+        let stroke = ellipse
+            .stroke
+            .as_deref()
+            .filter(|stroke| !is_none_paint(stroke))
+            .map(parse_color)
+            .transpose()?;
+        let stroke_width = eval_scene_number(&ellipse.stroke_width, time_norm, time_sec)?.max(0.0);
+        let transform = scene_ellipse_local_transform(ellipse, time_norm, time_sec)?;
+
+        if !affine_is_identity(transform) {
+            let mut layer =
+                RgbaImage::from_pixel(canvas.width(), canvas.height(), Rgba([0, 0, 0, 0]));
+            draw_ellipse_paint(&mut layer, x, y, radius_x, radius_y, &paint, opacity, blend);
+            if let Some(mut stroke) = stroke {
+                stroke[3] = ((stroke[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+                draw_ellipse_stroke(&mut layer, x, y, radius_x, radius_y, stroke_width, stroke);
+            }
+            composite_layer_affine(canvas, &layer, transform);
+            return Ok(());
+        }
+
+        draw_ellipse_paint(canvas, x, y, radius_x, radius_y, &paint, opacity, blend);
+        if let Some(mut stroke) = stroke {
+            stroke[3] = ((stroke[3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+            draw_ellipse_stroke(canvas, x, y, radius_x, radius_y, stroke_width, stroke);
+        }
+        Ok(())
+    }
+
     fn draw_line(
         &mut self,
         canvas: &mut RgbaImage,
@@ -7833,8 +8171,14 @@ impl SceneFrameRenderer {
         if let Some(fill) = path.fill.as_deref() {
             let paint = self.resolve_paint(fill)?;
             let blend = parse_scene_blend(&path.blend)?;
-            draw_transformed_filled_polylines_paint(
-                canvas, &subpaths, &paint, opacity, blend, transform,
+            draw_transformed_filled_polylines_paint_with_rule(
+                canvas,
+                &subpaths,
+                &paint,
+                opacity,
+                blend,
+                transform,
+                FillRule::parse(&path.fill_rule),
             );
         }
         let width = eval_scene_number(&path.stroke_width, time_norm, time_sec)?.max(0.0)
@@ -7873,8 +8217,14 @@ impl SceneFrameRenderer {
         if let Some(fill) = path.fill.as_deref() {
             let paint = self.resolve_paint(fill)?;
             let blend = parse_scene_blend(&path.blend)?;
-            draw_transformed_filled_polylines_paint(
-                canvas, &subpaths, &paint, opacity, blend, transform,
+            draw_transformed_filled_polylines_paint_with_rule(
+                canvas,
+                &subpaths,
+                &paint,
+                opacity,
+                blend,
+                transform,
+                FillRule::parse(&path.fill_rule),
             );
         }
 
@@ -8104,6 +8454,155 @@ impl SceneFrameRenderer {
             time_sec,
             canvas_size,
         )
+    }
+
+    fn gpu_vector_overlay_texture_layer(
+        &mut self,
+        nodes: &[SceneNode],
+        transform: Affine2,
+        inherited_opacity: f32,
+        time_norm: f32,
+        time_sec: f32,
+        canvas_size: (u32, u32),
+    ) -> Result<Option<GpuSceneTextureLayer>, MotionLoomSceneRenderError> {
+        if canvas_size.0 == 0 || canvas_size.1 == 0 || inherited_opacity <= 0.0001 {
+            return Ok(None);
+        }
+        let raster_transform = vector_overlay_raster_transform(transform);
+        let present_transform = vector_overlay_present_transform(transform);
+        let cache_key = if vector_overlay_nodes_are_static(nodes) {
+            Some(vector_overlay_cache_key(
+                nodes,
+                raster_transform,
+                inherited_opacity,
+                canvas_size,
+            ))
+        } else {
+            None
+        };
+
+        if let Some(key) = cache_key.as_deref() {
+            if let Some(cached) = self.vector_overlay_cache.get(key).cloned() {
+                if cached.gpu_texture.is_none() {
+                    if let Some(compositor) = self.gpu_compositor.as_mut() {
+                        let gpu_texture = compositor.upload_gpu_rgba_texture(&cached.image)?;
+                        if let Some(entry) = self.vector_overlay_cache.get_mut(key) {
+                            entry.gpu_texture = Some(gpu_texture);
+                        }
+                    }
+                }
+                return Ok(self
+                    .vector_overlay_cache
+                    .get(key)
+                    .map(|entry| entry.texture_layer(present_transform))
+                    .or_else(|| Some(cached.texture_layer(present_transform))));
+            }
+        }
+
+        let mut canvas = RgbaImage::from_pixel(canvas_size.0, canvas_size.1, Rgba([0, 0, 0, 0]));
+        self.draw_character_nodes_vector(
+            &mut canvas,
+            nodes,
+            raster_transform,
+            inherited_opacity,
+            time_norm,
+            time_sec,
+        )?;
+        let Some((cropped, offset_x, offset_y)) = crop_layer_alpha_bounds(&canvas) else {
+            return Ok(None);
+        };
+        let mut cached = CachedVectorOverlay {
+            image: cropped,
+            offset_x: offset_x as f32,
+            offset_y: offset_y as f32,
+            gpu_texture: None,
+        };
+        if let Some(compositor) = self.gpu_compositor.as_mut() {
+            cached.gpu_texture = Some(compositor.upload_gpu_rgba_texture(&cached.image)?);
+        }
+        let layer = cached.texture_layer(present_transform);
+        if let Some(key) = cache_key {
+            cache_vector_overlay(&mut self.vector_overlay_cache, key, cached);
+        }
+        Ok(Some(layer))
+    }
+
+    fn gpu_path_overlay_texture_layer(
+        &mut self,
+        path: &PathNode,
+        transform: Affine2,
+        inherited_opacity: f32,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<Option<GpuSceneTextureLayer>, MotionLoomSceneRenderError> {
+        if inherited_opacity <= 0.0001 || !path_has_default_local_transform(path) {
+            return Ok(None);
+        }
+        let subpaths = self.cached_path_subpaths(&eval_path_d(&path.d, time_norm, time_sec)?)?;
+        let Some(bounds) = subpaths_bounds(&subpaths) else {
+            return Ok(None);
+        };
+        let stroke_pad = eval_scene_number(&path.stroke_width, time_norm, time_sec)
+            .unwrap_or(0.0)
+            .abs()
+            .ceil()
+            .max(2.0);
+        let min_x = bounds.min_x - stroke_pad;
+        let min_y = bounds.min_y - stroke_pad;
+        let max_x = bounds.max_x + stroke_pad;
+        let max_y = bounds.max_y + stroke_pad;
+        let width = (max_x - min_x).ceil().max(1.0) as u32;
+        let height = (max_y - min_y).ceil().max(1.0) as u32;
+        if width > 8192 || height > 8192 {
+            return Ok(None);
+        }
+
+        let node = SceneNode::Path(path.clone());
+        let nodes = [node];
+        let cache_key = if vector_overlay_nodes_are_static(&nodes) {
+            let mut hasher = DefaultHasher::new();
+            width.hash(&mut hasher);
+            height.hash(&mut hasher);
+            inherited_opacity.to_bits().hash(&mut hasher);
+            format!("{:?}", nodes).hash(&mut hasher);
+            Some(format!("path-overlay-local:{:016x}", hasher.finish()))
+        } else {
+            None
+        };
+
+        if let Some(key) = cache_key.as_deref() {
+            if let Some(cached) = self.vector_overlay_cache.get(key).cloned() {
+                return Ok(Some(cached.texture_layer(transform)));
+            }
+        }
+
+        let mut canvas = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
+        let local_transform = Affine2::translate(-min_x, -min_y);
+        self.draw_character_nodes_vector(
+            &mut canvas,
+            &nodes,
+            local_transform,
+            inherited_opacity,
+            time_norm,
+            time_sec,
+        )?;
+        let Some((cropped, offset_x, offset_y)) = crop_layer_alpha_bounds(&canvas) else {
+            return Ok(None);
+        };
+        let mut cached = CachedVectorOverlay {
+            image: cropped,
+            offset_x: min_x + offset_x as f32,
+            offset_y: min_y + offset_y as f32,
+            gpu_texture: None,
+        };
+        if let Some(compositor) = self.gpu_compositor.as_mut() {
+            cached.gpu_texture = Some(compositor.upload_gpu_rgba_texture(&cached.image)?);
+        }
+        let layer = cached.texture_layer(transform);
+        if let Some(key) = cache_key {
+            cache_vector_overlay(&mut self.vector_overlay_cache, key, cached);
+        }
+        Ok(Some(layer))
     }
 
     fn rasterize_text_base_layer(
@@ -9082,6 +9581,19 @@ fn collect_gpu_scene_commands_with_depth(
                     )?;
                 }
             }
+            SceneNode::Ellipse(ellipse) => {
+                push_gpu_ellipse_commands(
+                    ellipse,
+                    transform,
+                    deform,
+                    inherited_opacity,
+                    time_norm,
+                    time_sec,
+                    gradient_defs,
+                    primitives,
+                )?;
+                pending_shadow = None;
+            }
             SceneNode::Line(line) => {
                 if line_requires_cpu_overlay(line) {
                     scene_overlays.push(CpuSceneOverlay::Vector {
@@ -9662,7 +10174,21 @@ fn path_requires_cpu_overlay(path: &PathNode) -> bool {
     !is_gpu_native_blend(&path.blend)
         || !is_default_line_cap(&path.line_cap)
         || !is_default_line_join(&path.line_join)
+        || (has_visible_fill && path_has_multiple_subpaths(&path.d))
         || (is_none_paint(&path.stroke) && !has_visible_fill)
+}
+
+fn path_has_multiple_subpaths(d: &str) -> bool {
+    let mut moves = 0usize;
+    for ch in d.chars() {
+        if matches!(ch, 'M' | 'm') {
+            moves += 1;
+            if moves > 1 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn is_default_line_cap(value: &str) -> bool {
@@ -9761,6 +10287,13 @@ fn ellipse_polygon(x: f32, y: f32, radius_x: f32, radius_y: f32) -> Vec<Point2> 
         points.push(Point2::new(x + t.cos() * radius_x, y + t.sin() * radius_y));
     }
     points
+}
+
+fn color_with_opacity(mut color: [u8; 4], opacity: f32) -> [u8; 4] {
+    color[3] = ((color[3] as f32) * opacity.clamp(0.0, 1.0))
+        .round()
+        .clamp(0.0, 255.0) as u8;
+    color
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9963,20 +10496,22 @@ fn push_gpu_circle_commands(
         let subpaths = transform_and_deform_subpaths(&subpaths, shape_transform, deform);
         let warped_bounds =
             subpaths_bounds(&subpaths).unwrap_or_else(|| PaintBounds::new(0.0, 0.0, 1.0, 1.0));
-        let (color, gradient) =
-            resolve_gpu_scene_paint(&circle.color, gradient_defs, warped_bounds)?;
-        push_gpu_filled_path_triangles_with_blend(
-            primitives,
-            Affine2::identity(),
-            &subpaths,
-            GpuFilledPathStyle {
-                color,
-                opacity,
-                gradient,
-                blend,
-                pick_id: 0,
-            },
-        );
+        if !is_none_paint(&circle.color) {
+            let (color, gradient) =
+                resolve_gpu_scene_paint(&circle.color, gradient_defs, warped_bounds)?;
+            push_gpu_filled_path_triangles_with_blend(
+                primitives,
+                Affine2::identity(),
+                &subpaths,
+                GpuFilledPathStyle {
+                    color,
+                    opacity,
+                    gradient,
+                    blend,
+                    pick_id: 0,
+                },
+            );
+        }
 
         if let Some(stroke_value) = circle
             .stroke
@@ -10026,24 +10561,27 @@ fn push_gpu_circle_commands(
         });
     }
 
-    let (color, gradient) = resolve_gpu_scene_paint(&circle.color, gradient_defs, paint_bounds)?;
-    primitives.push(GpuScenePrimitive {
-        kind: GPU_SHAPE_CIRCLE_FILL,
-        transform: shape_transform,
-        shape: [x, y, radius, 0.0],
-        radius: 0.0,
-        stroke_width: 0.0,
-        blur: 0.0,
-        color,
-        opacity,
-        blend,
-        pick_id: 0,
-        gradient,
-        line_t0: 0.0,
-        line_t1: 1.0,
-        taper_start: 0.0,
-        taper_end: 0.0,
-    });
+    if !is_none_paint(&circle.color) {
+        let (color, gradient) =
+            resolve_gpu_scene_paint(&circle.color, gradient_defs, paint_bounds)?;
+        primitives.push(GpuScenePrimitive {
+            kind: GPU_SHAPE_CIRCLE_FILL,
+            transform: shape_transform,
+            shape: [x, y, radius, 0.0],
+            radius: 0.0,
+            stroke_width: 0.0,
+            blur: 0.0,
+            color,
+            opacity,
+            blend,
+            pick_id: 0,
+            gradient,
+            line_t0: 0.0,
+            line_t1: 1.0,
+            taper_start: 0.0,
+            taper_end: 0.0,
+        });
+    }
 
     if let Some(stroke_value) = circle
         .stroke
@@ -10054,6 +10592,11 @@ fn push_gpu_circle_commands(
         if stroke_width > 0.0 {
             let (stroke, gradient) =
                 resolve_gpu_scene_paint(stroke_value, gradient_defs, paint_bounds)?;
+            let (stroke, stroke_opacity) = if gradient.is_none() {
+                (color_with_opacity(stroke, opacity), 1.0)
+            } else {
+                (stroke, opacity)
+            };
             primitives.push(GpuScenePrimitive {
                 kind: GPU_SHAPE_CIRCLE_STROKE,
                 transform: shape_transform,
@@ -10062,6 +10605,60 @@ fn push_gpu_circle_commands(
                 stroke_width,
                 blur: 0.0,
                 color: stroke,
+                opacity: stroke_opacity,
+                blend,
+                pick_id: 0,
+                gradient,
+                line_t0: 0.0,
+                line_t1: 1.0,
+                taper_start: 0.0,
+                taper_end: 0.0,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_gpu_ellipse_commands(
+    ellipse: &EllipseNode,
+    transform: Affine2,
+    deform: Option<&EvaluatedDeformGrid>,
+    inherited_opacity: f32,
+    time_norm: f32,
+    time_sec: f32,
+    gradient_defs: &HashMap<String, GradientDef>,
+    primitives: &mut Vec<GpuScenePrimitive>,
+) -> Result<(), MotionLoomSceneRenderError> {
+    let opacity = (eval_scene_number(&ellipse.opacity, time_norm, time_sec)? * inherited_opacity)
+        .clamp(0.0, 1.0);
+    if opacity <= 0.0001 {
+        return Ok(());
+    }
+    let x = eval_scene_number(&ellipse.x, time_norm, time_sec)?;
+    let y = eval_scene_number(&ellipse.y, time_norm, time_sec)?;
+    let radius_x = eval_scene_number(&ellipse.radius_x, time_norm, time_sec)?.max(0.0);
+    let radius_y = eval_scene_number(&ellipse.radius_y, time_norm, time_sec)?.max(0.0);
+    if radius_x <= 0.0001 || radius_y <= 0.0001 {
+        return Ok(());
+    }
+    let shape_transform =
+        transform.mul(scene_ellipse_local_transform(ellipse, time_norm, time_sec)?);
+    let blend = parse_scene_blend(&ellipse.blend)?;
+    let paint_bounds = PaintBounds::new(x - radius_x, y - radius_y, x + radius_x, y + radius_y);
+
+    if deform.is_none() {
+        if !is_none_paint(&ellipse.color) {
+            let (color, gradient) =
+                resolve_gpu_scene_paint(&ellipse.color, gradient_defs, paint_bounds)?;
+            primitives.push(GpuScenePrimitive {
+                kind: GPU_SHAPE_ELLIPSE_FILL,
+                transform: shape_transform,
+                shape: [x, y, radius_x, radius_y],
+                radius: 0.0,
+                stroke_width: 0.0,
+                blur: 0.0,
+                color,
                 opacity,
                 blend,
                 pick_id: 0,
@@ -10071,6 +10668,89 @@ fn push_gpu_circle_commands(
                 taper_start: 0.0,
                 taper_end: 0.0,
             });
+        }
+
+        if let Some(stroke_value) = ellipse
+            .stroke
+            .as_deref()
+            .filter(|stroke| !is_none_paint(stroke))
+        {
+            let stroke_width =
+                eval_scene_number(&ellipse.stroke_width, time_norm, time_sec)?.max(0.0);
+            if stroke_width > 0.0 {
+                let (stroke, gradient) =
+                    resolve_gpu_scene_paint(stroke_value, gradient_defs, paint_bounds)?;
+                let (stroke, stroke_opacity) = if gradient.is_none() {
+                    (color_with_opacity(stroke, opacity), 1.0)
+                } else {
+                    (stroke, opacity)
+                };
+                primitives.push(GpuScenePrimitive {
+                    kind: GPU_SHAPE_ELLIPSE_STROKE,
+                    transform: shape_transform,
+                    shape: [x, y, radius_x, radius_y],
+                    radius: 0.0,
+                    stroke_width,
+                    blur: 0.0,
+                    color: stroke,
+                    opacity: stroke_opacity,
+                    blend,
+                    pick_id: 0,
+                    gradient,
+                    line_t0: 0.0,
+                    line_t1: 1.0,
+                    taper_start: 0.0,
+                    taper_end: 0.0,
+                });
+            }
+        }
+        return Ok(());
+    }
+
+    let subpaths = vec![ellipse_polygon(x, y, radius_x, radius_y)];
+    let subpaths =
+        transform_and_deform_subpaths(&subpaths, shape_transform, deform.expect("checked above"));
+    let warped_bounds =
+        subpaths_bounds(&subpaths).unwrap_or_else(|| PaintBounds::new(0.0, 0.0, 1.0, 1.0));
+    if !is_none_paint(&ellipse.color) {
+        let (color, gradient) =
+            resolve_gpu_scene_paint(&ellipse.color, gradient_defs, warped_bounds)?;
+        push_gpu_filled_path_triangles_with_blend(
+            primitives,
+            Affine2::identity(),
+            &subpaths,
+            GpuFilledPathStyle {
+                color,
+                opacity,
+                gradient,
+                blend,
+                pick_id: 0,
+            },
+        );
+    }
+
+    if let Some(stroke_value) = ellipse
+        .stroke
+        .as_deref()
+        .filter(|stroke| !is_none_paint(stroke))
+    {
+        let stroke_width = eval_scene_number(&ellipse.stroke_width, time_norm, time_sec)?.max(0.0)
+            * affine_uniform_scale(shape_transform);
+        if stroke_width > 0.0 {
+            let (stroke, gradient) =
+                resolve_gpu_scene_paint(stroke_value, gradient_defs, warped_bounds)?;
+            push_gpu_stroke_segments(
+                primitives,
+                Affine2::identity(),
+                &subpaths,
+                stroke_width,
+                stroke,
+                opacity,
+                gradient,
+                (0.0, 1.0),
+                StrokeStyle::default(),
+                blend,
+            );
         }
     }
     Ok(())
@@ -10951,6 +11631,7 @@ fn scene_bool(value: &str) -> bool {
 mod tests {
     use crate::parse_graph_script;
     use crate::scene::drawable::{GpuSceneTextureLayer, GpuSceneTextureSource};
+    use crate::scene::model::{PathNode, SceneNode};
     use crate::scene::spatial::Affine2;
     use crate::scene::text::TextNode;
     use base64::Engine;
@@ -10963,7 +11644,9 @@ mod tests {
         MotionLoomSceneRenderError, SceneFrameRenderer, ScenePlatformPreviewSurface,
         ScenePreviewBackend, ScenePreviewPixelFormat, ScenePreviewSurface,
         ScenePreviewSurfaceOptions, SceneRenderError, SceneRenderProfile, SceneRenderer,
-        eval_text_box_padding, eval_text_font_weight, eval_text_tracking_em, validate_scene_graph,
+        eval_text_box_padding, eval_text_font_weight, eval_text_tracking_em,
+        graph_logical_render_size, graph_output_size, render_size_root_transform,
+        scene_nodes_for_present, validate_scene_graph,
     };
 
     fn max_rgb(image: &image::RgbaImage) -> u8 {
@@ -11244,6 +11927,26 @@ mod tests {
         assert_eq!(
             super::parse_color("[255, 128, 0, 64]").unwrap(),
             [0, 128, 255, 64]
+        );
+    }
+
+    #[test]
+    fn scene_color_parser_accepts_css_rgb_and_rgba() {
+        assert_eq!(
+            super::parse_color("rgb(255, 255, 255)").unwrap(),
+            [255, 255, 255, 255]
+        );
+        assert_eq!(
+            super::parse_color("rgb(100%, 50%, 0%)").unwrap(),
+            [255, 128, 0, 255]
+        );
+        assert_eq!(
+            super::parse_color("rgba(255, 0, 128, 0.5)").unwrap(),
+            [255, 0, 128, 128]
+        );
+        assert_eq!(
+            super::parse_color("rgba(10, 20, 30, 25%)").unwrap(),
+            [10, 20, 30, 64]
         );
     }
 
@@ -11721,6 +12424,124 @@ mod tests {
         assert!(
             hidden[0] < 30 && hidden[1] < 30 && hidden[2] < 30,
             "expected outside maskFrom path node to remain background, got {hidden:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_renders_ellipse_stroke_fill_none_with_opacity_and_group_rotation() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,64]}>
+  <Background color="#000000" />
+  <Scene id="ellipse_stroke_scene">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Group id="rotated_ellipse_group" rotation="90" transformOriginX="32" transformOriginY="32">
+              <Ellipse id="ellipse_stroke" cx="32" cy="32" rx="20" ry="8" fill="none" stroke="#ffffff" strokeWidth="6" opacity="0.5" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="ellipse_stroke_scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+
+        let vertical_ring = rendered.get_pixel(32, 12);
+        let center = rendered.get_pixel(32, 32);
+        assert!(
+            vertical_ring[0] > 70 && vertical_ring[0] < 190,
+            "expected semi-transparent rotated ellipse stroke, got {vertical_ring:?}"
+        );
+        assert!(
+            center[0] < 30 && center[1] < 30 && center[2] < 30,
+            "expected fill=none ellipse center to remain background, got {center:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_renders_circle_stroke_fill_none() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,64]}>
+  <Background color="#000000" />
+  <Scene id="circle_stroke_scene">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Circle id="circle_stroke" x="32" y="32" radius="16" fill="none" stroke="#ffffff" strokeWidth="8" opacity="0.5" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="circle_stroke_scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+
+        let ring = rendered.get_pixel(44, 32);
+        let center = rendered.get_pixel(32, 32);
+        assert!(ring[0] > 200, "expected circle stroke, got {ring:?}");
+        assert!(
+            center[0] < 30 && center[1] < 30 && center[2] < 30,
+            "expected fill=none circle center to remain background, got {center:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_applies_group_mask_from_ellipse_stroke_node() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,64]}>
+  <Background color="#000000" />
+  <Scene id="ellipse_mask_from_scene">
+    <Defs>
+      <Precompose id="matte_library" size={[64,64]}>
+        <Ellipse id="ellipse_stroke_matte" cx="32" cy="32" rx="20" ry="12" fill="none" stroke="#ffffff" strokeWidth="8" />
+      </Precompose>
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Group id="masked_red" maskFrom="ellipse_stroke_matte" maskMode="alpha">
+              <Rect x="0" y="0" width="64" height="64" color="#ff0000" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="ellipse_mask_from_scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+
+        let revealed_ring = rendered.get_pixel(48, 32);
+        let hidden_center = rendered.get_pixel(32, 32);
+        assert!(
+            revealed_ring[0] > 160,
+            "expected ellipse stroke maskFrom ring to reveal red, got {revealed_ring:?}"
+        );
+        assert!(
+            hidden_center[0] < 40 && hidden_center[1] < 40 && hidden_center[2] < 40,
+            "expected fill=none ellipse maskFrom center to hide red, got {hidden_center:?}"
         );
     }
 
@@ -12233,6 +13054,152 @@ mod tests {
     }
 
     #[test]
+    fn scene_gpu_native_path_composites_compound_path_overlay() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[80,80]}>
+  <Background color="#000000" />
+  <Scene id="compound_path_gpu_scene">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Path d="M 10 10 L 70 10 L 70 70 L 10 70 Z M 30 30 L 30 50 L 50 50 L 50 30 Z"
+                  fill="#ff0000"
+                  stroke="none" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="compound_path_gpu_scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer =
+            pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
+        let nodes = scene_nodes_for_present(&graph).expect("presentable scene");
+        let source = match pollster::block_on(renderer.try_render_gpu_scene_nodes_composited(
+            nodes,
+            graph_output_size(&graph),
+            graph_logical_render_size(&graph),
+            render_size_root_transform(
+                graph_output_size(&graph),
+                graph_logical_render_size(&graph),
+            ),
+            0.0,
+            0.0,
+            Some([0, 0, 0, 255]),
+        )) {
+            Ok(Some(source)) => source,
+            Ok(None) => panic!("expected GPU composited compound path source"),
+            Err(MotionLoomSceneRenderError::GpuRender { message })
+                if is_gpu_adapter_unavailable(&message) =>
+            {
+                skip_gpu_texture_test(message);
+                return;
+            }
+            Err(err) => panic!("unexpected GPU compound path compositing error: {err}"),
+        };
+        let rendered = pollster::block_on(renderer.graph_source_to_cpu(&source))
+            .expect("GPU compound path readback");
+
+        let ring = rendered.get_pixel(20, 20);
+        let hole = rendered.get_pixel(40, 40);
+        assert!(
+            ring[0] > 180 && ring[1] < 80 && ring[2] < 80,
+            "expected GPU compound path ring, got {ring:?}"
+        );
+        assert!(
+            hole[0] < 40 && hole[1] < 40 && hole[2] < 40,
+            "expected GPU compound path hole to stay black, got {hole:?}"
+        );
+    }
+
+    #[test]
+    fn scene_vector_overlay_caches_static_compound_path() {
+        let path = PathNode {
+            id: Some("compound_path_cache_test".to_string()),
+            brush: None,
+            x: "0".to_string(),
+            y: "0".to_string(),
+            rotation: "0".to_string(),
+            scale: "1".to_string(),
+            scale_x: "1".to_string(),
+            scale_y: "1".to_string(),
+            skew_x: "0".to_string(),
+            skew_y: "0".to_string(),
+            transform_origin_x: "0".to_string(),
+            transform_origin_y: "0".to_string(),
+            d: "M 10 10 L 70 10 L 70 70 L 10 70 Z M 30 30 L 30 50 L 50 50 L 50 30 Z".to_string(),
+            stroke: "none".to_string(),
+            fill: Some("#ff0000".to_string()),
+            fill_rule: "nonzero".to_string(),
+            stroke_width: "1".to_string(),
+            opacity: "1".to_string(),
+            trim_start: "0".to_string(),
+            trim_end: "1".to_string(),
+            line_cap: "butt".to_string(),
+            line_join: "miter".to_string(),
+            taper_start: "0".to_string(),
+            taper_end: "0".to_string(),
+            stroke_style: "solid".to_string(),
+            stroke_roughness: "0".to_string(),
+            stroke_copies: "1".to_string(),
+            stroke_texture: "0".to_string(),
+            stroke_bristles: "0".to_string(),
+            stroke_pressure: "1".to_string(),
+            stroke_pressure_min: "1".to_string(),
+            stroke_pressure_curve: "1".to_string(),
+            blend: "normal".to_string(),
+            texture: None,
+            texture_opacity: "1".to_string(),
+            texture_scale: "1".to_string(),
+            texture_mask: "0".to_string(),
+        };
+        let nodes = [SceneNode::Path(path)];
+        let mut renderer =
+            pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Cpu));
+
+        renderer
+            .gpu_vector_overlay_texture_layer(&nodes, Affine2::identity(), 1.0, 0.0, 0.0, (80, 80))
+            .expect("first overlay render")
+            .expect("first overlay layer");
+        renderer
+            .gpu_vector_overlay_texture_layer(&nodes, Affine2::identity(), 1.0, 0.0, 0.0, (80, 80))
+            .expect("second overlay render")
+            .expect("second overlay layer");
+        renderer
+            .gpu_vector_overlay_texture_layer(
+                &nodes,
+                Affine2::translate(12.0, 7.0),
+                1.0,
+                0.0,
+                0.0,
+                (80, 80),
+            )
+            .expect("translated overlay render")
+            .expect("translated overlay layer");
+        if let SceneNode::Path(path) = &nodes[0] {
+            renderer
+                .gpu_path_overlay_texture_layer(path, Affine2::scale(1.5), 1.0, 0.0, 0.0)
+                .expect("scaled local path overlay render")
+                .expect("scaled local path overlay layer");
+            renderer
+                .gpu_path_overlay_texture_layer(path, Affine2::rotate_deg(15.0), 1.0, 0.0, 0.0)
+                .expect("rotated local path overlay render")
+                .expect("rotated local path overlay layer");
+        }
+
+        assert_eq!(
+            renderer.vector_overlay_cache.len(),
+            2,
+            "static compound path overlay should reuse generic and local raster cache entries across transform edits"
+        );
+    }
+
+    #[test]
     fn scene_gpu_native_path_handles_mask_matte_precompose() {
         let graph = parse_graph_script(
             r##"
@@ -12302,6 +13269,131 @@ mod tests {
         assert!(
             hidden[1] < 80,
             "expected luma matte to hide right-side green source, got {hidden:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_applies_animated_layer_mask_from_precompose() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="6s" size={[64,32]}>
+  <Background color="#000000" />
+  <Scene id="animated_layer_mask_from_precompose">
+    <Defs>
+      <Precompose id="animated_cut" size={[64,32]}>
+        <Path id="animated_cut_path"
+              d={morph("0:M 4 4 L 60 4 L 60 28 L 4 28 Z",
+                       "2.92:M 4 4 L 60 4 L 60 28 L 4 28 Z",
+                       "3.12:M 4 15 L 60 15 L 60 17 L 4 17 Z",
+                       "3.26:M 4 15 L 60 15 L 60 17 L 4 17 Z",
+                       "3.48:M 4 4 L 60 4 L 60 28 L 4 28 Z",
+                       "6:M 4 4 L 60 4 L 60 28 L 4 28 Z")}
+              fill="#ffffff"
+              stroke="none" />
+      </Precompose>
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="screen" z="0">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer id="masked_plate" maskFrom="animated_cut" maskMode="alpha">
+            <Rect id="red_plate" x="0" y="0" width="64" height="32" color="#ff0000" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="animated_layer_mask_from_precompose" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let open = pollster::block_on(renderer.render_frame(&graph, 25)).expect("open frame");
+        let closed = pollster::block_on(renderer.render_frame(&graph, 94)).expect("closed frame");
+
+        let open_pixel = open.get_pixel(32, 8);
+        let closed_outside = closed.get_pixel(32, 8);
+        let closed_slit = closed.get_pixel(32, 16);
+        assert!(
+            open_pixel[0] > 200,
+            "expected animated maskFrom precompose to reveal open frame, got {open_pixel:?}"
+        );
+        assert!(
+            closed_slit[0] > 200,
+            "expected animated maskFrom precompose to keep slit visible, got {closed_slit:?}"
+        );
+        assert!(
+            closed_outside[0] < 30 && closed_outside[1] < 30 && closed_outside[2] < 30,
+            "expected animated maskFrom precompose to hide outside closed slit, got {closed_outside:?}"
+        );
+    }
+
+    #[test]
+    fn scene_gpu_native_path_applies_animated_layer_mask_from_precompose() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="6s" size={[64,32]}>
+  <Background color="#000000" />
+  <Scene id="animated_layer_mask_from_precompose_gpu">
+    <Defs>
+      <Precompose id="animated_cut" size={[64,32]}>
+        <Path id="animated_cut_path"
+              d={morph("0:M 4 4 L 60 4 L 60 28 L 4 28 Z",
+                       "2.92:M 4 4 L 60 4 L 60 28 L 4 28 Z",
+                       "3.12:M 4 15 L 60 15 L 60 17 L 4 17 Z",
+                       "3.26:M 4 15 L 60 15 L 60 17 L 4 17 Z",
+                       "3.48:M 4 4 L 60 4 L 60 28 L 4 28 Z",
+                       "6:M 4 4 L 60 4 L 60 28 L 4 28 Z")}
+              fill="#ffffff"
+              stroke="none" />
+      </Precompose>
+    </Defs>
+
+    <Timeline>
+      <Track id="scene_content" space="screen" z="0">
+        <Sequence from="0s" duration="6s" out="hold">
+          <Layer id="masked_plate" maskFrom="animated_cut" maskMode="alpha">
+            <Rect id="red_plate" x="0" y="0" width="64" height="32" color="#ff0000" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="animated_layer_mask_from_precompose_gpu" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer =
+            pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
+        let time_sec = 94.0 / 30.0;
+        let time_norm = time_sec / 6.0;
+        let source = match pollster::block_on(
+            renderer.try_render_gpu_scene_tree_frame(&graph, time_norm, time_sec),
+        ) {
+            Ok(Some(source)) => source,
+            Ok(None) => panic!("expected animated layer maskFrom precompose native GPU path"),
+            Err(MotionLoomSceneRenderError::GpuRender { message })
+                if is_gpu_adapter_unavailable(&message) =>
+            {
+                skip_gpu_texture_test(message);
+                return;
+            }
+            Err(err) => panic!("unexpected native GPU animated maskFrom render error: {err}"),
+        };
+        let rendered = pollster::block_on(renderer.graph_source_to_cpu(&source))
+            .expect("GPU readback after animated maskFrom render");
+
+        let closed_outside = rendered.get_pixel(32, 8);
+        let closed_slit = rendered.get_pixel(32, 16);
+        assert!(
+            closed_slit[0] > 200,
+            "expected GPU animated maskFrom precompose to keep slit visible, got {closed_slit:?}"
+        );
+        assert!(
+            closed_outside[0] < 30 && closed_outside[1] < 30 && closed_outside[2] < 30,
+            "expected GPU animated maskFrom precompose to hide outside closed slit, got {closed_outside:?}"
         );
     }
 
@@ -13173,6 +14265,47 @@ mod tests {
         assert!(
             masked_outside[0] < 40 && masked_outside[1] < 40 && masked_outside[2] < 40,
             "expected masked corner to stay black, got {masked_outside:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_uses_nonzero_fill_rule_for_compound_path_holes() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[80,80]}>
+  <Background color="#000000" />
+
+  <Scene id="scene0">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Path d="M 10 10 L 70 10 L 70 70 L 10 70 Z M 30 30 L 30 50 L 50 50 L 50 30 Z"
+                  fill="#ff0000"
+                  stroke="none" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="scene0" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer =
+            pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Cpu));
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+        let ring = rendered.get_pixel(20, 20);
+        let hole = rendered.get_pixel(40, 40);
+
+        assert!(
+            ring[0] > 180 && ring[1] < 80 && ring[2] < 80,
+            "expected red compound path ring, got {ring:?}"
+        );
+        assert!(
+            hole[0] < 40 && hole[1] < 40 && hole[2] < 40,
+            "expected compound path hole to stay black, got {hole:?}"
         );
     }
 

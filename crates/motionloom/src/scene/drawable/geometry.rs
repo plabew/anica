@@ -410,3 +410,28 @@ pub(crate) fn point_in_subpaths_even_odd(point: Point2, subpaths: &[Vec<Point2>]
     }
     inside
 }
+
+pub(crate) fn point_in_subpaths_nonzero(point: Point2, subpaths: &[Vec<Point2>]) -> bool {
+    let mut winding_number = 0i32;
+    for subpath in subpaths {
+        if subpath.len() < 3 {
+            continue;
+        }
+        let mut prev = *subpath.last().unwrap_or(&subpath[0]);
+        for current in subpath {
+            if prev.y <= point.y {
+                if current.y > point.y && is_left(prev, *current, point) > 0.0 {
+                    winding_number += 1;
+                }
+            } else if current.y <= point.y && is_left(prev, *current, point) < 0.0 {
+                winding_number -= 1;
+            }
+            prev = *current;
+        }
+    }
+    winding_number != 0
+}
+
+fn is_left(a: Point2, b: Point2, p: Point2) -> f32 {
+    (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y)
+}

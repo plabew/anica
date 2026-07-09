@@ -285,6 +285,17 @@ fn primitive_coverage(p: Primitive, local: vec2<f32>) -> vec2<f32> {
         coverage = inside_coverage(dist);
     } else if (shape_kind == 9) {
         coverage = triangle_coverage(local, p.shape.xy, p.shape.zw, p.style.xy);
+    } else if (shape_kind == 10) {
+        let radii = max(p.shape.zw, vec2<f32>(0.0001, 0.0001));
+        let q = (local - p.shape.xy) / radii;
+        let dist = (length(q) - 1.0) * min(radii.x, radii.y);
+        coverage = inside_coverage(dist);
+    } else if (shape_kind == 11) {
+        let radii = max(p.shape.zw, vec2<f32>(0.0001, 0.0001));
+        let q = (local - p.shape.xy) / radii;
+        let dist = (length(q) - 1.0) * min(radii.x, radii.y);
+        let sw = max(p.style.y, 0.0);
+        coverage = inside_coverage(dist) * (1.0 - inside_coverage(dist + sw));
     }
 
     return vec2<f32>(clamp(coverage, 0.0, 1.0), replace);
