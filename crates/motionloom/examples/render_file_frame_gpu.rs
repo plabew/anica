@@ -4,10 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use motionloom::{
-    SceneRenderProfile, SceneRenderer, parse_graph_script, render_scene_graph_frame,
-    set_scene_asset_roots,
-};
+use motionloom::{SceneRenderProfile, SceneRenderer, parse_graph_script, set_scene_asset_roots};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = env::args().nth(1).expect("expected MotionLoom file path");
@@ -41,11 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let strict_gpu_elapsed = strict_gpu_started_at.elapsed();
 
     let render_started_at = Instant::now();
-    let frame = pollster::block_on(render_scene_graph_frame(
-        &graph,
-        frame_index,
-        SceneRenderProfile::Gpu,
-    ))?;
+    let frame = pollster::block_on(renderer.render_frame_gpu_readback(&graph, frame_index))?;
     let render_elapsed = render_started_at.elapsed();
 
     let save_started_at = Instant::now();

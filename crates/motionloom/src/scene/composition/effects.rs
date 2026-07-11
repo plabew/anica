@@ -79,6 +79,11 @@ pub(crate) enum TextureOverlayKind {
     Canvas,
     Impasto,
     BrushedPaint,
+    Turbulence,
+    Ridged,
+    Cellular,
+    Flow,
+    Waves,
 }
 
 pub(crate) fn apply_scene_post_pass(
@@ -928,7 +933,12 @@ impl TextureOverlayKind {
             .replace(['-', '_'], "")
             .as_str()
         {
-            "noise" => Self::Noise,
+            "noise" | "fbm" | "perlin" | "value" | "valuenoise" | "simplex" => Self::Noise,
+            "turbulence" | "turbulent" => Self::Turbulence,
+            "ridged" | "ridge" | "billow" => Self::Ridged,
+            "cellular" | "voronoi" | "worley" => Self::Cellular,
+            "flow" | "domainwarp" | "domainwarped" => Self::Flow,
+            "wave" | "waves" | "water" => Self::Waves,
             "film" | "grain" | "filmgrain" => Self::FilmGrain,
             "scanline" | "scanlines" => Self::Scanlines,
             "canvas" | "fabric" | "cloth" => Self::Canvas,
@@ -947,6 +957,11 @@ impl TextureOverlayKind {
             Self::Canvas => 4.0,
             Self::Impasto => 5.0,
             Self::BrushedPaint => 6.0,
+            Self::Turbulence => 7.0,
+            Self::Ridged => 8.0,
+            Self::Cellular => 9.0,
+            Self::Flow => 10.0,
+            Self::Waves => 11.0,
         }
     }
 }
@@ -1574,6 +1589,27 @@ fn texture_overlay_value(
                 ridge * 0.50 + base * 0.25 + low * 0.25
             };
             (mixed - 0.5) * (1.0 + params.relief * 0.45) + 0.5
+        }
+        TextureOverlayKind::Turbulence => (base * 2.0 - 1.0).abs(),
+        TextureOverlayKind::Ridged => 1.0 - (base * 2.0 - 1.0).abs(),
+        TextureOverlayKind::Cellular => base.powf(2.4),
+        TextureOverlayKind::Flow => {
+            let warp = fbm(
+                uv_x * params.scale * 0.45 + params.seed,
+                uv_y * params.scale * 0.45,
+            );
+            fbm(
+                uv_x * params.scale + warp * 3.2 + params.seed,
+                uv_y * params.scale + warp * 1.7,
+            )
+        }
+        TextureOverlayKind::Waves => {
+            let warp = fbm(
+                uv_x * params.scale * 0.35 + params.seed,
+                uv_y * params.scale * 0.2,
+            );
+            0.5 + 0.28 * (uv_y * params.scale * 2.4 + warp * 5.0).sin()
+                + 0.18 * (uv_y * params.scale * 5.1 - uv_x * 1.7 + warp * 3.0).sin()
         }
     }
 }

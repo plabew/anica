@@ -4313,6 +4313,7 @@ dependencies = [
  "exmex",
  "image",
  "js-sys",
+ "lyon_tessellation",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "pollster 0.4.0",

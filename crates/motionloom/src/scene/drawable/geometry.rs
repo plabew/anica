@@ -384,6 +384,173 @@ pub(crate) fn polyline_bounds(subpaths: &[Vec<Point2>]) -> Option<(f32, f32, f32
     any.then_some((min_x, min_y, max_x, max_y))
 }
 
+pub(crate) fn normalize_path_subpaths(subpaths: &mut [Vec<Point2>]) {
+    for subpath in subpaths {
+        subpath.dedup_by(|a, b| point_distance(*a, *b) <= 0.0001);
+        let closed = subpath.len() > 2
+            && point_distance(subpath[0], *subpath.last().unwrap_or(&subpath[0])) <= 0.001;
+        if !closed || subpath.len() < 4 {
+            continue;
+        }
+        subpath.pop();
+        let start = subpath
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.y.total_cmp(&b.y).then_with(|| a.x.total_cmp(&b.x)))
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        subpath.rotate_left(start);
+        subpath.push(subpath[0]);
+    }
+}
+
+pub(crate) fn offset_path_subpaths(subpaths: &[Vec<Point2>], amount: f32) -> Vec<Vec<Point2>> {
+    if amount.abs() <= 0.0001 {
+        return subpaths.to_vec();
+    }
+    subpaths
+        .iter()
+        .map(|subpath| {
+            if subpath.len() < 2 {
+                return subpath.clone();
+            }
+            let closed = subpath.len() > 2
+                && point_distance(subpath[0], *subpath.last().unwrap_or(&subpath[0])) <= 0.001;
+            let count = if closed {
+                subpath.len() - 1
+            } else {
+                subpath.len()
+            };
+            let area = if closed {
+                signed_polygon_area(&subpath[..count])
+            } else {
+                0.0
+            };
+            let outward_sign = if area >= 0.0 { -1.0 } else { 1.0 };
+            let mut out = Vec::with_capacity(subpath.len());
+            for index in 0..count {
+                let prev = if index == 0 {
+                    if closed {
+                        subpath[count - 1]
+                    } else {
+                        subpath[0]
+                    }
+                } else {
+                    subpath[index - 1]
+                };
+                let current = subpath[index];
+                let next = if index + 1 >= count {
+                    if closed {
+                        subpath[0]
+                    } else {
+                        subpath[count - 1]
+                    }
+                } else {
+                    subpath[index + 1]
+                };
+                let n0 = segment_unit_normal(prev, current);
+                let n1 = segment_unit_normal(current, next);
+                let mut nx = n0.0 + n1.0;
+                let mut ny = n0.1 + n1.1;
+                let length = (nx * nx + ny * ny).sqrt();
+                if length > 0.0001 {
+                    nx /= length;
+                    ny /= length;
+                } else {
+                    nx = n1.0;
+                    ny = n1.1;
+                }
+                let direction = if closed { outward_sign } else { 1.0 };
+                out.push(Point2::new(
+                    current.x + nx * amount * direction,
+                    current.y + ny * amount * direction,
+                ));
+            }
+            if closed && !out.is_empty() {
+                out.push(out[0]);
+            }
+            out
+        })
+        .collect()
+}
+
+pub(crate) fn round_path_subpaths(subpaths: &[Vec<Point2>], amount: f32) -> Vec<Vec<Point2>> {
+    if amount <= 0.0001 {
+        return subpaths.to_vec();
+    }
+    subpaths
+        .iter()
+        .map(|subpath| {
+            if subpath.len() < 3 {
+                return subpath.clone();
+            }
+            let closed =
+                point_distance(subpath[0], *subpath.last().unwrap_or(&subpath[0])) <= 0.001;
+            let count = if closed {
+                subpath.len() - 1
+            } else {
+                subpath.len()
+            };
+            let mut out = Vec::with_capacity(count * 2 + usize::from(closed));
+            for index in 0..count {
+                if !closed && (index == 0 || index + 1 == count) {
+                    out.push(subpath[index]);
+                    continue;
+                }
+                let prev = subpath[(index + count - 1) % count];
+                let current = subpath[index];
+                let next = subpath[(index + 1) % count];
+                let in_len = point_distance(prev, current);
+                let out_len = point_distance(current, next);
+                let cut = amount.min(in_len * 0.45).min(out_len * 0.45);
+                if cut <= 0.0001 {
+                    out.push(current);
+                    continue;
+                }
+                let entry = current.lerp(prev, cut / in_len.max(0.0001));
+                let exit = current.lerp(next, cut / out_len.max(0.0001));
+                out.push(entry);
+                for step in 1..=6 {
+                    let t = step as f32 / 6.0;
+                    let mt = 1.0 - t;
+                    out.push(Point2::new(
+                        mt * mt * entry.x + 2.0 * mt * t * current.x + t * t * exit.x,
+                        mt * mt * entry.y + 2.0 * mt * t * current.y + t * t * exit.y,
+                    ));
+                }
+            }
+            if closed && !out.is_empty() {
+                out.push(out[0]);
+            }
+            out
+        })
+        .collect()
+}
+
+fn segment_unit_normal(a: Point2, b: Point2) -> (f32, f32) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let length = (dx * dx + dy * dy).sqrt().max(0.0001);
+    (-dy / length, dx / length)
+}
+
+fn signed_polygon_area(points: &[Point2]) -> f32 {
+    if points.len() < 3 {
+        return 0.0;
+    }
+    points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(a, b)| a.x * b.y - b.x * a.y)
+        .sum::<f32>()
+        * 0.5
+}
+
+pub(crate) fn point_in_single_subpath(point: Point2, subpath: &[Point2]) -> bool {
+    point_in_subpaths_even_odd(point, &[subpath.to_vec()])
+}
+
 pub(crate) fn point_in_subpaths_even_odd(point: Point2, subpaths: &[Vec<Point2>]) -> bool {
     let mut inside = false;
     for subpath in subpaths {

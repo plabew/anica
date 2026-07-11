@@ -1,6 +1,10 @@
 // =========================================
 // crates/motionloom/src/scene/render.rs
 
+use lyon_tessellation::{
+    BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers, math::point,
+    path::Path as LyonPath,
+};
 use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
 use std::fs;
 use std::future::Future;
@@ -35,17 +39,18 @@ use crate::scene::compile::{
     scene_nodes_require_cpu_scene_compositing,
 };
 use crate::scene::composition::{
-    apply_alpha_mask, apply_alpha_mask_with_invert, apply_box_blur_pass, apply_color_core_pass,
-    apply_deform_grid, apply_hsla_pass, apply_image_texture_overlay_pass, apply_layer_effects,
-    apply_over_pass, apply_scene_filter_step, apply_scene_post_pass, blend_pixel,
-    build_scene_bloom_prefilter, composite_layer, composite_layer_affine,
-    composite_layer_affine_blend, composite_layer_affine_blend_clipped,
-    composite_layer_affine_clipped, composite_layer_projected_quad_blend_clipped,
-    composite_scene_bloom, composite_transformed_layer, composite_transformed_layer_anchored,
-    draw_rgba_image, is_color_key_alpha_effect, pass_param_expr, scene_post_bloom_params,
-    scene_post_blur_passes, scene_post_brightness_amount, scene_post_glow_stack_params,
-    scene_post_light_sweep_params, scene_post_magnify_lens_params,
-    scene_post_texture_overlay_params, scene_post_tone_map_params,
+    SceneTextureOverlayParams, TextureOverlayKind, apply_alpha_mask, apply_alpha_mask_with_invert,
+    apply_box_blur_pass, apply_color_core_pass, apply_deform_grid, apply_hsla_pass,
+    apply_image_texture_overlay_pass, apply_layer_effects, apply_over_pass,
+    apply_scene_filter_step, apply_scene_post_pass, blend_pixel, build_scene_bloom_prefilter,
+    composite_layer, composite_layer_affine, composite_layer_affine_blend,
+    composite_layer_affine_blend_clipped, composite_layer_affine_clipped,
+    composite_layer_projected_quad_blend_clipped, composite_scene_bloom,
+    composite_transformed_layer, composite_transformed_layer_anchored, draw_rgba_image,
+    is_color_key_alpha_effect, pass_param_expr, scene_post_bloom_params, scene_post_blur_passes,
+    scene_post_brightness_amount, scene_post_glow_stack_params, scene_post_light_sweep_params,
+    scene_post_magnify_lens_params, scene_post_texture_overlay_params, scene_post_tone_map_params,
+    shape_alpha_mask,
 };
 use crate::scene::domain::apply_action_graph_at_time;
 
@@ -63,25 +68,27 @@ use crate::scene::drawable::{
     draw_transformed_filled_polylines_paint_with_rule, draw_transformed_trimmed_polylines_styled,
     eval_line_stroke_style, eval_path_d, eval_path_stroke_style, eval_polyline_stroke_style,
     evaluate_shadow, evaluate_trim, face_jaw_to_path_node, gpu_matte_mode, gpu_solid_primitive,
-    gradient_ref_id, id_suffix, is_gpu_native_blend, is_none_paint, parse_color, parse_paint,
-    parse_path_subpaths, parse_polyline_points, parse_scene_blend, point_distance,
-    raster_texture_layer, resolve_gradient_paint, scene_mask_mode_inverts, solid_canvas,
-    stroke_hash_signed, stroke_taper_pressure, stroke_texture_copy_count, stroke_texture_seed,
-    stroke_texture_variant, trimmed_polyline_segments_with_progress,
+    gradient_ref_id, id_suffix, is_gpu_native_blend, is_none_paint, normalize_path_subpaths,
+    offset_path_subpaths, parse_color, parse_paint, parse_path_subpaths, parse_polyline_points,
+    parse_scene_blend, point_distance, raster_texture_layer, resolve_gradient_paint,
+    round_path_subpaths, scene_mask_mode_inverts, solid_canvas, stroke_hash_signed,
+    stroke_taper_pressure, stroke_texture_copy_count, stroke_texture_seed, stroke_texture_variant,
+    trimmed_polyline_segments_with_progress,
 };
 use crate::scene::dsl::{ImageNode, SvgNode};
 use crate::scene::model::{
     CameraNode, CharacterNode, CircleNode, DefsNode, EllipseNode, FaceJawNode, FilterDef, FontDef,
-    GradientDef, GroupNode, LineNode, MaskNode, PaletteNode, PartNode, PathNode, PixelGridNode,
-    PolylineNode, PrecomposeNode, PuppetNode, RectNode, RepeatNode, SceneLayerNode, SceneNode,
-    TextureDef, UseNode,
+    GradientDef, GroupNode, LineNode, MaskNode, MaterialDef, NoiseDef, PaletteNode, PartNode,
+    PathNode, PixelGridNode, PolylineNode, PrecomposeNode, PuppetNode, RectNode, RepeatNode,
+    SceneLayerNode, SceneNode, TextureDef, UseNode,
 };
 pub use crate::scene::resource::{clear_scene_asset_roots, set_scene_asset_roots};
 use crate::scene::resource::{
     collect_graph_component_defs, collect_graph_filter_defs, collect_graph_font_defs,
-    collect_graph_gradient_defs, collect_graph_mask_defs, collect_graph_palette_defs,
-    collect_graph_precompose_defs, collect_graph_texture_defs, default_world_asset_root,
-    load_extra_fonts, load_rgba_image_source, load_svg_source, resolve_local_scene_asset_path,
+    collect_graph_gradient_defs, collect_graph_mask_defs, collect_graph_material_defs,
+    collect_graph_noise_defs, collect_graph_palette_defs, collect_graph_precompose_defs,
+    collect_graph_texture_defs, default_world_asset_root, load_extra_fonts, load_rgba_image_source,
+    load_svg_source, resolve_local_scene_asset_path,
 };
 use crate::scene::spatial::{
     Affine2, CameraRect, EvaluatedDeformGrid, active_scene_camera_from_tracks, affine_is_identity,
@@ -1039,6 +1046,28 @@ impl SceneRenderer {
         self.inner.render_frame_to_wgpu_texture(graph, frame).await
     }
 
+    /// Render through the strict GPU texture path and read back that exact texture.
+    /// Intended for diagnostics, thumbnails, and tests that must not silently use CPU rendering.
+    pub async fn render_frame_gpu_readback(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+    ) -> Result<RgbaImage, SceneRenderError> {
+        validate_scene_graph(graph)?;
+        let texture = self
+            .inner
+            .render_frame_to_wgpu_texture(graph, frame)
+            .await?;
+        self.inner
+            .gpu_compositor
+            .as_mut()
+            .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                message: "GPU compositor was not initialized".to_string(),
+            })?
+            .readback_texture_rgba_async(&texture.texture)
+            .await
+    }
+
     /// Render a scene frame into a caller-owned wgpu texture.
     ///
     /// The target texture must belong to the same `wgpu::Device` used to create
@@ -1336,6 +1365,8 @@ struct SceneFrameRenderer {
     palette_defs: HashMap<String, PaletteNode>,
     font_defs: HashMap<String, FontDef>,
     texture_defs: HashMap<String, TextureDef>,
+    noise_defs: HashMap<String, NoiseDef>,
+    material_defs: HashMap<String, MaterialDef>,
     filter_defs: HashMap<String, FilterDef>,
     scene_node_defs: HashMap<String, SceneNode>,
     scene_follow_nodes: Vec<SceneNode>,
@@ -1589,6 +1620,7 @@ fn collect_scene_node_defs_from_nodes(nodes: &[SceneNode], out: &mut HashMap<Str
                         SceneNode::Group(GroupNode {
                             id: Some(component.id.clone()),
                             brush: None,
+                            material: None,
                             x: "0".to_string(),
                             y: "0".to_string(),
                             rotation: "0".to_string(),
@@ -1606,6 +1638,9 @@ fn collect_scene_node_defs_from_nodes(nodes: &[SceneNode], out: &mut HashMap<Str
                             mask: None,
                             mask_from: None,
                             mask_mode: "alpha".to_string(),
+                            mask_feather: "0".to_string(),
+                            mask_expansion: "0".to_string(),
+                            effects: Vec::new(),
                             opacity: "1".to_string(),
                             children: component.children.clone(),
                         }),
@@ -1724,6 +1759,8 @@ impl SceneFrameRenderer {
             palette_defs: HashMap::new(),
             font_defs: HashMap::new(),
             texture_defs: HashMap::new(),
+            noise_defs: HashMap::new(),
+            material_defs: HashMap::new(),
             filter_defs: HashMap::new(),
             scene_node_defs: HashMap::new(),
             scene_follow_nodes: Vec::new(),
@@ -1764,6 +1801,8 @@ impl SceneFrameRenderer {
             palette_defs: HashMap::new(),
             font_defs: HashMap::new(),
             texture_defs: HashMap::new(),
+            noise_defs: HashMap::new(),
+            material_defs: HashMap::new(),
             filter_defs: HashMap::new(),
             scene_node_defs: HashMap::new(),
             scene_follow_nodes: Vec::new(),
@@ -2150,6 +2189,8 @@ impl SceneFrameRenderer {
         self.palette_defs.clear();
         self.font_defs.clear();
         self.texture_defs.clear();
+        self.noise_defs.clear();
+        self.material_defs.clear();
         self.filter_defs.clear();
         self.scene_node_defs.clear();
         self.scene_follow_nodes.clear();
@@ -2161,6 +2202,8 @@ impl SceneFrameRenderer {
         collect_graph_palette_defs(graph, &mut self.palette_defs);
         collect_graph_font_defs(graph, &mut self.font_defs);
         collect_graph_texture_defs(graph, &mut self.texture_defs);
+        collect_graph_noise_defs(graph, &mut self.noise_defs);
+        collect_graph_material_defs(graph, &mut self.material_defs);
         collect_graph_filter_defs(graph, &mut self.filter_defs);
         collect_graph_scene_node_defs(graph, &mut self.scene_node_defs);
         self.scene_follow_nodes = collect_graph_scene_follow_nodes(graph);
@@ -2232,6 +2275,8 @@ impl SceneFrameRenderer {
         self.palette_defs.clear();
         self.font_defs.clear();
         self.texture_defs.clear();
+        self.noise_defs.clear();
+        self.material_defs.clear();
         self.filter_defs.clear();
         self.scene_node_defs.clear();
         self.scene_follow_nodes.clear();
@@ -2243,6 +2288,8 @@ impl SceneFrameRenderer {
         collect_graph_palette_defs(graph, &mut self.palette_defs);
         collect_graph_font_defs(graph, &mut self.font_defs);
         collect_graph_texture_defs(graph, &mut self.texture_defs);
+        collect_graph_noise_defs(graph, &mut self.noise_defs);
+        collect_graph_material_defs(graph, &mut self.material_defs);
         collect_graph_filter_defs(graph, &mut self.filter_defs);
         collect_graph_scene_node_defs(graph, &mut self.scene_node_defs);
         self.scene_follow_nodes = collect_graph_scene_follow_nodes(graph);
@@ -3528,6 +3575,17 @@ impl SceneFrameRenderer {
                     .apply_gpu_color_texture(&output, brightness, contrast, saturation)?;
                 continue;
             }
+            if kind == "opacity" {
+                let opacity = step
+                    .opacity
+                    .as_deref()
+                    .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+                    .transpose()?
+                    .unwrap_or(1.0)
+                    .clamp(0.0, 1.0);
+                output = compositor.apply_gpu_opacity_texture(&output, opacity)?;
+                continue;
+            }
             return Err(MotionLoomSceneRenderError::GpuRender {
                 message: format!(
                     "Filter '{}' step '{}' is not GPU-native yet",
@@ -3536,6 +3594,81 @@ impl SceneFrameRenderer {
             });
         }
         Ok(output)
+    }
+
+    fn apply_gpu_material_texture(
+        &mut self,
+        mut input: GpuSceneNativeTexture,
+        material_id: &str,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let material = self
+            .material_defs
+            .get(material_id)
+            .cloned()
+            .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                message: format!("unknown material '{material_id}'"),
+            })?;
+        let noise_id = material.displacement.as_ref().or(material.texture.as_ref());
+        let noise = noise_id.and_then(|id| self.noise_defs.get(id)).cloned();
+        let roughness = eval_scene_number(&material.roughness, time_norm, time_sec)?;
+        let specular = eval_scene_number(&material.specular, time_norm, time_sec)?;
+        if let Some(noise) = noise.as_ref() {
+            let scale = eval_scene_number(&noise.scale, time_norm, time_sec)?;
+            let seed = eval_scene_number(&noise.seed, time_norm, time_sec)?
+                + eval_scene_number(&noise.evolution, time_norm, time_sec)?;
+            let amount = eval_scene_number(&material.displacement_amount, time_norm, time_sec)?;
+            input = self
+                .gpu_compositor
+                .as_mut()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?
+                .apply_gpu_material_displacement_texture(
+                    &input,
+                    TextureOverlayKind::parse(&noise.kind).id(),
+                    scale,
+                    amount,
+                    seed,
+                    roughness,
+                    specular,
+                )?;
+            if material.texture.is_some() {
+                let strength = eval_scene_number(&material.texture_amount, time_norm, time_sec)?;
+                let contrast = eval_scene_number(&noise.contrast, time_norm, time_sec)?;
+                input = self
+                    .gpu_compositor
+                    .as_mut()
+                    .unwrap()
+                    .apply_gpu_texture_overlay_texture(
+                        &input,
+                        SceneTextureOverlayParams {
+                            kind: TextureOverlayKind::parse(&noise.kind),
+                            texture_ref: None,
+                            height_ref: None,
+                            texture_src: None,
+                            height_src: None,
+                            scale,
+                            strength,
+                            contrast,
+                            seed,
+                            brush_angle: 0.0,
+                            bump_strength: specular,
+                            relief: 1.0 - roughness,
+                        },
+                    )?;
+            }
+        }
+        let opacity = eval_scene_number(&material.opacity, time_norm, time_sec)?.clamp(0.0, 1.0);
+        if opacity < 0.999 {
+            input = self
+                .gpu_compositor
+                .as_mut()
+                .unwrap()
+                .apply_gpu_opacity_texture(&input, opacity)?;
+        }
+        Ok(input)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3853,6 +3986,8 @@ impl SceneFrameRenderer {
                                     texture: matte,
                                     mode: GpuSceneMatteMode::Alpha,
                                     invert: false,
+                                    feather: 0.0,
+                                    expansion: 0.0,
                                 }),
                             });
                         }
@@ -4039,6 +4174,10 @@ impl SceneFrameRenderer {
                             *unsupported = true;
                             continue;
                         }
+                        let mask_feather =
+                            eval_scene_number(&layer.mask_feather, time_norm, time_sec)?.max(0.0);
+                        let mask_expansion =
+                            eval_scene_number(&layer.mask_expansion, time_norm, time_sec)?;
                         let matte = if let Some(mask_id) = layer.mask.as_deref() {
                             if let Some(mask) = self.scene_masks.get(mask_id).cloned() {
                                 let Some(texture) = self
@@ -4058,6 +4197,8 @@ impl SceneFrameRenderer {
                                     texture,
                                     mode: GpuSceneMatteMode::Alpha,
                                     invert: scene_mask_mode_inverts(&layer.mask_mode),
+                                    feather: mask_feather,
+                                    expansion: mask_expansion,
                                 })
                             } else {
                                 assets.masks.get(mask_id).cloned().map(|texture| {
@@ -4065,6 +4206,8 @@ impl SceneFrameRenderer {
                                         texture,
                                         mode: GpuSceneMatteMode::Alpha,
                                         invert: scene_mask_mode_inverts(&layer.mask_mode),
+                                        feather: mask_feather,
+                                        expansion: mask_expansion,
                                     }
                                 })
                             }
@@ -4090,6 +4233,8 @@ impl SceneFrameRenderer {
                                         texture,
                                         mode: gpu_matte_mode(&layer.mask_mode),
                                         invert: scene_mask_mode_inverts(&layer.mask_mode),
+                                        feather: mask_feather,
+                                        expansion: mask_expansion,
                                     }
                                 })
                             } else {
@@ -4106,6 +4251,8 @@ impl SceneFrameRenderer {
                                         texture,
                                         mode: gpu_matte_mode(&layer.mask_mode),
                                         invert: scene_mask_mode_inverts(&layer.mask_mode),
+                                        feather: mask_feather,
+                                        expansion: mask_expansion,
                                     }
                                 })
                             }
@@ -4115,6 +4262,8 @@ impl SceneFrameRenderer {
                                     texture: mask,
                                     mode: GpuSceneMatteMode::Alpha,
                                     invert: scene_bool(&layer.invert_matte),
+                                    feather: 0.0,
+                                    expansion: 0.0,
                                 })
                             } else {
                                 if let Some(precompose) = self.scene_precompose_defs.get(matte_id)
@@ -4137,6 +4286,8 @@ impl SceneFrameRenderer {
                                         texture,
                                         mode: gpu_matte_mode(&layer.matte_mode),
                                         invert: scene_bool(&layer.invert_matte),
+                                        feather: 0.0,
+                                        expansion: 0.0,
                                     }
                                 })
                             }
@@ -4153,6 +4304,8 @@ impl SceneFrameRenderer {
                                 texture,
                                 mode: gpu_matte_mode(&layer.matte_mode),
                                 invert: scene_bool(&layer.invert_matte),
+                                feather: 0.0,
+                                expansion: 0.0,
                             })
                         } else {
                             None
@@ -4181,6 +4334,17 @@ impl SceneFrameRenderer {
                             time_sec,
                             canvas_size,
                         )? {
+                            if let Some(material_id) = image.material.as_deref()
+                                && let GpuSceneTextureSource::Gpu(source) = layer.source
+                            {
+                                layer.source =
+                                    GpuSceneTextureSource::Gpu(self.apply_gpu_material_texture(
+                                        source,
+                                        material_id,
+                                        time_norm,
+                                        time_sec,
+                                    )?);
+                            }
                             layer.pick_id = self
                                 .gpu_pick_ids
                                 .get(image.id.as_deref().unwrap_or(""))
@@ -4202,6 +4366,17 @@ impl SceneFrameRenderer {
                             time_sec,
                             canvas_size,
                         )? {
+                            if let Some(material_id) = svg.material.as_deref()
+                                && let GpuSceneTextureSource::Gpu(source) = layer.source
+                            {
+                                layer.source =
+                                    GpuSceneTextureSource::Gpu(self.apply_gpu_material_texture(
+                                        source,
+                                        material_id,
+                                        time_norm,
+                                        time_sec,
+                                    )?);
+                            }
                             layer.pick_id = self
                                 .gpu_pick_ids
                                 .get(svg.id.as_deref().unwrap_or(""))
@@ -4216,7 +4391,7 @@ impl SceneFrameRenderer {
                             .get(path.id.as_deref().unwrap_or(""))
                             .copied()
                             .unwrap_or(0);
-                        if path_requires_cpu_overlay(path) {
+                        if path_requires_cpu_overlay(path) || path.material.is_some() {
                             if deform.is_some() || !is_gpu_native_blend(&path.blend) {
                                 *unsupported = true;
                                 continue;
@@ -4239,6 +4414,18 @@ impl SceneFrameRenderer {
                                 )?;
                             }
                             if let Some(mut layer) = overlay_layer {
+                                if let Some(material_id) = path.material.as_deref()
+                                    && let GpuSceneTextureSource::Gpu(source) = layer.source
+                                {
+                                    layer.source = GpuSceneTextureSource::Gpu(
+                                        self.apply_gpu_material_texture(
+                                            source,
+                                            material_id,
+                                            time_norm,
+                                            time_sec,
+                                        )?,
+                                    );
+                                }
                                 layer.pick_id = path_pick_id;
                                 texture_layers.push(layer);
                             }
@@ -4282,16 +4469,16 @@ impl SceneFrameRenderer {
                             *unsupported = true;
                             continue;
                         }
-                        if let Some(mask_id) = group.mask.as_deref() {
+                        if group.mask.is_some()
+                            || group.mask_from.is_some()
+                            || !group.effects.is_empty()
+                            || group.material.is_some()
+                        {
                             if group_deform.is_some() {
                                 *unsupported = true;
                                 continue;
                             }
-                            let Some(matte) = assets.masks.get(mask_id).cloned() else {
-                                *unsupported = true;
-                                continue;
-                            };
-                            let Some(source) = self
+                            let Some(mut source) = self
                                 .render_gpu_scene_texture_from_nodes(
                                     &group.children,
                                     Affine2::identity(),
@@ -4306,51 +4493,59 @@ impl SceneFrameRenderer {
                                 *unsupported = true;
                                 continue;
                             };
-                            texture_layers.push(GpuSceneTextureLayer {
-                                source: GpuSceneTextureSource::Gpu(source),
-                                transform: group_transform,
-                                projected_quad: None,
-                                opacity: 1.0,
-                                blend: SceneBlendMode::Normal,
-                                pick_id: group_pick_id,
-                                matte: Some(GpuSceneTextureMatte {
+                            for filter_id in &group.effects {
+                                source = self.apply_gpu_scene_filter_texture(
+                                    source, filter_id, time_norm, time_sec,
+                                )?;
+                            }
+                            if let Some(material_id) = group.material.as_deref() {
+                                source = self.apply_gpu_material_texture(
+                                    source,
+                                    material_id,
+                                    time_norm,
+                                    time_sec,
+                                )?;
+                            }
+                            let mask_feather =
+                                eval_scene_number(&group.mask_feather, time_norm, time_sec)?
+                                    .max(0.0);
+                            let mask_expansion =
+                                eval_scene_number(&group.mask_expansion, time_norm, time_sec)?;
+                            let matte = if let Some(mask_id) = group.mask.as_deref() {
+                                let Some(matte) = assets.masks.get(mask_id).cloned() else {
+                                    *unsupported = true;
+                                    continue;
+                                };
+                                Some(GpuSceneTextureMatte {
                                     texture: matte,
                                     mode: GpuSceneMatteMode::Alpha,
                                     invert: scene_mask_mode_inverts(&group.mask_mode),
-                                }),
-                            });
-                        } else if let Some(mask_from) = group.mask_from.as_deref() {
-                            if group_deform.is_some() {
-                                *unsupported = true;
-                                continue;
-                            }
-                            let Some(matte) = self
-                                .render_gpu_node_matte_texture(
-                                    mask_from,
-                                    time_norm,
-                                    time_sec,
-                                    canvas_size,
-                                    assets,
-                                )
-                                .await?
-                            else {
-                                *unsupported = true;
-                                continue;
-                            };
-                            let Some(source) = self
-                                .render_gpu_scene_texture_from_nodes(
-                                    &group.children,
-                                    Affine2::identity(),
-                                    opacity,
-                                    time_norm,
-                                    time_sec,
-                                    canvas_size,
-                                    assets,
-                                )
-                                .await?
-                            else {
-                                *unsupported = true;
-                                continue;
+                                    feather: mask_feather,
+                                    expansion: mask_expansion,
+                                })
+                            } else if let Some(mask_from) = group.mask_from.as_deref() {
+                                let Some(matte) = self
+                                    .render_gpu_node_matte_texture(
+                                        mask_from,
+                                        time_norm,
+                                        time_sec,
+                                        canvas_size,
+                                        assets,
+                                    )
+                                    .await?
+                                else {
+                                    *unsupported = true;
+                                    continue;
+                                };
+                                Some(GpuSceneTextureMatte {
+                                    texture: matte,
+                                    mode: gpu_matte_mode(&group.mask_mode),
+                                    invert: scene_mask_mode_inverts(&group.mask_mode),
+                                    feather: mask_feather,
+                                    expansion: mask_expansion,
+                                })
+                            } else {
+                                None
                             };
                             texture_layers.push(GpuSceneTextureLayer {
                                 source: GpuSceneTextureSource::Gpu(source),
@@ -4359,11 +4554,7 @@ impl SceneFrameRenderer {
                                 opacity: 1.0,
                                 blend: SceneBlendMode::Normal,
                                 pick_id: group_pick_id,
-                                matte: Some(GpuSceneTextureMatte {
-                                    texture: matte,
-                                    mode: gpu_matte_mode(&group.mask_mode),
-                                    invert: scene_mask_mode_inverts(&group.mask_mode),
-                                }),
+                                matte,
                             });
                         } else {
                             let group_deform = group_deform
@@ -4904,11 +5095,19 @@ impl SceneFrameRenderer {
                     };
                     let path = PathNode {
                         id: mask.id.clone(),
+                        brush: None,
+                        material: None,
                         d: d.to_string(),
                         fill: Some("#ffffff".to_string()),
                         fill_rule: "nonzero".to_string(),
+                        boolean_op: "none".to_string(),
+                        offset_path: "0".to_string(),
+                        round_corners: "0".to_string(),
+                        normalize: "false".to_string(),
                         stroke: "none".to_string(),
                         stroke_width: "0".to_string(),
+                        stroke_width_start: "1".to_string(),
+                        stroke_width_end: "1".to_string(),
                         line_cap: "round".to_string(),
                         line_join: "round".to_string(),
                         trim_start: "0".to_string(),
@@ -4925,7 +5124,6 @@ impl SceneFrameRenderer {
                         stroke_pressure_curve: "1".to_string(),
                         opacity: mask.opacity.clone(),
                         blend: "normal".to_string(),
-                        brush: None,
                         x: "0".to_string(),
                         y: "0".to_string(),
                         rotation: "0".to_string(),
@@ -6369,7 +6567,11 @@ impl SceneFrameRenderer {
         let transform = scene_group_local_transform(group, time_norm, time_sec)?;
         let deform_grid = eval_group_deform_grid(group, time_norm, time_sec)?;
 
-        if group.mask.is_none() && group.mask_from.is_none() && deform_grid.is_none() {
+        if group.mask.is_none()
+            && group.mask_from.is_none()
+            && deform_grid.is_none()
+            && group.effects.is_empty()
+        {
             self.draw_character_nodes_vector(
                 canvas,
                 &group.children,
@@ -6383,6 +6585,11 @@ impl SceneFrameRenderer {
 
         let mut layer = RgbaImage::from_pixel(canvas.width(), canvas.height(), Rgba([0, 0, 0, 0]));
         self.draw_scene_nodes(&mut layer, &group.children, time_norm, time_sec, opacity)?;
+        for filter_id in &group.effects {
+            layer = self.apply_scene_filter(&layer, filter_id, time_norm, time_sec)?;
+        }
+        let mask_feather = eval_scene_number(&group.mask_feather, time_norm, time_sec)?.max(0.0);
+        let mask_expansion = eval_scene_number(&group.mask_expansion, time_norm, time_sec)?;
         if let Some(mask_id) = group.mask.as_deref()
             && let Some(mask_alpha) = self.scene_mask_alpha(
                 mask_id,
@@ -6395,6 +6602,7 @@ impl SceneFrameRenderer {
             let invert = group.mask_mode.trim().eq_ignore_ascii_case("inverse")
                 || group.mask_mode.trim().eq_ignore_ascii_case("invert")
                 || group.mask_mode.trim().eq_ignore_ascii_case("inverted");
+            let mask_alpha = shape_alpha_mask(&mask_alpha, mask_expansion, mask_feather);
             apply_alpha_mask_with_invert(&mut layer, &mask_alpha, invert);
         } else if let Some(mask_from) = group.mask_from.as_deref()
             && let Some(mask_alpha) = self.scene_matte_alpha(
@@ -6406,6 +6614,7 @@ impl SceneFrameRenderer {
                 time_sec,
             )?
         {
+            let mask_alpha = shape_alpha_mask(&mask_alpha, mask_expansion, mask_feather);
             apply_alpha_mask_with_invert(
                 &mut layer,
                 &mask_alpha,
@@ -6639,6 +6848,8 @@ impl SceneFrameRenderer {
         if let Some(filter_id) = layer.effect.as_deref() {
             source = self.apply_scene_filter(&source, filter_id, time_norm, time_sec)?;
         }
+        let mask_feather = eval_scene_number(&layer.mask_feather, time_norm, time_sec)?.max(0.0);
+        let mask_expansion = eval_scene_number(&layer.mask_expansion, time_norm, time_sec)?;
         if let Some(mask_id) = layer.mask.as_deref()
             && let Some(mask_alpha) = self.scene_mask_alpha(
                 mask_id,
@@ -6648,6 +6859,7 @@ impl SceneFrameRenderer {
                 time_sec,
             )?
         {
+            let mask_alpha = shape_alpha_mask(&mask_alpha, mask_expansion, mask_feather);
             apply_alpha_mask_with_invert(
                 &mut source,
                 &mask_alpha,
@@ -6664,6 +6876,7 @@ impl SceneFrameRenderer {
                 time_sec,
             )?
         {
+            let mask_alpha = shape_alpha_mask(&mask_alpha, mask_expansion, mask_feather);
             apply_alpha_mask_with_invert(
                 &mut source,
                 &mask_alpha,
@@ -7114,6 +7327,7 @@ impl SceneFrameRenderer {
             // Character-level image sources reuse the same raster loader as <Image>.
             let image = ImageNode {
                 id: character.id.clone(),
+                material: None,
                 src: src.to_string(),
                 x: "0".to_string(),
                 y: "0".to_string(),
@@ -8166,8 +8380,7 @@ impl SceneFrameRenderer {
             return Ok(());
         }
         let transform = scene_path_local_transform(path, time_norm, time_sec)?;
-        let path_d = eval_path_d(&path.d, time_norm, time_sec)?;
-        let subpaths = parse_path_subpaths(path_d.as_ref())?;
+        let subpaths = evaluated_path_subpaths(path, time_norm, time_sec)?;
         if let Some(fill) = path.fill.as_deref() {
             let paint = self.resolve_paint(fill)?;
             let blend = parse_scene_blend(&path.blend)?;
@@ -8178,7 +8391,7 @@ impl SceneFrameRenderer {
                 opacity,
                 blend,
                 transform,
-                FillRule::parse(&path.fill_rule),
+                evaluated_path_fill_rule(path),
             );
         }
         let width = eval_scene_number(&path.stroke_width, time_norm, time_sec)?.max(0.0)
@@ -10174,21 +10387,37 @@ fn path_requires_cpu_overlay(path: &PathNode) -> bool {
     !is_gpu_native_blend(&path.blend)
         || !is_default_line_cap(&path.line_cap)
         || !is_default_line_join(&path.line_join)
-        || (has_visible_fill && path_has_multiple_subpaths(&path.d))
         || (is_none_paint(&path.stroke) && !has_visible_fill)
 }
 
-fn path_has_multiple_subpaths(d: &str) -> bool {
-    let mut moves = 0usize;
-    for ch in d.chars() {
-        if matches!(ch, 'M' | 'm') {
-            moves += 1;
-            if moves > 1 {
-                return true;
-            }
-        }
+fn evaluated_path_subpaths(
+    path: &PathNode,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<Vec<Vec<Point2>>, MotionLoomSceneRenderError> {
+    let path_d = eval_path_d(&path.d, time_norm, time_sec)?;
+    let mut subpaths = parse_path_subpaths(path_d.as_ref())?;
+    if scene_bool(&path.normalize) {
+        normalize_path_subpaths(&mut subpaths);
     }
-    false
+    let round_corners = eval_scene_number(&path.round_corners, time_norm, time_sec)?.max(0.0);
+    if round_corners > 0.0001 {
+        subpaths = round_path_subpaths(&subpaths, round_corners);
+    }
+    let offset = eval_scene_number(&path.offset_path, time_norm, time_sec)?;
+    if offset.abs() > 0.0001 {
+        subpaths = offset_path_subpaths(&subpaths, offset);
+    }
+    Ok(subpaths)
+}
+
+fn evaluated_path_fill_rule(path: &PathNode) -> FillRule {
+    let boolean_op = path.boolean_op.trim();
+    if boolean_op.is_empty() || boolean_op.eq_ignore_ascii_case("none") {
+        FillRule::parse(&path.fill_rule)
+    } else {
+        FillRule::parse(boolean_op)
+    }
 }
 
 fn is_default_line_cap(value: &str) -> bool {
@@ -10906,10 +11135,9 @@ fn push_gpu_path_commands(
     if opacity <= 0.0001 {
         return Ok(());
     }
-    let path_d = eval_path_d(&path.d, time_norm, time_sec)?;
     let transform = transform.mul(scene_path_local_transform(path, time_norm, time_sec)?);
     let blend = parse_scene_blend(&path.blend)?;
-    let subpaths = parse_path_subpaths(path_d.as_ref())?;
+    let subpaths = evaluated_path_subpaths(path, time_norm, time_sec)?;
     let (subpaths, primitive_transform, stroke_width_scale) = if let Some(deform) = deform {
         (
             transform_and_deform_subpaths(&subpaths, transform, deform),
@@ -10923,10 +11151,11 @@ fn push_gpu_path_commands(
         subpaths_bounds(&subpaths).unwrap_or_else(|| PaintBounds::new(0.0, 0.0, 1.0, 1.0));
     if let Some(fill) = path.fill.as_deref().filter(|fill| !is_none_paint(fill)) {
         let (color, gradient) = resolve_gpu_scene_paint(fill, gradient_defs, paint_bounds)?;
-        push_gpu_filled_path_triangles_with_blend(
+        push_gpu_tessellated_path_with_blend(
             primitives,
             primitive_transform,
             &subpaths,
+            evaluated_path_fill_rule(path),
             GpuFilledPathStyle {
                 color,
                 opacity,
@@ -10957,6 +11186,80 @@ fn push_gpu_path_commands(
         );
     }
     Ok(())
+}
+
+fn push_gpu_tessellated_path_with_blend(
+    primitives: &mut Vec<GpuScenePrimitive>,
+    transform: Affine2,
+    subpaths: &[Vec<Point2>],
+    fill_rule: FillRule,
+    style: GpuFilledPathStyle,
+) {
+    let mut builder = LyonPath::builder();
+    for subpath in subpaths {
+        if subpath.len() < 3 {
+            continue;
+        }
+        let closed = point_distance(subpath[0], *subpath.last().unwrap_or(&subpath[0])) <= 0.001;
+        let count = if closed {
+            subpath.len() - 1
+        } else {
+            subpath.len()
+        };
+        if count < 3 {
+            continue;
+        }
+        builder.begin(point(subpath[0].x, subpath[0].y));
+        for value in &subpath[1..count] {
+            builder.line_to(point(value.x, value.y));
+        }
+        builder.end(closed);
+    }
+    let path = builder.build();
+    let mut geometry: VertexBuffers<Point2, u32> = VertexBuffers::new();
+    let lyon_rule = match fill_rule {
+        FillRule::EvenOdd | FillRule::Subtract | FillRule::Xor => {
+            lyon_tessellation::FillRule::EvenOdd
+        }
+        _ => lyon_tessellation::FillRule::NonZero,
+    };
+    let options = FillOptions::default().with_fill_rule(lyon_rule);
+    if FillTessellator::new()
+        .tessellate_path(
+            &path,
+            &options,
+            &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| {
+                let position = vertex.position();
+                Point2::new(position.x, position.y)
+            }),
+        )
+        .is_err()
+    {
+        push_gpu_filled_path_triangles_with_blend(primitives, transform, subpaths, style);
+        return;
+    }
+    for triangle in geometry.indices.chunks_exact(3) {
+        let a = geometry.vertices[triangle[0] as usize];
+        let b = geometry.vertices[triangle[1] as usize];
+        let c = geometry.vertices[triangle[2] as usize];
+        primitives.push(GpuScenePrimitive {
+            kind: GPU_SHAPE_TRIANGLE_FILL,
+            transform,
+            shape: [a.x, a.y, b.x, b.y],
+            radius: c.x,
+            stroke_width: c.y,
+            blur: 0.0,
+            color: style.color,
+            opacity: style.opacity,
+            blend: style.blend,
+            pick_id: style.pick_id,
+            gradient: style.gradient.clone(),
+            line_t0: 0.0,
+            line_t1: 1.0,
+            taper_start: 0.0,
+            taper_end: 0.0,
+        });
+    }
 }
 
 fn push_gpu_filled_path_triangles(
@@ -11163,7 +11466,10 @@ fn push_gpu_styled_line_primitives(
             stroke_texture_variant(p0, p1, style, copy_ix);
         let stroke_width = (width * width_scale).max(0.01);
         let stroke_opacity = (opacity * opacity_scale).clamp(0.0, 1.0);
-        if style.pressure_auto {
+        if style.pressure_auto
+            || (style.width_start - 1.0).abs() > 0.0001
+            || (style.width_end - 1.0).abs() > 0.0001
+        {
             push_gpu_pressure_line_primitives(
                 primitives,
                 transform,
@@ -11959,6 +12265,105 @@ mod tests {
     }
 
     #[test]
+    fn scene_parser_preserves_universal_material_resources_and_group_reference() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,64]}>
+  <Scene id="material_test">
+  <Defs>
+    <Noise id="n" type="ridged" scale="8" />
+    <Material id="m" texture="n" opacity="0.12" />
+  </Defs>
+  <Timeline>
+  <Track>
+  <Sequence from="0s" duration="1s">
+  <Layer>
+    <Group id="g" material="m">
+      <Rect x="4" y="4" width="20" height="20" color="#fff" />
+    </Group>
+  </Layer>
+  </Sequence>
+  </Track>
+  </Timeline>
+  </Scene>
+  <Present from="material_test" />
+</Graph>
+"##,
+        )
+        .expect("material graph parse");
+        let defs = graph.scenes[0]
+            .children
+            .iter()
+            .find_map(|node| match node {
+                SceneNode::Defs(value) => Some(value),
+                _ => None,
+            })
+            .expect("defs");
+        assert_eq!(defs.noises[0].kind, "ridged");
+        assert_eq!(defs.materials[0].opacity, "0.12");
+        fn group_material(nodes: &[SceneNode]) -> Option<&str> {
+            for node in nodes {
+                match node {
+                    SceneNode::Group(group) if group.id.as_deref() == Some("g") => {
+                        return group.material.as_deref();
+                    }
+                    SceneNode::Timeline(v) => {
+                        if let Some(x) = group_material(&v.children) {
+                            return Some(x);
+                        }
+                    }
+                    SceneNode::Track(v) => {
+                        if let Some(x) = group_material(&v.children) {
+                            return Some(x);
+                        }
+                    }
+                    SceneNode::Sequence(v) => {
+                        if let Some(x) = group_material(&v.children) {
+                            return Some(x);
+                        }
+                    }
+                    SceneNode::Layer(v) => {
+                        if let Some(x) = group_material(&v.children) {
+                            return Some(x);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        assert_eq!(group_material(&graph.scenes[0].children), Some("m"));
+    }
+
+    #[test]
+    fn scene_path_morph_normalizes_different_commands_and_point_counts() {
+        let d = r#"morph("0:M 8 8 H 40 V 40 H 8 Z", "2:M 24 4 C 46 4 52 20 48 36 C 44 52 20 54 8 38 C -4 22 2 4 24 4 Z")"#;
+        let interpolated = super::eval_path_d(d, 0.5, 1.0).unwrap().into_owned();
+        let subpaths = super::parse_path_subpaths(&interpolated).unwrap();
+
+        assert_eq!(subpaths.len(), 1);
+        assert!(subpaths[0].len() >= 24);
+        assert!(super::point_distance(subpaths[0][0], *subpaths[0].last().unwrap()) < 0.01);
+    }
+
+    #[test]
+    fn scene_path_morph_aligns_closed_contour_winding_and_start() {
+        let d = r#"morph("0:M 0 0 L 40 0 L 40 40 L 0 40 Z", "1:M 40 40 L 40 0 L 0 0 L 0 40 Z")"#;
+        let interpolated = super::eval_path_d(d, 0.5, 0.5).unwrap().into_owned();
+        let subpaths = super::parse_path_subpaths(&interpolated).unwrap();
+        let (min_x, max_x) = subpaths[0]
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), point| {
+                (min.min(point.x), max.max(point.x))
+            });
+
+        assert!(
+            max_x - min_x > 35.0,
+            "morph collapsed after winding alignment"
+        );
+    }
+
+    #[test]
     fn scene_renderer_draws_path_d_morph() {
         let graph = parse_graph_script(
             r##"
@@ -12424,6 +12829,62 @@ mod tests {
         assert!(
             hidden[0] < 30 && hidden[1] < 30 && hidden[2] < 30,
             "expected outside maskFrom path node to remain background, got {hidden:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_applies_group_mask_shape_and_effect_stack() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,32]}>
+  <Background color="#000000" />
+  <Scene id="mask_shape_effect_scene">
+    <Defs>
+      <Filter id="half_opacity">
+        <Effect type="opacity" opacity="0.5" />
+      </Filter>
+      <Precompose id="matte_library" size={[64,32]}>
+        <Rect id="center_matte" x="20" y="0" width="24" height="32" color="#ffffff" />
+      </Precompose>
+    </Defs>
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Group id="treated_red"
+                   maskFrom="center_matte"
+                   maskFeather="3"
+                   maskExpansion="4"
+                   effects={["half_opacity"]}>
+              <Rect x="0" y="0" width="64" height="32" color="#ff0000" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="mask_shape_effect_scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+
+        let center = rendered.get_pixel(32, 16);
+        let expanded_edge = rendered.get_pixel(17, 16);
+        let hidden = rendered.get_pixel(5, 16);
+        assert!(
+            center[0] > 90 && center[0] < 180,
+            "expected ordered opacity effect on masked group, got {center:?}"
+        );
+        assert!(
+            expanded_edge[0] > 5,
+            "expected mask expansion plus feather to reveal edge, got {expanded_edge:?}"
+        );
+        assert!(
+            hidden[0] < 5,
+            "expected distant pixel to remain hidden, got {hidden:?}"
         );
     }
 
@@ -13122,6 +13583,7 @@ mod tests {
         let path = PathNode {
             id: Some("compound_path_cache_test".to_string()),
             brush: None,
+            material: None,
             x: "0".to_string(),
             y: "0".to_string(),
             rotation: "0".to_string(),
@@ -13136,7 +13598,13 @@ mod tests {
             stroke: "none".to_string(),
             fill: Some("#ff0000".to_string()),
             fill_rule: "nonzero".to_string(),
+            boolean_op: "none".to_string(),
+            offset_path: "0".to_string(),
+            round_corners: "0".to_string(),
+            normalize: "false".to_string(),
             stroke_width: "1".to_string(),
+            stroke_width_start: "1".to_string(),
+            stroke_width_end: "1".to_string(),
             opacity: "1".to_string(),
             trim_start: "0".to_string(),
             trim_end: "1".to_string(),

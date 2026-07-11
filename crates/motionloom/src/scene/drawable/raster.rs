@@ -7,22 +7,30 @@ use crate::scene::spatial::Affine2;
 
 use super::{
     PaintBounds, Point2, ResolvedPaint, SceneBlendMode, StrokeCap, StrokeJoin, StrokeStyle,
-    StrokeTexture, parse_color, point_distance, point_in_subpaths_even_odd,
-    point_in_subpaths_nonzero, polyline_bounds, polyline_total_length, sample_paint,
-    stroke_hash_signed, stroke_taper_pressure, stroke_texture_copy_count, stroke_texture_seed,
-    stroke_texture_variant, trimmed_polyline_segments_with_progress,
+    StrokeTexture, parse_color, point_distance, point_in_single_subpath,
+    point_in_subpaths_even_odd, point_in_subpaths_nonzero, polyline_bounds, polyline_total_length,
+    sample_paint, stroke_hash_signed, stroke_taper_pressure, stroke_texture_copy_count,
+    stroke_texture_seed, stroke_texture_variant, trimmed_polyline_segments_with_progress,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FillRule {
     NonZero,
     EvenOdd,
+    Union,
+    Subtract,
+    Intersect,
+    Xor,
 }
 
 impl FillRule {
     pub(crate) fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "evenodd" | "even-odd" => Self::EvenOdd,
+            "union" => Self::Union,
+            "subtract" | "difference" => Self::Subtract,
+            "intersect" | "intersection" => Self::Intersect,
+            "xor" | "exclude" => Self::Xor,
             _ => Self::NonZero,
         }
     }
@@ -857,6 +865,32 @@ fn point_in_subpaths(point: Point2, subpaths: &[Vec<Point2>], fill_rule: FillRul
     match fill_rule {
         FillRule::NonZero => point_in_subpaths_nonzero(point, subpaths),
         FillRule::EvenOdd => point_in_subpaths_even_odd(point, subpaths),
+        FillRule::Union => subpaths
+            .iter()
+            .any(|path| point_in_single_subpath(point, path)),
+        FillRule::Subtract => {
+            subpaths
+                .first()
+                .is_some_and(|base| point_in_single_subpath(point, base))
+                && !subpaths
+                    .iter()
+                    .skip(1)
+                    .any(|path| point_in_single_subpath(point, path))
+        }
+        FillRule::Intersect => {
+            !subpaths.is_empty()
+                && subpaths
+                    .iter()
+                    .all(|path| point_in_single_subpath(point, path))
+        }
+        FillRule::Xor => {
+            subpaths
+                .iter()
+                .filter(|path| point_in_single_subpath(point, path))
+                .count()
+                % 2
+                == 1
+        }
     }
 }
 

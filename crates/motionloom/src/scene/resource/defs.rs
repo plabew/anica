@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::dsl::GraphScript;
 use crate::scene::model::{
-    FilterDef, FontDef, GradientDef, MaskNode, PaletteNode, PrecomposeNode, SceneNode, TextureDef,
+    FilterDef, FontDef, GradientDef, MaskNode, MaterialDef, NoiseDef, PaletteNode, PrecomposeNode,
+    SceneNode, TextureDef,
 };
 
 pub(crate) fn collect_graph_gradient_defs(
@@ -12,6 +13,77 @@ pub(crate) fn collect_graph_gradient_defs(
     collect_scene_gradient_defs(&graph.scene_nodes, out);
     for scene in &graph.scenes {
         collect_scene_gradient_defs(&scene.children, out);
+    }
+}
+
+pub(crate) fn collect_graph_noise_defs(graph: &GraphScript, out: &mut HashMap<String, NoiseDef>) {
+    collect_scene_resource_defs(&graph.scene_nodes, &mut |defs| {
+        for value in &defs.noises {
+            out.insert(value.id.clone(), value.clone());
+        }
+    });
+    for scene in &graph.scenes {
+        collect_scene_resource_defs(&scene.children, &mut |defs| {
+            for value in &defs.noises {
+                out.insert(value.id.clone(), value.clone());
+            }
+        });
+    }
+}
+
+pub(crate) fn collect_graph_material_defs(
+    graph: &GraphScript,
+    out: &mut HashMap<String, MaterialDef>,
+) {
+    collect_scene_resource_defs(&graph.scene_nodes, &mut |defs| {
+        for value in &defs.materials {
+            out.insert(value.id.clone(), value.clone());
+        }
+    });
+    for scene in &graph.scenes {
+        collect_scene_resource_defs(&scene.children, &mut |defs| {
+            for value in &defs.materials {
+                out.insert(value.id.clone(), value.clone());
+            }
+        });
+    }
+}
+
+fn collect_scene_resource_defs(
+    nodes: &[SceneNode],
+    visit: &mut impl FnMut(&crate::scene::model::DefsNode),
+) {
+    for node in nodes {
+        let children = match node {
+            SceneNode::Defs(defs) => {
+                visit(defs);
+                for value in &defs.masks {
+                    collect_scene_resource_defs(&value.children, visit);
+                }
+                for value in &defs.precomposes {
+                    collect_scene_resource_defs(&value.children, visit);
+                }
+                for value in &defs.components {
+                    collect_scene_resource_defs(&value.children, visit);
+                }
+                continue;
+            }
+            SceneNode::Timeline(v) => &v.children,
+            SceneNode::Track(v) => &v.children,
+            SceneNode::Sequence(v) => &v.children,
+            SceneNode::Chain(v) => &v.children,
+            SceneNode::Group(v) => &v.children,
+            SceneNode::Puppet(v) => &v.children,
+            SceneNode::Part(v) => &v.children,
+            SceneNode::Repeat(v) => &v.children,
+            SceneNode::Mask(v) => &v.children,
+            SceneNode::Precompose(v) => &v.children,
+            SceneNode::Layer(v) => &v.children,
+            SceneNode::Camera(v) => &v.children,
+            SceneNode::Character(v) => &v.children,
+            _ => continue,
+        };
+        collect_scene_resource_defs(children, visit);
     }
 }
 

@@ -26,6 +26,79 @@ pub(crate) fn apply_alpha_mask_with_invert(layer: &mut RgbaImage, mask: &RgbaIma
     }
 }
 
+pub(crate) fn shape_alpha_mask(mask: &RgbaImage, expansion: f32, feather: f32) -> RgbaImage {
+    let mut alpha = mask.clone();
+    let radius = expansion.abs().ceil().clamp(0.0, 64.0) as i32;
+    if radius > 0 {
+        let source = alpha.clone();
+        let expand = expansion > 0.0;
+        for y in 0..alpha.height() {
+            for x in 0..alpha.width() {
+                let mut value = if expand { 0u8 } else { 255u8 };
+                for oy in -radius..=radius {
+                    for ox in -radius..=radius {
+                        if ox * ox + oy * oy > radius * radius {
+                            continue;
+                        }
+                        let sx = x as i32 + ox;
+                        let sy = y as i32 + oy;
+                        let sample = if sx < 0
+                            || sy < 0
+                            || sx >= source.width() as i32
+                            || sy >= source.height() as i32
+                        {
+                            0
+                        } else {
+                            source.get_pixel(sx as u32, sy as u32)[3]
+                        };
+                        value = if expand {
+                            value.max(sample)
+                        } else {
+                            value.min(sample)
+                        };
+                    }
+                }
+                alpha.get_pixel_mut(x, y)[3] = value;
+            }
+        }
+    }
+
+    let feather_radius = feather.ceil().clamp(0.0, 64.0) as i32;
+    if feather_radius > 0 {
+        for horizontal in [true, false] {
+            let source = alpha.clone();
+            for y in 0..alpha.height() {
+                for x in 0..alpha.width() {
+                    let mut sum = 0u32;
+                    let mut count = 0u32;
+                    for offset in -feather_radius..=feather_radius {
+                        let sx = if horizontal {
+                            x as i32 + offset
+                        } else {
+                            x as i32
+                        };
+                        let sy = if horizontal {
+                            y as i32
+                        } else {
+                            y as i32 + offset
+                        };
+                        if sx >= 0
+                            && sy >= 0
+                            && sx < source.width() as i32
+                            && sy < source.height() as i32
+                        {
+                            sum += source.get_pixel(sx as u32, sy as u32)[3] as u32;
+                            count += 1;
+                        }
+                    }
+                    alpha.get_pixel_mut(x, y)[3] = (sum / count.max(1)) as u8;
+                }
+            }
+        }
+    }
+    alpha
+}
+
 pub(crate) fn composite_layer(canvas: &mut RgbaImage, layer: &RgbaImage) {
     for (x, y, pixel) in layer.enumerate_pixels() {
         if pixel[3] > 0 && x < canvas.width() && y < canvas.height() {

@@ -118,6 +118,8 @@ pub(crate) struct GpuSceneTextureMatte {
     pub(crate) texture: GpuSceneNativeTexture,
     pub(crate) mode: GpuSceneMatteMode,
     pub(crate) invert: bool,
+    pub(crate) feather: f32,
+    pub(crate) expansion: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -760,11 +762,19 @@ pub(crate) fn matte_texture_uniform(
         quad[2].0,
         quad[2].1,
         quad[2].2,
-        0.0,
+        layer
+            .matte
+            .as_ref()
+            .map(|matte| matte.expansion)
+            .unwrap_or(0.0),
         quad[3].0,
         quad[3].1,
         quad[3].2,
-        0.0,
+        layer
+            .matte
+            .as_ref()
+            .map(|matte| matte.feather)
+            .unwrap_or(0.0),
     ];
     let mut uniform = [0u8; 160];
     for (ix, value) in values.iter().enumerate() {
@@ -986,6 +996,32 @@ pub(crate) fn post_texture_overlay_uniform(params: PostTextureOverlayUniformPara
         params.bump_strength.clamp(0.0, 2.0),
         params.relief.clamp(0.0, 2.0),
         params.asset_flags,
+    ])
+}
+
+pub(crate) fn post_material_displacement_uniform(
+    canvas_w: u32,
+    canvas_h: u32,
+    kind: f32,
+    scale: f32,
+    amount: f32,
+    seed: f32,
+    roughness: f32,
+    specular: f32,
+) -> [u8; 48] {
+    f32_bytes(&[
+        canvas_w as f32,
+        canvas_h as f32,
+        roughness.clamp(0.0, 1.0),
+        specular.clamp(0.0, 2.0),
+        scale.clamp(0.001, 4096.0),
+        amount.clamp(-256.0, 256.0),
+        seed,
+        9.0,
+        kind,
+        0.0,
+        0.0,
+        0.0,
     ])
 }
 

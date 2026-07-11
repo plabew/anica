@@ -84,6 +84,46 @@ fn fbm(p_in: vec2<f32>) -> f32 {
     return sum;
 }
 
+fn turbulence(p_in: vec2<f32>) -> f32 {
+    var p = p_in; var amp = 0.55; var sum = 0.0;
+    for (var i = 0; i < 5; i = i + 1) {
+        sum = sum + abs(noise2(p) * 2.0 - 1.0) * amp;
+        p = p * 2.07 + vec2<f32>(13.7, 8.3); amp = amp * 0.5;
+    }
+    return clamp(sum, 0.0, 1.0);
+}
+
+fn cellular(p: vec2<f32>) -> f32 {
+    let cell = floor(p); let local = fract(p); var nearest = 10.0;
+    for (var oy = -1; oy <= 1; oy = oy + 1) {
+        for (var ox = -1; ox <= 1; ox = ox + 1) {
+            let offset = vec2<f32>(f32(ox), f32(oy));
+            let point = vec2<f32>(hash21(cell + offset), hash21(cell + offset + vec2<f32>(31.7, 19.3)));
+            nearest = min(nearest, length(offset + point - local));
+        }
+    }
+    return clamp(nearest, 0.0, 1.0);
+}
+
+fn procedural_noise(kind: i32, p: vec2<f32>, seed: f32) -> f32 {
+    let q = p + vec2<f32>(seed, seed * 1.73);
+    if (kind == 7) { return turbulence(q); }
+    if (kind == 8) { return 1.0 - abs(fbm(q) * 2.0 - 1.0); }
+    if (kind == 9) { return cellular(q); }
+    if (kind == 10) {
+        let stretched = vec2<f32>(q.x * 1.9, q.y * 0.48);
+        let warp = vec2<f32>(fbm(stretched * 0.38), fbm(stretched * 0.38 + vec2<f32>(17.2, 8.1))) - vec2<f32>(0.5);
+        return fbm(stretched + warp * vec2<f32>(4.2, 1.8));
+    }
+    if (kind == 11) {
+        let warp = fbm(vec2<f32>(q.x * 0.35, q.y * 0.22));
+        return clamp(0.5
+            + 0.28 * sin(q.y * 2.4 + warp * 5.0)
+            + 0.18 * sin(q.y * 5.1 - q.x * 1.7 + warp * 3.0), 0.0, 1.0);
+    }
+    return fbm(q);
+}
+
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
@@ -189,6 +229,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    if (mode == 9) {
+        let uv = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / max(params.canvas.xy, vec2<f32>(1.0));
+        let scale = max(params.params.x, 0.001);
+        let amount = params.params.y;
+        let seed = params.params.z;
+        let roughness = clamp(params.canvas.z, 0.0, 1.0);
+        let specular = clamp(params.canvas.w, 0.0, 2.0);
+        let kind = i32(round(params.extra.x));
+        let n = procedural_noise(kind, uv * scale, seed);
+        let nx = procedural_noise(kind, (uv + vec2<f32>(1.0 / params.canvas.x, 0.0)) * scale, seed) - n;
+        let ny = procedural_noise(kind, (uv + vec2<f32>(0.0, 1.0 / params.canvas.y)) * scale, seed) - n;
+        let sample_xy = vec2<i32>(
+            clamp(i32(f32(x) + nx * amount), 0, i32(params.canvas.x) - 1),
+            clamp(i32(f32(y) + ny * amount), 0, i32(params.canvas.y) - 1)
+        );
+        let src = textureLoad(base_tex, sample_xy, 0);
+        let normal = normalize(vec3<f32>(-nx * scale, -ny * scale, 1.0));
+        let highlight = pow(max(dot(normal, normalize(vec3<f32>(-0.4, -0.5, 1.0))), 0.0), mix(48.0, 4.0, roughness)) * specular;
+        textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(src.rgb + vec3<f32>(highlight), vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
+        return;
+    }
+
     if (mode == 7) {
         let src = textureLoad(base_tex, vec2<i32>(i32(x), i32(y)), 0);
         let uv = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / max(params.canvas.xy, vec2<f32>(1.0));
@@ -200,7 +262,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let asset_flags = params.extra.w;
         let has_texture = asset_flags >= 0.5;
         let has_height = asset_flags >= 1.5;
-        var tex_value = fbm(uv * scale + vec2<f32>(seed, seed * 1.73));
+        var tex_value = procedural_noise(kind, uv * scale, seed);
         if (kind == 1) {
             let fibers = 0.5 + 0.5 * sin((uv.y * scale * 8.0 + tex_value * 4.0 + seed) * 6.28318);
             tex_value = mix(tex_value, fibers, 0.35);

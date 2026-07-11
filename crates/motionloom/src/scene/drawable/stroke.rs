@@ -34,6 +34,8 @@ pub(crate) struct StrokeStyle {
     pub(crate) join: StrokeJoin,
     pub(crate) taper_start: f32,
     pub(crate) taper_end: f32,
+    pub(crate) width_start: f32,
+    pub(crate) width_end: f32,
     pub(crate) texture: StrokeTexture,
     pub(crate) roughness: f32,
     pub(crate) copies: u32,
@@ -51,6 +53,8 @@ impl Default for StrokeStyle {
             join: StrokeJoin::Round,
             taper_start: 0.0,
             taper_end: 0.0,
+            width_start: 1.0,
+            width_end: 1.0,
             texture: StrokeTexture::Solid,
             roughness: 0.0,
             copies: 1,
@@ -108,6 +112,8 @@ pub(crate) fn eval_line_stroke_style(
         join: StrokeJoin::Round,
         taper_start: eval_scene_number(&line.taper_start, time_norm, time_sec)?.clamp(0.0, 0.5),
         taper_end: eval_scene_number(&line.taper_end, time_norm, time_sec)?.clamp(0.0, 0.5),
+        width_start: 1.0,
+        width_end: 1.0,
         texture,
         roughness: params.roughness,
         copies: params.copies,
@@ -142,6 +148,8 @@ pub(crate) fn eval_polyline_stroke_style(
         join: parse_stroke_join(&polyline.line_join),
         taper_start: eval_scene_number(&polyline.taper_start, time_norm, time_sec)?.clamp(0.0, 0.5),
         taper_end: eval_scene_number(&polyline.taper_end, time_norm, time_sec)?.clamp(0.0, 0.5),
+        width_start: 1.0,
+        width_end: 1.0,
         texture,
         roughness: params.roughness,
         copies: params.copies,
@@ -176,6 +184,9 @@ pub(crate) fn eval_path_stroke_style(
         join: parse_stroke_join(&path.line_join),
         taper_start: eval_scene_number(&path.taper_start, time_norm, time_sec)?.clamp(0.0, 0.5),
         taper_end: eval_scene_number(&path.taper_end, time_norm, time_sec)?.clamp(0.0, 0.5),
+        width_start: eval_scene_number(&path.stroke_width_start, time_norm, time_sec)?
+            .clamp(0.0, 16.0),
+        width_end: eval_scene_number(&path.stroke_width_end, time_norm, time_sec)?.clamp(0.0, 16.0),
         texture,
         roughness: params.roughness,
         copies: params.copies,
@@ -425,7 +436,8 @@ pub(crate) fn stroke_hash_signed(seed: f32) -> f32 {
 }
 
 pub(crate) fn stroke_taper_pressure(t: f32, style: StrokeStyle) -> f32 {
-    let mut pressure: f32 = 1.0;
+    let mut pressure =
+        style.width_start + (style.width_end - style.width_start) * t.clamp(0.0, 1.0);
     if style.taper_start > 0.0001 {
         pressure = pressure.min((t / style.taper_start).clamp(0.0, 1.0));
     }

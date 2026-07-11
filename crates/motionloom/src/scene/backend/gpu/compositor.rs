@@ -18,9 +18,9 @@ use crate::scene::drawable::{
     GpuSceneTextureSource, PostLightSweepUniformParams, PostMagnifyLensUniformParams,
     PostTextureOverlayUniformParams, batch_shape_storage_bytes, batch_shape_uniform,
     matte_texture_uniform, post_blur_uniform, post_color_uniform, post_hsla_overlay_uniform,
-    post_light_sweep_uniform, post_magnify_lens_uniform, post_opacity_uniform,
-    post_texture_overlay_uniform, post_tint_uniform, post_tone_map_uniform, texture_layer_bounds,
-    texture_layer_projected_bounds,
+    post_light_sweep_uniform, post_magnify_lens_uniform, post_material_displacement_uniform,
+    post_opacity_uniform, post_texture_overlay_uniform, post_tint_uniform, post_tone_map_uniform,
+    texture_layer_bounds, texture_layer_projected_bounds,
 };
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 use crate::scene::resource::{load_rgba_image_source, load_svg_source};
@@ -2441,6 +2441,46 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         })
     }
 
+    pub(crate) fn apply_gpu_material_displacement_texture(
+        &mut self,
+        input: &GpuSceneNativeTexture,
+        kind: f32,
+        scale: f32,
+        amount: f32,
+        seed: f32,
+        roughness: f32,
+        specular: f32,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let (width, height) = (input.width.max(1), input.height.max(1));
+        let uniform = post_material_displacement_uniform(
+            width, height, kind, scale, amount, seed, roughness, specular,
+        );
+        let uniform_buffer = self.make_post_uniform_buffer(&uniform);
+        let dst = Arc::new(Self::make_canvas_texture(&self.device, width, height));
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("motionloom-material-displacement"),
+            });
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        self.dispatch_post_pass_sized(
+            &mut encoder,
+            &input.texture,
+            &dst,
+            &uniform_buffer,
+            width,
+            height,
+            &mut keepalive,
+        );
+        self.submit_encoder(encoder);
+        Ok(GpuSceneNativeTexture {
+            texture: dst,
+            width,
+            height,
+            _keepalive_textures: vec![input.texture.clone()],
+        })
+    }
+
     pub(crate) fn apply_gpu_image_texture_overlay_texture(
         &mut self,
         input: &GpuSceneNativeTexture,
@@ -2607,6 +2647,50 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 label: Some("anica-motionloom-scene-post-color-texture-gpu-encoder"),
             });
         let uniform = post_color_uniform(self.width, self.height, brightness, contrast, saturation);
+        let uniform_buffer = self.make_post_uniform_buffer(&uniform);
+        let dst = std::sync::Arc::new(Self::make_canvas_texture(
+            &self.device,
+            self.width,
+            self.height,
+        ));
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        self.dispatch_post_pass(
+            &mut encoder,
+            &input.texture,
+            &dst,
+            &uniform_buffer,
+            &mut keepalive,
+        );
+        self.submit_encoder(encoder);
+        drop(uniform_buffer);
+        drop(keepalive);
+        Ok(GpuSceneNativeTexture {
+            texture: dst,
+            width: self.width,
+            height: self.height,
+            _keepalive_textures: vec![input.texture.clone()],
+        })
+    }
+
+    pub(crate) fn apply_gpu_opacity_texture(
+        &mut self,
+        input: &GpuSceneNativeTexture,
+        opacity: f32,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        if input.width != self.width || input.height != self.height {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: format!(
+                    "texture opacity input size {}x{} does not match GPU compositor {}x{}",
+                    input.width, input.height, self.width, self.height
+                ),
+            });
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-scene-post-opacity-texture-gpu-encoder"),
+            });
+        let uniform = post_opacity_uniform(self.width, self.height, opacity);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(
             &self.device,

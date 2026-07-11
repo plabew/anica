@@ -1144,8 +1144,25 @@ impl ExternalPreviewAnchorElement {
 
     fn minimum_visible_top(viewport_h: f32) -> f32 {
         // The WGPU preview is an OS window, so GPUI scroll clipping cannot mask it.
-        // Hide it once the slot scrolls into the fixed header/control area.
+        // Keep it below the fixed Studio header when its in-page slot scrolls away.
         (viewport_h * 0.16).max(170.0)
+    }
+
+    fn pinned_origin(
+        local_x: f32,
+        local_y: f32,
+        width: f32,
+        height: f32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> (f32, f32) {
+        let minimum_top = Self::minimum_visible_top(viewport_h);
+        let maximum_x = (viewport_w - width).max(0.0);
+        let maximum_y = (viewport_h - height).max(minimum_top);
+        (
+            local_x.clamp(0.0, maximum_x),
+            local_y.clamp(minimum_top, maximum_y),
+        )
     }
 }
 
@@ -1212,34 +1229,23 @@ impl Element for ExternalPreviewAnchorElement {
         let local_y = f32::from(bounds.origin.y);
         let local_w = f32::from(bounds.size.width);
         let local_h = f32::from(bounds.size.height);
-        let minimum_visible_top = Self::minimum_visible_top(viewport_h);
-        let fully_in_viewport = local_x >= 0.0
-            && local_y >= minimum_visible_top
-            && local_x + local_w <= viewport_w
-            && local_y + local_h <= viewport_h;
-        if !fully_in_viewport {
-            if motionloom_external_preview_debug_enabled() {
-                eprintln!(
-                    "external MotionLoom preview hidden outside slot viewport: local=({local_x:.1},{local_y:.1} {local_w:.1}x{local_h:.1}) viewport={viewport_w:.1}x{viewport_h:.1} min_top={minimum_visible_top:.1}"
-                );
-            }
-            self.clear_desired_window();
-            return;
-        }
+        let (pinned_x, pinned_y) = Self::pinned_origin(
+            local_x, local_y, local_w, local_h, viewport_w, viewport_h,
+        );
         let content_offset_y = (f32::from(window_bounds.size.height)
             - f32::from(window.viewport_size().height))
         .max(0.0);
         let (calibration_x, calibration_y) = motionloom_external_preview_offset();
-        let host_x = f64::from(window_bounds.origin.x) + f64::from(bounds.origin.x) + calibration_x;
+        let host_x = f64::from(window_bounds.origin.x) + f64::from(pinned_x) + calibration_x;
         let host_y = f64::from(window_bounds.origin.y)
             + f64::from(content_offset_y)
-            + f64::from(bounds.origin.y)
+            + f64::from(pinned_y)
             + calibration_y;
         let host_w = f64::from(bounds.size.width);
         let host_h = f64::from(bounds.size.height);
         if motionloom_external_preview_debug_enabled() {
             eprintln!(
-                "external MotionLoom preview attach: window=({:.1},{:.1} {:.1}x{:.1}) viewport={:.1}x{:.1} content_offset_y={content_offset_y:.1} local=({:.1},{:.1} {:.1}x{:.1}) offset=({calibration_x:.1},{calibration_y:.1}) sent=({host_x:.1},{host_y:.1} {host_w:.1}x{host_h:.1}) scale={:.2}",
+                "external MotionLoom preview attach: window=({:.1},{:.1} {:.1}x{:.1}) viewport={:.1}x{:.1} content_offset_y={content_offset_y:.1} local=({:.1},{:.1} {:.1}x{:.1}) pinned=({pinned_x:.1},{pinned_y:.1}) offset=({calibration_x:.1},{calibration_y:.1}) sent=({host_x:.1},{host_y:.1} {host_w:.1}x{host_h:.1}) scale={:.2}",
                 f64::from(window_bounds.origin.x),
                 f64::from(window_bounds.origin.y),
                 f64::from(window_bounds.size.width),

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::scene::render::MotionLoomSceneRenderError;
 
-use super::{PathToken, tokenize_path_data};
+use super::{PathToken, Point2, parse_path_subpaths, point_distance, tokenize_path_data};
 
 #[derive(Debug, Clone)]
 struct PathMorphKeyframe {
@@ -231,13 +231,28 @@ fn interpolate_path_morph_tokens(
     t: f32,
     source: &str,
 ) -> Result<String, MotionLoomSceneRenderError> {
-    if from.len() != to.len() {
-        return Err(invalid_path_morph(
-            source,
-            "incompatible path data: keyframes have different token counts.",
-        ));
+    if path_morph_tokens_are_compatible(from, to) {
+        return interpolate_compatible_path_morph_tokens(from, to, t, source);
     }
 
+    interpolate_normalized_path_morph(from, to, t, source)
+}
+
+fn path_morph_tokens_are_compatible(from: &[PathMorphToken], to: &[PathMorphToken]) -> bool {
+    from.len() == to.len()
+        && from.iter().zip(to).all(|(a, b)| match (*a, *b) {
+            (PathMorphToken::Command(a), PathMorphToken::Command(b)) => a == b,
+            (PathMorphToken::Number(_), PathMorphToken::Number(_)) => true,
+            _ => false,
+        })
+}
+
+fn interpolate_compatible_path_morph_tokens(
+    from: &[PathMorphToken],
+    to: &[PathMorphToken],
+    t: f32,
+    source: &str,
+) -> Result<String, MotionLoomSceneRenderError> {
     let mut out = Vec::with_capacity(from.len());
     for (from_token, to_token) in from.iter().zip(to.iter()) {
         match (*from_token, *to_token) {
@@ -263,6 +278,202 @@ fn interpolate_path_morph_tokens(
     }
 
     Ok(path_morph_tokens_to_d(&out))
+}
+
+fn interpolate_normalized_path_morph(
+    from: &[PathMorphToken],
+    to: &[PathMorphToken],
+    t: f32,
+    source: &str,
+) -> Result<String, MotionLoomSceneRenderError> {
+    let from_d = path_morph_tokens_to_d(from);
+    let to_d = path_morph_tokens_to_d(to);
+    let from_subpaths = parse_path_subpaths(&from_d)?;
+    let to_subpaths = parse_path_subpaths(&to_d)?;
+    if from_subpaths.len() != to_subpaths.len() {
+        return Err(invalid_path_morph(
+            source,
+            format!(
+                "incompatible path topology: keyframes contain {} and {} subpaths; add matching subpaths before morphing.",
+                from_subpaths.len(),
+                to_subpaths.len()
+            ),
+        ));
+    }
+
+    let mut output = Vec::with_capacity(from_subpaths.len());
+    for (from_path, to_path) in from_subpaths.iter().zip(&to_subpaths) {
+        let from_closed = subpath_is_closed(from_path);
+        let to_closed = subpath_is_closed(to_path);
+        if from_closed != to_closed {
+            return Err(invalid_path_morph(
+                source,
+                "incompatible path topology: cannot morph an open subpath into a closed subpath.",
+            ));
+        }
+
+        let sample_count = morph_sample_count(from_path, to_path, from_closed);
+        let from_samples = resample_subpath(from_path, sample_count, from_closed);
+        let mut to_samples = resample_subpath(to_path, sample_count, to_closed);
+        if from_closed {
+            match_subpath_winding(&from_samples, &mut to_samples);
+            align_closed_subpath_start(&from_samples, &mut to_samples);
+        }
+        output.push(
+            from_samples
+                .iter()
+                .zip(&to_samples)
+                .map(|(a, b)| a.lerp(*b, t))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    Ok(sampled_subpaths_to_d(&output, &from_subpaths))
+}
+
+fn subpath_is_closed(points: &[Point2]) -> bool {
+    points.len() > 2 && point_distance(points[0], points[points.len() - 1]) <= 0.001
+}
+
+fn morph_sample_count(from: &[Point2], to: &[Point2], closed: bool) -> usize {
+    let from_len = from.len().saturating_sub(usize::from(closed));
+    let to_len = to.len().saturating_sub(usize::from(closed));
+    from_len
+        .max(to_len)
+        .max(if closed { 24 } else { 2 })
+        .min(512)
+}
+
+fn resample_subpath(points: &[Point2], count: usize, closed: bool) -> Vec<Point2> {
+    let usable = if closed && points.len() > 1 {
+        &points[..points.len() - 1]
+    } else {
+        points
+    };
+    if usable.len() <= 1 {
+        return vec![usable.first().copied().unwrap_or(Point2::new(0.0, 0.0)); count];
+    }
+
+    let segment_count = if closed {
+        usable.len()
+    } else {
+        usable.len() - 1
+    };
+    let mut lengths = Vec::with_capacity(segment_count + 1);
+    lengths.push(0.0);
+    for index in 0..segment_count {
+        let next = if index + 1 == usable.len() {
+            0
+        } else {
+            index + 1
+        };
+        let value = lengths[index] + point_distance(usable[index], usable[next]);
+        lengths.push(value);
+    }
+    let total = *lengths.last().unwrap_or(&0.0);
+    if total <= 0.0001 {
+        return vec![usable[0]; count];
+    }
+
+    (0..count)
+        .map(|sample| {
+            let denominator = if closed {
+                count
+            } else {
+                count.saturating_sub(1).max(1)
+            };
+            let distance = total * sample as f32 / denominator as f32;
+            let segment = lengths
+                .windows(2)
+                .position(|range| distance <= range[1])
+                .unwrap_or(segment_count - 1);
+            let start = usable[segment];
+            let next_index = if segment + 1 == usable.len() {
+                0
+            } else {
+                segment + 1
+            };
+            let segment_len = lengths[segment + 1] - lengths[segment];
+            let local_t = if segment_len <= 0.0001 {
+                0.0
+            } else {
+                (distance - lengths[segment]) / segment_len
+            };
+            start.lerp(usable[next_index], local_t.clamp(0.0, 1.0))
+        })
+        .collect()
+}
+
+fn signed_area(points: &[Point2]) -> f32 {
+    points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(a, b)| a.x * b.y - b.x * a.y)
+        .sum::<f32>()
+        * 0.5
+}
+
+fn match_subpath_winding(reference: &[Point2], candidate: &mut [Point2]) {
+    if signed_area(reference).signum() != signed_area(candidate).signum() {
+        candidate.reverse();
+    }
+}
+
+fn align_closed_subpath_start(reference: &[Point2], candidate: &mut [Point2]) {
+    if reference.is_empty() || candidate.is_empty() {
+        return;
+    }
+    let best_shift = (0..candidate.len())
+        .min_by(|a, b| {
+            let cost_a = reference
+                .iter()
+                .enumerate()
+                .map(|(index, point)| {
+                    let other = candidate[(index + a) % candidate.len()];
+                    (point.x - other.x).powi(2) + (point.y - other.y).powi(2)
+                })
+                .sum::<f32>();
+            let cost_b = reference
+                .iter()
+                .enumerate()
+                .map(|(index, point)| {
+                    let other = candidate[(index + b) % candidate.len()];
+                    (point.x - other.x).powi(2) + (point.y - other.y).powi(2)
+                })
+                .sum::<f32>();
+            cost_a.total_cmp(&cost_b)
+        })
+        .unwrap_or(0);
+    candidate.rotate_left(best_shift);
+}
+
+fn sampled_subpaths_to_d(subpaths: &[Vec<Point2>], originals: &[Vec<Point2>]) -> String {
+    let mut out = String::new();
+    for (points, original) in subpaths.iter().zip(originals) {
+        let Some(first) = points.first() else {
+            continue;
+        };
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!(
+            "M {} {}",
+            format_path_morph_number(first.x),
+            format_path_morph_number(first.y)
+        ));
+        for point in &points[1..] {
+            out.push_str(&format!(
+                " L {} {}",
+                format_path_morph_number(point.x),
+                format_path_morph_number(point.y)
+            ));
+        }
+        if subpath_is_closed(original) {
+            out.push_str(" Z");
+        }
+    }
+    out
 }
 
 fn path_morph_tokens_to_d(tokens: &[PathMorphToken]) -> String {

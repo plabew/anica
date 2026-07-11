@@ -159,6 +159,8 @@ pub struct BackgroundNode {
 #[serde(rename_all = "camelCase")]
 pub struct ImageNode {
     pub id: Option<String>,
+    #[serde(default)]
+    pub material: Option<String>,
     pub src: String,
     pub x: String,
     pub y: String,
@@ -170,6 +172,8 @@ pub struct ImageNode {
 #[serde(rename_all = "camelCase")]
 pub struct SvgNode {
     pub id: Option<String>,
+    #[serde(default)]
+    pub material: Option<String>,
     pub src: String,
     pub x: String,
     pub y: String,
@@ -2323,6 +2327,7 @@ pub(crate) fn parse_image_node(block: &str, line: usize) -> Result<ImageNode, Gr
 
     Ok(ImageNode {
         id,
+        material: attr_value(block, "material").map(|v| strip_wrappers(&v).to_string()),
         src,
         x,
         y,
@@ -2349,6 +2354,7 @@ pub(crate) fn parse_svg_node(block: &str, line: usize) -> Result<SvgNode, GraphP
 
     Ok(SvgNode {
         id,
+        material: attr_value(block, "material").map(|v| strip_wrappers(&v).to_string()),
         src,
         x,
         y,
@@ -2367,6 +2373,8 @@ pub(crate) fn parse_defs_block(
     let id = attr_value(&open_tag, "id").map(|v| strip_wrappers(&v).to_string());
     let mut gradients = Vec::<GradientDef>::new();
     let mut textures = Vec::<TextureDef>::new();
+    let mut noises = Vec::<NoiseDef>::new();
+    let mut materials = Vec::<MaterialDef>::new();
     let mut brushes = Vec::<BrushDef>::new();
     let mut masks = Vec::<MaskNode>::new();
     let mut precomposes = Vec::<PrecomposeNode>::new();
@@ -2401,6 +2409,18 @@ pub(crate) fn parse_defs_block(
         if starts_open_tag(line, "Texture") {
             let (tag, end_ix) = collect_self_closing_block(lines, i)?;
             textures.push(parse_texture_def(&tag, i + 1)?);
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Noise") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            noises.push(parse_noise_def(&tag, i + 1)?);
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "Material") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            materials.push(parse_material_def(&tag, i + 1)?);
             i = end_ix + 1;
             continue;
         }
@@ -2461,6 +2481,8 @@ pub(crate) fn parse_defs_block(
             id,
             gradients,
             textures,
+            noises,
+            materials,
             brushes,
             masks,
             precomposes,
@@ -2471,6 +2493,35 @@ pub(crate) fn parse_defs_block(
         },
         close_ix,
     ))
+}
+
+fn parse_noise_def(block: &str, line: usize) -> Result<NoiseDef, GraphParseError> {
+    Ok(NoiseDef {
+        id: strip_wrappers(&required_attr_value(block, "id", line)?).to_string(),
+        kind: scene_attr_or_default(block, &["type", "kind"], "fbm"),
+        scale: scene_attr_or_default(block, &["scale", "frequency"], "42"),
+        octaves: scene_attr_or_default(block, &["octaves"], "4"),
+        seed: scene_attr_or_default(block, &["seed"], "0"),
+        contrast: scene_attr_or_default(block, &["contrast"], "1"),
+        evolution: scene_attr_or_default(block, &["evolution", "time"], "0"),
+    })
+}
+
+fn parse_material_def(block: &str, line: usize) -> Result<MaterialDef, GraphParseError> {
+    Ok(MaterialDef {
+        id: strip_wrappers(&required_attr_value(block, "id", line)?).to_string(),
+        texture: attr_value(block, "texture").map(|v| strip_wrappers(&v).to_string()),
+        texture_amount: scene_attr_or_default(block, &["textureAmount", "texture_amount"], "0.25"),
+        displacement: attr_value(block, "displacement").map(|v| strip_wrappers(&v).to_string()),
+        displacement_amount: scene_attr_or_default(
+            block,
+            &["displacementAmount", "displacement_amount"],
+            "0",
+        ),
+        roughness: scene_attr_or_default(block, &["roughness"], "0.5"),
+        specular: scene_attr_or_default(block, &["specular"], "0"),
+        opacity: scene_attr_or_default(block, &["opacity"], "1"),
+    })
 }
 
 fn parse_texture_def(block: &str, line: usize) -> Result<TextureDef, GraphParseError> {
@@ -3341,6 +3392,7 @@ pub(crate) fn parse_path_node(
     Ok(PathNode {
         id,
         brush: brush_id,
+        material: attr_value(block, "material").map(|v| strip_wrappers(&v).to_string()),
         x: scene_attr_or_default(block, &["x"], "0"),
         y: scene_attr_or_default(block, &["y"], "0"),
         rotation: scene_attr_or_default(block, &["rotation"], "0"),
@@ -3366,7 +3418,44 @@ pub(crate) fn parse_path_node(
             .or_else(|| attr_value(block, "fill_rule"))
             .map(|v| strip_wrappers(&v).to_string())
             .unwrap_or_else(|| "nonzero".to_string()),
+        boolean_op: scene_attr_or_default(
+            block,
+            &["booleanOp", "boolean_op", "compoundOp", "compound_op"],
+            "none",
+        ),
+        offset_path: scene_attr_or_default(block, &["offsetPath", "offset_path", "offset"], "0"),
+        round_corners: scene_attr_or_default(
+            block,
+            &[
+                "roundCorners",
+                "round_corners",
+                "cornerRadius",
+                "corner_radius",
+            ],
+            "0",
+        ),
+        normalize: scene_attr_or_default(block, &["normalize", "normalizePath"], "false"),
         stroke_width,
+        stroke_width_start: scene_attr_or_default(
+            block,
+            &[
+                "strokeWidthStart",
+                "stroke_width_start",
+                "widthStart",
+                "width_start",
+            ],
+            "1",
+        ),
+        stroke_width_end: scene_attr_or_default(
+            block,
+            &[
+                "strokeWidthEnd",
+                "stroke_width_end",
+                "widthEnd",
+                "width_end",
+            ],
+            "1",
+        ),
         opacity,
         trim_start,
         trim_end,
@@ -3630,12 +3719,25 @@ fn parse_group_node(
         .or_else(|| attr_value(block, "mask_mode"))
         .map(|v| strip_wrappers(&v).to_string())
         .unwrap_or_else(|| "alpha".to_string());
+    let mask_feather =
+        scene_attr_or_default(block, &["maskFeather", "mask_feather", "feather"], "0");
+    let mask_expansion = scene_attr_or_default(
+        block,
+        &["maskExpansion", "mask_expansion", "expansion"],
+        "0",
+    );
+    let effects = attr_value(block, "effects")
+        .or_else(|| attr_value(block, "effectStack"))
+        .or_else(|| attr_value(block, "effect_stack"))
+        .map(|value| parse_scene_string_list(&value))
+        .unwrap_or_default();
     let opacity = attr_value(block, "opacity")
         .map(|v| strip_wrappers(&v).to_string())
         .unwrap_or_else(|| "1.0".to_string());
     Ok(GroupNode {
         id,
         brush,
+        material: attr_value(block, "material").map(|v| strip_wrappers(&v).to_string()),
         x,
         y,
         rotation,
@@ -3653,9 +3755,24 @@ fn parse_group_node(
         mask,
         mask_from,
         mask_mode,
+        mask_feather,
+        mask_expansion,
+        effects,
         opacity,
         children,
     })
+}
+
+fn parse_scene_string_list(raw: &str) -> Vec<String> {
+    strip_wrappers(raw)
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(str::trim)
+        .map(|value| value.trim_matches(['"', '\'']).trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 fn parse_puppet_node(
@@ -4089,6 +4206,13 @@ fn parse_scene_layer_node(
         .or_else(|| attr_value(block, "mask_mode"))
         .map(|v| strip_wrappers(&v).to_string())
         .unwrap_or_else(|| "alpha".to_string());
+    let mask_feather =
+        scene_attr_or_default(block, &["maskFeather", "mask_feather", "feather"], "0");
+    let mask_expansion = scene_attr_or_default(
+        block,
+        &["maskExpansion", "mask_expansion", "expansion"],
+        "0",
+    );
     let matte = attr_value(block, "matte")
         .or_else(|| attr_value(block, "trackMatte"))
         .or_else(|| attr_value(block, "track_matte"))
@@ -4138,6 +4262,8 @@ fn parse_scene_layer_node(
         mask,
         mask_from,
         mask_mode,
+        mask_feather,
+        mask_expansion,
         matte,
         matte_from,
         matte_mode,

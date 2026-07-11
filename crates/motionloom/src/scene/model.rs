@@ -154,6 +154,10 @@ pub struct DefsNode {
     #[serde(default)]
     pub textures: Vec<TextureDef>,
     #[serde(default)]
+    pub noises: Vec<NoiseDef>,
+    #[serde(default)]
+    pub materials: Vec<MaterialDef>,
+    #[serde(default)]
     pub brushes: Vec<BrushDef>,
     #[serde(default)]
     pub masks: Vec<MaskNode>,
@@ -167,6 +171,55 @@ pub struct DefsNode {
     pub fonts: Vec<FontDef>,
     #[serde(default)]
     pub palettes: Vec<PaletteNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoiseDef {
+    pub id: String,
+    #[serde(default = "default_noise_kind")]
+    pub kind: String,
+    #[serde(default = "default_texture_scale")]
+    pub scale: String,
+    #[serde(default = "default_noise_octaves")]
+    pub octaves: String,
+    #[serde(default = "default_scene_zero")]
+    pub seed: String,
+    #[serde(default = "default_scene_one")]
+    pub contrast: String,
+    #[serde(default = "default_scene_zero")]
+    pub evolution: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterialDef {
+    pub id: String,
+    pub texture: Option<String>,
+    #[serde(default = "default_texture_strength")]
+    pub texture_amount: String,
+    pub displacement: Option<String>,
+    #[serde(default = "default_scene_zero")]
+    pub displacement_amount: String,
+    #[serde(default = "default_material_roughness")]
+    pub roughness: String,
+    #[serde(default = "default_material_specular")]
+    pub specular: String,
+    #[serde(default = "default_scene_one")]
+    pub opacity: String,
+}
+
+fn default_noise_kind() -> String {
+    "fbm".to_string()
+}
+fn default_noise_octaves() -> String {
+    "4".to_string()
+}
+fn default_material_roughness() -> String {
+    "0.5".to_string()
+}
+fn default_material_specular() -> String {
+    "0.0".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -569,6 +622,8 @@ pub struct PolylineNode {
 pub struct PathNode {
     pub id: Option<String>,
     pub brush: Option<String>,
+    #[serde(default)]
+    pub material: Option<String>,
     #[serde(default = "default_scene_zero")]
     pub x: String,
     #[serde(default = "default_scene_zero")]
@@ -594,7 +649,19 @@ pub struct PathNode {
     pub fill: Option<String>,
     #[serde(default = "default_path_fill_rule")]
     pub fill_rule: String,
+    #[serde(default = "default_path_boolean_op")]
+    pub boolean_op: String,
+    #[serde(default = "default_scene_zero")]
+    pub offset_path: String,
+    #[serde(default = "default_scene_zero")]
+    pub round_corners: String,
+    #[serde(default = "default_scene_false")]
+    pub normalize: String,
     pub stroke_width: String,
+    #[serde(default = "default_scene_one")]
+    pub stroke_width_start: String,
+    #[serde(default = "default_scene_one")]
+    pub stroke_width_end: String,
     pub opacity: String,
     pub trim_start: String,
     pub trim_end: String,
@@ -632,6 +699,10 @@ pub struct PathNode {
 
 fn default_path_fill_rule() -> String {
     "nonzero".to_string()
+}
+
+fn default_path_boolean_op() -> String {
+    "none".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -694,6 +765,8 @@ pub struct ShadowNode {
 pub struct GroupNode {
     pub id: Option<String>,
     pub brush: Option<String>,
+    #[serde(default)]
+    pub material: Option<String>,
     pub x: String,
     pub y: String,
     pub rotation: String,
@@ -721,6 +794,12 @@ pub struct GroupNode {
     pub mask_from: Option<String>,
     #[serde(default = "default_scene_mask_mode")]
     pub mask_mode: String,
+    #[serde(default = "default_scene_zero")]
+    pub mask_feather: String,
+    #[serde(default = "default_scene_zero")]
+    pub mask_expansion: String,
+    #[serde(default)]
+    pub effects: Vec<String>,
     pub opacity: String,
     pub children: Vec<SceneNode>,
 }
@@ -997,6 +1076,10 @@ pub struct SceneLayerNode {
     pub mask_from: Option<String>,
     #[serde(default = "default_scene_mask_mode")]
     pub mask_mode: String,
+    #[serde(default = "default_scene_zero")]
+    pub mask_feather: String,
+    #[serde(default = "default_scene_zero")]
+    pub mask_expansion: String,
     #[serde(default)]
     pub matte: Option<String>,
     #[serde(default)]

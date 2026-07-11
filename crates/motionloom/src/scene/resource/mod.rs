@@ -21,6 +21,7 @@ pub(crate) use fonts::load_extra_fonts;
 
 pub(crate) use defs::{
     collect_graph_component_defs, collect_graph_filter_defs, collect_graph_font_defs,
-    collect_graph_gradient_defs, collect_graph_mask_defs, collect_graph_palette_defs,
-    collect_graph_precompose_defs, collect_graph_texture_defs,
+    collect_graph_gradient_defs, collect_graph_mask_defs, collect_graph_material_defs,
+    collect_graph_noise_defs, collect_graph_palette_defs, collect_graph_precompose_defs,
+    collect_graph_texture_defs,
 };

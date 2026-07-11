@@ -86,6 +86,47 @@ fn sample_matte(local: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(matte_tex, image_sampler, matte_uv, 0.0);
 }
 
+fn raw_matte_factor(local: vec2<f32>, matte_mode: i32) -> f32 {
+    if (local.x < 0.0 || local.y < 0.0 || local.x >= params.image.z || local.y >= params.image.w) {
+        return 0.0;
+    }
+    let matte = sample_matte(local);
+    if (matte_mode == 2) {
+        return dot(matte.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)) * matte.a;
+    }
+    return matte.a;
+}
+
+fn shaped_matte_factor(local: vec2<f32>, matte_mode: i32) -> f32 {
+    let expansion = clamp(params.quad2.w, -64.0, 64.0);
+    var factor = raw_matte_factor(local, matte_mode);
+    if (abs(expansion) > 0.01) {
+        let radius = abs(expansion);
+        for (var i = 0; i < 16; i = i + 1) {
+            let angle = f32(i) * 0.3926990817;
+            let direction = vec2<f32>(cos(angle), sin(angle));
+            let outer = raw_matte_factor(local + direction * radius, matte_mode);
+            let inner = raw_matte_factor(local + direction * radius * 0.5, matte_mode);
+            if (expansion > 0.0) {
+                factor = max(factor, max(outer, inner));
+            } else {
+                factor = min(factor, min(outer, inner));
+            }
+        }
+    }
+    let feather = clamp(params.quad3.w, 0.0, 64.0);
+    if (feather > 0.01) {
+        var sum = factor;
+        for (var i = 0; i < 16; i = i + 1) {
+            let angle = f32(i) * 0.3926990817;
+            let direction = vec2<f32>(cos(angle), sin(angle));
+            sum = sum + raw_matte_factor(local + direction * feather, matte_mode);
+        }
+        factor = sum / 17.0;
+    }
+    return factor;
+}
+
 fn barycentric(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> vec3<f32> {
     let v0 = b - a;
     let v1 = c - a;
@@ -176,16 +217,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var matte_factor = 1.0;
         let matte_mode = i32(round(params.opacity.z));
         if (matte_mode != 0) {
-            if (local.x >= 0.0 && local.y >= 0.0 && local.x < params.image.z && local.y < params.image.w) {
-                let matte = sample_matte(local);
-                if (matte_mode == 2) {
-                    matte_factor = dot(matte.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)) * matte.a;
-                } else {
-                    matte_factor = matte.a;
-                }
-            } else {
-                matte_factor = 0.0;
-            }
+            matte_factor = shaped_matte_factor(local, matte_mode);
             if (params.opacity.w > 0.5) {
                 matte_factor = 1.0 - matte_factor;
             }
