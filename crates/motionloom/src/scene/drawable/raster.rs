@@ -295,6 +295,7 @@ pub(crate) fn draw_circle_stroke(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_ellipse_paint(
     canvas: &mut RgbaImage,
     x: f32,

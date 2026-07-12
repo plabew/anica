@@ -2562,6 +2562,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn apply_gpu_material_displacement_texture(
         &mut self,
         input: &GpuSceneNativeTexture,

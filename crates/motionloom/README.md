@@ -628,6 +628,26 @@ frame.save("motionloom_world_frame.png")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Path DSL Benchmark
+
+MotionLoom includes a Paris-30K-style Path DSL benchmark. It measures DSL
+parsing, Path flattening/tessellation, WGPU command encoding, and GPU execution
+for static, transformed, and morphed scenes at 100, 1K, 5K, 10K, and 30K Paths.
+The command also writes a JSON report and the generated `.motionloom` workloads:
+
+```bash
+cargo run --release -p motionloom --example path_dsl_benchmark -- \
+  --counts 100,1000,5000,10000,30000 \
+  --warmup 2 \
+  --samples 10 \
+  --size 1600x1600 \
+  --json target/path-dsl-benchmark.json \
+  --emit-dsl target/path-dsl-workloads
+```
+
+See [`benchmarks/path-dsl/README.md`](benchmarks/path-dsl/README.md) for metric
+definitions and benchmark methodology.
+
 ## Notes
 
 Scene graph APIs are for 2D scene/motion graphics/effect graphs. World graph

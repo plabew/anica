@@ -1024,6 +1024,7 @@ pub(crate) fn post_texture_overlay_uniform(params: PostTextureOverlayUniformPara
     ])
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn post_material_displacement_uniform(
     canvas_w: u32,
     canvas_h: u32,

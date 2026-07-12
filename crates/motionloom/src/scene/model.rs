@@ -65,6 +65,9 @@ pub struct SceneRootNode {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
+// Boxing Path would break the public AST and its construction API. Keep the
+// stable enum shape until an intentional AST version change is made.
+#[allow(clippy::large_enum_variant)]
 pub enum SceneNode {
     Defs(DefsNode),
     Timeline(SceneTimelineNode),
