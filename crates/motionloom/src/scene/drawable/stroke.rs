@@ -36,6 +36,8 @@ pub(crate) struct StrokeStyle {
     pub(crate) taper_end: f32,
     pub(crate) width_start: f32,
     pub(crate) width_end: f32,
+    pub(crate) width_profile: [(f32, f32); 8],
+    pub(crate) width_profile_len: usize,
     pub(crate) texture: StrokeTexture,
     pub(crate) roughness: f32,
     pub(crate) copies: u32,
@@ -55,6 +57,8 @@ impl Default for StrokeStyle {
             taper_end: 0.0,
             width_start: 1.0,
             width_end: 1.0,
+            width_profile: [(0.0, 1.0); 8],
+            width_profile_len: 0,
             texture: StrokeTexture::Solid,
             roughness: 0.0,
             copies: 1,
@@ -114,6 +118,8 @@ pub(crate) fn eval_line_stroke_style(
         taper_end: eval_scene_number(&line.taper_end, time_norm, time_sec)?.clamp(0.0, 0.5),
         width_start: 1.0,
         width_end: 1.0,
+        width_profile: [(0.0, 1.0); 8],
+        width_profile_len: 0,
         texture,
         roughness: params.roughness,
         copies: params.copies,
@@ -150,6 +156,8 @@ pub(crate) fn eval_polyline_stroke_style(
         taper_end: eval_scene_number(&polyline.taper_end, time_norm, time_sec)?.clamp(0.0, 0.5),
         width_start: 1.0,
         width_end: 1.0,
+        width_profile: [(0.0, 1.0); 8],
+        width_profile_len: 0,
         texture,
         roughness: params.roughness,
         copies: params.copies,
@@ -179,6 +187,7 @@ pub(crate) fn eval_path_stroke_style(
         time_norm,
         time_sec,
     )?;
+    let (width_profile, width_profile_len) = parse_width_profile(&path.stroke_width_profile);
     Ok(StrokeStyle {
         cap: parse_stroke_cap(&path.line_cap),
         join: parse_stroke_join(&path.line_join),
@@ -187,6 +196,8 @@ pub(crate) fn eval_path_stroke_style(
         width_start: eval_scene_number(&path.stroke_width_start, time_norm, time_sec)?
             .clamp(0.0, 16.0),
         width_end: eval_scene_number(&path.stroke_width_end, time_norm, time_sec)?.clamp(0.0, 16.0),
+        width_profile,
+        width_profile_len,
         texture,
         roughness: params.roughness,
         copies: params.copies,
@@ -196,6 +207,33 @@ pub(crate) fn eval_path_stroke_style(
         pressure_min: params.pressure_min,
         pressure_curve: params.pressure_curve,
     })
+}
+
+fn parse_width_profile(value: &str) -> ([(f32, f32); 8], usize) {
+    let mut profile = [(0.0, 1.0); 8];
+    let mut len = 0usize;
+    for item in value.split(',') {
+        if len == profile.len() {
+            break;
+        }
+        let mut parts = item.trim().split(':');
+        let Some(offset) = parts
+            .next()
+            .and_then(|part| part.trim().parse::<f32>().ok())
+        else {
+            continue;
+        };
+        let Some(width) = parts
+            .next()
+            .and_then(|part| part.trim().parse::<f32>().ok())
+        else {
+            continue;
+        };
+        profile[len] = (offset.clamp(0.0, 1.0), width.clamp(0.0, 16.0));
+        len += 1;
+    }
+    profile[..len].sort_by(|a, b| a.0.total_cmp(&b.0));
+    (profile, len)
 }
 
 fn parse_stroke_cap(value: &str) -> StrokeCap {
@@ -436,8 +474,23 @@ pub(crate) fn stroke_hash_signed(seed: f32) -> f32 {
 }
 
 pub(crate) fn stroke_taper_pressure(t: f32, style: StrokeStyle) -> f32 {
-    let mut pressure =
-        style.width_start + (style.width_end - style.width_start) * t.clamp(0.0, 1.0);
+    let t = t.clamp(0.0, 1.0);
+    let mut pressure = if style.width_profile_len >= 2 {
+        let profile = &style.width_profile[..style.width_profile_len];
+        let mut value = profile[0].1;
+        for pair in profile.windows(2) {
+            if t <= pair[1].0 {
+                let span = (pair[1].0 - pair[0].0).max(0.00001);
+                let local = ((t - pair[0].0) / span).clamp(0.0, 1.0);
+                value = pair[0].1 + (pair[1].1 - pair[0].1) * local;
+                break;
+            }
+            value = pair[1].1;
+        }
+        value
+    } else {
+        style.width_start + (style.width_end - style.width_start) * t
+    };
     if style.taper_start > 0.0001 {
         pressure = pressure.min((t / style.taper_start).clamp(0.0, 1.0));
     }

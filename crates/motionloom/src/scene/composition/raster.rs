@@ -673,6 +673,27 @@ pub(crate) fn blend_pixel_with_mode(
         SceneBlendMode::Multiply => s * d,
         SceneBlendMode::Screen => 1.0 - (1.0 - s) * (1.0 - d),
         SceneBlendMode::Add => (s + d).min(1.0),
+        SceneBlendMode::Overlay => {
+            if d <= 0.5 {
+                2.0 * s * d
+            } else {
+                1.0 - 2.0 * (1.0 - s) * (1.0 - d)
+            }
+        }
+        SceneBlendMode::SoftLight => {
+            if s <= 0.5 {
+                (1.0 - 2.0 * s) * d * d + 2.0 * s * d
+            } else {
+                d + (2.0 * s - 1.0) * (d.sqrt() - d)
+            }
+        }
+        SceneBlendMode::ColorDodge => {
+            if s >= 0.9999 {
+                1.0
+            } else {
+                (d / (1.0 - s)).min(1.0)
+            }
+        }
     };
     let br = blend_channel(sr, dr);
     let bg = blend_channel(sg, dg);

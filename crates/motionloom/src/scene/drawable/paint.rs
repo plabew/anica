@@ -47,6 +47,9 @@ pub(crate) enum SceneBlendMode {
     Multiply,
     Screen,
     Add,
+    Overlay,
+    SoftLight,
+    ColorDodge,
 }
 
 impl SceneBlendMode {
@@ -56,6 +59,9 @@ impl SceneBlendMode {
             Self::Multiply => 1.0,
             Self::Screen => 2.0,
             Self::Add => 3.0,
+            Self::Overlay => 4.0,
+            Self::SoftLight => 5.0,
+            Self::ColorDodge => 6.0,
         }
     }
 }
@@ -160,6 +166,9 @@ pub(crate) fn is_gpu_native_blend(value: &str) -> bool {
             | "add"
             | "plus"
             | "linear-dodge"
+            | "overlay"
+            | "soft-light"
+            | "color-dodge"
     )
 }
 
@@ -169,6 +178,9 @@ pub(crate) fn parse_scene_blend(value: &str) -> Result<SceneBlendMode, MotionLoo
         "multiply" => Ok(SceneBlendMode::Multiply),
         "screen" => Ok(SceneBlendMode::Screen),
         "add" | "plus" | "linear-dodge" => Ok(SceneBlendMode::Add),
+        "overlay" => Ok(SceneBlendMode::Overlay),
+        "soft-light" => Ok(SceneBlendMode::SoftLight),
+        "color-dodge" => Ok(SceneBlendMode::ColorDodge),
         other => Err(MotionLoomSceneRenderError::InvalidPaint {
             value: value.to_string(),
             message: format!("unsupported blend mode: {other}"),

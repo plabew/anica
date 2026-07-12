@@ -196,6 +196,8 @@ pub use scene::model::{
 };
 #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 pub use scene::render::DmabufPlane;
+#[cfg(not(target_arch = "wasm32"))]
+pub use scene::render::VectorFrameBenchmark;
 pub use scene::render::{
     MotionLoomSceneRenderError, SceneGpuTexture, ScenePlatformPreviewSurface, ScenePreviewBackend,
     ScenePreviewPixelFormat, ScenePreviewSurface, ScenePreviewSurfaceOptions, SceneRenderError,

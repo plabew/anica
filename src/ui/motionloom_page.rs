@@ -1229,9 +1229,8 @@ impl Element for ExternalPreviewAnchorElement {
         let local_y = f32::from(bounds.origin.y);
         let local_w = f32::from(bounds.size.width);
         let local_h = f32::from(bounds.size.height);
-        let (pinned_x, pinned_y) = Self::pinned_origin(
-            local_x, local_y, local_w, local_h, viewport_w, viewport_h,
-        );
+        let (pinned_x, pinned_y) =
+            Self::pinned_origin(local_x, local_y, local_w, local_h, viewport_w, viewport_h);
         let content_offset_y = (f32::from(window_bounds.size.height)
             - f32::from(window.viewport_size().height))
         .max(0.0);

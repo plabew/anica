@@ -48,6 +48,14 @@ fn blend_over(base: vec4<f32>, src_rgb: vec3<f32>, src_a: f32, mode: f32) -> vec
         blended = one - (one - src_rgb) * (one - base.rgb);
     } else if (blend_mode == 3) {
         blended = min(src_rgb + base.rgb, vec3<f32>(1.0, 1.0, 1.0));
+    } else if (blend_mode == 4) {
+        blended = select(2.0 * src_rgb * base.rgb, vec3<f32>(1.0) - 2.0 * (vec3<f32>(1.0) - src_rgb) * (vec3<f32>(1.0) - base.rgb), base.rgb > vec3<f32>(0.5));
+    } else if (blend_mode == 5) {
+        let low = (vec3<f32>(1.0) - 2.0 * src_rgb) * base.rgb * base.rgb + 2.0 * src_rgb * base.rgb;
+        let high = base.rgb + (2.0 * src_rgb - vec3<f32>(1.0)) * (sqrt(max(base.rgb, vec3<f32>(0.0))) - base.rgb);
+        blended = select(low, high, src_rgb > vec3<f32>(0.5));
+    } else if (blend_mode == 6) {
+        blended = min(base.rgb / max(vec3<f32>(0.0001), vec3<f32>(1.0) - src_rgb), vec3<f32>(1.0));
     }
 
     let out_a = a + base.a * (1.0 - a);

@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
 use image::RgbaImage;
 
@@ -17,10 +19,10 @@ use crate::scene::drawable::{
     GpuSceneMatteMode, GpuSceneNativeTexture, GpuScenePrimitive, GpuSceneTextureLayer,
     GpuSceneTextureSource, PostLightSweepUniformParams, PostMagnifyLensUniformParams,
     PostTextureOverlayUniformParams, batch_shape_storage_bytes, batch_shape_uniform,
-    matte_texture_uniform, post_blur_uniform, post_color_uniform, post_hsla_overlay_uniform,
-    post_light_sweep_uniform, post_magnify_lens_uniform, post_material_displacement_uniform,
-    post_opacity_uniform, post_texture_overlay_uniform, post_tint_uniform, post_tone_map_uniform,
-    texture_layer_bounds, texture_layer_projected_bounds,
+    matte_texture_uniform, post_blur_uniform, post_color_uniform, post_edge_treatment_uniform,
+    post_hsla_overlay_uniform, post_light_sweep_uniform, post_magnify_lens_uniform,
+    post_material_displacement_uniform, post_opacity_uniform, post_texture_overlay_uniform,
+    post_tint_uniform, post_tone_map_uniform, texture_layer_bounds, texture_layer_projected_bounds,
 };
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 use crate::scene::resource::{load_rgba_image_source, load_svg_source};
@@ -74,6 +76,15 @@ pub(crate) struct WgpuSceneCompositor {
     asset_resolver: Arc<dyn crate::asset::AssetResolver>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct ShapeBenchmarkRender {
+    pub(crate) texture: GpuSceneNativeTexture,
+    pub(crate) encode: Duration,
+    pub(crate) gpu: Duration,
+    pub(crate) primitive_count: u32,
+    pub(crate) upload_bytes: usize,
+}
+
 /// Platform-specific surface handles needed only for WASM canvas presentation.
 /// Empty on native targets where zero-copy interop uses external surfaces.
 #[derive(Clone)]
@@ -119,6 +130,116 @@ impl WgpuSceneCompositor {
                 .poll(wgpu::PollType::WaitForSubmissionIndex(submission))
                 .ok();
         }
+    }
+
+    /// Profile the same batched shape pipeline used by normal scene rendering.
+    ///
+    /// This deliberately accepts shapes only: texture layers introduce several
+    /// independent submissions and would make the encode/GPU boundary ambiguous.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn render_shape_benchmark_to_texture(
+        &mut self,
+        primitives: &[GpuScenePrimitive],
+        clear: [u8; 4],
+    ) -> Result<ShapeBenchmarkRender, MotionLoomSceneRenderError> {
+        let encode_started = Instant::now();
+        let canvas_len = (self.width as usize)
+            .saturating_mul(self.height as usize)
+            .saturating_mul(4);
+        let mut base = vec![0u8; canvas_len];
+        for pixel in base.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&clear);
+        }
+
+        let tex_a = Arc::new(Self::make_canvas_texture(
+            &self.device,
+            self.width,
+            self.height,
+        ));
+        let tex_b = Arc::new(Self::make_canvas_texture(
+            &self.device,
+            self.width,
+            self.height,
+        ));
+        self.write_texture_rgba(&tex_a, self.width, self.height, &base)?;
+        self.write_texture_rgba(&tex_b, self.width, self.height, &base)?;
+
+        let shape_batch = batch_shape_storage_bytes(primitives, self.width, self.height)?;
+        let uniform = batch_shape_uniform(
+            self.width,
+            self.height,
+            false,
+            shape_batch.primitive_count,
+            shape_batch.tile_size,
+            shape_batch.tiles_x,
+            shape_batch.tiles_y,
+        );
+        let upload_bytes = canvas_len
+            .saturating_mul(2)
+            .saturating_add(uniform.len())
+            .saturating_add(shape_batch.primitive_bytes.len())
+            .saturating_add(shape_batch.tile_range_bytes.len())
+            .saturating_add(shape_batch.tile_index_bytes.len());
+        let uniform_buffer = self.make_batch_shape_uniform_buffer(&uniform);
+        let storage_buffer = self.make_storage_buffer(
+            "motionloom-path-benchmark-shape-storage",
+            &shape_batch.primitive_bytes,
+        );
+        let tile_range_buffer = self.make_storage_buffer(
+            "motionloom-path-benchmark-tile-ranges",
+            &shape_batch.tile_range_bytes,
+        );
+        let tile_index_buffer = self.make_storage_buffer(
+            "motionloom-path-benchmark-tile-indices",
+            &shape_batch.tile_index_bytes,
+        );
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("motionloom-path-benchmark-encoder"),
+            });
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        self.dispatch_batched_shape_pass(
+            &mut encoder,
+            &tex_a,
+            &tex_b,
+            &uniform_buffer,
+            &storage_buffer,
+            &tile_range_buffer,
+            &tile_index_buffer,
+            &mut keepalive,
+        );
+        let command_buffer = encoder.finish();
+        let encode = encode_started.elapsed();
+
+        let gpu_started = Instant::now();
+        let submission = self.queue.submit([command_buffer]);
+        self.device
+            .poll(wgpu::PollType::WaitForSubmissionIndex(submission))
+            .map_err(|error| MotionLoomSceneRenderError::GpuRender {
+                message: format!("path benchmark GPU wait failed: {error}"),
+            })?;
+        let gpu = gpu_started.elapsed();
+
+        drop((
+            uniform_buffer,
+            storage_buffer,
+            tile_range_buffer,
+            tile_index_buffer,
+        ));
+        drop(keepalive);
+        Ok(ShapeBenchmarkRender {
+            texture: GpuSceneNativeTexture {
+                texture: tex_b.clone(),
+                width: self.width,
+                height: self.height,
+                _keepalive_textures: vec![tex_a, tex_b],
+            },
+            encode,
+            gpu,
+            primitive_count: shape_batch.primitive_count,
+            upload_bytes,
+        })
     }
 
     fn debug_gpu_matte_enabled() -> bool {
@@ -2693,6 +2814,62 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let uniform = post_opacity_uniform(self.width, self.height, opacity);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(
+            &self.device,
+            self.width,
+            self.height,
+        ));
+        let mut keepalive = WgpuDispatchKeepalive::default();
+        self.dispatch_post_pass(
+            &mut encoder,
+            &input.texture,
+            &dst,
+            &uniform_buffer,
+            &mut keepalive,
+        );
+        self.submit_encoder(encoder);
+        drop(uniform_buffer);
+        drop(keepalive);
+        Ok(GpuSceneNativeTexture {
+            texture: dst,
+            width: self.width,
+            height: self.height,
+            _keepalive_textures: vec![input.texture.clone()],
+        })
+    }
+
+    pub(crate) fn apply_gpu_edge_treatment_texture(
+        &mut self,
+        input: &GpuSceneNativeTexture,
+        mode: f32,
+        radius: f32,
+        amount: f32,
+        scale: f32,
+        seed_or_preserve: f32,
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        if input.width != self.width || input.height != self.height {
+            return Err(MotionLoomSceneRenderError::GpuRender {
+                message: format!(
+                    "edge treatment input size {}x{} does not match GPU compositor {}x{}",
+                    input.width, input.height, self.width, self.height
+                ),
+            });
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("anica-motionloom-scene-edge-treatment-gpu-encoder"),
+            });
+        let uniform = post_edge_treatment_uniform(
+            self.width,
+            self.height,
+            mode,
+            radius,
+            amount,
+            scale,
+            seed_or_preserve,
+        );
+        let uniform_buffer = self.make_post_uniform_buffer(&uniform);
+        let dst = Arc::new(Self::make_canvas_texture(
             &self.device,
             self.width,
             self.height,

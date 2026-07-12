@@ -20,7 +20,7 @@ use motionloom::{
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
@@ -255,7 +255,6 @@ struct LivePreviewApp {
     surface_config: Option<wgpu::SurfaceConfiguration>,
     surface_format: Option<wgpu::TextureFormat>,
     preview_engine: Option<WgpuPreviewEngine>,
-    target_texture: Option<wgpu::Texture>,
     target_width: u32,
     target_height: u32,
     sampler: Option<wgpu::Sampler>,
@@ -269,7 +268,9 @@ struct LivePreviewApp {
     last_cursor_pos: Option<(f64, f64)>,
     frame: u32,
     total_frames: u32,
-    last_frame_at: Instant,
+    playback_started_at: Instant,
+    playback_start_frame: u32,
+    next_redraw_at: Instant,
     last_title_at: Instant,
     last_stats_at: Instant,
     print_stats_enabled: bool,
@@ -294,6 +295,13 @@ struct LivePreviewApp {
     interaction_targets: Vec<PreviewInteractionNode>,
     interaction_drag: Option<PreviewInteractionDrag>,
     mouse_left_down: bool,
+    present_cache: Vec<PresentTextureCache>,
+}
+
+struct PresentTextureCache {
+    texture: Arc<wgpu::Texture>,
+    _view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -375,7 +383,6 @@ impl LivePreviewApp {
             surface_config: None,
             surface_format: None,
             preview_engine: None,
-            target_texture: None,
             target_width: 0,
             target_height: 0,
             sampler: None,
@@ -389,7 +396,9 @@ impl LivePreviewApp {
             last_cursor_pos: None,
             frame: 0,
             total_frames,
-            last_frame_at: Instant::now(),
+            playback_started_at: Instant::now(),
+            playback_start_frame: 0,
+            next_redraw_at: Instant::now(),
             last_title_at: Instant::now(),
             last_stats_at: Instant::now(),
             print_stats_enabled,
@@ -413,6 +422,7 @@ impl LivePreviewApp {
             interaction_targets: Vec::new(),
             interaction_drag: None,
             mouse_left_down: false,
+            present_cache: Vec::with_capacity(2),
         })
     }
 
@@ -433,13 +443,7 @@ impl LivePreviewApp {
         self.graph = Some(graph);
         self.target_width = target_width.max(1);
         self.target_height = target_height.max(1);
-        if let Some(device) = self.device.as_ref() {
-            self.target_texture = Some(WgpuPreviewEngine::create_target_texture(
-                device,
-                self.target_width,
-                self.target_height,
-            ));
-        }
+        self.present_cache.clear();
         self.render_times.clear();
         self.present_times.clear();
         self.update_title_now();
@@ -475,6 +479,7 @@ impl LivePreviewApp {
         self.total_frames =
             (((graph.duration_ms as f32 / 1000.0).max(1.0 / fps) * fps).round() as u32).max(1);
         self.frame = self.frame.min(self.total_frames.saturating_sub(1));
+        self.restart_playback_clock();
         self.script_source = source.unwrap_or_else(|| "preview-host-script".to_string());
         self.base_script = script;
         self.base_graph = graph;
@@ -501,6 +506,7 @@ impl LivePreviewApp {
                 self.keep_attached_visible();
                 if self.frame != frame {
                     self.frame = frame;
+                    self.restart_playback_clock();
                     self.request_redraw();
                 }
             }
@@ -604,12 +610,39 @@ impl LivePreviewApp {
 
     fn request_redraw(&mut self) {
         self.needs_redraw = true;
-        if self.host_mode && !self.window_visible {
+        self.next_redraw_at = self.next_redraw_at.min(Instant::now());
+    }
+
+    fn frame_interval(&self) -> Duration {
+        let fps = self
+            .graph
+            .as_ref()
+            .map(|graph| graph.fps)
+            .unwrap_or(self.base_graph.fps)
+            .clamp(1.0, 60.0);
+        Duration::from_secs_f64(1.0 / fps as f64)
+    }
+
+    fn restart_playback_clock(&mut self) {
+        self.playback_started_at = Instant::now();
+        self.playback_start_frame = self.frame;
+        self.next_redraw_at = Instant::now();
+    }
+
+    fn update_frame_from_wall_clock(&mut self) {
+        if !self.auto_advance || self.total_frames <= 1 {
             return;
         }
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
-        }
+        let fps = self
+            .graph
+            .as_ref()
+            .map(|graph| graph.fps)
+            .unwrap_or(self.base_graph.fps)
+            .max(1.0);
+        let elapsed_frames =
+            (self.playback_started_at.elapsed().as_secs_f64() * fps as f64).floor() as u64;
+        self.frame =
+            ((self.playback_start_frame as u64 + elapsed_frames) % self.total_frames as u64) as u32;
     }
 
     fn keep_attached_visible(&mut self) {
@@ -1198,12 +1231,19 @@ impl LivePreviewApp {
             .copied()
             .find(|format| !format.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
-        let present_mode = surface_caps
+        let present_mode = if surface_caps
             .present_modes
-            .iter()
-            .copied()
-            .find(|mode| *mode == wgpu::PresentMode::Immediate)
-            .unwrap_or(wgpu::PresentMode::Fifo);
+            .contains(&wgpu::PresentMode::Fifo)
+        {
+            wgpu::PresentMode::Fifo
+        } else if surface_caps
+            .present_modes
+            .contains(&wgpu::PresentMode::AutoVsync)
+        {
+            wgpu::PresentMode::AutoVsync
+        } else {
+            surface_caps.present_modes[0]
+        };
         let alpha_mode = surface_caps.alpha_modes[0];
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -1223,12 +1263,6 @@ impl LivePreviewApp {
         ))?;
         let graph = WgpuPreviewEngine::graph_for_quality(&self.base_graph, self.quality);
         let (target_width, target_height) = graph.render_size.unwrap_or(graph.size);
-        let target_texture = WgpuPreviewEngine::create_target_texture(
-            &device,
-            target_width.max(1),
-            target_height.max(1),
-        );
-
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("motionloom-live-preview-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -1425,7 +1459,6 @@ impl LivePreviewApp {
         self.surface_format = Some(surface_format);
         self.preview_engine = Some(preview_engine);
         self.graph = Some(graph);
-        self.target_texture = Some(target_texture);
         self.target_width = target_width.max(1);
         self.target_height = target_height.max(1);
         self.sampler = Some(sampler);
@@ -1435,6 +1468,7 @@ impl LivePreviewApp {
         self.overlay_bind_group = Some(overlay_bind_group);
         self.overlay_pipeline = Some(overlay_pipeline);
         self.picking_pipeline = Some(picking_pipeline);
+        self.restart_playback_clock();
         Ok(())
     }
 
@@ -1454,29 +1488,80 @@ impl LivePreviewApp {
     }
 
     fn render(&mut self) {
+        self.update_frame_from_wall_clock();
+        let render_start = Instant::now();
+        let frame_texture = {
+            let (Some(graph), Some(preview_engine)) =
+                (self.graph.as_ref(), self.preview_engine.as_mut())
+            else {
+                return;
+            };
+            match pollster::block_on(
+                preview_engine.render_frame_for_native_present(graph, self.frame),
+            ) {
+                Ok(texture) => texture,
+                Err(err) => {
+                    eprintln!("render frame {} failed: {err}", self.frame);
+                    return;
+                }
+            }
+        };
+        let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
+
+        self.target_width = frame_texture.width;
+        self.target_height = frame_texture.height;
+        let cache_index = self
+            .present_cache
+            .iter()
+            .position(|cached| Arc::ptr_eq(&cached.texture, &frame_texture.texture))
+            .unwrap_or_else(|| {
+                let device = self.device.as_ref().expect("device initialized");
+                let sampler = self.sampler.as_ref().expect("sampler initialized");
+                let layout = self
+                    .bind_group_layout
+                    .as_ref()
+                    .expect("bind group layout initialized");
+                let view = frame_texture
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("motionloom-live-preview-bind-group"),
+                    layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                    ],
+                });
+                if self.present_cache.len() >= 3 {
+                    self.present_cache.remove(0);
+                }
+                self.present_cache.push(PresentTextureCache {
+                    texture: frame_texture.texture.clone(),
+                    _view: view,
+                    bind_group,
+                });
+                self.present_cache.len() - 1
+            });
+
         let (
-            Some(graph),
             Some(surface),
             Some(device),
             Some(queue),
-            Some(preview_engine),
-            Some(target_texture),
-            Some(sampler),
-            Some(bind_group_layout),
             Some(pipeline),
             Some(overlay_buffer),
             Some(overlay_bind_group),
             Some(overlay_pipeline),
             Some(surface_config),
         ) = (
-            self.graph.as_ref(),
             self.surface.as_ref(),
             self.device.as_ref(),
             self.queue.as_ref(),
-            self.preview_engine.as_mut(),
-            self.target_texture.as_ref(),
-            self.sampler.as_ref(),
-            self.bind_group_layout.as_ref(),
             self.pipeline.as_ref(),
             self.overlay_buffer.as_ref(),
             self.overlay_bind_group.as_ref(),
@@ -1486,19 +1571,6 @@ impl LivePreviewApp {
         else {
             return;
         };
-
-        let render_start = Instant::now();
-        if let Err(err) = pollster::block_on(preview_engine.render_frame_to_wgpu_target_texture(
-            graph,
-            self.frame,
-            target_texture,
-            self.target_width,
-            self.target_height,
-        )) {
-            eprintln!("render frame {} failed: {err}", self.frame);
-            return;
-        }
-        let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
 
         let surface_texture = match surface.get_current_texture() {
             Ok(texture) => texture,
@@ -1517,24 +1589,10 @@ impl LivePreviewApp {
         };
 
         let present_start = Instant::now();
-        let scene_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let surface_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("motionloom-live-preview-bind-group"),
-            layout: bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&scene_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
+        let bind_group = &self.present_cache[cache_index].bind_group;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("motionloom-live-preview-command-encoder"),
         });
@@ -1559,7 +1617,7 @@ impl LivePreviewApp {
                 occlusion_query_set: None,
             });
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..3, 0..1);
             pass.set_pipeline(overlay_pipeline);
             pass.set_bind_group(0, overlay_bind_group, &[]);
@@ -1584,9 +1642,6 @@ impl LivePreviewApp {
         self.broadcast_event(PreviewEvent::Rendered {
             frame: rendered_frame,
         });
-        if self.auto_advance {
-            self.frame = self.frame.saturating_add(1) % self.total_frames;
-        }
         self.update_title();
         self.print_stats();
     }
@@ -1623,14 +1678,9 @@ impl LivePreviewApp {
         let avg_render = avg(&self.render_times);
         let min_render = min_or_zero(&self.render_times);
         let max_render = max_or_zero(&self.render_times);
-        let fps = if self.last_frame_at.elapsed().as_secs_f32() > 0.0 {
-            1.0 / self.last_frame_at.elapsed().as_secs_f32()
-        } else {
-            0.0
-        };
-        self.last_frame_at = Instant::now();
+        let fps = self.graph.as_ref().map(|graph| graph.fps).unwrap_or(0.0);
         window.set_title(&format!(
-            "MotionLoom wgpu live preview | frame {}/{} | last {:.2} ms | avg {:.2} ms | min/max {:.2}/{:.2} ms | blit {:.2} ms | tick {:.1} fps | target {}x{} | surface {:?} | quality {} (1 Full, 2 Balanced, 3 Speed, 4 High Speed, 5 Ultra Speed) | {}",
+            "MotionLoom wgpu live preview | frame {}/{} | last {:.2} ms | avg {:.2} ms | min/max {:.2}/{:.2} ms | blit {:.2} ms | timeline {:.1} fps | target {}x{} | surface {:?} | quality {} (1 Full, 2 Balanced, 3 Speed, 4 High Speed, 5 Ultra Speed) | {}",
             self.frame,
             self.total_frames,
             self.last_render_ms,
@@ -1777,9 +1827,7 @@ impl ApplicationHandler<PreviewHostUserEvent> for LivePreviewApp {
                 }
                 self.needs_redraw = false;
                 self.render();
-                if self.auto_advance {
-                    self.request_redraw();
-                }
+                self.next_redraw_at = Instant::now() + self.frame_interval();
             }
             _ => {}
         }
@@ -1791,11 +1839,24 @@ impl ApplicationHandler<PreviewHostUserEvent> for LivePreviewApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.hide_stale_attached_window();
-        if self.auto_advance || self.needs_redraw {
-            self.request_redraw();
+        let now = Instant::now();
+        let can_draw = !self.host_mode || self.window_visible;
+        if can_draw && (self.auto_advance || self.needs_redraw) && now >= self.next_redraw_at {
+            self.needs_redraw = true;
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            self.next_redraw_at = now + self.frame_interval();
         }
+        let heartbeat_at = now + Duration::from_millis(100);
+        let wake_at = if self.auto_advance || self.needs_redraw {
+            self.next_redraw_at.min(heartbeat_at)
+        } else {
+            heartbeat_at
+        };
+        event_loop.set_control_flow(ControlFlow::WaitUntil(wake_at));
     }
 }
 

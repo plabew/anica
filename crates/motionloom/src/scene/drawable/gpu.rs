@@ -967,6 +967,31 @@ pub(crate) fn post_opacity_uniform(canvas_w: u32, canvas_h: u32, opacity: f32) -
     ])
 }
 
+pub(crate) fn post_edge_treatment_uniform(
+    canvas_w: u32,
+    canvas_h: u32,
+    mode: f32,
+    radius: f32,
+    amount: f32,
+    scale: f32,
+    seed_or_preserve: f32,
+) -> [u8; 48] {
+    f32_bytes(&[
+        canvas_w as f32,
+        canvas_h as f32,
+        0.0,
+        0.0,
+        radius.clamp(0.0, 32.0),
+        amount.clamp(0.0, 1.0),
+        scale.max(0.001),
+        mode,
+        seed_or_preserve,
+        0.0,
+        0.0,
+        0.0,
+    ])
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PostTextureOverlayUniformParams {
     pub(crate) canvas_w: u32,

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    GraphParseError, GraphScript, MotionLoomSceneRenderError, ScenePreviewBackend,
+    GraphParseError, GraphScript, MotionLoomSceneRenderError, SceneGpuTexture, ScenePreviewBackend,
     ScenePreviewSurface, ScenePreviewSurfaceOptions, SceneRenderProfile, SceneRenderer,
     parse_graph_script,
 };
@@ -289,6 +289,38 @@ impl WgpuPreviewEngine {
             )
             .await
             .map_err(WgpuPreviewEngineError::Render)
+    }
+
+    /// Render directly to the compositor-owned GPU texture.
+    ///
+    /// Native presenters should prefer this over `render_frame_to_wgpu_target_texture`:
+    /// sampling the returned texture into the swapchain avoids the extra
+    /// compositor-to-host-target texture copy.
+    pub async fn render_frame_to_wgpu_texture(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+    ) -> Result<SceneGpuTexture, WgpuPreviewEngineError> {
+        let Some(renderer) = self.gpu_renderer.as_mut() else {
+            return Err(WgpuPreviewEngineError::NoRenderer);
+        };
+        renderer
+            .render_frame_to_wgpu_texture(graph, frame)
+            .await
+            .map_err(WgpuPreviewEngineError::Render)
+    }
+
+    /// Render the compositor frame intended for a native swapchain presenter.
+    ///
+    /// The host samples this texture directly in its surface render pass. The
+    /// shared texture ownership also lets the host cache its texture view and
+    /// bind group while the compositor keeps reusing the same backing texture.
+    pub async fn render_frame_for_native_present(
+        &mut self,
+        graph: &GraphScript,
+        frame: u32,
+    ) -> Result<SceneGpuTexture, WgpuPreviewEngineError> {
+        self.render_frame_to_wgpu_texture(graph, frame).await
     }
 
     /// Pick a scene node id from the renderer's hidden GPU ID pass.

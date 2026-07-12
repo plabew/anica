@@ -120,6 +120,7 @@ pub(crate) fn face_jaw_to_path_node(
         stroke_width: face_jaw.stroke_width.clone(),
         stroke_width_start: "1".to_string(),
         stroke_width_end: "1".to_string(),
+        stroke_width_profile: String::new(),
         opacity: face_jaw.opacity.clone(),
         trim_start: face_jaw.trim_start.clone(),
         trim_end: face_jaw.trim_end.clone(),

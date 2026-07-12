@@ -84,6 +84,7 @@ pub(crate) enum TextureOverlayKind {
     Cellular,
     Flow,
     Waves,
+    Polar,
 }
 
 pub(crate) fn apply_scene_post_pass(
@@ -392,7 +393,288 @@ pub(crate) fn apply_scene_filter_step(
             .clamp(0.0, 1.0);
         return Ok(apply_opacity_pass(input, opacity));
     }
+    if kind == "edgesoftness" || kind == "edge_softness" || kind == "edge-softness" {
+        let radius = eval_filter_value(step.radius.as_deref(), 2.0, time_norm, time_sec)?;
+        let amount = eval_filter_value(step.amount.as_deref(), 0.65, time_norm, time_sec)?;
+        let preserve =
+            eval_filter_value(step.preserve_interior.as_deref(), 0.85, time_norm, time_sec)?;
+        return Ok(apply_edge_softness(
+            input,
+            radius.clamp(0.0, 32.0),
+            amount.clamp(0.0, 1.0),
+            preserve.clamp(0.0, 1.0),
+        ));
+    }
+    if kind == "edgeroughness" || kind == "edge_roughness" || kind == "edge-roughness" {
+        let radius = eval_filter_value(step.radius.as_deref(), 1.5, time_norm, time_sec)?;
+        let amount = eval_filter_value(step.amount.as_deref(), 0.75, time_norm, time_sec)?;
+        let scale = eval_filter_value(step.scale.as_deref(), 22.0, time_norm, time_sec)?;
+        let seed = eval_filter_value(step.seed.as_deref(), 0.0, time_norm, time_sec)?;
+        return Ok(apply_edge_roughness(
+            input,
+            radius.clamp(0.0, 16.0),
+            amount.clamp(0.0, 1.0),
+            scale.max(0.001),
+            seed,
+        ));
+    }
+    if kind == "colorbleed" || kind == "color_bleed" || kind == "color-bleed" {
+        let radius = eval_filter_value(step.radius.as_deref(), 3.0, time_norm, time_sec)?;
+        let amount = eval_filter_value(step.amount.as_deref(), 0.18, time_norm, time_sec)?;
+        return Ok(apply_color_bleed(
+            input,
+            radius.clamp(0.0, 32.0),
+            amount.clamp(0.0, 1.0),
+        ));
+    }
+    if kind == "lightstreak" || kind == "light_streak" || kind == "light-streak" {
+        let length = eval_filter_value(step.radius.as_deref(), 24.0, time_norm, time_sec)?;
+        let amount = eval_filter_value(step.amount.as_deref(), 0.7, time_norm, time_sec)?;
+        let angle = eval_filter_value(step.scale.as_deref(), -18.0, time_norm, time_sec)?;
+        let threshold = eval_filter_value(step.seed.as_deref(), 0.72, time_norm, time_sec)?;
+        return Ok(apply_light_streak_filter(
+            input, length, amount, angle, threshold,
+        ));
+    }
+    if kind == "chromaticaberration"
+        || kind == "chromatic_aberration"
+        || kind == "chromatic-aberration"
+    {
+        let offset = eval_filter_value(step.radius.as_deref(), 3.0, time_norm, time_sec)?;
+        let amount = eval_filter_value(step.amount.as_deref(), 1.0, time_norm, time_sec)?;
+        return Ok(apply_chromatic_aberration_filter(input, offset, amount));
+    }
+    if kind == "highlightcompression"
+        || kind == "highlight_compression"
+        || kind == "highlight-compression"
+    {
+        let threshold = eval_filter_value(step.scale.as_deref(), 0.72, time_norm, time_sec)?;
+        let amount = eval_filter_value(step.amount.as_deref(), 0.65, time_norm, time_sec)?;
+        return Ok(apply_highlight_compression_filter(input, threshold, amount));
+    }
     Ok(input.clone())
+}
+
+fn apply_chromatic_aberration_filter(input: &RgbaImage, offset: f32, amount: f32) -> RgbaImage {
+    let mut out = input.clone();
+    let shift = (offset * amount).round() as i32;
+    let max_x = input.width().saturating_sub(1) as i32;
+    for y in 0..input.height() {
+        for x in 0..input.width() {
+            let center = input.get_pixel(x, y);
+            let red = input.get_pixel((x as i32 + shift).clamp(0, max_x) as u32, y)[0];
+            let blue = input.get_pixel((x as i32 - shift).clamp(0, max_x) as u32, y)[2];
+            out.put_pixel(x, y, Rgba([red, center[1], blue, center[3]]));
+        }
+    }
+    out
+}
+
+fn apply_highlight_compression_filter(input: &RgbaImage, threshold: f32, amount: f32) -> RgbaImage {
+    let mut out = input.clone();
+    for pixel in out.pixels_mut() {
+        for channel in 0..3 {
+            let value = pixel[channel] as f32 / 255.0;
+            let compressed = if value > threshold {
+                threshold + (value - threshold) / (1.0 + amount * 6.0 * (value - threshold))
+            } else {
+                value
+            };
+            pixel[channel] = (compressed.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+    out
+}
+
+fn apply_light_streak_filter(
+    input: &RgbaImage,
+    length: f32,
+    amount: f32,
+    angle: f32,
+    threshold: f32,
+) -> RgbaImage {
+    let mut out = input.clone();
+    let steps = length.round().clamp(1.0, 64.0) as i32;
+    let direction = angle.to_radians();
+    let max_x = input.width().saturating_sub(1) as i32;
+    let max_y = input.height().saturating_sub(1) as i32;
+    for y in 0..input.height() {
+        for x in 0..input.width() {
+            let mut glow = [0.0f32; 3];
+            for step in -steps..=steps {
+                let sx = (x as f32 + direction.cos() * step as f32).round() as i32;
+                let sy = (y as f32 + direction.sin() * step as f32).round() as i32;
+                let p = input.get_pixel(sx.clamp(0, max_x) as u32, sy.clamp(0, max_y) as u32);
+                let luma =
+                    (p[0] as f32 * 0.2126 + p[1] as f32 * 0.7152 + p[2] as f32 * 0.0722) / 255.0;
+                let weight = ((luma - threshold) / (1.0 - threshold).max(0.001)).max(0.0)
+                    / (1.0 + step.abs() as f32 * 0.12);
+                for c in 0..3 {
+                    glow[c] += p[c] as f32 / 255.0 * weight;
+                }
+            }
+            let src = input.get_pixel(x, y);
+            let mut result = src.0;
+            for c in 0..3 {
+                result[c] = ((src[c] as f32 / 255.0 + glow[c] * amount / steps as f32)
+                    .clamp(0.0, 1.0)
+                    * 255.0) as u8;
+            }
+            out.put_pixel(x, y, Rgba(result));
+        }
+    }
+    out
+}
+
+fn eval_filter_value(
+    expression: Option<&str>,
+    default: f32,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<f32, MotionLoomSceneRenderError> {
+    expression
+        .map(|expr| eval_scene_number(expr, time_norm, time_sec))
+        .transpose()
+        .map(|value| value.unwrap_or(default))
+}
+
+fn edge_samples(input: &RgbaImage, x: u32, y: u32, radius: i32) -> [[u8; 4]; 9] {
+    let radius = radius.max(1);
+    let offsets = [
+        (0, 0),
+        (radius, 0),
+        (-radius, 0),
+        (0, radius),
+        (0, -radius),
+        (radius, radius),
+        (-radius, radius),
+        (radius, -radius),
+        (-radius, -radius),
+    ];
+    let max_x = input.width().saturating_sub(1) as i32;
+    let max_y = input.height().saturating_sub(1) as i32;
+    offsets.map(|(dx, dy)| {
+        input
+            .get_pixel(
+                (x as i32 + dx).clamp(0, max_x) as u32,
+                (y as i32 + dy).clamp(0, max_y) as u32,
+            )
+            .0
+    })
+}
+
+fn sample_edge_strength(samples: &[[u8; 4]; 9]) -> f32 {
+    let min_alpha = samples.iter().map(|pixel| pixel[3]).min().unwrap_or(0) as f32 / 255.0;
+    let max_alpha = samples.iter().map(|pixel| pixel[3]).max().unwrap_or(0) as f32 / 255.0;
+    (max_alpha - min_alpha).clamp(0.0, 1.0)
+}
+
+fn apply_edge_softness(
+    input: &RgbaImage,
+    radius: f32,
+    amount: f32,
+    preserve_interior: f32,
+) -> RgbaImage {
+    let mut out = input.clone();
+    let radius = radius.round() as i32;
+    for y in 0..input.height() {
+        for x in 0..input.width() {
+            let samples = edge_samples(input, x, y, radius);
+            let src = samples[0];
+            let edge = sample_edge_strength(&samples);
+            let src_alpha = src[3] as f32 / 255.0;
+            let mix_amount = edge * amount * (1.0 - preserve_interior * src_alpha * 0.82);
+            let weights = [1.6_f32, 0.72, 0.72, 0.72, 0.72, 0.72, 0.72, 0.72, 0.72];
+            let weight_sum: f32 = weights.iter().sum();
+            let mut softened = [0.0_f32; 4];
+            for (pixel, weight) in samples.iter().zip(weights) {
+                for channel in 0..4 {
+                    softened[channel] += pixel[channel] as f32 * weight;
+                }
+            }
+            let mut result = [0_u8; 4];
+            for channel in 0..4 {
+                let average = softened[channel] / weight_sum;
+                result[channel] = (src[channel] as f32 * (1.0 - mix_amount) + average * mix_amount)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+            out.put_pixel(x, y, Rgba(result));
+        }
+    }
+    out
+}
+
+fn edge_noise(x: f32, y: f32, seed: f32) -> f32 {
+    ((x * 127.1 + y * 311.7 + seed * 74.7).sin() * 43_758.547).fract()
+}
+
+fn apply_edge_roughness(
+    input: &RgbaImage,
+    radius: f32,
+    amount: f32,
+    scale: f32,
+    seed: f32,
+) -> RgbaImage {
+    let mut out = input.clone();
+    let max_x = input.width().saturating_sub(1) as i32;
+    let max_y = input.height().saturating_sub(1) as i32;
+    for y in 0..input.height() {
+        for x in 0..input.width() {
+            let edge = sample_edge_strength(&edge_samples(input, x, y, 1));
+            if edge <= 0.001 {
+                continue;
+            }
+            let nx = edge_noise(x as f32 / scale, y as f32 / scale, seed) * 2.0 - 1.0;
+            let ny = edge_noise(
+                x as f32 / scale + 41.0,
+                y as f32 / scale + 19.0,
+                seed * 2.17,
+            ) * 2.0
+                - 1.0;
+            let displacement = radius * amount * edge;
+            let sx = (x as f32 + nx * displacement).round() as i32;
+            let sy = (y as f32 + ny * displacement).round() as i32;
+            out.put_pixel(
+                x,
+                y,
+                *input.get_pixel(sx.clamp(0, max_x) as u32, sy.clamp(0, max_y) as u32),
+            );
+        }
+    }
+    out
+}
+
+fn apply_color_bleed(input: &RgbaImage, radius: f32, amount: f32) -> RgbaImage {
+    let mut out = input.clone();
+    let radius = radius.round() as i32;
+    for y in 0..input.height() {
+        for x in 0..input.width() {
+            let samples = edge_samples(input, x, y, radius);
+            let src = samples[0];
+            let donor = samples
+                .iter()
+                .copied()
+                .max_by_key(|pixel| pixel[3])
+                .unwrap_or(src);
+            let edge = ((donor[3] as f32 - src[3] as f32) / 255.0
+                + sample_edge_strength(&samples) * 0.35)
+                .clamp(0.0, 1.0);
+            let bleed = edge * amount;
+            let src_alpha = src[3] as f32 / 255.0;
+            let color_mix = bleed * (1.0 - src_alpha * 0.45);
+            let mut result = src;
+            for channel in 0..3 {
+                result[channel] = (src[channel] as f32 * (1.0 - color_mix)
+                    + donor[channel] as f32 * color_mix)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+            result[3] = src[3].max((donor[3] as f32 * bleed).round() as u8);
+            out.put_pixel(x, y, Rgba(result));
+        }
+    }
+    out
 }
 
 pub(crate) fn apply_over_pass(inputs: &[RgbaImage]) -> RgbaImage {
@@ -939,6 +1221,7 @@ impl TextureOverlayKind {
             "cellular" | "voronoi" | "worley" => Self::Cellular,
             "flow" | "domainwarp" | "domainwarped" => Self::Flow,
             "wave" | "waves" | "water" => Self::Waves,
+            "polar" | "polarnoise" | "radialnoise" => Self::Polar,
             "film" | "grain" | "filmgrain" => Self::FilmGrain,
             "scanline" | "scanlines" => Self::Scanlines,
             "canvas" | "fabric" | "cloth" => Self::Canvas,
@@ -962,6 +1245,7 @@ impl TextureOverlayKind {
             Self::Cellular => 9.0,
             Self::Flow => 10.0,
             Self::Waves => 11.0,
+            Self::Polar => 12.0,
         }
     }
 }
@@ -1610,6 +1894,13 @@ fn texture_overlay_value(
             );
             0.5 + 0.28 * (uv_y * params.scale * 2.4 + warp * 5.0).sin()
                 + 0.18 * (uv_y * params.scale * 5.1 - uv_x * 1.7 + warp * 3.0).sin()
+        }
+        TextureOverlayKind::Polar => {
+            let cx = uv_x - 0.5;
+            let cy = uv_y - 0.5;
+            let radius = (cx * cx + cy * cy).sqrt() * params.scale;
+            let angle = cy.atan2(cx) / std::f32::consts::TAU * params.scale;
+            fbm(radius * 2.4 + params.seed, angle * 3.0 + params.seed * 0.37)
         }
     }
 }

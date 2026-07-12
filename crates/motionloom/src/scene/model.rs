@@ -207,6 +207,12 @@ pub struct MaterialDef {
     pub specular: String,
     #[serde(default = "default_scene_one")]
     pub opacity: String,
+    #[serde(default = "default_scene_zero")]
+    pub refraction: String,
+    #[serde(default = "default_scene_zero")]
+    pub dispersion: String,
+    #[serde(default = "default_scene_zero")]
+    pub glass: String,
 }
 
 fn default_noise_kind() -> String {
@@ -302,6 +308,10 @@ pub struct FilterDef {
 pub struct FilterStepDef {
     pub kind: String,
     pub radius: Option<String>,
+    pub amount: Option<String>,
+    pub scale: Option<String>,
+    pub seed: Option<String>,
+    pub preserve_interior: Option<String>,
     pub saturation: Option<String>,
     pub brightness: Option<String>,
     pub contrast: Option<String>,
@@ -662,6 +672,8 @@ pub struct PathNode {
     pub stroke_width_start: String,
     #[serde(default = "default_scene_one")]
     pub stroke_width_end: String,
+    #[serde(default)]
+    pub stroke_width_profile: String,
     pub opacity: String,
     pub trim_start: String,
     pub trim_end: String,

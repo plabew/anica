@@ -825,7 +825,7 @@ mod tests {
     <Timeline>
       <Track>
         <Sequence duration="1s">
-          <Path d="M 0 0 L 100 100" stroke="#FF0000" strokeWidth="2" blend="overlay" />
+          <Path d="M 0 0 L 100 100" stroke="#FF0000" strokeWidth="2" blend="hue" />
         </Sequence>
       </Track>
     </Timeline>
@@ -883,7 +883,7 @@ mod tests {
     <Timeline>
       <Track>
         <Sequence duration="1s">
-          <Path d="M 0 0 L 100 100" stroke="#FF0000" strokeWidth="2" blend="overlay" />
+          <Path d="M 0 0 L 100 100" stroke="#FF0000" strokeWidth="2" blend="hue" />
         </Sequence>
       </Track>
     </Timeline>

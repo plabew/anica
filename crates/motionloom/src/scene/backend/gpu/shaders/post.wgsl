@@ -105,7 +105,12 @@ fn cellular(p: vec2<f32>) -> f32 {
     return clamp(nearest, 0.0, 1.0);
 }
 
-fn procedural_noise(kind: i32, p: vec2<f32>, seed: f32) -> f32 {
+fn procedural_noise(kind: i32, p: vec2<f32>, seed: f32, coordinate_scale: f32) -> f32 {
+    if (kind == 12) {
+        let centered = p - vec2<f32>(coordinate_scale * 0.5);
+        let polar = vec2<f32>(length(centered) * 2.4, atan2(centered.y, centered.x) / 6.2831853 * coordinate_scale * 0.3);
+        return fbm(polar + vec2<f32>(seed, seed * 0.37));
+    }
     let q = p + vec2<f32>(seed, seed * 1.73);
     if (kind == 7) { return turbulence(q); }
     if (kind == 8) { return 1.0 - abs(fbm(q) * 2.0 - 1.0); }
@@ -122,6 +127,28 @@ fn procedural_noise(kind: i32, p: vec2<f32>, seed: f32) -> f32 {
             + 0.18 * sin(q.y * 5.1 - q.x * 1.7 + warp * 3.0), 0.0, 1.0);
     }
     return fbm(q);
+}
+
+fn load_clamped(pixel: vec2<i32>) -> vec4<f32> {
+    let limit = vec2<i32>(i32(params.canvas.x) - 1, i32(params.canvas.y) - 1);
+    return textureLoad(base_tex, clamp(pixel, vec2<i32>(0), limit), 0);
+}
+
+fn local_alpha_edge(pixel: vec2<i32>, radius: i32) -> f32 {
+    let r = max(radius, 1);
+    var min_alpha = 1.0;
+    var max_alpha = 0.0;
+    let offsets = array<vec2<i32>, 9>(
+        vec2<i32>(0, 0), vec2<i32>(r, 0), vec2<i32>(-r, 0),
+        vec2<i32>(0, r), vec2<i32>(0, -r), vec2<i32>(r, r),
+        vec2<i32>(-r, r), vec2<i32>(r, -r), vec2<i32>(-r, -r)
+    );
+    for (var i = 0; i < 9; i = i + 1) {
+        let alpha = load_clamped(pixel + offsets[i]).a;
+        min_alpha = min(min_alpha, alpha);
+        max_alpha = max(max_alpha, alpha);
+    }
+    return clamp(max_alpha - min_alpha, 0.0, 1.0);
 }
 
 @compute @workgroup_size(16, 16, 1)
@@ -237,9 +264,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let roughness = clamp(params.canvas.z, 0.0, 1.0);
         let specular = clamp(params.canvas.w, 0.0, 2.0);
         let kind = i32(round(params.extra.x));
-        let n = procedural_noise(kind, uv * scale, seed);
-        let nx = procedural_noise(kind, (uv + vec2<f32>(1.0 / params.canvas.x, 0.0)) * scale, seed) - n;
-        let ny = procedural_noise(kind, (uv + vec2<f32>(0.0, 1.0 / params.canvas.y)) * scale, seed) - n;
+        let n = procedural_noise(kind, uv * scale, seed, scale);
+        let nx = procedural_noise(kind, (uv + vec2<f32>(1.0 / params.canvas.x, 0.0)) * scale, seed, scale) - n;
+        let ny = procedural_noise(kind, (uv + vec2<f32>(0.0, 1.0 / params.canvas.y)) * scale, seed, scale) - n;
         let sample_xy = vec2<i32>(
             clamp(i32(f32(x) + nx * amount), 0, i32(params.canvas.x) - 1),
             clamp(i32(f32(y) + ny * amount), 0, i32(params.canvas.y) - 1)
@@ -248,6 +275,131 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let normal = normalize(vec3<f32>(-nx * scale, -ny * scale, 1.0));
         let highlight = pow(max(dot(normal, normalize(vec3<f32>(-0.4, -0.5, 1.0))), 0.0), mix(48.0, 4.0, roughness)) * specular;
         textureStore(out_tex, vec2<i32>(i32(x), i32(y)), vec4<f32>(clamp(src.rgb + vec3<f32>(highlight), vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
+        return;
+    }
+
+    if (mode == 10) {
+        let pixel = vec2<i32>(i32(x), i32(y));
+        let src = load_clamped(pixel);
+        let radius = max(i32(round(params.params.x)), 1);
+        let amount = clamp(params.params.y, 0.0, 1.0);
+        let preserve = clamp(params.extra.x, 0.0, 1.0);
+        let edge = local_alpha_edge(pixel, radius);
+        let offsets = array<vec2<i32>, 9>(
+            vec2<i32>(0, 0), vec2<i32>(radius, 0), vec2<i32>(-radius, 0),
+            vec2<i32>(0, radius), vec2<i32>(0, -radius), vec2<i32>(radius, radius),
+            vec2<i32>(-radius, radius), vec2<i32>(radius, -radius), vec2<i32>(-radius, -radius)
+        );
+        var sum = vec4<f32>(0.0);
+        var weight_sum = 0.0;
+        for (var i = 0; i < 9; i = i + 1) {
+            let weight = select(0.72, 1.6, i == 0);
+            sum = sum + load_clamped(pixel + offsets[i]) * weight;
+            weight_sum = weight_sum + weight;
+        }
+        let softened = sum / weight_sum;
+        let edge_mix = edge * amount * (1.0 - preserve * src.a * 0.82);
+        textureStore(out_tex, pixel, mix(src, softened, edge_mix));
+        return;
+    }
+
+    if (mode == 11) {
+        let pixel = vec2<i32>(i32(x), i32(y));
+        let src = load_clamped(pixel);
+        let amount = clamp(params.params.y, 0.0, 1.0);
+        let scale = max(params.params.z, 0.001);
+        let seed = params.extra.x;
+        let edge = local_alpha_edge(pixel, 1);
+        let p = vec2<f32>(f32(x), f32(y)) / scale;
+        let nx = noise2(p + vec2<f32>(seed, seed * 1.37)) * 2.0 - 1.0;
+        let ny = noise2(p + vec2<f32>(seed * 2.17 + 41.0, seed * 0.73 + 19.0)) * 2.0 - 1.0;
+        let displacement = max(params.params.x, 0.0) * amount * edge;
+        let sample_pixel = pixel + vec2<i32>(i32(round(nx * displacement)), i32(round(ny * displacement)));
+        textureStore(out_tex, pixel, load_clamped(sample_pixel));
+        return;
+    }
+
+    if (mode == 12) {
+        let pixel = vec2<i32>(i32(x), i32(y));
+        let src = load_clamped(pixel);
+        let radius = max(i32(round(params.params.x)), 1);
+        let amount = clamp(params.params.y, 0.0, 1.0);
+        let offsets = array<vec2<i32>, 8>(
+            vec2<i32>(radius, 0), vec2<i32>(-radius, 0), vec2<i32>(0, radius), vec2<i32>(0, -radius),
+            vec2<i32>(radius, radius), vec2<i32>(-radius, radius), vec2<i32>(radius, -radius), vec2<i32>(-radius, -radius)
+        );
+        var donor = src;
+        for (var i = 0; i < 8; i = i + 1) {
+            let candidate = load_clamped(pixel + offsets[i]);
+            if (candidate.a > donor.a) {
+                donor = candidate;
+            }
+        }
+        let edge = clamp(donor.a - src.a + local_alpha_edge(pixel, radius) * 0.35, 0.0, 1.0);
+        let bleed = edge * amount;
+        let out_alpha = max(src.a, donor.a * bleed);
+        let out_rgb = mix(src.rgb, donor.rgb, bleed * (1.0 - src.a * 0.45));
+        textureStore(out_tex, pixel, vec4<f32>(out_rgb, out_alpha));
+        return;
+    }
+
+    if (mode == 13) {
+        let pixel = vec2<i32>(i32(x), i32(y));
+        let src = load_clamped(pixel);
+        let steps = clamp(i32(round(params.params.x)), 1, 64);
+        let amount = max(params.params.y, 0.0);
+        let angle = params.params.z * 0.0174532925;
+        let threshold = clamp(params.extra.x, 0.0, 0.999);
+        let direction = vec2<f32>(cos(angle), sin(angle));
+        var glow = vec3<f32>(0.0);
+        for (var step = -64; step <= 64; step = step + 1) {
+            if (abs(step) <= steps) {
+                let sample_pixel = pixel + vec2<i32>(round(direction * f32(step)));
+                let sample = load_clamped(sample_pixel);
+                let luma = dot(sample.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+                let weight = max(0.0, (luma - threshold) / max(1.0 - threshold, 0.001)) / (1.0 + f32(abs(step)) * 0.12);
+                glow = glow + sample.rgb * weight;
+            }
+        }
+        textureStore(out_tex, pixel, vec4<f32>(clamp(src.rgb + glow * amount / f32(steps), vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
+        return;
+    }
+
+    if (mode == 14) {
+        let pixel = vec2<i32>(i32(x), i32(y));
+        let src = load_clamped(pixel);
+        let shift = i32(round(params.params.x * params.params.y));
+        let red = load_clamped(pixel + vec2<i32>(shift, 0)).r;
+        let blue = load_clamped(pixel - vec2<i32>(shift, 0)).b;
+        textureStore(out_tex, pixel, vec4<f32>(red, src.g, blue, src.a));
+        return;
+    }
+
+    if (mode == 15) {
+        let pixel = vec2<i32>(i32(x), i32(y));
+        let src = load_clamped(pixel);
+        let threshold = clamp(params.params.x, 0.0, 0.999);
+        let amount = max(params.params.y, 0.0);
+        let over = max(src.rgb - vec3<f32>(threshold), vec3<f32>(0.0));
+        let compressed = vec3<f32>(threshold) + over / (vec3<f32>(1.0) + over * amount * 6.0);
+        textureStore(out_tex, pixel, vec4<f32>(select(src.rgb, compressed, src.rgb > vec3<f32>(threshold)), src.a));
+        return;
+    }
+
+    if (mode == 16) {
+        let pixel = vec2<i32>(i32(x), i32(y));
+        let src = load_clamped(pixel);
+        let refraction = max(params.params.x, 0.0);
+        let dispersion = max(params.params.y, 0.0);
+        let glass = clamp(params.params.z, 0.0, 1.0);
+        let uv = vec2<f32>(f32(x), f32(y)) / max(params.canvas.xy, vec2<f32>(1.0));
+        let warp = vec2<f32>(noise2(uv * 9.0 + vec2<f32>(3.1, 7.7)), noise2(uv * 9.0 + vec2<f32>(19.4, 2.8))) * 2.0 - vec2<f32>(1.0);
+        let offset = warp * refraction;
+        let r = load_clamped(pixel + vec2<i32>(i32(round(offset.x + dispersion)), i32(round(offset.y)))).r;
+        let g = load_clamped(pixel + vec2<i32>(i32(round(offset.x)), i32(round(offset.y)))).g;
+        let b = load_clamped(pixel + vec2<i32>(i32(round(offset.x - dispersion)), i32(round(offset.y)))).b;
+        let sheen = pow(max(0.0, 1.0 - length(uv - vec2<f32>(0.32, 0.28)) * 1.8), 5.0) * glass * 0.35;
+        textureStore(out_tex, pixel, vec4<f32>(clamp(vec3<f32>(r, g, b) + vec3<f32>(sheen), vec3<f32>(0.0), vec3<f32>(1.0)), src.a));
         return;
     }
 
@@ -262,7 +414,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let asset_flags = params.extra.w;
         let has_texture = asset_flags >= 0.5;
         let has_height = asset_flags >= 1.5;
-        var tex_value = procedural_noise(kind, uv * scale, seed);
+        var tex_value = procedural_noise(kind, uv * scale, seed, scale);
         if (kind == 1) {
             let fibers = 0.5 + 0.5 * sin((uv.y * scale * 8.0 + tex_value * 4.0 + seed) * 6.28318);
             tex_value = mix(tex_value, fibers, 0.35);

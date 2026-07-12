@@ -94,6 +94,9 @@ pub use crate::{
     render_scene_graph_to_video_with_progress_and_cancel, set_scene_asset_roots,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::VectorFrameBenchmark;
+
 #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 pub use crate::DmabufPlane;
 

@@ -1552,6 +1552,18 @@ fn parse_scene_nodes(
             i = end_ix + 1;
             continue;
         }
+        if starts_open_tag(line, "RadialRays") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Group(parse_radial_rays_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "ParticleField") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Group(parse_particle_field_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
         if starts_open_tag(line, "Image") {
             let (tag, end_ix) = collect_self_closing_block(lines, i)?;
             nodes.push(SceneNode::Image(parse_image_node(&tag, i + 1)?));
@@ -2521,6 +2533,13 @@ fn parse_material_def(block: &str, line: usize) -> Result<MaterialDef, GraphPars
         roughness: scene_attr_or_default(block, &["roughness"], "0.5"),
         specular: scene_attr_or_default(block, &["specular"], "0"),
         opacity: scene_attr_or_default(block, &["opacity"], "1"),
+        refraction: scene_attr_or_default(block, &["refraction", "ior"], "0"),
+        dispersion: scene_attr_or_default(
+            block,
+            &["dispersion", "chromaticDispersion", "chromatic_dispersion"],
+            "0",
+        ),
+        glass: scene_attr_or_default(block, &["glass", "glassAmount", "glass_amount"], "0"),
     })
 }
 
@@ -2580,6 +2599,42 @@ fn parse_filter_block(lines: &[&str], start: usize) -> Result<(FilterDef, usize)
             i = end_ix + 1;
             continue;
         }
+        if starts_open_tag(line, "EdgeSoftness") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            steps.push(parse_filter_step_def("edgeSoftness", &tag));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "EdgeRoughness") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            steps.push(parse_filter_step_def("edgeRoughness", &tag));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "ColorBleed") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            steps.push(parse_filter_step_def("colorBleed", &tag));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "LightStreak") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            steps.push(parse_filter_step_def("lightStreak", &tag));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "ChromaticAberration") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            steps.push(parse_filter_step_def("chromaticAberration", &tag));
+            i = end_ix + 1;
+            continue;
+        }
+        if starts_open_tag(line, "HighlightCompression") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            steps.push(parse_filter_step_def("highlightCompression", &tag));
+            i = end_ix + 1;
+            continue;
+        }
         if starts_open_tag(line, "ColorMatrix") {
             let (tag, end_ix) = collect_self_closing_block(lines, i)?;
             steps.push(parse_filter_step_def("colorMatrix", &tag));
@@ -2598,9 +2653,7 @@ fn parse_filter_block(lines: &[&str], start: usize) -> Result<(FilterDef, usize)
         }
         return Err(GraphParseError {
             line: i + 1,
-            message: format!(
-                "<Filter> only accepts <Blur />, <ColorMatrix />, or <Effect />, got: {line}"
-            ),
+            message: format!("unsupported <Filter> child: {line}"),
         });
     }
 
@@ -2612,6 +2665,14 @@ fn parse_filter_step_def(kind: &str, block: &str) -> FilterStepDef {
         kind: kind.to_string(),
         radius: attr_value(block, "radius")
             .or_else(|| attr_value(block, "sigma"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        amount: attr_value(block, "amount")
+            .or_else(|| attr_value(block, "strength"))
+            .map(|v| strip_wrappers(&v).to_string()),
+        scale: attr_value(block, "scale").map(|v| strip_wrappers(&v).to_string()),
+        seed: attr_value(block, "seed").map(|v| strip_wrappers(&v).to_string()),
+        preserve_interior: attr_value(block, "preserveInterior")
+            .or_else(|| attr_value(block, "preserve_interior"))
             .map(|v| strip_wrappers(&v).to_string()),
         saturation: attr_value(block, "saturation").map(|v| strip_wrappers(&v).to_string()),
         brightness: attr_value(block, "brightness").map(|v| strip_wrappers(&v).to_string()),
@@ -3456,6 +3517,10 @@ pub(crate) fn parse_path_node(
             ],
             "1",
         ),
+        stroke_width_profile: attr_value(block, "strokeWidthProfile")
+            .or_else(|| attr_value(block, "stroke_width_profile"))
+            .map(|value| strip_wrappers(&value).to_string())
+            .unwrap_or_default(),
         opacity,
         trim_start,
         trim_end,
@@ -3646,6 +3711,101 @@ pub(crate) fn parse_shadow_node(block: &str, _line: usize) -> Result<ShadowNode,
         color,
         opacity,
     })
+}
+
+fn literal_f32_attr(block: &str, names: &[&str], default: f32) -> f32 {
+    names
+        .iter()
+        .find_map(|name| attr_value(block, name))
+        .map(|value| {
+            strip_wrappers(&value)
+                .trim()
+                .parse::<f32>()
+                .unwrap_or(default)
+        })
+        .unwrap_or(default)
+}
+
+fn procedural_group_tag(block: &str, fallback_id: &str) -> String {
+    let id = scene_attr_or_default(block, &["id"], fallback_id);
+    let x = scene_attr_or_default(block, &["x", "cx"], "0");
+    let y = scene_attr_or_default(block, &["y", "cy"], "0");
+    let rotation = scene_attr_or_default(block, &["rotation"], "0");
+    let scale = scene_attr_or_default(block, &["scale"], "1");
+    let opacity = scene_attr_or_default(block, &["opacity"], "1");
+    format!(
+        "<Group id=\"{id}\" x=\"{x}\" y=\"{y}\" rotation=\"{rotation}\" scale=\"{scale}\" opacity=\"{opacity}\">"
+    )
+}
+
+fn procedural_random(state: &mut u32) -> f32 {
+    *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    ((*state >> 8) as f32) / 16_777_215.0
+}
+
+fn parse_radial_rays_node(block: &str, line: usize) -> Result<GroupNode, GraphParseError> {
+    let count = literal_f32_attr(block, &["count"], 24.0)
+        .round()
+        .clamp(1.0, 512.0) as usize;
+    let inner = literal_f32_attr(block, &["innerRadius", "inner_radius"], 24.0);
+    let length = literal_f32_attr(block, &["length"], 160.0);
+    let variation = literal_f32_attr(block, &["lengthVariation", "length_variation"], 0.0);
+    let start = literal_f32_attr(block, &["startAngle", "start_angle"], -90.0);
+    let spread = literal_f32_attr(block, &["spread"], 360.0);
+    let width = scene_attr_or_default(block, &["strokeWidth", "stroke_width"], "2");
+    let color = scene_attr_or_default(block, &["stroke", "color"], "#ffffff");
+    let opacity = scene_attr_or_default(block, &["rayOpacity", "ray_opacity"], "1");
+    let mut seed = literal_f32_attr(block, &["seed"], 1.0).to_bits();
+    let mut children = Vec::with_capacity(count);
+    for index in 0..count {
+        let fraction = if count == 1 {
+            0.0
+        } else {
+            index as f32 / count as f32
+        };
+        let angle = (start + spread * fraction).to_radians();
+        let ray_length = length * (1.0 + (procedural_random(&mut seed) * 2.0 - 1.0) * variation);
+        let x1 = angle.cos() * inner;
+        let y1 = angle.sin() * inner;
+        let x2 = angle.cos() * (inner + ray_length.max(0.0));
+        let y2 = angle.sin() * (inner + ray_length.max(0.0));
+        let tag = format!(
+            "<Line id=\"ray_{index:03}\" x1=\"{x1}\" y1=\"{y1}\" x2=\"{x2}\" y2=\"{y2}\" stroke=\"{color}\" strokeWidth=\"{width}\" opacity=\"{opacity}\" />"
+        );
+        children.push(SceneNode::Line(parse_line_node(&tag, line)?));
+    }
+    parse_group_node(&procedural_group_tag(block, "radial_rays"), line, children)
+}
+
+fn parse_particle_field_node(block: &str, line: usize) -> Result<GroupNode, GraphParseError> {
+    let count = literal_f32_attr(block, &["count"], 80.0)
+        .round()
+        .clamp(1.0, 2_048.0) as usize;
+    let width = literal_f32_attr(block, &["width"], 400.0).max(0.0);
+    let height = literal_f32_attr(block, &["height"], 240.0).max(0.0);
+    let min_size = literal_f32_attr(block, &["minSize", "min_size"], 1.0).max(0.01);
+    let max_size = literal_f32_attr(block, &["maxSize", "max_size"], 5.0).max(min_size);
+    let min_opacity = literal_f32_attr(block, &["minOpacity", "min_opacity"], 0.2).clamp(0.0, 1.0);
+    let max_opacity =
+        literal_f32_attr(block, &["maxOpacity", "max_opacity"], 1.0).clamp(min_opacity, 1.0);
+    let color = scene_attr_or_default(block, &["color", "fill"], "#ffffff");
+    let mut seed = literal_f32_attr(block, &["seed"], 1.0).to_bits();
+    let mut children = Vec::with_capacity(count);
+    for index in 0..count {
+        let x = (procedural_random(&mut seed) - 0.5) * width;
+        let y = (procedural_random(&mut seed) - 0.5) * height;
+        let radius = min_size + procedural_random(&mut seed) * (max_size - min_size);
+        let opacity = min_opacity + procedural_random(&mut seed) * (max_opacity - min_opacity);
+        let tag = format!(
+            "<Circle id=\"particle_{index:04}\" x=\"{x}\" y=\"{y}\" radius=\"{radius}\" color=\"{color}\" opacity=\"{opacity}\" />"
+        );
+        children.push(SceneNode::Circle(parse_circle_node(&tag, line)?));
+    }
+    parse_group_node(
+        &procedural_group_tag(block, "particle_field"),
+        line,
+        children,
+    )
 }
 
 fn parse_group_node(
