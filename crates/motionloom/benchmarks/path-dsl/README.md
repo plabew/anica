@@ -38,6 +38,20 @@ files for inspection or execution in other MotionLoom hosts.
   performed. It is intentionally not approximated with an offscreen copy.
 - `path_count`, `segment_count`, `primitive_count`, and `upload_bytes`: workload
   and actual renderer-output counters.
+- `path_cache_hits` and `path_cache_misses`: per-frame local Path geometry cache
+  activity. Transform-only frames should hit while changed Morph geometry misses.
+
+The batched renderer stores immutable primitive geometry separately from dynamic
+bounds/inverse transforms. Persistent grow-only WGPU buffers skip unchanged
+geometry uploads; transform animation updates the transform buffer and any tile
+spatial-index data affected by movement.
+
+Pure GPU-native static shape scenes are retained above scene traversal and Path
+flattening. After warmup, `static` should report effectively zero `flatten_ms`.
+Animated transforms continue to reuse local Path geometry while updating their
+transform records. Group/Layer transform expressions are compiled once, so
+constant and `curve(...)` values do not reparse on every frame. Changed Morph
+geometry remains an intentional cache miss.
 
 Each timing reports median, p95, minimum, and maximum. Renderer/device creation
 is excluded; warmups occur before recorded frame samples.

@@ -32,6 +32,16 @@ struct PrimitiveBuffer {
     items: array<Primitive>,
 };
 
+struct PrimitiveTransform {
+    bounds: vec4<f32>,
+    inv0: vec4<f32>,
+    inv1: vec4<f32>,
+};
+
+struct PrimitiveTransformBuffer {
+    items: array<PrimitiveTransform>,
+};
+
 struct TileRangeBuffer {
     items: array<vec4<u32>>,
 };
@@ -46,6 +56,7 @@ struct TileIndexBuffer {
 @group(0) @binding(3) var<storage, read> primitive_buffer: PrimitiveBuffer;
 @group(0) @binding(4) var<storage, read> tile_range_buffer: TileRangeBuffer;
 @group(0) @binding(5) var<storage, read> tile_index_buffer: TileIndexBuffer;
+@group(0) @binding(6) var<storage, read> transform_buffer: PrimitiveTransformBuffer;
 
 fn rounded_rect_sdf(p: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
     let half_size = max(rect.zw * 0.5, vec2<f32>(0.0001, 0.0001));
@@ -330,12 +341,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
         let p = primitive_buffer.items[primitive_index];
-        if (px < p.bounds.x || py < p.bounds.y || px >= p.bounds.x + p.bounds.z || py >= p.bounds.y + p.bounds.w) {
+        let dynamic = transform_buffer.items[primitive_index];
+        if (px < dynamic.bounds.x || py < dynamic.bounds.y || px >= dynamic.bounds.x + dynamic.bounds.z || py >= dynamic.bounds.y + dynamic.bounds.w) {
             continue;
         }
         let local = vec2<f32>(
-            p.inv0.x * px + p.inv0.y * py + p.inv0.z,
-            p.inv1.x * px + p.inv1.y * py + p.inv1.z
+            dynamic.inv0.x * px + dynamic.inv0.y * py + dynamic.inv0.z,
+            dynamic.inv1.x * px + dynamic.inv1.y * py + dynamic.inv1.z
         );
         let cover_replace = primitive_coverage(p, local);
         let coverage = cover_replace.x;

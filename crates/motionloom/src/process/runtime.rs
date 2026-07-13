@@ -41,7 +41,7 @@ pub(crate) enum CurveEase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct CurvePoint {
+pub(crate) struct CurvePoint {
     t_sec: f32,
     value: f32,
     ease: CurveEase,
@@ -1214,6 +1214,34 @@ pub fn eval_time_expr(value: &str, time_norm: f32, time_sec: f32) -> Result<f32,
     eval_expr(&expr, time_norm, time_sec)
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum CompiledTimeExpr {
+    Constant(f32),
+    Curve(Vec<CurvePoint>),
+    Dynamic(String),
+}
+
+impl CompiledTimeExpr {
+    pub(crate) fn compile(value: &str) -> Result<Self, String> {
+        let expr = normalize_param_expr(value);
+        if let Ok(value) = expr.parse::<f32>() {
+            return Ok(Self::Constant(value));
+        }
+        if is_curve_expr(&expr) {
+            return parse_curve_points(&expr).map(Self::Curve);
+        }
+        Ok(Self::Dynamic(expr))
+    }
+
+    pub(crate) fn evaluate(&self, time_norm: f32, time_sec: f32) -> Result<f32, String> {
+        match self {
+            Self::Constant(value) => Ok(*value),
+            Self::Curve(points) => eval_compiled_curve_points(points, time_sec),
+            Self::Dynamic(expr) => eval_expr(expr, time_norm, time_sec),
+        }
+    }
+}
+
 fn validate_expr(expr: &str) -> Result<(), String> {
     eval_expr(expr, 0.5, 1.0).map(|_| ())
 }
@@ -1648,6 +1676,13 @@ fn is_curve_expr(expr: &str) -> bool {
 
 fn eval_curve_points(expr: &str, time_sec: f32) -> Result<f32, String> {
     let points = parse_curve_points(expr)?;
+    eval_compiled_curve_points(&points, time_sec)
+}
+
+fn eval_compiled_curve_points(points: &[CurvePoint], time_sec: f32) -> Result<f32, String> {
+    if points.is_empty() {
+        return Err("curve() requires at least one point.".to_string());
+    }
     if points.len() == 1 {
         return Ok(points[0].value);
     }

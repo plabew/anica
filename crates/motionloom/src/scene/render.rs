@@ -20,7 +20,9 @@ use std::time::Instant;
 
 use crate::dsl::GraphScript;
 use crate::process::model::PassNode;
-use crate::process::runtime::{apply_curve_ease, eval_time_expr, parse_curve_ease};
+use crate::process::runtime::{
+    CompiledTimeExpr, apply_curve_ease, eval_time_expr, parse_curve_ease,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::scene::backend::encoding::scene_encoder_args;
@@ -967,6 +969,8 @@ pub struct VectorFrameBenchmark {
     pub present_ms: Option<f64>,
     pub primitive_count: u32,
     pub upload_bytes: usize,
+    pub path_cache_hits: usize,
+    pub path_cache_misses: usize,
 }
 
 impl SceneRenderer {
@@ -1393,6 +1397,14 @@ struct SceneFrameRenderer {
     path_cache: HashMap<String, Vec<Vec<Point2>>>,
     polyline_cache: HashMap<String, Vec<Point2>>,
     vector_overlay_cache: HashMap<String, CachedVectorOverlay>,
+    gpu_path_geometry_cache: HashMap<String, CachedGpuPathGeometry>,
+    retained_gpu_shape_scenes: HashMap<RetainedGpuShapeSceneKey, CachedRetainedGpuShapeScene>,
+    retained_gpu_transform_scenes:
+        HashMap<RetainedGpuShapeSceneKey, CachedRetainedGpuTransformScene>,
+    gpu_text_raster_cache: HashMap<u64, CachedGpuTextRaster>,
+    prepared_graph_signature: u64,
+    gpu_path_cache_hits: usize,
+    gpu_path_cache_misses: usize,
     gradient_defs: HashMap<String, GradientDef>,
     palette_defs: HashMap<String, PaletteNode>,
     font_defs: HashMap<String, FontDef>,
@@ -1418,6 +1430,170 @@ struct SceneFrameRenderer {
 }
 
 const VECTOR_OVERLAY_CACHE_LIMIT: usize = 64;
+const GPU_PATH_GEOMETRY_CACHE_LIMIT: usize = 100_000;
+const RETAINED_GPU_SHAPE_SCENE_CACHE_LIMIT: usize = 8;
+const GPU_TEXT_RASTER_CACHE_LIMIT: usize = 256;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct RetainedGpuShapeSceneKey {
+    graph_signature: u64,
+    nodes_len: usize,
+    canvas_size: (u32, u32),
+    transform_bits: [u32; 6],
+}
+
+#[derive(Clone)]
+struct CachedRetainedGpuShapeScene {
+    primitives: Arc<Vec<GpuScenePrimitive>>,
+    path_count: usize,
+}
+
+#[derive(Clone)]
+struct CachedGpuTextRaster {
+    texture: GpuSceneNativeTexture,
+    local_transform: Affine2,
+}
+
+#[derive(Clone)]
+enum RetainedTransformAncestor {
+    Transform(RetainedCompiledTransform),
+}
+
+#[derive(Clone)]
+struct RetainedCompiledTransform {
+    x: CompiledTimeExpr,
+    y: CompiledTimeExpr,
+    rotation: CompiledTimeExpr,
+    scale: CompiledTimeExpr,
+    scale_x: CompiledTimeExpr,
+    scale_y: CompiledTimeExpr,
+    skew_x: CompiledTimeExpr,
+    skew_y: CompiledTimeExpr,
+    origin_x: CompiledTimeExpr,
+    origin_y: CompiledTimeExpr,
+    opacity: CompiledTimeExpr,
+}
+
+impl RetainedCompiledTransform {
+    fn compile(values: [&str; 11]) -> Result<Self, MotionLoomSceneRenderError> {
+        let [
+            x,
+            y,
+            rotation,
+            scale,
+            scale_x,
+            scale_y,
+            skew_x,
+            skew_y,
+            origin_x,
+            origin_y,
+            opacity,
+        ] = values;
+        let compile = |value: &str| {
+            CompiledTimeExpr::compile(value).map_err(|message| {
+                MotionLoomSceneRenderError::InvalidExpression {
+                    expr: value.to_string(),
+                    message,
+                }
+            })
+        };
+        Ok(Self {
+            x: compile(x)?,
+            y: compile(y)?,
+            rotation: compile(rotation)?,
+            scale: compile(scale)?,
+            scale_x: compile(scale_x)?,
+            scale_y: compile(scale_y)?,
+            skew_x: compile(skew_x)?,
+            skew_y: compile(skew_y)?,
+            origin_x: compile(origin_x)?,
+            origin_y: compile(origin_y)?,
+            opacity: compile(opacity)?,
+        })
+    }
+
+    fn evaluate(
+        &self,
+        time_norm: f32,
+        time_sec: f32,
+    ) -> Result<(Affine2, f32), MotionLoomSceneRenderError> {
+        let eval = |expr: &CompiledTimeExpr| {
+            expr.evaluate(time_norm, time_sec).map_err(|message| {
+                MotionLoomSceneRenderError::InvalidExpression {
+                    expr: "compiled transform".to_string(),
+                    message,
+                }
+            })
+        };
+        let scale = eval(&self.scale)?.clamp(0.001, 64.0);
+        let signed_scale = |value: f32| {
+            if value.abs() < 0.001 {
+                if value.is_sign_negative() {
+                    -0.001
+                } else {
+                    0.001
+                }
+            } else {
+                value
+            }
+        };
+        let scale_x = signed_scale(scale * eval(&self.scale_x)?);
+        let scale_y = signed_scale(scale * eval(&self.scale_y)?);
+        let origin_x = eval(&self.origin_x)?;
+        let origin_y = eval(&self.origin_y)?;
+        let transform = Affine2::translate(eval(&self.x)?, eval(&self.y)?)
+            .mul(Affine2::translate(origin_x, origin_y))
+            .mul(Affine2::rotate_deg(eval(&self.rotation)?))
+            .mul(Affine2::skew_deg(eval(&self.skew_x)?, eval(&self.skew_y)?))
+            .mul(Affine2::scale_xy(scale_x, scale_y))
+            .mul(Affine2::translate(-origin_x, -origin_y));
+        Ok((transform, eval(&self.opacity)?.clamp(0.0, 1.0)))
+    }
+}
+
+#[derive(Clone)]
+struct RetainedTransformPathEntry {
+    primitive_range: std::ops::Range<usize>,
+    ancestors: Vec<RetainedTransformAncestor>,
+}
+
+#[derive(Clone)]
+struct CachedRetainedGpuTransformScene {
+    primitives: Arc<Vec<GpuScenePrimitive>>,
+    base_transforms: Vec<Affine2>,
+    base_opacities: Vec<f32>,
+    entries: Vec<RetainedTransformPathEntry>,
+    path_count: usize,
+}
+
+impl RetainedGpuShapeSceneKey {
+    fn new(
+        graph_signature: u64,
+        nodes: &[SceneNode],
+        transform: Affine2,
+        canvas_size: (u32, u32),
+    ) -> Self {
+        Self {
+            graph_signature,
+            nodes_len: nodes.len(),
+            canvas_size,
+            transform_bits: [
+                transform.m00.to_bits(),
+                transform.m01.to_bits(),
+                transform.m02.to_bits(),
+                transform.m10.to_bits(),
+                transform.m11.to_bits(),
+                transform.m12.to_bits(),
+            ],
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CachedGpuPathGeometry {
+    signature: u64,
+    primitives: Arc<Vec<GpuScenePrimitive>>,
+}
 
 #[derive(Clone)]
 struct CachedVectorOverlay {
@@ -1490,10 +1666,48 @@ fn vector_overlay_nodes_are_static(nodes: &[SceneNode]) -> bool {
     let debug = format!("{nodes:?}").to_ascii_lowercase();
     !debug.contains("curve(")
         && !debug.contains("morph(")
-        && !debug.contains("time")
-        && !debug.contains("frame")
-        && !debug.contains("random")
-        && !debug.contains("noise")
+        && !debug.contains("$time")
+        && !debug.contains("$frame")
+        && !debug.contains("random(")
+        && !debug.contains("noise(")
+}
+
+fn text_raster_is_static(text: &TextNode) -> bool {
+    if !text.animators.is_empty() || text.visible_chars.is_some() {
+        return false;
+    }
+    let debug = format!("{text:?}").to_ascii_lowercase();
+    !debug.contains("curve(")
+        && !debug.contains("morph(")
+        && !debug.contains("$time")
+        && !debug.contains("$frame")
+        && !debug.contains("random(")
+        && !debug.contains("noise(")
+}
+
+fn retained_path_geometry_and_style_are_static(path: &PathNode) -> bool {
+    if !gpu_path_style_is_cacheable(path) || path.material.is_some() {
+        return false;
+    }
+    let debug = format!("{path:?}").to_ascii_lowercase();
+    !debug.contains("curve(")
+        && !debug.contains("morph(")
+        && !debug.contains("$time")
+        && !debug.contains("$frame")
+        && !debug.contains("random(")
+        && !debug.contains("noise(")
+}
+
+fn gpu_text_raster_cache_key(
+    graph_signature: u64,
+    text: &TextNode,
+    canvas_size: (u32, u32),
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    graph_signature.hash(&mut hasher);
+    canvas_size.hash(&mut hasher);
+    format!("{text:?}").hash(&mut hasher);
+    hasher.finish()
 }
 
 fn vector_overlay_cache_key(
@@ -1787,6 +2001,13 @@ impl SceneFrameRenderer {
             path_cache: HashMap::new(),
             polyline_cache: HashMap::new(),
             vector_overlay_cache: HashMap::new(),
+            gpu_path_geometry_cache: HashMap::new(),
+            retained_gpu_shape_scenes: HashMap::new(),
+            retained_gpu_transform_scenes: HashMap::new(),
+            gpu_text_raster_cache: HashMap::new(),
+            prepared_graph_signature: 0,
+            gpu_path_cache_hits: 0,
+            gpu_path_cache_misses: 0,
             gradient_defs: HashMap::new(),
             palette_defs: HashMap::new(),
             font_defs: HashMap::new(),
@@ -1829,6 +2050,13 @@ impl SceneFrameRenderer {
             path_cache: HashMap::new(),
             polyline_cache: HashMap::new(),
             vector_overlay_cache: HashMap::new(),
+            gpu_path_geometry_cache: HashMap::new(),
+            retained_gpu_shape_scenes: HashMap::new(),
+            retained_gpu_transform_scenes: HashMap::new(),
+            gpu_text_raster_cache: HashMap::new(),
+            prepared_graph_signature: 0,
+            gpu_path_cache_hits: 0,
+            gpu_path_cache_misses: 0,
             gradient_defs: HashMap::new(),
             palette_defs: HashMap::new(),
             font_defs: HashMap::new(),
@@ -1982,6 +2210,8 @@ impl SceneFrameRenderer {
         graph: &GraphScript,
         frame: u32,
     ) -> Result<VectorFrameBenchmark, MotionLoomSceneRenderError> {
+        self.gpu_path_cache_hits = 0;
+        self.gpu_path_cache_misses = 0;
         if !self.profile.uses_gpu_compositor() {
             return Err(MotionLoomSceneRenderError::GpuRender {
                 message: "vector benchmark requires a GPU profile".to_string(),
@@ -2020,26 +2250,50 @@ impl SceneFrameRenderer {
             .await?;
 
         let flatten_started = Instant::now();
+        let retained = self
+            .try_collect_retained_gpu_shape_scene(
+                nodes,
+                scene_transform,
+                1.0,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+            )
+            .await?;
+        let retained = if retained.is_some() {
+            retained
+        } else {
+            self.try_collect_retained_gpu_transform_scene(
+                nodes,
+                scene_transform,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+            )?
+        };
         let mut assets = GpuSceneNativeAssets::default();
-        let mut primitives = Vec::<GpuScenePrimitive>::new();
+        let mut collected_primitives = Vec::<GpuScenePrimitive>::new();
         let mut texture_layers = Vec::<GpuSceneTextureLayer>::new();
         let mut text_requests = Vec::<GpuSceneTextRequest>::new();
         let mut unsupported = false;
-        self.collect_gpu_scene_native_commands(
-            nodes,
-            scene_transform,
-            None,
-            1.0,
-            time_norm,
-            time_sec,
-            scene_canvas_size,
-            &mut assets,
-            &mut primitives,
-            &mut texture_layers,
-            &mut text_requests,
-            &mut unsupported,
-        )
-        .await?;
+        if retained.is_none() {
+            self.collect_gpu_scene_native_commands(
+                nodes,
+                scene_transform,
+                None,
+                1.0,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+                &mut assets,
+                &mut collected_primitives,
+                &mut texture_layers,
+                &mut text_requests,
+                &mut unsupported,
+            )
+            .await?;
+        }
+        let primitives = retained.as_deref().unwrap_or(&collected_primitives);
         let flatten_ms = flatten_started.elapsed().as_secs_f64() * 1000.0;
         if unsupported || !texture_layers.is_empty() || !text_requests.is_empty() {
             return Err(MotionLoomSceneRenderError::GpuRender {
@@ -2060,7 +2314,7 @@ impl SceneFrameRenderer {
                 .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
                     message: "GPU compositor was not initialized".to_string(),
                 })?;
-        let profiled = compositor.render_shape_benchmark_to_texture(&primitives, background)?;
+        let profiled = compositor.render_shape_benchmark_to_texture(primitives, background)?;
         let _texture = profiled.texture;
         Ok(VectorFrameBenchmark {
             flatten_ms,
@@ -2069,6 +2323,8 @@ impl SceneFrameRenderer {
             present_ms: None,
             primitive_count: profiled.primitive_count,
             upload_bytes: profiled.upload_bytes,
+            path_cache_hits: self.gpu_path_cache_hits,
+            path_cache_misses: self.gpu_path_cache_misses,
         })
     }
 
@@ -2313,6 +2569,22 @@ impl SceneFrameRenderer {
     }
 
     fn prepare_frame_caches(&mut self, graph: &GraphScript) {
+        // Action evaluation may reuse the same allocation for different
+        // frame-local Graph clones, so pointer identity alone is not a valid
+        // retained-scene revision. Always verify the content signature.
+        let mut hasher = DefaultHasher::new();
+        if let Some(raw_script) = graph.raw_script.as_deref() {
+            raw_script.hash(&mut hasher);
+        } else {
+            format!("{graph:?}").hash(&mut hasher);
+        }
+        let graph_signature = hasher.finish();
+        if self.prepared_graph_signature != graph_signature {
+            self.retained_gpu_shape_scenes.clear();
+            self.retained_gpu_transform_scenes.clear();
+            self.gpu_text_raster_cache.clear();
+            self.prepared_graph_signature = graph_signature;
+        }
         self.gradient_defs.clear();
         self.palette_defs.clear();
         self.font_defs.clear();
@@ -3063,26 +3335,50 @@ impl SceneFrameRenderer {
 
         self.ensure_gpu_compositor_size(output_size.0.max(1), output_size.1.max(1))
             .await?;
+        let retained = self
+            .try_collect_retained_gpu_shape_scene(
+                nodes,
+                scene_transform,
+                1.0,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+            )
+            .await?;
+        let retained = if retained.is_some() {
+            retained
+        } else {
+            self.try_collect_retained_gpu_transform_scene(
+                nodes,
+                scene_transform,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+            )?
+        };
         let mut assets = GpuSceneNativeAssets::default();
-        let mut primitives = Vec::<GpuScenePrimitive>::new();
+        let mut collected_primitives = Vec::<GpuScenePrimitive>::new();
         let mut texture_layers = Vec::<GpuSceneTextureLayer>::new();
         let mut text_requests = Vec::<GpuSceneTextRequest>::new();
         let mut unsupported = false;
-        self.collect_gpu_scene_native_commands(
-            nodes,
-            scene_transform,
-            None,
-            1.0,
-            time_norm,
-            time_sec,
-            scene_canvas_size,
-            &mut assets,
-            &mut primitives,
-            &mut texture_layers,
-            &mut text_requests,
-            &mut unsupported,
-        )
-        .await?;
+        if retained.is_none() {
+            self.collect_gpu_scene_native_commands(
+                nodes,
+                scene_transform,
+                None,
+                1.0,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+                &mut assets,
+                &mut collected_primitives,
+                &mut texture_layers,
+                &mut text_requests,
+                &mut unsupported,
+            )
+            .await?;
+        }
+        let primitives = retained.as_deref().unwrap_or(&collected_primitives);
         if unsupported {
             return Err(MotionLoomSceneRenderError::GpuRender {
                 message:
@@ -3295,26 +3591,50 @@ impl SceneFrameRenderer {
 
         self.ensure_gpu_compositor_size(output_size.0.max(1), output_size.1.max(1))
             .await?;
+        let retained = self
+            .try_collect_retained_gpu_shape_scene(
+                nodes,
+                scene_transform,
+                1.0,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+            )
+            .await?;
+        let retained = if retained.is_some() {
+            retained
+        } else {
+            self.try_collect_retained_gpu_transform_scene(
+                nodes,
+                scene_transform,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+            )?
+        };
         let mut assets = GpuSceneNativeAssets::default();
-        let mut primitives = Vec::<GpuScenePrimitive>::new();
+        let mut collected_primitives = Vec::<GpuScenePrimitive>::new();
         let mut texture_layers = Vec::<GpuSceneTextureLayer>::new();
         let mut text_requests = Vec::<GpuSceneTextRequest>::new();
         let mut unsupported = false;
-        self.collect_gpu_scene_native_commands(
-            nodes,
-            scene_transform,
-            None,
-            1.0,
-            time_norm,
-            time_sec,
-            scene_canvas_size,
-            &mut assets,
-            &mut primitives,
-            &mut texture_layers,
-            &mut text_requests,
-            &mut unsupported,
-        )
-        .await?;
+        if retained.is_none() {
+            self.collect_gpu_scene_native_commands(
+                nodes,
+                scene_transform,
+                None,
+                1.0,
+                time_norm,
+                time_sec,
+                scene_canvas_size,
+                &mut assets,
+                &mut collected_primitives,
+                &mut texture_layers,
+                &mut text_requests,
+                &mut unsupported,
+            )
+            .await?;
+        }
+        let primitives = retained.as_deref().unwrap_or(&collected_primitives);
         if unsupported {
             return Err(MotionLoomSceneRenderError::GpuRender {
                 message: "direct GPU texture rendering does not support this scene node set yet"
@@ -3345,7 +3665,7 @@ impl SceneFrameRenderer {
                     message: "GPU compositor was not initialized".to_string(),
                 })?;
         compositor.render_scene_content_to_texture(
-            &primitives,
+            primitives,
             &texture_layers,
             background.unwrap_or([0, 0, 0, 0]),
         )
@@ -4008,6 +4328,418 @@ impl SceneFrameRenderer {
             unsupported,
             None,
         )
+    }
+
+    /// Return a retained primitive list for a time-invariant, GPU-native shape scene.
+    ///
+    /// This cache deliberately sits above Path parsing and scene traversal. The
+    /// per-Path cache avoids rebuilding geometry, but still requires walking the
+    /// complete tree and cloning every primitive. A retained scene hit skips that
+    /// work entirely. Mixed scenes remain on the regular collector so text,
+    /// textures, masks, materials, and other effect ordering stay unchanged.
+    #[allow(clippy::too_many_arguments)]
+    async fn try_collect_retained_gpu_shape_scene(
+        &mut self,
+        nodes: &[SceneNode],
+        transform: Affine2,
+        inherited_opacity: f32,
+        time_norm: f32,
+        time_sec: f32,
+        canvas_size: (u32, u32),
+    ) -> Result<Option<Arc<Vec<GpuScenePrimitive>>>, MotionLoomSceneRenderError> {
+        if (inherited_opacity - 1.0).abs() > 0.0001 {
+            return Ok(None);
+        }
+        let key = RetainedGpuShapeSceneKey::new(
+            self.prepared_graph_signature,
+            nodes,
+            transform,
+            canvas_size,
+        );
+        if let Some(scene) = self.retained_gpu_shape_scenes.get(&key) {
+            self.gpu_path_cache_hits = self.gpu_path_cache_hits.saturating_add(scene.path_count);
+            return Ok(Some(scene.primitives.clone()));
+        }
+        if !vector_overlay_nodes_are_static(nodes) {
+            return Ok(None);
+        }
+
+        let mut assets = GpuSceneNativeAssets::default();
+        let mut primitives = Vec::new();
+        let mut texture_layers = Vec::new();
+        let mut text_requests = Vec::new();
+        let mut unsupported = false;
+        let paths_before = self
+            .gpu_path_cache_hits
+            .saturating_add(self.gpu_path_cache_misses);
+        self.collect_gpu_scene_native_commands(
+            nodes,
+            transform,
+            None,
+            inherited_opacity,
+            time_norm,
+            time_sec,
+            canvas_size,
+            &mut assets,
+            &mut primitives,
+            &mut texture_layers,
+            &mut text_requests,
+            &mut unsupported,
+        )
+        .await?;
+        if unsupported || !texture_layers.is_empty() || !text_requests.is_empty() {
+            return Ok(None);
+        }
+
+        let path_count = self
+            .gpu_path_cache_hits
+            .saturating_add(self.gpu_path_cache_misses)
+            .saturating_sub(paths_before);
+        let primitives = Arc::new(primitives);
+        if self.retained_gpu_shape_scenes.len() >= RETAINED_GPU_SHAPE_SCENE_CACHE_LIMIT {
+            self.retained_gpu_shape_scenes.clear();
+        }
+        self.retained_gpu_shape_scenes.insert(
+            key,
+            CachedRetainedGpuShapeScene {
+                primitives: primitives.clone(),
+                path_count,
+            },
+        );
+        Ok(Some(primitives))
+    }
+
+    fn compile_retained_transform_nodes(
+        &mut self,
+        nodes: &[SceneNode],
+        ancestors: &mut Vec<RetainedTransformAncestor>,
+        time_norm: f32,
+        time_sec: f32,
+        primitives: &mut Vec<GpuScenePrimitive>,
+        entries: &mut Vec<RetainedTransformPathEntry>,
+    ) -> Result<bool, MotionLoomSceneRenderError> {
+        for node in nodes {
+            match node {
+                SceneNode::Defs(_) | SceneNode::Palette(_) => {}
+                SceneNode::Timeline(timeline) => {
+                    if timeline.children.len() != 1
+                        || !self.compile_retained_transform_nodes(
+                            &timeline.children,
+                            ancestors,
+                            time_norm,
+                            time_sec,
+                            primitives,
+                            entries,
+                        )?
+                    {
+                        return Ok(false);
+                    }
+                }
+                SceneNode::Track(track) => {
+                    if !track.space.eq_ignore_ascii_case("screen")
+                        || !self.compile_retained_transform_nodes(
+                            &track.children,
+                            ancestors,
+                            time_norm,
+                            time_sec,
+                            primitives,
+                            entries,
+                        )?
+                    {
+                        return Ok(false);
+                    }
+                }
+                SceneNode::Sequence(sequence) => {
+                    if sequence.from_ms != 0
+                        || !sequence.out.eq_ignore_ascii_case("hold")
+                        || !self.compile_retained_transform_nodes(
+                            &sequence.children,
+                            ancestors,
+                            time_norm,
+                            time_sec,
+                            primitives,
+                            entries,
+                        )?
+                    {
+                        return Ok(false);
+                    }
+                }
+                SceneNode::Layer(layer) => {
+                    if layer.source.is_some()
+                        || layer.is_3d
+                        || layer.effect.is_some()
+                        || layer.mask.is_some()
+                        || layer.mask_from.is_some()
+                        || layer.matte.is_some()
+                        || layer.matte_from.is_some()
+                        || !layer.blend.eq_ignore_ascii_case("normal")
+                    {
+                        return Ok(false);
+                    }
+                    ancestors.push(RetainedTransformAncestor::Transform(
+                        RetainedCompiledTransform::compile([
+                            &layer.x,
+                            &layer.y,
+                            &layer.rotation,
+                            &layer.scale,
+                            &layer.scale_x,
+                            &layer.scale_y,
+                            &layer.skew_x,
+                            &layer.skew_y,
+                            &layer.transform_origin_x,
+                            &layer.transform_origin_y,
+                            &layer.opacity,
+                        ])?,
+                    ));
+                    let supported = self.compile_retained_transform_nodes(
+                        &layer.children,
+                        ancestors,
+                        time_norm,
+                        time_sec,
+                        primitives,
+                        entries,
+                    )?;
+                    ancestors.pop();
+                    if !supported {
+                        return Ok(false);
+                    }
+                }
+                SceneNode::Group(group) => {
+                    if group.deform_grid.is_some()
+                        || group.grid_from.is_some()
+                        || group.grid_to.is_some()
+                        || group.mask.is_some()
+                        || group.mask_from.is_some()
+                        || !group.effects.is_empty()
+                        || group.material.is_some()
+                    {
+                        return Ok(false);
+                    }
+                    ancestors.push(RetainedTransformAncestor::Transform(
+                        RetainedCompiledTransform::compile([
+                            &group.x,
+                            &group.y,
+                            &group.rotation,
+                            &group.scale,
+                            &group.scale_x,
+                            &group.scale_y,
+                            &group.skew_x,
+                            &group.skew_y,
+                            &group.transform_origin_x,
+                            &group.transform_origin_y,
+                            &group.opacity,
+                        ])?,
+                    ));
+                    let supported = self.compile_retained_transform_nodes(
+                        &group.children,
+                        ancestors,
+                        time_norm,
+                        time_sec,
+                        primitives,
+                        entries,
+                    )?;
+                    ancestors.pop();
+                    if !supported {
+                        return Ok(false);
+                    }
+                }
+                SceneNode::Path(path) => {
+                    if !retained_path_geometry_and_style_are_static(path) {
+                        return Ok(false);
+                    }
+                    let start = primitives.len();
+                    self.push_gpu_path_commands_cached(
+                        path,
+                        Affine2::identity(),
+                        None,
+                        1.0,
+                        time_norm,
+                        time_sec,
+                        primitives,
+                    )?;
+                    entries.push(RetainedTransformPathEntry {
+                        primitive_range: start..primitives.len(),
+                        ancestors: ancestors.clone(),
+                    });
+                }
+                _ => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+
+    fn try_collect_retained_gpu_transform_scene(
+        &mut self,
+        nodes: &[SceneNode],
+        root_transform: Affine2,
+        time_norm: f32,
+        time_sec: f32,
+        canvas_size: (u32, u32),
+    ) -> Result<Option<Arc<Vec<GpuScenePrimitive>>>, MotionLoomSceneRenderError> {
+        let key = RetainedGpuShapeSceneKey::new(
+            self.prepared_graph_signature,
+            nodes,
+            root_transform,
+            canvas_size,
+        );
+        if !self.retained_gpu_transform_scenes.contains_key(&key) {
+            let mut primitives = Vec::new();
+            let mut entries = Vec::new();
+            if !self.compile_retained_transform_nodes(
+                nodes,
+                &mut Vec::new(),
+                time_norm,
+                time_sec,
+                &mut primitives,
+                &mut entries,
+            )? || entries.is_empty()
+            {
+                return Ok(None);
+            }
+            let base_transforms = primitives
+                .iter()
+                .map(|primitive| primitive.transform)
+                .collect();
+            let base_opacities = primitives
+                .iter()
+                .map(|primitive| primitive.opacity)
+                .collect();
+            let path_count = entries.len();
+            if self.retained_gpu_transform_scenes.len() >= RETAINED_GPU_SHAPE_SCENE_CACHE_LIMIT {
+                self.retained_gpu_transform_scenes.clear();
+            }
+            self.retained_gpu_transform_scenes.insert(
+                key,
+                CachedRetainedGpuTransformScene {
+                    primitives: Arc::new(primitives),
+                    base_transforms,
+                    base_opacities,
+                    entries,
+                    path_count,
+                },
+            );
+        }
+
+        let scene = self
+            .retained_gpu_transform_scenes
+            .get_mut(&key)
+            .expect("retained transform scene inserted before update");
+        let primitives = Arc::make_mut(&mut scene.primitives);
+        for entry in &scene.entries {
+            let mut transform = root_transform;
+            let mut opacity = 1.0_f32;
+            for ancestor in &entry.ancestors {
+                match ancestor {
+                    RetainedTransformAncestor::Transform(compiled) => {
+                        let (local_transform, local_opacity) =
+                            compiled.evaluate(time_norm, time_sec)?;
+                        opacity *= local_opacity;
+                        transform = transform.mul(local_transform);
+                    }
+                }
+            }
+            for primitive_ix in entry.primitive_range.clone() {
+                primitives[primitive_ix].transform =
+                    transform.mul(scene.base_transforms[primitive_ix]);
+                primitives[primitive_ix].opacity =
+                    (scene.base_opacities[primitive_ix] * opacity).clamp(0.0, 1.0);
+            }
+        }
+        self.gpu_path_cache_hits = self.gpu_path_cache_hits.saturating_add(scene.path_count);
+        Ok(Some(scene.primitives.clone()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_gpu_path_commands_cached(
+        &mut self,
+        path: &PathNode,
+        parent_transform: Affine2,
+        deform: Option<&EvaluatedDeformGrid>,
+        inherited_opacity: f32,
+        time_norm: f32,
+        time_sec: f32,
+        primitives: &mut Vec<GpuScenePrimitive>,
+    ) -> Result<(), MotionLoomSceneRenderError> {
+        if deform.is_some() || !gpu_path_style_is_cacheable(path) {
+            return push_gpu_path_commands(
+                path,
+                parent_transform,
+                deform,
+                inherited_opacity,
+                time_norm,
+                time_sec,
+                &self.gradient_defs,
+                primitives,
+            );
+        }
+
+        let evaluated_d = eval_path_d(&path.d, time_norm, time_sec)?;
+        let signature = gpu_path_geometry_signature(path, evaluated_d.as_ref());
+        let slot = path
+            .id
+            .as_deref()
+            .map(|id| format!("id:{id}"))
+            .unwrap_or_else(|| format!("shape:{signature:016x}"));
+
+        let cached = self
+            .gpu_path_geometry_cache
+            .get(&slot)
+            .filter(|entry| entry.signature == signature)
+            .map(|entry| entry.primitives.clone());
+        let local_primitives = if let Some(cached) = cached {
+            self.gpu_path_cache_hits = self.gpu_path_cache_hits.saturating_add(1);
+            cached
+        } else {
+            self.gpu_path_cache_misses = self.gpu_path_cache_misses.saturating_add(1);
+            let mut local_path = path.clone();
+            local_path.id = None;
+            local_path.x = "0".to_string();
+            local_path.y = "0".to_string();
+            local_path.rotation = "0".to_string();
+            local_path.scale = "1".to_string();
+            local_path.scale_x = "1".to_string();
+            local_path.scale_y = "1".to_string();
+            local_path.skew_x = "0".to_string();
+            local_path.skew_y = "0".to_string();
+            local_path.transform_origin_x = "0".to_string();
+            local_path.transform_origin_y = "0".to_string();
+            local_path.d = evaluated_d.into_owned();
+            let mut generated = Vec::new();
+            push_gpu_path_commands(
+                &local_path,
+                Affine2::identity(),
+                None,
+                1.0,
+                time_norm,
+                time_sec,
+                &self.gradient_defs,
+                &mut generated,
+            )?;
+            let generated = Arc::new(generated);
+            if self.gpu_path_geometry_cache.len() >= GPU_PATH_GEOMETRY_CACHE_LIMIT
+                && !self.gpu_path_geometry_cache.contains_key(&slot)
+            {
+                self.gpu_path_geometry_cache.clear();
+            }
+            self.gpu_path_geometry_cache.insert(
+                slot,
+                CachedGpuPathGeometry {
+                    signature,
+                    primitives: generated.clone(),
+                },
+            );
+            generated
+        };
+
+        let path_transform =
+            parent_transform.mul(scene_path_local_transform(path, time_norm, time_sec)?);
+        for primitive in local_primitives.iter() {
+            let mut primitive = primitive.clone();
+            primitive.transform = path_transform.mul(primitive.transform);
+            primitive.opacity = (primitive.opacity * inherited_opacity).clamp(0.0, 1.0);
+            primitives.push(primitive);
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4737,14 +5469,13 @@ impl SceneFrameRenderer {
                             }
                         } else {
                             let primitive_start = primitives.len();
-                            push_gpu_path_commands(
+                            self.push_gpu_path_commands_cached(
                                 path,
                                 transform,
                                 deform,
                                 inherited_opacity,
                                 time_norm,
                                 time_sec,
-                                &self.gradient_defs,
                                 primitives,
                             )?;
                             if path_pick_id != 0 {
@@ -9393,6 +10124,75 @@ impl SceneFrameRenderer {
         text: &TextNode,
         context: TextTextureRasterContext,
     ) -> Result<Vec<GpuSceneTextureLayer>, MotionLoomSceneRenderError> {
+        if context.inherited_opacity <= 0.0001 {
+            return Ok(Vec::new());
+        }
+
+        // Static text content is retained independently from its parent Group
+        // transform. This is especially important for renderScale="4x": moving
+        // a title should update one texture-layer matrix, not rerun shaping,
+        // supersampled rasterization, and RGBA upload every frame.
+        if text_raster_is_static(text)
+            && !text_layer_effect_spec(text, context.time_norm, context.time_sec)?.has_effects()
+        {
+            let cache_key =
+                gpu_text_raster_cache_key(self.prepared_graph_signature, text, context.canvas_size);
+            if let Some(cached) = self.gpu_text_raster_cache.get(&cache_key).cloned() {
+                return Ok(vec![GpuSceneTextureLayer {
+                    source: GpuSceneTextureSource::Gpu(cached.texture),
+                    transform: context.transform.mul(cached.local_transform),
+                    projected_quad: None,
+                    opacity: context.inherited_opacity.clamp(0.0, 1.0),
+                    blend: SceneBlendMode::Normal,
+                    pick_id: context.pick_id,
+                    matte: None,
+                }]);
+            }
+
+            let Some(base) = self.rasterize_text_base_layer(
+                text,
+                context.transform,
+                1.0,
+                context.time_norm,
+                context.time_sec,
+                context.canvas_size,
+            )?
+            else {
+                return Ok(Vec::new());
+            };
+            let local_transform = context
+                .transform
+                .inverse()
+                .map(|inverse| inverse.mul(base.transform))
+                .unwrap_or(base.transform);
+            let texture = self
+                .gpu_compositor
+                .as_mut()
+                .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                    message: "GPU compositor was not initialized".to_string(),
+                })?
+                .upload_gpu_rgba_texture(&base.image)?;
+            if self.gpu_text_raster_cache.len() >= GPU_TEXT_RASTER_CACHE_LIMIT {
+                self.gpu_text_raster_cache.clear();
+            }
+            self.gpu_text_raster_cache.insert(
+                cache_key,
+                CachedGpuTextRaster {
+                    texture: texture.clone(),
+                    local_transform,
+                },
+            );
+            return Ok(vec![GpuSceneTextureLayer {
+                source: GpuSceneTextureSource::Gpu(texture),
+                transform: context.transform.mul(local_transform),
+                projected_quad: None,
+                opacity: context.inherited_opacity.clamp(0.0, 1.0),
+                blend: SceneBlendMode::Normal,
+                pick_id: context.pick_id,
+                matte: None,
+            }]);
+        }
+
         let Some(base) = self.rasterize_text_base_layer(
             text,
             context.transform,
@@ -10695,6 +11495,79 @@ fn path_requires_cpu_overlay(path: &PathNode) -> bool {
         || !is_default_line_cap(&path.line_cap)
         || !is_default_line_join(&path.line_join)
         || (is_none_paint(&path.stroke) && !has_visible_fill)
+}
+
+fn gpu_path_style_is_cacheable(path: &PathNode) -> bool {
+    let uses_gradient = path
+        .fill
+        .as_deref()
+        .is_some_and(|paint| gradient_ref_id(paint).is_some())
+        || gradient_ref_id(&path.stroke).is_some();
+    if uses_gradient {
+        return false;
+    }
+    [
+        path.offset_path.as_str(),
+        path.round_corners.as_str(),
+        path.stroke_width.as_str(),
+        path.stroke_width_start.as_str(),
+        path.stroke_width_end.as_str(),
+        path.opacity.as_str(),
+        path.trim_start.as_str(),
+        path.trim_end.as_str(),
+        path.taper_start.as_str(),
+        path.taper_end.as_str(),
+        path.stroke_roughness.as_str(),
+        path.stroke_copies.as_str(),
+        path.stroke_bristles.as_str(),
+        path.stroke_pressure_min.as_str(),
+        path.texture_opacity.as_str(),
+        path.texture_scale.as_str(),
+        path.texture_mask.as_str(),
+    ]
+    .into_iter()
+    .all(|value| value.trim().parse::<f32>().is_ok())
+        && (path.stroke_pressure.trim().eq_ignore_ascii_case("none")
+            || path.stroke_pressure.trim().parse::<f32>().is_ok())
+}
+
+fn gpu_path_geometry_signature(path: &PathNode, evaluated_d: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.brush.hash(&mut hasher);
+    path.material.hash(&mut hasher);
+    evaluated_d.hash(&mut hasher);
+    path.stroke.hash(&mut hasher);
+    path.fill.hash(&mut hasher);
+    path.fill_rule.hash(&mut hasher);
+    path.boolean_op.hash(&mut hasher);
+    path.offset_path.hash(&mut hasher);
+    path.round_corners.hash(&mut hasher);
+    path.normalize.hash(&mut hasher);
+    path.stroke_width.hash(&mut hasher);
+    path.stroke_width_start.hash(&mut hasher);
+    path.stroke_width_end.hash(&mut hasher);
+    path.stroke_width_profile.hash(&mut hasher);
+    path.opacity.hash(&mut hasher);
+    path.trim_start.hash(&mut hasher);
+    path.trim_end.hash(&mut hasher);
+    path.line_cap.hash(&mut hasher);
+    path.line_join.hash(&mut hasher);
+    path.taper_start.hash(&mut hasher);
+    path.taper_end.hash(&mut hasher);
+    path.stroke_style.hash(&mut hasher);
+    path.stroke_roughness.hash(&mut hasher);
+    path.stroke_copies.hash(&mut hasher);
+    path.stroke_texture.hash(&mut hasher);
+    path.stroke_bristles.hash(&mut hasher);
+    path.stroke_pressure.hash(&mut hasher);
+    path.stroke_pressure_min.hash(&mut hasher);
+    path.stroke_pressure_curve.hash(&mut hasher);
+    path.blend.hash(&mut hasher);
+    path.texture.hash(&mut hasher);
+    path.texture_opacity.hash(&mut hasher);
+    path.texture_scale.hash(&mut hasher);
+    path.texture_mask.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn evaluated_path_subpaths(
@@ -12244,7 +13117,9 @@ fn scene_bool(value: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use crate::parse_graph_script;
-    use crate::scene::drawable::{GpuSceneTextureLayer, GpuSceneTextureSource};
+    use crate::scene::drawable::{
+        GpuSceneNativeAssets, GpuScenePrimitive, GpuSceneTextureLayer, GpuSceneTextureSource,
+    };
     use crate::scene::model::{PathNode, SceneNode};
     use crate::scene::spatial::Affine2;
     use crate::scene::text::TextNode;
@@ -12401,6 +13276,249 @@ mod tests {
             eval_text_tracking_em(Some("4"), 40.0, 0.0, 0.0).expect("positive tracking"),
             0.1
         );
+    }
+
+    #[test]
+    fn gpu_text_raster_cache_reuses_4x_texture_across_parent_transform() {
+        let mut renderer =
+            pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
+        if pollster::block_on(renderer.ensure_gpu_compositor_size(800, 450)).is_err() {
+            return;
+        }
+        renderer.prepared_graph_signature = 42;
+        let mut text = basic_text_node("retained 4x title");
+        text.render_scale = "4x".to_string();
+
+        let first = renderer
+            .rasterize_text_texture_layers_gpu_effects(
+                &text,
+                super::TextTextureRasterContext {
+                    transform: Affine2::translate(10.0, 20.0),
+                    inherited_opacity: 0.5,
+                    pick_id: 7,
+                    time_norm: 0.0,
+                    time_sec: 0.0,
+                    canvas_size: (800, 450),
+                },
+            )
+            .expect("first cached text raster");
+        let second = renderer
+            .rasterize_text_texture_layers_gpu_effects(
+                &text,
+                super::TextTextureRasterContext {
+                    transform: Affine2::translate(110.0, 70.0),
+                    inherited_opacity: 0.8,
+                    pick_id: 7,
+                    time_norm: 0.5,
+                    time_sec: 1.0,
+                    canvas_size: (800, 450),
+                },
+            )
+            .expect("reuse cached text raster");
+
+        assert_eq!(renderer.gpu_text_raster_cache.len(), 1);
+        let (first_texture, second_texture) = match (&first[0].source, &second[0].source) {
+            (GpuSceneTextureSource::Gpu(first), GpuSceneTextureSource::Gpu(second)) => {
+                (&first.texture, &second.texture)
+            }
+            _ => panic!("retained text should use a persistent GPU texture"),
+        };
+        assert!(std::sync::Arc::ptr_eq(first_texture, second_texture));
+        assert_ne!(first[0].transform.m02, second[0].transform.m02);
+        assert_eq!(first[0].opacity, 0.5);
+        assert_eq!(second[0].opacity, 0.8);
+    }
+
+    #[test]
+    fn gpu_path_geometry_cache_reuses_transform_and_invalidates_changed_morph() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="2s" size={[128,128]}>
+  <Scene id="cache_test">
+    <Timeline>
+      <Track id="main" space="screen" z="0">
+        <Sequence from="0s" duration="2s" out="hold">
+          <Layer>
+            <Group id="moving" x={curve("0:0:linear, 2:40:linear")}>
+              <Path id="static_path" d="M 0 0 L 20 0 L 10 20 Z" fill="#ff0000" />
+            </Group>
+            <Path id="morph_path"
+                  d={morph("0:M 40 0 L 60 0 L 50 20 Z", "2:M 40 0 L 70 0 L 55 30 Z")}
+                  fill="#00ff00" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="cache_test" />
+</Graph>
+"##,
+        )
+        .expect("cache test graph");
+        let nodes = scene_nodes_for_present(&graph).expect("presentable scene");
+        assert!(
+            !super::vector_overlay_nodes_are_static(nodes),
+            "animated curve/morph scene was classified static: {nodes:#?}"
+        );
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        renderer.prepare_frame_caches(&graph);
+
+        let collect = |renderer: &mut SceneFrameRenderer,
+                       time_norm: f32,
+                       time_sec: f32|
+         -> Vec<GpuScenePrimitive> {
+            let mut assets = GpuSceneNativeAssets::default();
+            let mut primitives = Vec::new();
+            let mut texture_layers = Vec::new();
+            let mut text_requests = Vec::new();
+            let mut unsupported = false;
+            pollster::block_on(renderer.collect_gpu_scene_native_commands(
+                nodes,
+                Affine2::identity(),
+                None,
+                1.0,
+                time_norm,
+                time_sec,
+                (128, 128),
+                &mut assets,
+                &mut primitives,
+                &mut texture_layers,
+                &mut text_requests,
+                &mut unsupported,
+            ))
+            .expect("collect cached Path commands");
+            assert!(!unsupported);
+            assert!(texture_layers.is_empty());
+            assert!(text_requests.is_empty());
+            primitives
+        };
+
+        let first = collect(&mut renderer, 0.0, 0.0);
+        assert_eq!(renderer.gpu_path_cache_hits, 0);
+        assert_eq!(renderer.gpu_path_cache_misses, 2);
+        renderer.gpu_path_cache_hits = 0;
+        renderer.gpu_path_cache_misses = 0;
+        let second = collect(&mut renderer, 0.5, 1.0);
+        assert_eq!(renderer.gpu_path_cache_hits, 1, "static Path should hit");
+        assert_eq!(
+            renderer.gpu_path_cache_misses, 1,
+            "only the changed Morph Path should miss"
+        );
+        assert_ne!(
+            first[0].transform.m02, second[0].transform.m02,
+            "cached local geometry must receive the current Group transform"
+        );
+    }
+
+    #[test]
+    fn retained_gpu_shape_scene_skips_static_path_collection_after_first_frame() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="2s" size={[128,128]}>
+  <Scene id="retained_test">
+    <Timeline>
+      <Track id="main" space="screen" z="0">
+        <Sequence from="0s" duration="2s" out="hold">
+          <Layer>
+            <Path id="a" d="M 0 0 L 20 0 L 10 20 Z" fill="#ff0000" />
+            <Path id="b" x="40" d="M 0 0 L 20 0 L 10 20 Z" fill="#00ff00" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="retained_test" />
+</Graph>
+"##,
+        )
+        .expect("retained scene graph");
+        let nodes = scene_nodes_for_present(&graph).expect("presentable scene");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        renderer.prepare_frame_caches(&graph);
+
+        let first = pollster::block_on(renderer.try_collect_retained_gpu_shape_scene(
+            nodes,
+            Affine2::identity(),
+            1.0,
+            0.0,
+            0.0,
+            (128, 128),
+        ))
+        .expect("compile retained scene")
+        .expect("static scene is retainable");
+        assert_eq!(renderer.gpu_path_cache_misses, 2);
+
+        renderer.gpu_path_cache_hits = 0;
+        renderer.gpu_path_cache_misses = 0;
+        let second = pollster::block_on(renderer.try_collect_retained_gpu_shape_scene(
+            nodes,
+            Affine2::identity(),
+            1.0,
+            0.5,
+            1.0,
+            (128, 128),
+        ))
+        .expect("reuse retained scene")
+        .expect("static scene remains retainable");
+
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(renderer.gpu_path_cache_hits, 2);
+        assert_eq!(renderer.gpu_path_cache_misses, 0);
+    }
+
+    #[test]
+    fn retained_gpu_transform_scene_updates_group_matrix_without_reflattening() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="2s" size={[128,128]}>
+  <Scene id="retained_transform_test">
+    <Timeline>
+      <Track id="main" space="screen" z="0">
+        <Sequence from="0s" duration="2s" out="hold">
+          <Layer>
+            <Group id="moving" x={curve("0:0:linear, 2:40:linear")}>
+              <Path id="a" d="M 0 0 L 20 0 L 10 20 Z" fill="#ff0000" />
+            </Group>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="retained_transform_test" />
+</Graph>
+"##,
+        )
+        .expect("retained transform graph");
+        let nodes = scene_nodes_for_present(&graph).expect("presentable scene");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        renderer.prepare_frame_caches(&graph);
+        let first = renderer
+            .try_collect_retained_gpu_transform_scene(
+                nodes,
+                Affine2::identity(),
+                0.0,
+                0.0,
+                (128, 128),
+            )
+            .expect("compile retained transform scene")
+            .unwrap_or_else(|| panic!("transform scene rejected: {nodes:#?}"));
+        let first_x = first[0].transform.m02;
+        drop(first);
+        renderer.gpu_path_cache_hits = 0;
+        renderer.gpu_path_cache_misses = 0;
+        let second = renderer
+            .try_collect_retained_gpu_transform_scene(
+                nodes,
+                Affine2::identity(),
+                0.5,
+                1.0,
+                (128, 128),
+            )
+            .expect("update retained transform scene")
+            .expect("transform scene remains retained");
+        assert_ne!(first_x, second[0].transform.m02);
+        assert_eq!(renderer.gpu_path_cache_hits, 1);
+        assert_eq!(renderer.gpu_path_cache_misses, 0);
     }
 
     fn cpu_texture_size(layer: GpuSceneTextureLayer) -> (u32, u32) {

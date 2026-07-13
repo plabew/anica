@@ -260,6 +260,7 @@ const GPU_BATCH_TILE_SIZE: u32 = 32;
 
 pub(crate) struct BatchedShapeData {
     pub(crate) primitive_bytes: Vec<u8>,
+    pub(crate) transform_bytes: Vec<u8>,
     pub(crate) primitive_count: u32,
     pub(crate) tile_range_bytes: Vec<u8>,
     pub(crate) tile_index_bytes: Vec<u8>,
@@ -300,6 +301,7 @@ pub(crate) fn batch_shape_storage_bytes(
     let tile_count = tiles_x.saturating_mul(tiles_y) as usize;
     let mut tile_buckets = vec![Vec::<u32>::new(); tile_count];
     let mut primitive_bytes = Vec::with_capacity(primitives.len().saturating_mul(84 * 4));
+    let mut transform_bytes = Vec::with_capacity(primitives.len().saturating_mul(12 * 4));
     let mut primitive_count = 0_u32;
 
     for primitive in primitives {
@@ -311,9 +313,11 @@ pub(crate) fn batch_shape_storage_bytes(
         if bounds_w == 0 || bounds_h == 0 {
             continue;
         }
-        let values =
-            batch_shape_primitive_values(primitive, bounds_x, bounds_y, bounds_w, bounds_h)?;
+        let values = batch_shape_primitive_values(primitive);
         push_f32_bytes(&mut primitive_bytes, &values);
+        let transform_values =
+            batch_shape_transform_values(primitive, bounds_x, bounds_y, bounds_w, bounds_h)?;
+        push_f32_bytes(&mut transform_bytes, &transform_values);
 
         let x0 = (bounds_x / tile_size).min(tiles_x.saturating_sub(1));
         let y0 = (bounds_y / tile_size).min(tiles_y.saturating_sub(1));
@@ -353,6 +357,7 @@ pub(crate) fn batch_shape_storage_bytes(
 
     Ok(BatchedShapeData {
         primitive_bytes,
+        transform_bytes,
         primitive_count,
         tile_range_bytes,
         tile_index_bytes,
@@ -504,20 +509,7 @@ fn gpu_gradient_units(units: GradientUnits) -> f32 {
     }
 }
 
-fn batch_shape_primitive_values(
-    primitive: &GpuScenePrimitive,
-    bounds_x: u32,
-    bounds_y: u32,
-    bounds_w: u32,
-    bounds_h: u32,
-) -> Result<[f32; 84], MotionLoomSceneRenderError> {
-    let inverse =
-        primitive
-            .transform
-            .inverse()
-            .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
-                message: "shape transform is not invertible".to_string(),
-            })?;
+fn batch_shape_primitive_values(primitive: &GpuScenePrimitive) -> [f32; 84] {
     let color = rgba_u8_to_unit(primitive.color);
     let mut values = [0.0_f32; 84];
     values[..28].copy_from_slice(&[
@@ -525,10 +517,10 @@ fn batch_shape_primitive_values(
         primitive.blend.gpu_code(),
         primitive.pick_id as f32,
         0.0,
-        bounds_x as f32,
-        bounds_y as f32,
-        bounds_w as f32,
-        bounds_h as f32,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
         primitive.shape[0],
         primitive.shape[1],
         primitive.shape[2],
@@ -541,13 +533,13 @@ fn batch_shape_primitive_values(
         color[1],
         color[2],
         color[3],
-        inverse.m00,
-        inverse.m01,
-        inverse.m02,
         0.0,
-        inverse.m10,
-        inverse.m11,
-        inverse.m12,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
         0.0,
     ]);
     write_gpu_gradient_uniform(primitive.gradient.as_ref(), &mut values[28..80]);
@@ -557,7 +549,37 @@ fn batch_shape_primitive_values(
         primitive.taper_start,
         primitive.taper_end,
     ]);
-    Ok(values)
+    values
+}
+
+fn batch_shape_transform_values(
+    primitive: &GpuScenePrimitive,
+    bounds_x: u32,
+    bounds_y: u32,
+    bounds_w: u32,
+    bounds_h: u32,
+) -> Result<[f32; 12], MotionLoomSceneRenderError> {
+    let inverse =
+        primitive
+            .transform
+            .inverse()
+            .ok_or_else(|| MotionLoomSceneRenderError::GpuRender {
+                message: "shape transform is not invertible".to_string(),
+            })?;
+    Ok([
+        bounds_x as f32,
+        bounds_y as f32,
+        bounds_w as f32,
+        bounds_h as f32,
+        inverse.m00,
+        inverse.m01,
+        inverse.m02,
+        0.0,
+        inverse.m10,
+        inverse.m11,
+        inverse.m12,
+        0.0,
+    ])
 }
 
 fn push_f32_bytes(out: &mut Vec<u8>, values: &[f32]) {

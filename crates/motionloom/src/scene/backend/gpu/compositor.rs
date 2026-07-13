@@ -34,6 +34,12 @@ struct WgpuImageTexture {
     texture: std::sync::Arc<wgpu::Texture>,
 }
 
+struct PersistentGpuBuffer {
+    buffer: wgpu::Buffer,
+    capacity: usize,
+    last_data: Vec<u8>,
+}
+
 #[derive(Default)]
 pub(crate) struct WgpuDispatchKeepalive {
     textures: Vec<Arc<wgpu::Texture>>,
@@ -73,6 +79,11 @@ pub(crate) struct WgpuSceneCompositor {
     readback_buffer: wgpu::Buffer,
     padded_bytes_per_row: u32,
     image_textures: HashMap<String, WgpuImageTexture>,
+    shape_uniform_buffer: Option<PersistentGpuBuffer>,
+    shape_primitive_buffer: Option<PersistentGpuBuffer>,
+    shape_transform_buffer: Option<PersistentGpuBuffer>,
+    shape_tile_range_buffer: Option<PersistentGpuBuffer>,
+    shape_tile_index_buffer: Option<PersistentGpuBuffer>,
     asset_resolver: Arc<dyn crate::asset::AssetResolver>,
 }
 
@@ -174,25 +185,41 @@ impl WgpuSceneCompositor {
             shape_batch.tiles_x,
             shape_batch.tiles_y,
         );
-        let upload_bytes = canvas_len
-            .saturating_mul(2)
-            .saturating_add(uniform.len())
-            .saturating_add(shape_batch.primitive_bytes.len())
-            .saturating_add(shape_batch.tile_range_bytes.len())
-            .saturating_add(shape_batch.tile_index_bytes.len());
-        let uniform_buffer = self.make_batch_shape_uniform_buffer(&uniform);
-        let storage_buffer = self.make_storage_buffer(
-            "motionloom-path-benchmark-shape-storage",
+        let shape_upload_bytes = self.update_persistent_shape_buffers(
+            &uniform,
             &shape_batch.primitive_bytes,
-        );
-        let tile_range_buffer = self.make_storage_buffer(
-            "motionloom-path-benchmark-tile-ranges",
+            &shape_batch.transform_bytes,
             &shape_batch.tile_range_bytes,
-        );
-        let tile_index_buffer = self.make_storage_buffer(
-            "motionloom-path-benchmark-tile-indices",
             &shape_batch.tile_index_bytes,
         );
+        let upload_bytes = canvas_len
+            .saturating_mul(2)
+            .saturating_add(shape_upload_bytes);
+        let uniform_buffer = &self
+            .shape_uniform_buffer
+            .as_ref()
+            .expect("shape uniform buffer initialized")
+            .buffer;
+        let storage_buffer = &self
+            .shape_primitive_buffer
+            .as_ref()
+            .expect("shape primitive buffer initialized")
+            .buffer;
+        let transform_buffer = &self
+            .shape_transform_buffer
+            .as_ref()
+            .expect("shape transform buffer initialized")
+            .buffer;
+        let tile_range_buffer = &self
+            .shape_tile_range_buffer
+            .as_ref()
+            .expect("shape tile range buffer initialized")
+            .buffer;
+        let tile_index_buffer = &self
+            .shape_tile_index_buffer
+            .as_ref()
+            .expect("shape tile index buffer initialized")
+            .buffer;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -203,10 +230,11 @@ impl WgpuSceneCompositor {
             &mut encoder,
             &tex_a,
             &tex_b,
-            &uniform_buffer,
-            &storage_buffer,
-            &tile_range_buffer,
-            &tile_index_buffer,
+            uniform_buffer,
+            storage_buffer,
+            transform_buffer,
+            tile_range_buffer,
+            tile_index_buffer,
             &mut keepalive,
         );
         let command_buffer = encoder.finish();
@@ -221,12 +249,6 @@ impl WgpuSceneCompositor {
             })?;
         let gpu = gpu_started.elapsed();
 
-        drop((
-            uniform_buffer,
-            storage_buffer,
-            tile_range_buffer,
-            tile_index_buffer,
-        ));
         drop(keepalive);
         Ok(ShapeBenchmarkRender {
             texture: GpuSceneNativeTexture {
@@ -526,6 +548,16 @@ impl WgpuSceneCompositor {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -997,6 +1029,11 @@ impl WgpuSceneCompositor {
             readback_buffer,
             padded_bytes_per_row,
             image_textures: HashMap::new(),
+            shape_uniform_buffer: None,
+            shape_primitive_buffer: None,
+            shape_transform_buffer: None,
+            shape_tile_range_buffer: None,
+            shape_tile_index_buffer: None,
             asset_resolver,
         })
     }
@@ -1666,19 +1703,38 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 shape_batch.tiles_x,
                 shape_batch.tiles_y,
             );
-            let uniform_buffer = self.make_batch_shape_uniform_buffer(&uniform);
-            let storage_buffer = self.make_storage_buffer(
-                "anica-motionloom-scene-shape-gpu-storage",
+            self.update_persistent_shape_buffers(
+                &uniform,
                 &shape_batch.primitive_bytes,
-            );
-            let tile_range_buffer = self.make_storage_buffer(
-                "anica-motionloom-scene-shape-gpu-tile-ranges",
+                &shape_batch.transform_bytes,
                 &shape_batch.tile_range_bytes,
-            );
-            let tile_index_buffer = self.make_storage_buffer(
-                "anica-motionloom-scene-shape-gpu-tile-indices",
                 &shape_batch.tile_index_bytes,
             );
+            let uniform_buffer = &self
+                .shape_uniform_buffer
+                .as_ref()
+                .expect("shape uniform buffer initialized")
+                .buffer;
+            let storage_buffer = &self
+                .shape_primitive_buffer
+                .as_ref()
+                .expect("shape primitive buffer initialized")
+                .buffer;
+            let transform_buffer = &self
+                .shape_transform_buffer
+                .as_ref()
+                .expect("shape transform buffer initialized")
+                .buffer;
+            let tile_range_buffer = &self
+                .shape_tile_range_buffer
+                .as_ref()
+                .expect("shape tile range buffer initialized")
+                .buffer;
+            let tile_index_buffer = &self
+                .shape_tile_index_buffer
+                .as_ref()
+                .expect("shape tile index buffer initialized")
+                .buffer;
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1689,20 +1745,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 &mut encoder,
                 &tex_a,
                 &tex_b,
-                &uniform_buffer,
-                &storage_buffer,
-                &tile_range_buffer,
-                &tile_index_buffer,
+                uniform_buffer,
+                storage_buffer,
+                transform_buffer,
+                tile_range_buffer,
+                tile_index_buffer,
                 &mut keepalive,
             );
             self.submit_encoder(encoder);
             submitted_keepalives.push(keepalive);
-            submitted_buffers.extend([
-                uniform_buffer,
-                storage_buffer,
-                tile_range_buffer,
-                tile_index_buffer,
-            ]);
             current_is_a = false;
             dirty_a = Some(TextureRect {
                 x: 0,
@@ -2988,19 +3039,102 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         buffer
     }
 
-    pub(crate) fn make_batch_shape_uniform_buffer(&self, uniform: &[u8; 32]) -> wgpu::Buffer {
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("anica-motionloom-scene-batch-shape-gpu-uniform"),
-            size: uniform.len() as u64,
-            usage: wgpu::BufferUsages::UNIFORM,
-            mapped_at_creation: true,
-        });
-        buffer
-            .slice(..)
-            .get_mapped_range_mut()
-            .copy_from_slice(uniform);
-        buffer.unmap();
-        buffer
+    fn update_persistent_buffer(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        slot: &mut Option<PersistentGpuBuffer>,
+        label: &'static str,
+        data: &[u8],
+        usage: wgpu::BufferUsages,
+    ) -> usize {
+        if slot
+            .as_ref()
+            .is_some_and(|entry| entry.last_data.as_slice() == data)
+        {
+            return 0;
+        }
+        let required = data.len().max(4);
+        let needs_grow = slot.as_ref().is_none_or(|entry| entry.capacity < required);
+        if needs_grow {
+            let capacity = required.checked_next_power_of_two().unwrap_or(required);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: capacity as u64,
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: true,
+            });
+            if !data.is_empty() {
+                buffer
+                    .slice(..data.len() as u64)
+                    .get_mapped_range_mut()
+                    .copy_from_slice(data);
+            }
+            buffer.unmap();
+            *slot = Some(PersistentGpuBuffer {
+                buffer,
+                capacity,
+                last_data: data.to_vec(),
+            });
+        } else if let Some(entry) = slot.as_mut() {
+            if !data.is_empty() {
+                queue.write_buffer(&entry.buffer, 0, data);
+            }
+            entry.last_data.clear();
+            entry.last_data.extend_from_slice(data);
+        }
+        data.len()
+    }
+
+    fn update_persistent_shape_buffers(
+        &mut self,
+        uniform: &[u8; 32],
+        primitive_bytes: &[u8],
+        transform_bytes: &[u8],
+        tile_range_bytes: &[u8],
+        tile_index_bytes: &[u8],
+    ) -> usize {
+        let mut uploaded = 0usize;
+        uploaded += Self::update_persistent_buffer(
+            &self.device,
+            &self.queue,
+            &mut self.shape_uniform_buffer,
+            "anica-motionloom-scene-batch-shape-gpu-uniform-persistent",
+            uniform,
+            wgpu::BufferUsages::UNIFORM,
+        );
+        uploaded += Self::update_persistent_buffer(
+            &self.device,
+            &self.queue,
+            &mut self.shape_primitive_buffer,
+            "anica-motionloom-scene-shape-gpu-storage-persistent",
+            primitive_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        uploaded += Self::update_persistent_buffer(
+            &self.device,
+            &self.queue,
+            &mut self.shape_transform_buffer,
+            "anica-motionloom-scene-shape-gpu-transforms-persistent",
+            transform_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        uploaded += Self::update_persistent_buffer(
+            &self.device,
+            &self.queue,
+            &mut self.shape_tile_range_buffer,
+            "anica-motionloom-scene-shape-gpu-tile-ranges-persistent",
+            tile_range_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        uploaded += Self::update_persistent_buffer(
+            &self.device,
+            &self.queue,
+            &mut self.shape_tile_index_buffer,
+            "anica-motionloom-scene-shape-gpu-tile-indices-persistent",
+            tile_index_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        uploaded
     }
 
     pub(crate) fn make_storage_buffer(&self, label: &'static str, data: &[u8]) -> wgpu::Buffer {
@@ -3229,6 +3363,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         out_texture: &wgpu::Texture,
         uniform_buffer: &wgpu::Buffer,
         primitive_buffer: &wgpu::Buffer,
+        transform_buffer: &wgpu::Buffer,
         tile_range_buffer: &wgpu::Buffer,
         tile_index_buffer: &wgpu::Buffer,
         keepalive: &mut WgpuDispatchKeepalive,
@@ -3262,6 +3397,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: tile_index_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: transform_buffer.as_entire_binding(),
                 },
             ],
         });

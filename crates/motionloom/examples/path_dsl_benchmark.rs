@@ -59,6 +59,8 @@ struct WorkloadResult {
     present_ms: Option<Distribution>,
     primitive_count: u32,
     upload_bytes: usize,
+    path_cache_hits: usize,
+    path_cache_misses: usize,
 }
 
 #[derive(Serialize)]
@@ -95,11 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 graph = Some(parsed);
             }
             let graph = graph.expect("samples is at least one");
-            let frame = match mode {
-                WorkloadMode::Static => 0,
-                WorkloadMode::Transform | WorkloadMode::Morph => 30,
-            };
-            for _ in 0..options.warmup {
+            for warmup_index in 0..options.warmup {
+                let frame = workload_frame(mode, warmup_index);
                 pollster::block_on(renderer.benchmark_vector_frame(&graph, frame))?;
             }
 
@@ -108,13 +107,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut gpu = Vec::with_capacity(options.samples);
             let mut primitive_count = 0;
             let mut upload_bytes = 0;
-            for _ in 0..options.samples {
+            let mut path_cache_hits = 0;
+            let mut path_cache_misses = 0;
+            for sample_index in 0..options.samples {
+                let frame = workload_frame(mode, options.warmup + sample_index);
                 let sample = pollster::block_on(renderer.benchmark_vector_frame(&graph, frame))?;
                 flatten.push(sample.flatten_ms);
                 encode.push(sample.encode_ms);
                 gpu.push(sample.gpu_ms);
                 primitive_count = sample.primitive_count;
                 upload_bytes = sample.upload_bytes;
+                path_cache_hits = sample.path_cache_hits;
+                path_cache_misses = sample.path_cache_misses;
             }
 
             results.push(WorkloadResult {
@@ -128,6 +132,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 present_ms: None,
                 primitive_count,
                 upload_bytes,
+                path_cache_hits,
+                path_cache_misses,
             });
         }
     }
@@ -146,6 +152,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(path, format!("{json}\n"))?;
     }
     Ok(())
+}
+
+fn workload_frame(mode: WorkloadMode, index: usize) -> u32 {
+    match mode {
+        WorkloadMode::Static => 0,
+        WorkloadMode::Transform | WorkloadMode::Morph => (index as u32 % 59).saturating_add(1),
+    }
 }
 
 fn generate_workload(mode: WorkloadMode, count: usize, width: u32, height: u32) -> String {
