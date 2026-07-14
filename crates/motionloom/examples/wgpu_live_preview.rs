@@ -15,7 +15,8 @@ mod preview_host_platform;
 
 use motionloom::{
     PREVIEW_PROTOCOL_VERSION, PreviewCommand, PreviewEvent, PreviewInteractionMode,
-    PreviewInteractionNode, WgpuPreviewEngine, WgpuPreviewQuality, parse_graph_script,
+    PreviewInteractionNode, SceneCpuFrameProfile, WgpuPreviewEngine, WgpuPreviewQuality,
+    parse_graph_script,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
@@ -64,6 +65,27 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     return textureSample(scene_tex, scene_sampler, in.uv);
 }
 "#;
+
+fn aspect_fit_viewport(
+    surface_width: u32,
+    surface_height: u32,
+    content_width: u32,
+    content_height: u32,
+) -> (f32, f32, f32, f32) {
+    let surface_width = surface_width.max(1) as f32;
+    let surface_height = surface_height.max(1) as f32;
+    let content_width = content_width.max(1) as f32;
+    let content_height = content_height.max(1) as f32;
+    let scale = (surface_width / content_width).min(surface_height / content_height);
+    let width = content_width * scale;
+    let height = content_height * scale;
+    (
+        (surface_width - width) * 0.5,
+        (surface_height - height) * 0.5,
+        width,
+        height,
+    )
+}
 
 const OVERLAY_SHADER: &str = r#"
 struct OverlayUniforms {
@@ -280,6 +302,8 @@ struct LivePreviewApp {
     controller_process_id: Option<u32>,
     overrides: HashMap<(String, String), f32>,
     last_render_ms: f32,
+    last_gpu_frame_ms: Option<f64>,
+    last_cpu_profile: SceneCpuFrameProfile,
     last_present_ms: f32,
     render_times: Vec<f32>,
     present_times: Vec<f32>,
@@ -408,6 +432,8 @@ impl LivePreviewApp {
             controller_process_id: None,
             overrides: HashMap::new(),
             last_render_ms: 0.0,
+            last_gpu_frame_ms: None,
+            last_cpu_profile: SceneCpuFrameProfile::default(),
             last_present_ms: 0.0,
             render_times: Vec::with_capacity(240),
             present_times: Vec::with_capacity(240),
@@ -1215,10 +1241,20 @@ impl LivePreviewApp {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))?;
+        let adapter_features = adapter.features();
+        let timestamp_features =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        let required_features = if adapter_features.contains(timestamp_features) {
+            timestamp_features
+        } else if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            wgpu::Features::TIMESTAMP_QUERY
+        } else {
+            wgpu::Features::empty()
+        };
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("motionloom-live-preview-device"),
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
@@ -1490,13 +1526,13 @@ impl LivePreviewApp {
     fn render(&mut self) {
         self.update_frame_from_wall_clock();
         let render_start = Instant::now();
-        let frame_texture = {
+        let (frame_texture, gpu_frame_ms, cpu_profile) = {
             let (Some(graph), Some(preview_engine)) =
                 (self.graph.as_ref(), self.preview_engine.as_mut())
             else {
                 return;
             };
-            match pollster::block_on(
+            let texture = match pollster::block_on(
                 preview_engine.render_frame_for_native_present(graph, self.frame),
             ) {
                 Ok(texture) => texture,
@@ -1504,7 +1540,12 @@ impl LivePreviewApp {
                     eprintln!("render frame {} failed: {err}", self.frame);
                     return;
                 }
-            }
+            };
+            (
+                texture,
+                preview_engine.last_gpu_frame_ms(),
+                preview_engine.last_cpu_frame_profile().unwrap_or_default(),
+            )
         };
         let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
 
@@ -1601,6 +1642,12 @@ impl LivePreviewApp {
         overlay_uniforms[4..8].copy_from_slice(&(surface_config.height as f32).to_ne_bytes());
         overlay_uniforms[8..12].copy_from_slice(&self.quality.index().to_ne_bytes());
         queue.write_buffer(overlay_buffer, 0, &overlay_uniforms);
+        let (viewport_x, viewport_y, viewport_width, viewport_height) = aspect_fit_viewport(
+            surface_config.width,
+            surface_config.height,
+            frame_texture.width,
+            frame_texture.height,
+        );
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("motionloom-live-preview-blit-pass"),
@@ -1616,9 +1663,25 @@ impl LivePreviewApp {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            pass.set_viewport(
+                viewport_x,
+                viewport_y,
+                viewport_width,
+                viewport_height,
+                0.0,
+                1.0,
+            );
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..3, 0..1);
+            pass.set_viewport(
+                0.0,
+                0.0,
+                surface_config.width as f32,
+                surface_config.height as f32,
+                0.0,
+                1.0,
+            );
             pass.set_pipeline(overlay_pipeline);
             pass.set_bind_group(0, overlay_bind_group, &[]);
             pass.draw(0..6, 0..5);
@@ -1629,6 +1692,8 @@ impl LivePreviewApp {
         let rendered_frame = self.frame;
 
         self.last_render_ms = render_ms;
+        self.last_gpu_frame_ms = gpu_frame_ms;
+        self.last_cpu_profile = cpu_profile;
         self.last_present_ms = present_ms;
         self.render_times.push(render_ms);
         self.present_times.push(present_ms);
@@ -1679,11 +1744,16 @@ impl LivePreviewApp {
         let min_render = min_or_zero(&self.render_times);
         let max_render = max_or_zero(&self.render_times);
         let fps = self.graph.as_ref().map(|graph| graph.fps).unwrap_or(0.0);
+        let gpu_frame_label = self
+            .last_gpu_frame_ms
+            .map(|value| format!("{value:.3}"))
+            .unwrap_or_else(|| "pending".to_string());
         window.set_title(&format!(
-            "MotionLoom wgpu live preview | frame {}/{} | last {:.2} ms | avg {:.2} ms | min/max {:.2}/{:.2} ms | blit {:.2} ms | timeline {:.1} fps | target {}x{} | surface {:?} | quality {} (1 Full, 2 Balanced, 3 Speed, 4 High Speed, 5 Ultra Speed) | {}",
+            "MotionLoom wgpu live preview | frame {}/{} | CPU submit {:.2} ms | GPU {} ms | avg {:.2} ms | min/max {:.2}/{:.2} ms | blit {:.2} ms | timeline {:.1} fps | target {}x{} | surface {:?} | quality {} (1 Full, 2 Balanced, 3 Speed, 4 High Speed, 5 Ultra Speed) | {}",
             self.frame,
             self.total_frames,
             self.last_render_ms,
+            gpu_frame_label,
             avg_render,
             min_render,
             max_render,
@@ -1705,14 +1775,27 @@ impl LivePreviewApp {
             return;
         }
         self.last_stats_at = Instant::now();
+        let gpu_frame_label = self
+            .last_gpu_frame_ms
+            .map(|value| format!("{value:.3}"))
+            .unwrap_or_else(|| "pending".to_string());
         println!(
-            "quality={} target={}x{} frame={}/{} render_last_ms={:.2} render_avg_ms={:.2} render_min_ms={:.2} render_max_ms={:.2} blit_last_ms={:.2} blit_avg_ms={:.2}",
+            "quality={} target={}x{} frame={}/{} cpu_submit_last_ms={:.2} expression_ms={:.3} traversal_ms={:.3} upload_ms={:.3} encode_ms={:.3} wait_ms={:.3} gpu_last_ms={} gpu_timestamp_supported={} render_avg_ms={:.2} render_min_ms={:.2} render_max_ms={:.2} blit_last_ms={:.2} blit_avg_ms={:.2}",
             self.quality.label(),
             self.target_width,
             self.target_height,
             self.frame,
             self.total_frames,
             self.last_render_ms,
+            self.last_cpu_profile.expression_ms,
+            self.last_cpu_profile.traversal_ms,
+            self.last_cpu_profile.upload_ms,
+            self.last_cpu_profile.encode_ms,
+            self.last_cpu_profile.wait_ms,
+            gpu_frame_label,
+            self.preview_engine
+                .as_ref()
+                .is_some_and(WgpuPreviewEngine::gpu_timestamp_supported),
             avg(&self.render_times),
             min_or_zero(&self.render_times),
             max_or_zero(&self.render_times),
@@ -1827,7 +1910,6 @@ impl ApplicationHandler<PreviewHostUserEvent> for LivePreviewApp {
                 }
                 self.needs_redraw = false;
                 self.render();
-                self.next_redraw_at = Instant::now() + self.frame_interval();
             }
             _ => {}
         }
@@ -2111,6 +2193,35 @@ fn format_live_number(value: f32) -> String {
         text.pop();
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::aspect_fit_viewport;
+
+    #[test]
+    fn aspect_fit_viewport_letterboxes_wide_surface() {
+        assert_eq!(
+            aspect_fit_viewport(1600, 900, 1200, 900),
+            (200.0, 0.0, 1200.0, 900.0)
+        );
+    }
+
+    #[test]
+    fn aspect_fit_viewport_pillarboxes_tall_surface() {
+        assert_eq!(
+            aspect_fit_viewport(1200, 1200, 1200, 900),
+            (0.0, 150.0, 1200.0, 900.0)
+        );
+    }
+
+    #[test]
+    fn aspect_fit_viewport_scales_without_distortion() {
+        assert_eq!(
+            aspect_fit_viewport(600, 450, 1200, 900),
+            (0.0, 0.0, 600.0, 450.0)
+        );
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

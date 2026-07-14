@@ -196,8 +196,6 @@ pub use scene::model::{
 };
 #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
 pub use scene::render::DmabufPlane;
-#[cfg(not(target_arch = "wasm32"))]
-pub use scene::render::VectorFrameBenchmark;
 pub use scene::render::{
     MotionLoomSceneRenderError, SceneGpuTexture, ScenePlatformPreviewSurface, ScenePreviewBackend,
     ScenePreviewPixelFormat, ScenePreviewSurface, ScenePreviewSurfaceOptions, SceneRenderError,
@@ -209,6 +207,8 @@ pub use scene::render::{
     render_scene_graph_to_video_with_progress,
     render_scene_graph_to_video_with_progress_and_cancel, set_scene_asset_roots,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use scene::render::{SceneCpuFrameProfile, VectorFrameBenchmark};
 #[cfg(target_os = "windows")]
 pub use scene::render::{WindowsD3DSharedHandle, WindowsD3DSharedSurface};
 pub use scene::text::{

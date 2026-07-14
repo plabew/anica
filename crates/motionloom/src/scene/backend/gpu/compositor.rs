@@ -1,6 +1,10 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::VecDeque;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
@@ -45,6 +49,33 @@ pub(crate) struct WgpuDispatchKeepalive {
     textures: Vec<Arc<wgpu::Texture>>,
     texture_views: Vec<wgpu::TextureView>,
     bind_groups: Vec<wgpu::BindGroup>,
+    buffers: Vec<wgpu::Buffer>,
+}
+
+impl WgpuDispatchKeepalive {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn append(&mut self, mut other: Self) {
+        self.textures.append(&mut other.textures);
+        self.texture_views.append(&mut other.texture_views);
+        self.bind_groups.append(&mut other.bind_groups);
+        self.buffers.append(&mut other.buffers);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeInFlightSubmission {
+    index: wgpu::SubmissionIndex,
+    _keepalive: WgpuDispatchKeepalive,
+    timestamp: Option<NativeGpuTimestampFrame>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeGpuTimestampFrame {
+    _query_set: wgpu::QuerySet,
+    _resolve_buffer: wgpu::Buffer,
+    readback_buffer: wgpu::Buffer,
+    map_result: Arc<Mutex<Option<Result<(), wgpu::BufferAsyncError>>>>,
+    timestamp_period_ns: f32,
 }
 
 pub(crate) struct WgpuSceneCompositor {
@@ -85,6 +116,30 @@ pub(crate) struct WgpuSceneCompositor {
     shape_tile_range_buffer: Option<PersistentGpuBuffer>,
     shape_tile_index_buffer: Option<PersistentGpuBuffer>,
     asset_resolver: Arc<dyn crate::asset::AssetResolver>,
+    #[cfg(not(target_arch = "wasm32"))]
+    frame_recording: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_command_encoder: Option<wgpu::CommandEncoder>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_keepalive: WgpuDispatchKeepalive,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_timestamp: Option<NativeGpuTimestampFrame>,
+    #[cfg(not(target_arch = "wasm32"))]
+    frame_shape_dispatches: usize,
+    #[cfg(not(target_arch = "wasm32"))]
+    in_flight_submissions: VecDeque<NativeInFlightSubmission>,
+    #[cfg(not(target_arch = "wasm32"))]
+    last_gpu_frame_ms: Option<f64>,
+    #[cfg(not(target_arch = "wasm32"))]
+    current_cpu_upload: Duration,
+    #[cfg(not(target_arch = "wasm32"))]
+    current_cpu_encode: Duration,
+    #[cfg(not(target_arch = "wasm32"))]
+    current_cpu_wait: Duration,
+    #[cfg(not(target_arch = "wasm32"))]
+    last_cpu_stages: (Duration, Duration, Duration),
+    #[cfg(not(target_arch = "wasm32"))]
+    timestamp_marker_pipeline: Option<wgpu::ComputePipeline>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -119,28 +174,288 @@ impl WgpuPresentationContext {
 }
 
 impl WgpuSceneCompositor {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn device_queue(&self) -> (Arc<wgpu::Device>, wgpu::Queue) {
         (self.device.clone(), self.queue.clone())
     }
 
-    fn submit_encoder(&self, encoder: wgpu::CommandEncoder) {
+    fn submit_encoder(&mut self, encoder: wgpu::CommandEncoder) {
+        self.submit_encoder_with_keepalive(encoder, WgpuDispatchKeepalive::default());
+    }
+
+    fn submit_encoder_with_keepalive(
+        &mut self,
+        encoder: wgpu::CommandEncoder,
+        keepalive: WgpuDispatchKeepalive,
+    ) {
         #[cfg(target_arch = "wasm32")]
         {
             self.queue.submit([encoder.finish()]);
+            drop(keepalive);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let submission = self.queue.submit([encoder.finish()]);
-            // Native wgpu validates resource/view lifetime until the submitted
-            // command buffer has completed. The texture-output path returns
-            // immediately, so wait here before local bind group keepalives are
-            // dropped. WASM WebGPU presentation is event-loop driven and does
-            // not need this native fence.
-            self.device
-                .poll(wgpu::PollType::WaitForSubmissionIndex(submission))
-                .ok();
+            if self.frame_recording {
+                self.pending_command_encoder = Some(encoder);
+                self.pending_keepalive.append(keepalive);
+            } else {
+                self.submit_native_frame(vec![encoder.finish()], keepalive, None, true);
+            }
         }
+    }
+
+    /// Start collecting all command buffers for one native frame.
+    pub(crate) fn begin_native_frame(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_cpu_upload = Duration::ZERO;
+            self.current_cpu_encode = Duration::ZERO;
+            self.current_cpu_wait = Duration::ZERO;
+            self.poll_native_submissions();
+            self.frame_recording = true;
+            self.pending_command_encoder = Some(self.device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor {
+                    label: Some("motionloom-native-frame-encoder"),
+                },
+            ));
+            self.pending_keepalive = WgpuDispatchKeepalive::default();
+            self.frame_shape_dispatches = 0;
+            self.pending_timestamp = self.begin_gpu_timestamp_frame();
+        }
+    }
+
+    /// Submit one frame as a single queue operation and retain its GPU resources.
+    pub(crate) fn end_native_frame(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.frame_recording = false;
+            if self.pending_command_encoder.is_none() {
+                return;
+            }
+            let timestamp = self.end_gpu_timestamp_frame();
+            let Some(encoder) = self.pending_command_encoder.take() else {
+                return;
+            };
+            let keepalive = std::mem::take(&mut self.pending_keepalive);
+            self.submit_native_frame(vec![encoder.finish()], keepalive, timestamp, false);
+            self.last_cpu_stages = (
+                self.current_cpu_upload,
+                self.current_cpu_encode,
+                self.current_cpu_wait,
+            );
+        }
+    }
+
+    fn frame_encoder(&mut self, label: &'static str) -> wgpu::CommandEncoder {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.frame_recording {
+            return self.pending_command_encoder.take().unwrap_or_else(|| {
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) })
+            });
+        }
+        self.device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_native_submissions(&mut self) {
+        let queue_empty = self
+            .device
+            .poll(wgpu::PollType::Poll)
+            .is_ok_and(|status| status.is_queue_empty());
+        self.collect_gpu_timestamp_results();
+        if queue_empty {
+            // Queue completion can be reported before the asynchronous map
+            // callback is dispatched. Keep timestamp resources alive until
+            // their callback result has been consumed.
+            self.in_flight_submissions
+                .retain(|submission| submission.timestamp.is_some());
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn submit_native_frame(
+        &mut self,
+        command_buffers: Vec<wgpu::CommandBuffer>,
+        keepalive: WgpuDispatchKeepalive,
+        timestamp: Option<NativeGpuTimestampFrame>,
+        poll_before_submit: bool,
+    ) {
+        const MAX_FRAMES_IN_FLIGHT: usize = 3;
+
+        if poll_before_submit {
+            self.poll_native_submissions();
+        }
+        while self.in_flight_submissions.len() >= MAX_FRAMES_IN_FLIGHT {
+            let Some(mut oldest) = self.in_flight_submissions.pop_front() else {
+                break;
+            };
+            // Backpressure happens only when three complete frames are queued.
+            let wait_started = Instant::now();
+            self.device
+                .poll(wgpu::PollType::WaitForSubmissionIndex(oldest.index.clone()))
+                .ok();
+            self.current_cpu_wait += wait_started.elapsed();
+            self.collect_gpu_timestamp_result(&mut oldest);
+        }
+        let index = self.queue.submit(command_buffers);
+        if let Some(timestamp) = timestamp.as_ref() {
+            let result = timestamp.map_result.clone();
+            timestamp
+                .readback_buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |value| {
+                    *result.lock().expect("GPU timestamp map result lock") = Some(value);
+                });
+        }
+        self.in_flight_submissions
+            .push_back(NativeInFlightSubmission {
+                index,
+                _keepalive: keepalive,
+                timestamp,
+            });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn begin_gpu_timestamp_frame(&mut self) -> Option<NativeGpuTimestampFrame> {
+        let required = wgpu::Features::TIMESTAMP_QUERY;
+        if !self.device.features().contains(required) {
+            return None;
+        }
+        let query_set = self.device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("motionloom-frame-timestamp-query"),
+            ty: wgpu::QueryType::Timestamp,
+            count: 2,
+        });
+        let resolve_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("motionloom-frame-timestamp-resolve"),
+            size: 16,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("motionloom-frame-timestamp-readback"),
+            size: 16,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let marker_pipeline = self.timestamp_marker_pipeline.as_ref()?;
+        let encoder = self.pending_command_encoder.as_mut()?;
+        {
+            let mut marker = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("motionloom-frame-timestamp-begin-pass"),
+                timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                    query_set: &query_set,
+                    beginning_of_pass_write_index: Some(0),
+                    end_of_pass_write_index: None,
+                }),
+            });
+            marker.set_pipeline(marker_pipeline);
+            marker.dispatch_workgroups(1, 1, 1);
+        }
+        Some(NativeGpuTimestampFrame {
+            _query_set: query_set,
+            _resolve_buffer: resolve_buffer,
+            readback_buffer,
+            map_result: Arc::new(Mutex::new(None)),
+            timestamp_period_ns: self.queue.get_timestamp_period(),
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn end_gpu_timestamp_frame(&mut self) -> Option<NativeGpuTimestampFrame> {
+        let timestamp = self.pending_timestamp.take()?;
+        let marker_pipeline = self.timestamp_marker_pipeline.as_ref()?;
+        let encoder = self.pending_command_encoder.as_mut()?;
+        {
+            let mut marker = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("motionloom-frame-timestamp-end-pass"),
+                timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                    query_set: &timestamp._query_set,
+                    beginning_of_pass_write_index: None,
+                    end_of_pass_write_index: Some(1),
+                }),
+            });
+            marker.set_pipeline(marker_pipeline);
+            marker.dispatch_workgroups(1, 1, 1);
+        }
+        encoder.resolve_query_set(&timestamp._query_set, 0..2, &timestamp._resolve_buffer, 0);
+        encoder.copy_buffer_to_buffer(
+            &timestamp._resolve_buffer,
+            0,
+            &timestamp.readback_buffer,
+            0,
+            16,
+        );
+        Some(timestamp)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn collect_gpu_timestamp_results(&mut self) {
+        let mut completed_ms = None;
+        for submission in &mut self.in_flight_submissions {
+            if let Some(value) = Self::read_gpu_timestamp_result(submission) {
+                completed_ms = Some(value);
+            }
+        }
+        if completed_ms.is_some() {
+            self.last_gpu_frame_ms = completed_ms;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn collect_gpu_timestamp_result(&mut self, submission: &mut NativeInFlightSubmission) {
+        if let Some(value) = Self::read_gpu_timestamp_result(submission) {
+            self.last_gpu_frame_ms = Some(value);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_gpu_timestamp_result(submission: &mut NativeInFlightSubmission) -> Option<f64> {
+        let timestamp = submission.timestamp.as_mut()?;
+        let result = timestamp
+            .map_result
+            .lock()
+            .expect("GPU timestamp map result lock")
+            .take()?;
+        if result.is_err() {
+            submission.timestamp = None;
+            return None;
+        }
+        let mapped = timestamp.readback_buffer.slice(..).get_mapped_range();
+        let start = u64::from_ne_bytes(mapped[0..8].try_into().ok()?);
+        let end = u64::from_ne_bytes(mapped[8..16].try_into().ok()?);
+        if std::env::var_os("MOTIONLOOM_GPU_TIMESTAMP_DEBUG").is_some() {
+            eprintln!(
+                "[MotionLoom][GPU timestamp] start={start} end={end} period_ns={}",
+                timestamp.timestamp_period_ns
+            );
+        }
+        drop(mapped);
+        timestamp.readback_buffer.unmap();
+        let elapsed_ms =
+            end.saturating_sub(start) as f64 * timestamp.timestamp_period_ns as f64 / 1_000_000.0;
+        submission.timestamp = None;
+        Some(elapsed_ms)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn last_gpu_frame_ms(&self) -> Option<f64> {
+        self.last_gpu_frame_ms
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn last_cpu_stages(&self) -> (Duration, Duration, Duration) {
+        self.last_cpu_stages
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn gpu_timestamp_supported(&self) -> bool {
+        self.device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
     }
 
     /// Profile the same batched shape pipeline used by normal scene rendering.
@@ -325,6 +640,16 @@ impl WgpuSceneCompositor {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = request_scene_gpu_adapter_async(&instance).await?;
         let adapter_limits = adapter.limits();
+        let adapter_features = adapter.features();
+        let timestamp_features =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        let required_features = if adapter_features.contains(timestamp_features) {
+            timestamp_features
+        } else if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            wgpu::Features::TIMESTAMP_QUERY
+        } else {
+            wgpu::Features::empty()
+        };
         let max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
         if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
             return Err(MotionLoomSceneRenderError::GpuRender {
@@ -339,7 +664,7 @@ impl WgpuSceneCompositor {
             &adapter,
             &wgpu::DeviceDescriptor {
                 label: Some("anica-motionloom-scene-gpu-device"),
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits: adapter_limits,
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
@@ -947,6 +1272,28 @@ impl WgpuSceneCompositor {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        let timestamp_marker_pipeline = if device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+        {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("motionloom-frame-timestamp-marker-shader"),
+                source: wgpu::ShaderSource::Wgsl("@compute @workgroup_size(1) fn main() {}".into()),
+            });
+            Some(
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("motionloom-frame-timestamp-marker-pipeline"),
+                    layout: None,
+                    module: &shader,
+                    entry_point: Some("main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                }),
+            )
+        } else {
+            None
+        };
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("anica-motionloom-scene-gpu-sampler"),
@@ -1035,6 +1382,30 @@ impl WgpuSceneCompositor {
             shape_tile_range_buffer: None,
             shape_tile_index_buffer: None,
             asset_resolver,
+            #[cfg(not(target_arch = "wasm32"))]
+            frame_recording: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_command_encoder: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_keepalive: WgpuDispatchKeepalive::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_timestamp: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            frame_shape_dispatches: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            in_flight_submissions: VecDeque::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            last_gpu_frame_ms: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            current_cpu_upload: Duration::ZERO,
+            #[cfg(not(target_arch = "wasm32"))]
+            current_cpu_encode: Duration::ZERO,
+            #[cfg(not(target_arch = "wasm32"))]
+            current_cpu_wait: Duration::ZERO,
+            #[cfg(not(target_arch = "wasm32"))]
+            last_cpu_stages: (Duration::ZERO, Duration::ZERO, Duration::ZERO),
+            #[cfg(not(target_arch = "wasm32"))]
+            timestamp_marker_pipeline,
         })
     }
 
@@ -1408,6 +1779,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
@@ -1465,11 +1837,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         self.write_texture_rgba(&tex_a, self.width, self.height, &base)?;
 
         let mut current_is_a = true;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-gpu-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-gpu-encoder");
         let mut uniform_buffers = Vec::with_capacity(graph.images.len() + graph.svgs.len());
         let mut keepalive = WgpuDispatchKeepalive::default();
 
@@ -1605,9 +1973,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         } else {
             tex_b.clone()
         };
-        self.queue.submit([encoder.finish()]);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffers);
-        drop(keepalive);
 
         Ok(GpuSceneNativeTexture {
             texture: final_texture,
@@ -1660,14 +2027,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         clear: [u8; 4],
         pick_mode: bool,
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
-        let canvas_len = (self.width as usize)
-            .saturating_mul(self.height as usize)
-            .saturating_mul(4);
-        let mut base = vec![0u8; canvas_len];
-        for pixel in base.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&clear);
-        }
-
+        #[cfg(not(target_arch = "wasm32"))]
+        let encode_started = Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut local_upload = Duration::ZERO;
         let tex_a = std::sync::Arc::new(Self::make_canvas_texture(
             &self.device,
             self.width,
@@ -1678,8 +2041,56 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             self.width,
             self.height,
         ));
-        self.write_texture_rgba(&tex_a, self.width, self.height, &base)?;
-        self.write_texture_rgba(&tex_b, self.width, self.height, &base)?;
+        if clear == [0, 0, 0, 0] {
+            // Offscreen layers start transparent. Clear them on the GPU rather
+            // than allocating and uploading two full-size CPU RGBA images.
+            let mut encoder = self.frame_encoder("anica-motionloom-scene-transparent-clear");
+            let view_a = tex_a.create_view(&wgpu::TextureViewDescriptor::default());
+            let view_b = tex_b.create_view(&wgpu::TextureViewDescriptor::default());
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("anica-motionloom-scene-transparent-clear-pass"),
+                    color_attachments: &[
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: &view_a,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: &view_b,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                    ],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
+            self.submit_encoder(encoder);
+        } else {
+            let canvas_len = (self.width as usize)
+                .saturating_mul(self.height as usize)
+                .saturating_mul(4);
+            let mut base = vec![0u8; canvas_len];
+            for pixel in base.chunks_exact_mut(4) {
+                pixel.copy_from_slice(&clear);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let clear_upload_started = Instant::now();
+            self.write_texture_rgba(&tex_a, self.width, self.height, &base)?;
+            self.write_texture_rgba(&tex_b, self.width, self.height, &base)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                local_upload += clear_upload_started.elapsed();
+            }
+        }
 
         let mut current_is_a = true;
         let mut dirty_a: Option<TextureRect> = None;
@@ -1688,7 +2099,6 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             Vec::<std::sync::Arc<wgpu::Texture>>::with_capacity(texture_layers.len());
         let mut texture_alias_copies =
             Vec::<std::sync::Arc<wgpu::Texture>>::with_capacity(texture_layers.len());
-        let mut submitted_keepalives = Vec::<WgpuDispatchKeepalive>::new();
         let mut gpu_layer_keepalive_textures = Vec::<std::sync::Arc<wgpu::Texture>>::new();
         let mut submitted_buffers = Vec::<wgpu::Buffer>::new();
 
@@ -1703,57 +2113,116 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 shape_batch.tiles_x,
                 shape_batch.tiles_y,
             );
-            self.update_persistent_shape_buffers(
-                &uniform,
-                &shape_batch.primitive_bytes,
-                &shape_batch.transform_bytes,
-                &shape_batch.tile_range_bytes,
-                &shape_batch.tile_index_bytes,
-            );
-            let uniform_buffer = &self
-                .shape_uniform_buffer
-                .as_ref()
-                .expect("shape uniform buffer initialized")
-                .buffer;
-            let storage_buffer = &self
-                .shape_primitive_buffer
-                .as_ref()
-                .expect("shape primitive buffer initialized")
-                .buffer;
-            let transform_buffer = &self
-                .shape_transform_buffer
-                .as_ref()
-                .expect("shape transform buffer initialized")
-                .buffer;
-            let tile_range_buffer = &self
-                .shape_tile_range_buffer
-                .as_ref()
-                .expect("shape tile range buffer initialized")
-                .buffer;
-            let tile_index_buffer = &self
-                .shape_tile_index_buffer
-                .as_ref()
-                .expect("shape tile index buffer initialized")
-                .buffer;
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("anica-motionloom-scene-shape-gpu-encoder"),
-                });
-            let mut keepalive = WgpuDispatchKeepalive::default();
-            self.dispatch_batched_shape_pass(
-                &mut encoder,
-                &tex_a,
-                &tex_b,
-                uniform_buffer,
-                storage_buffer,
-                transform_buffer,
-                tile_range_buffer,
-                tile_index_buffer,
-                &mut keepalive,
-            );
-            self.submit_encoder(encoder);
-            submitted_keepalives.push(keepalive);
+            #[cfg(not(target_arch = "wasm32"))]
+            let use_transient_shape_buffers =
+                self.frame_recording && self.frame_shape_dispatches > 0;
+            #[cfg(target_arch = "wasm32")]
+            let use_transient_shape_buffers = false;
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.frame_recording {
+                self.frame_shape_dispatches = self.frame_shape_dispatches.saturating_add(1);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let shape_upload_started = Instant::now();
+            if use_transient_shape_buffers {
+                let uniform_buffer = self.make_initialized_buffer(
+                    "anica-motionloom-scene-batch-shape-gpu-uniform-transient",
+                    &uniform,
+                    wgpu::BufferUsages::UNIFORM,
+                );
+                let storage_buffer = self.make_initialized_buffer(
+                    "anica-motionloom-scene-shape-gpu-storage-transient",
+                    &shape_batch.primitive_bytes,
+                    wgpu::BufferUsages::STORAGE,
+                );
+                let transform_buffer = self.make_initialized_buffer(
+                    "anica-motionloom-scene-shape-gpu-transforms-transient",
+                    &shape_batch.transform_bytes,
+                    wgpu::BufferUsages::STORAGE,
+                );
+                let tile_range_buffer = self.make_initialized_buffer(
+                    "anica-motionloom-scene-shape-gpu-tile-ranges-transient",
+                    &shape_batch.tile_range_bytes,
+                    wgpu::BufferUsages::STORAGE,
+                );
+                let tile_index_buffer = self.make_initialized_buffer(
+                    "anica-motionloom-scene-shape-gpu-tile-indices-transient",
+                    &shape_batch.tile_index_bytes,
+                    wgpu::BufferUsages::STORAGE,
+                );
+                let mut encoder = self.frame_encoder("anica-motionloom-scene-shape-gpu-encoder");
+                let mut keepalive = WgpuDispatchKeepalive::default();
+                self.dispatch_batched_shape_pass(
+                    &mut encoder,
+                    &tex_a,
+                    &tex_b,
+                    &uniform_buffer,
+                    &storage_buffer,
+                    &transform_buffer,
+                    &tile_range_buffer,
+                    &tile_index_buffer,
+                    &mut keepalive,
+                );
+                keepalive.buffers.extend([
+                    uniform_buffer,
+                    storage_buffer,
+                    transform_buffer,
+                    tile_range_buffer,
+                    tile_index_buffer,
+                ]);
+                self.submit_encoder_with_keepalive(encoder, keepalive);
+            } else {
+                self.update_persistent_shape_buffers(
+                    &uniform,
+                    &shape_batch.primitive_bytes,
+                    &shape_batch.transform_bytes,
+                    &shape_batch.tile_range_bytes,
+                    &shape_batch.tile_index_bytes,
+                );
+                let mut encoder = self.frame_encoder("anica-motionloom-scene-shape-gpu-encoder");
+                let uniform_buffer = &self
+                    .shape_uniform_buffer
+                    .as_ref()
+                    .expect("shape uniform buffer initialized")
+                    .buffer;
+                let storage_buffer = &self
+                    .shape_primitive_buffer
+                    .as_ref()
+                    .expect("shape primitive buffer initialized")
+                    .buffer;
+                let transform_buffer = &self
+                    .shape_transform_buffer
+                    .as_ref()
+                    .expect("shape transform buffer initialized")
+                    .buffer;
+                let tile_range_buffer = &self
+                    .shape_tile_range_buffer
+                    .as_ref()
+                    .expect("shape tile range buffer initialized")
+                    .buffer;
+                let tile_index_buffer = &self
+                    .shape_tile_index_buffer
+                    .as_ref()
+                    .expect("shape tile index buffer initialized")
+                    .buffer;
+                let mut keepalive = WgpuDispatchKeepalive::default();
+                self.dispatch_batched_shape_pass(
+                    &mut encoder,
+                    &tex_a,
+                    &tex_b,
+                    uniform_buffer,
+                    storage_buffer,
+                    transform_buffer,
+                    tile_range_buffer,
+                    tile_index_buffer,
+                    &mut keepalive,
+                );
+                self.submit_encoder_with_keepalive(encoder, keepalive);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                local_upload += shape_upload_started.elapsed();
+            }
             current_is_a = false;
             dirty_a = Some(TextureRect {
                 x: 0,
@@ -1788,12 +2257,18 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                     let texture = std::sync::Arc::new(
                         self.make_source_texture(image.width().max(1), image.height().max(1)),
                     );
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let texture_upload_started = Instant::now();
                     self.write_texture_rgba(
                         &texture,
                         image.width().max(1),
                         image.height().max(1),
                         image.as_raw(),
                     )?;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        local_upload += texture_upload_started.elapsed();
+                    }
                     texture_sources.push(texture.clone());
                     texture
                 }
@@ -1854,10 +2329,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                     layer_h.max(1),
                 ));
                 let mut encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("anica-motionloom-scene-texture-alias-copy-gpu-encoder"),
-                        });
+                    self.frame_encoder("anica-motionloom-scene-texture-alias-copy-gpu-encoder");
                 self.copy_texture_rect(
                     &mut encoder,
                     &source_texture,
@@ -1882,10 +2354,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                     matte_h.max(1),
                 ));
                 let mut encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("anica-motionloom-scene-matte-alias-copy-gpu-encoder"),
-                        });
+                    self.frame_encoder("anica-motionloom-scene-matte-alias-copy-gpu-encoder");
                 self.copy_texture_rect(
                     &mut encoder,
                     &matte_texture,
@@ -1906,18 +2375,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             let dst_dirty = if current_is_a { dirty_b } else { dirty_a };
             if let Some(rect) = dst_dirty {
                 let mut encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("anica-motionloom-scene-dirty-copy-gpu-encoder"),
-                        });
+                    self.frame_encoder("anica-motionloom-scene-dirty-copy-gpu-encoder");
                 self.copy_texture_rect(&mut encoder, src_canvas, dst_canvas, rect);
                 self.submit_encoder(encoder);
             }
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("anica-motionloom-scene-matte-texture-gpu-encoder"),
-                });
+            let mut encoder =
+                self.frame_encoder("anica-motionloom-scene-matte-texture-gpu-encoder");
             let mut keepalive = WgpuDispatchKeepalive::default();
             self.dispatch_matte_texture_pass(
                 &mut encoder,
@@ -1930,8 +2393,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 bounds_h,
                 &mut keepalive,
             );
-            self.submit_encoder(encoder);
-            submitted_keepalives.push(keepalive);
+            self.submit_encoder_with_keepalive(encoder, keepalive);
             submitted_buffers.push(uniform_buffer);
             let changed = TextureRect {
                 x: bounds_x,
@@ -1955,32 +2417,35 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             tex_b.clone()
         };
         drop(submitted_buffers);
-        drop(submitted_keepalives);
         let keepalive_textures = texture_sources
             .into_iter()
             .chain(texture_alias_copies)
             .chain(gpu_layer_keepalive_textures)
             .chain([tex_a.clone(), tex_b.clone()])
             .collect();
-        Ok(GpuSceneNativeTexture {
+        let result = GpuSceneNativeTexture {
             texture: final_texture,
             width: self.width,
             height: self.height,
             _keepalive_textures: keepalive_textures,
-        })
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_cpu_upload += local_upload;
+            self.current_cpu_encode += encode_started.elapsed().saturating_sub(local_upload);
+        }
+        Ok(result)
     }
 
     pub(crate) fn copy_gpu_native_texture_owned(
-        &self,
+        &mut self,
         input: &GpuSceneNativeTexture,
         label: &'static str,
     ) -> GpuSceneNativeTexture {
         let width = input.width.max(1);
         let height = input.height.max(1);
         let texture = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+        let mut encoder = self.frame_encoder(label);
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &input.texture,
@@ -2161,6 +2626,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         input: &GpuSceneNativeTexture,
         passes: &[(bool, f32)],
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let encode_started = Instant::now();
         if passes.is_empty() {
             return Ok(input.clone());
         }
@@ -2171,14 +2638,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let mut current = input.texture.clone();
 
         for (horizontal, sigma) in passes {
-            // Submit each pass separately so native wgpu sees the previous
-            // storage-write texture in a completed usage scope before it is
-            // rebound as a sampled input for the next blur axis.
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("anica-motionloom-scene-post-texture-gpu-encoder"),
-                });
+            // Pass boundaries on the retained frame encoder provide the
+            // storage-write to sampled-texture usage transition.
+            let mut encoder = self.frame_encoder("anica-motionloom-scene-post-texture-gpu-encoder");
             let uniform = post_blur_uniform(width, height, *horizontal, *sigma);
             let uniform_buffer = self.make_post_uniform_buffer(&uniform);
             let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
@@ -2192,19 +2654,23 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 height,
                 &mut keepalive,
             );
-            self.submit_encoder(encoder);
+            self.submit_encoder_with_keepalive(encoder, keepalive);
             drop(uniform_buffer);
-            drop(keepalive);
             current = dst.clone();
             temp_textures.push(dst);
         }
 
-        Ok(GpuSceneNativeTexture {
+        let result = GpuSceneNativeTexture {
             texture: current,
             width,
             height,
             _keepalive_textures: temp_textures,
-        })
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_cpu_encode += encode_started.elapsed();
+        }
+        Ok(result)
     }
 
     pub(crate) fn apply_gpu_deform_texture(
@@ -2226,11 +2692,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             self.make_storage_buffer("anica-motionloom-scene-puppet-deform-triangles", &triangles);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-puppet-deform-gpu-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-puppet-deform-gpu-encoder");
         let mut keepalive = WgpuDispatchKeepalive::default();
         self.dispatch_puppet_deform_pass(
             &mut encoder,
@@ -2242,10 +2704,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             height,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
         drop(triangle_buffer);
-        drop(keepalive);
 
         let mut keepalive_textures = Vec::with_capacity(input._keepalive_textures.len() + 1);
         keepalive_textures.push(input.texture.clone());
@@ -2264,13 +2725,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         dst_width: u32,
         dst_height: u32,
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let encode_started = Instant::now();
         let dst_width = dst_width.max(1);
         let dst_height = dst_height.max(1);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-downsample-gpu-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-downsample-gpu-encoder");
         let uniform = downsample_uniform(input.width, input.height, dst_width, dst_height);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(
@@ -2288,15 +2747,19 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             dst_height,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
-        Ok(GpuSceneNativeTexture {
+        let result = GpuSceneNativeTexture {
             texture: dst,
             width: dst_width,
             height: dst_height,
             _keepalive_textures: vec![input.texture.clone()],
-        })
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_cpu_encode += encode_started.elapsed();
+        }
+        Ok(result)
     }
 
     pub(crate) fn apply_gpu_bloom_texture_low_res(
@@ -2310,11 +2773,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let scale = scale.clamp(0.05, 1.0);
         let bloom_width = ((original.width.max(1) as f32) * scale).round().max(1.0) as u32;
         let bloom_height = ((original.height.max(1) as f32) * scale).round().max(1.0) as u32;
-        let downsampled = self.apply_gpu_downsample_texture(original, bloom_width, bloom_height)?;
-        let scaled_sigma = (sigma * scale).max(1.0);
-        let blurred = self
-            .apply_gpu_blur_texture(&downsampled, &[(true, scaled_sigma), (false, scaled_sigma)])?;
-        self.apply_gpu_bloom_texture(original, &blurred, threshold, intensity)
+        let half = self.apply_gpu_downsample_texture(original, bloom_width, bloom_height)?;
+        // A one-level half-resolution pyramid keeps the expensive separable
+        // blur off the full-size target. Composite performs the only upscale,
+        // avoiding extra intermediate bloom/blur submissions.
+        let half_sigma = (sigma * scale).max(1.0);
+        let half_blurred =
+            self.apply_gpu_blur_texture(&half, &[(true, half_sigma), (false, half_sigma)])?;
+        self.apply_gpu_bloom_texture(original, &half_blurred, threshold, intensity)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2382,11 +2848,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     ) -> GpuSceneNativeTexture {
         let width = input.width.max(1);
         let height = input.height.max(1);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-post-tint-texture-gpu-encoder"),
-            });
+        let mut encoder =
+            self.frame_encoder("anica-motionloom-scene-post-tint-texture-gpu-encoder");
         let uniform = post_tint_uniform(width, height, color, intensity);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(&self.device, width, height));
@@ -2400,9 +2863,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             height,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
         GpuSceneNativeTexture {
             texture: dst,
             width,
@@ -2439,13 +2901,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         intensity: f32,
         tint: [u8; 4],
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let encode_started = Instant::now();
         let width = original.width.max(1);
         let height = original.height.max(1);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-bloom-gpu-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-bloom-gpu-encoder");
         let uniform =
             crate::scene::drawable::bloom_tint_uniform(width, height, threshold, intensity, tint);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
@@ -2461,15 +2921,19 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             height,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
-        Ok(GpuSceneNativeTexture {
+        let result = GpuSceneNativeTexture {
             texture: dst,
             width,
             height,
             _keepalive_textures: vec![original.texture.clone(), blurred.texture.clone()],
-        })
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_cpu_encode += encode_started.elapsed();
+        }
+        Ok(result)
     }
 
     pub(crate) fn apply_gpu_tone_map_texture(
@@ -2483,11 +2947,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
         let width = input.width.max(1);
         let height = input.height.max(1);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-tone-map-gpu-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-tone-map-gpu-encoder");
         let uniform = post_tone_map_uniform(
             width, height, exposure, contrast, shoulder, gamma, saturation,
         );
@@ -2503,9 +2963,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             height,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width,
@@ -2527,11 +2986,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
         let width = input.width.max(1);
         let height = input.height.max(1);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-light-sweep-gpu-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-light-sweep-gpu-encoder");
         let uniform = post_light_sweep_uniform(PostLightSweepUniformParams {
             canvas_w: width,
             canvas_h: height,
@@ -2554,9 +3009,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             height,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width,
@@ -2572,11 +3026,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
         let width = input.width.max(1);
         let height = input.height.max(1);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-texture-overlay-gpu-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-texture-overlay-gpu-encoder");
         let uniform = post_texture_overlay_uniform(PostTextureOverlayUniformParams {
             canvas_w: width,
             canvas_h: height,
@@ -2602,9 +3052,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             height,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width,
@@ -2630,11 +3079,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         );
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = Arc::new(Self::make_canvas_texture(&self.device, width, height));
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("motionloom-material-displacement"),
-            });
+        let mut encoder = self.frame_encoder("motionloom-material-displacement");
         let mut keepalive = WgpuDispatchKeepalive::default();
         self.dispatch_post_pass_sized(
             &mut encoder,
@@ -2645,7 +3090,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             height,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width,
@@ -2663,11 +3108,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
         let width = input.width.max(1);
         let height = input.height.max(1);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-image-texture-overlay-gpu-encoder"),
-            });
+        let mut encoder =
+            self.frame_encoder("anica-motionloom-scene-image-texture-overlay-gpu-encoder");
         let texture_source = if let Some(image) = texture_image {
             Some(self.upload_gpu_rgba_texture(image)?)
         } else {
@@ -2725,9 +3167,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             height_texture,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width,
@@ -2743,11 +3184,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
         let width = input.width.max(1);
         let height = input.height.max(1);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-magnify-lens-gpu-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-magnify-lens-gpu-encoder");
         let uniform = post_magnify_lens_uniform(PostMagnifyLensUniformParams {
             canvas_w: width,
             canvas_h: height,
@@ -2771,9 +3208,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             height,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width,
@@ -2814,11 +3250,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             });
         }
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-post-color-texture-gpu-encoder"),
-            });
+        let mut encoder =
+            self.frame_encoder("anica-motionloom-scene-post-color-texture-gpu-encoder");
         let uniform = post_color_uniform(self.width, self.height, brightness, contrast, saturation);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(
@@ -2834,9 +3267,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             &uniform_buffer,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width: self.width,
@@ -2858,11 +3290,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 ),
             });
         }
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-post-opacity-texture-gpu-encoder"),
-            });
+        let mut encoder =
+            self.frame_encoder("anica-motionloom-scene-post-opacity-texture-gpu-encoder");
         let uniform = post_opacity_uniform(self.width, self.height, opacity);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
         let dst = std::sync::Arc::new(Self::make_canvas_texture(
@@ -2878,9 +3307,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             &uniform_buffer,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width: self.width,
@@ -2906,11 +3334,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                 ),
             });
         }
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-edge-treatment-gpu-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-edge-treatment-gpu-encoder");
         let uniform = post_edge_treatment_uniform(
             self.width,
             self.height,
@@ -2934,9 +3358,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             &uniform_buffer,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
         Ok(GpuSceneNativeTexture {
             texture: dst,
             width: self.width,
@@ -2953,6 +3376,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         lightness: f32,
         alpha: f32,
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let encode_started = Instant::now();
         if input.width != self.width || input.height != self.height {
             return Err(MotionLoomSceneRenderError::GpuRender {
                 message: format!(
@@ -2962,11 +3387,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             });
         }
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-post-hsla-texture-gpu-encoder"),
-            });
+        let mut encoder =
+            self.frame_encoder("anica-motionloom-scene-post-hsla-texture-gpu-encoder");
         let uniform =
             post_hsla_overlay_uniform(self.width, self.height, hue, saturation, lightness, alpha);
         let uniform_buffer = self.make_post_uniform_buffer(&uniform);
@@ -2983,15 +3405,19 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             &uniform_buffer,
             &mut keepalive,
         );
-        self.submit_encoder(encoder);
+        self.submit_encoder_with_keepalive(encoder, keepalive);
         drop(uniform_buffer);
-        drop(keepalive);
-        Ok(GpuSceneNativeTexture {
+        let result = GpuSceneNativeTexture {
             texture: dst,
             width: self.width,
             height: self.height,
             _keepalive_textures: vec![input.texture.clone()],
-        })
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.current_cpu_encode += encode_started.elapsed();
+        }
+        Ok(result)
     }
 
     pub(crate) fn make_uniform_buffer(&self, uniform: &[u8; 48]) -> wgpu::Buffer {
@@ -3025,16 +3451,31 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     }
 
     pub(crate) fn make_post_uniform_buffer(&self, uniform: &[u8]) -> wgpu::Buffer {
+        self.make_initialized_buffer(
+            "anica-motionloom-scene-post-gpu-uniform",
+            uniform,
+            wgpu::BufferUsages::UNIFORM,
+        )
+    }
+
+    fn make_initialized_buffer(
+        &self,
+        label: &'static str,
+        data: &[u8],
+        usage: wgpu::BufferUsages,
+    ) -> wgpu::Buffer {
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("anica-motionloom-scene-post-gpu-uniform"),
-            size: uniform.len() as u64,
-            usage: wgpu::BufferUsages::UNIFORM,
+            label: Some(label),
+            size: data.len().max(4) as u64,
+            usage,
             mapped_at_creation: true,
         });
-        buffer
-            .slice(..)
-            .get_mapped_range_mut()
-            .copy_from_slice(uniform);
+        if !data.is_empty() {
+            buffer
+                .slice(..data.len() as u64)
+                .get_mapped_range_mut()
+                .copy_from_slice(data);
+        }
         buffer.unmap();
         buffer
     }
@@ -3262,7 +3703,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     }
 
     pub(crate) fn copy_native_texture_to_target(
-        &self,
+        &mut self,
         src_texture: &wgpu::Texture,
         dst_texture: &wgpu::Texture,
         width: u32,
@@ -3271,11 +3712,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         if width == 0 || height == 0 {
             return;
         }
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("anica-motionloom-scene-copy-to-target-encoder"),
-            });
+        let mut encoder = self.frame_encoder("anica-motionloom-scene-copy-to-target-encoder");
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: src_texture,

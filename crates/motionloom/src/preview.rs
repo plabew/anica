@@ -323,6 +323,28 @@ impl WgpuPreviewEngine {
         self.render_frame_to_wgpu_texture(graph, frame).await
     }
 
+    /// Last completed compositor GPU duration, excluding CPU traversal and present.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn last_gpu_frame_ms(&self) -> Option<f64> {
+        self.gpu_renderer
+            .as_ref()
+            .and_then(SceneRenderer::last_gpu_frame_ms)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn last_cpu_frame_profile(&self) -> Option<crate::SceneCpuFrameProfile> {
+        self.gpu_renderer
+            .as_ref()
+            .map(SceneRenderer::last_cpu_frame_profile)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn gpu_timestamp_supported(&self) -> bool {
+        self.gpu_renderer
+            .as_ref()
+            .is_some_and(SceneRenderer::gpu_timestamp_supported)
+    }
+
     /// Pick a scene node id from the renderer's hidden GPU ID pass.
     pub async fn pick_id_at_wgpu_position(
         &mut self,
