@@ -1,3 +1,7 @@
+// =========================================
+// =========================================
+// crates/motionloom/src/scene/drawable/geometry.rs
+
 use crate::scene::render::MotionLoomSceneRenderError;
 
 #[derive(Debug, Clone, Copy)]
@@ -339,33 +343,84 @@ fn flush_active_subpath(active: &mut Vec<Point2>, subpaths: &mut Vec<Vec<Point2>
 }
 
 fn sample_cubic(p0: Point2, c1: Point2, c2: Point2, p1: Point2, out: &mut Vec<Point2>) {
-    const STEPS: usize = 28;
-    for step in 1..=STEPS {
-        let t = step as f32 / STEPS as f32;
-        let mt = 1.0 - t;
-        out.push(Point2::new(
-            mt.powi(3) * p0.x
-                + 3.0 * mt.powi(2) * t * c1.x
-                + 3.0 * mt * t.powi(2) * c2.x
-                + t.powi(3) * p1.x,
-            mt.powi(3) * p0.y
-                + 3.0 * mt.powi(2) * t * c1.y
-                + 3.0 * mt * t.powi(2) * c2.y
-                + t.powi(3) * p1.y,
-        ));
-    }
+    adaptive_sample_cubic(p0, c1, c2, p1, 0, out);
 }
 
 fn sample_quadratic(p0: Point2, c: Point2, p1: Point2, out: &mut Vec<Point2>) {
-    const STEPS: usize = 20;
-    for step in 1..=STEPS {
-        let t = step as f32 / STEPS as f32;
-        let mt = 1.0 - t;
-        out.push(Point2::new(
-            mt.powi(2) * p0.x + 2.0 * mt * t * c.x + t.powi(2) * p1.x,
-            mt.powi(2) * p0.y + 2.0 * mt * t * c.y + t.powi(2) * p1.y,
-        ));
+    adaptive_sample_quadratic(p0, c, p1, 0, out);
+}
+
+const PATH_FLATTEN_TOLERANCE: f32 = 0.35;
+const PATH_FLATTEN_MAX_DEPTH: u8 = 12;
+
+// Adaptive subdivision avoids expanding every tiny imported SVG curve into the
+// old fixed 28-segment representation while preserving sub-pixel path detail.
+fn adaptive_sample_cubic(
+    p0: Point2,
+    c1: Point2,
+    c2: Point2,
+    p1: Point2,
+    depth: u8,
+    out: &mut Vec<Point2>,
+) {
+    if depth >= PATH_FLATTEN_MAX_DEPTH || cubic_is_flat_enough(p0, c1, c2, p1) {
+        out.push(p1);
+        return;
     }
+
+    let p01 = p0.lerp(c1, 0.5);
+    let p12 = c1.lerp(c2, 0.5);
+    let p23 = c2.lerp(p1, 0.5);
+    let p012 = p01.lerp(p12, 0.5);
+    let p123 = p12.lerp(p23, 0.5);
+    let midpoint = p012.lerp(p123, 0.5);
+    adaptive_sample_cubic(p0, p01, p012, midpoint, depth + 1, out);
+    adaptive_sample_cubic(midpoint, p123, p23, p1, depth + 1, out);
+}
+
+fn adaptive_sample_quadratic(
+    p0: Point2,
+    control: Point2,
+    p1: Point2,
+    depth: u8,
+    out: &mut Vec<Point2>,
+) {
+    if depth >= PATH_FLATTEN_MAX_DEPTH || quadratic_is_flat_enough(p0, control, p1) {
+        out.push(p1);
+        return;
+    }
+
+    let p01 = p0.lerp(control, 0.5);
+    let p12 = control.lerp(p1, 0.5);
+    let midpoint = p01.lerp(p12, 0.5);
+    adaptive_sample_quadratic(p0, p01, midpoint, depth + 1, out);
+    adaptive_sample_quadratic(midpoint, p12, p1, depth + 1, out);
+}
+
+fn cubic_is_flat_enough(p0: Point2, c1: Point2, c2: Point2, p1: Point2) -> bool {
+    let chord = point_distance(p0, p1);
+    let control_polygon = point_distance(p0, c1) + point_distance(c1, c2) + point_distance(c2, p1);
+    point_line_distance(c1, p0, p1) <= PATH_FLATTEN_TOLERANCE
+        && point_line_distance(c2, p0, p1) <= PATH_FLATTEN_TOLERANCE
+        && control_polygon - chord <= PATH_FLATTEN_TOLERANCE
+}
+
+fn quadratic_is_flat_enough(p0: Point2, control: Point2, p1: Point2) -> bool {
+    let chord = point_distance(p0, p1);
+    let control_polygon = point_distance(p0, control) + point_distance(control, p1);
+    point_line_distance(control, p0, p1) <= PATH_FLATTEN_TOLERANCE
+        && control_polygon - chord <= PATH_FLATTEN_TOLERANCE
+}
+
+fn point_line_distance(point: Point2, start: Point2, end: Point2) -> f32 {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let length_squared = dx * dx + dy * dy;
+    if length_squared <= f32::EPSILON {
+        return point_distance(point, start);
+    }
+    ((dy * point.x - dx * point.y + end.x * start.y - end.y * start.x).abs())
+        / length_squared.sqrt()
 }
 
 pub(crate) fn polyline_bounds(subpaths: &[Vec<Point2>]) -> Option<(f32, f32, f32, f32)> {
@@ -601,4 +656,50 @@ pub(crate) fn point_in_subpaths_nonzero(point: Point2, subpaths: &[Vec<Point2>])
 
 fn is_left(a: Point2, b: Point2, p: Point2) -> f32 {
     (b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y)
+}
+
+#[cfg(test)]
+mod adaptive_flatten_tests {
+    use super::*;
+
+    #[test]
+    fn straight_cubic_uses_one_segment() {
+        let mut points = Vec::new();
+        sample_cubic(
+            Point2::new(0.0, 0.0),
+            Point2::new(3.0, 0.0),
+            Point2::new(7.0, 0.0),
+            Point2::new(10.0, 0.0),
+            &mut points,
+        );
+        assert_eq!(points.len(), 1);
+        assert!((points[0].x - 10.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn curved_cubic_is_subdivided() {
+        let mut points = Vec::new();
+        sample_cubic(
+            Point2::new(0.0, 0.0),
+            Point2::new(0.0, 100.0),
+            Point2::new(100.0, 100.0),
+            Point2::new(100.0, 0.0),
+            &mut points,
+        );
+        assert!(points.len() > 4);
+        assert!((points.last().unwrap().x - 100.0).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn collinear_reversal_is_not_collapsed() {
+        let mut points = Vec::new();
+        sample_cubic(
+            Point2::new(0.0, 0.0),
+            Point2::new(100.0, 0.0),
+            Point2::new(-100.0, 0.0),
+            Point2::new(10.0, 0.0),
+            &mut points,
+        );
+        assert!(points.len() > 1);
+    }
 }
