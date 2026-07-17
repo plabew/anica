@@ -83,6 +83,8 @@ pub enum MotionLoomSceneRenderError {
     VideoExportNotAvailable { message: String },
     #[error("scene render cancelled")]
     Cancelled,
+    #[error(transparent)]
+    Simulation(#[from] crate::simulation::error::SimulationError),
 }
 
 impl From<crate::export::EncodeError> for MotionLoomSceneRenderError {

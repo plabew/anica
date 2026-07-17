@@ -153,7 +153,7 @@ for Scene Camera and Layer3D labels, groups, property types, and animatability.
 | Compact numeric animation | `curve("time:value:ease, ...")` | Use for hand-authored numeric properties. |
 | UI/time keyframes | `<AnimationTarget>` + `<Key>` | Direct graph children targeting a node id and property. |
 | Editable path shape keys | `AnimationTarget property="d"` | Use path-string keys; do not use `curve(...)` for `Path.d`. |
-| Puppet deformation | `<Puppet>` + `<Pin>` | AE-style pin deformation with auto mesh by default. |
+| Puppet deformation | `<PuppetWarp>` + `<PuppetPin>` | Target-based editor syntax; `<Puppet>` + `<Pin>` remains supported. |
 | Manual topology | `<MeshTopology>` + `<Vertex>` + `<Triangle>` | Optional expert path when auto mesh is not enough. |
 | Character rigs | `<Skeleton>`, `<Action>`, `<Character>`, `<Part>`, `<ApplyAction>` | Bone-attached scene artwork. |
 | IK controls | `<IK root mid end ...>` or `<IK chain="..." ...>` | Two-bone and CCD-chain solvers. |
@@ -209,6 +209,26 @@ Use `MeshTopology` only for advanced cases that need explicit vertices,
 triangles, edges, or regions. Pins can attach to topology vertices with
 `vertex="vertex_id"`.
 
+For DSL-first editor workflows, place `PuppetWarp` beside the target Group and
+bind pins to semantic descendant ids. Moving a pin writes `targetX/targetY`;
+the target artwork remains the single source of geometry:
+
+```xml
+<Group id="character">
+  <Group id="left_hand" x="220" y="410">
+    <Circle x="0" y="0" radius="30" color="#f2c9b8" />
+  </Group>
+</Group>
+<PuppetWarp id="character_warp" target="character" width="1200" height="900">
+  <PuppetPin id="left_hand_pin" bindTo="left_hand"
+             targetX="250" targetY="390" radius="160" />
+</PuppetWarp>
+```
+
+`PuppetWarp`/`PuppetPin` are aliases over the native Puppet renderer. A bound
+pin uses its target node's local Scene anchor as the rest position. Free pins
+can continue to use explicit `x/y`.
+
 ### Character Sources
 
 `Character` can draw vector children and/or a raster source with `src`,
@@ -247,6 +267,42 @@ For longer chains, use CCD IK with `chain`:
 <IK chain="finger_1,finger_2,finger_3,finger_tip"
     targetX="24" targetY="-120" iterations="10" weight="1" />
 ```
+
+## Profile-Driven 2D Skeletons
+
+`<Skeleton>` can carry proportion, anatomy, silhouette, validation, drawing-guide,
+and editor-control metadata without adding a wrapper tag. All additions are
+optional, so existing bone-only rigs remain compatible.
+
+```xml
+<Skeleton id="hero_rig" profile="anime_6_head" height="720"
+          facing="front" symmetryAxis="body_center"
+          validation="strict" autoCorrect="proportions">
+  <Bone id="root" role="root" x="0" y="0" />
+  <Bone id="head" role="head" parent="root" x="0" y="-600" />
+  <Landmark id="body_center" bone="root" offset={[0,0]} />
+  <Landmark id="left_eye" bone="head" offset={[-28,-12]} />
+  <Landmark id="right_eye" bone="head" offset={[28,-12]} />
+  <Measure id="head_height" from="head_top" to="chin" />
+  <Ratio measure="head_height" relativeTo="body_height" value="0.1667" />
+  <Region id="head_volume" role="head" type="ellipse"
+          center="face_center" radiusX="72" radiusY="88" />
+  <Constraint type="symmetry" left="left_eye" right="right_eye"
+              axis="body_center" />
+  <Guide id="eye_horizontal" type="line" through="eye_line" angle="0" />
+  <Control id="look_control" type="aim" targets={["left_eye","right_eye"]} />
+</Skeleton>
+```
+
+Built-in profiles cover `chibi_2_head`, `chibi_3_head`, `anime_5_head`,
+`anime_6_head`, `heroic_7_head`, `realistic_7_5_head`, and
+`realistic_8_head`. Explicit Skeleton values remain the source of truth.
+
+Hosts can call `GraphScript::skeleton_validation_reports()` for diagnostics,
+`auto_correct_skeleton()` for deterministic symmetry correction, and
+`build_skeleton_overlay()` to obtain editor-ready bone, landmark, region,
+guide, and control primitives. Angle-limit constraints are also enforced after
+FK/IK sampling.
 
 `chain` ids must be direct parent-child bones. The last id is the end effector;
 all earlier ids can rotate during the solve.

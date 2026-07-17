@@ -28,6 +28,13 @@ process graph, or app-layer effect.
 
 ## Core Parsing
 
+### 2D Skeleton authoring
+
+`builtin_proportion_profiles`, `validate_skeleton`, `auto_correct_skeleton`, and
+`build_skeleton_overlay` form the stable host API for profile-driven 2D rigs.
+The overlay result is renderer-independent and is intended for editor gizmos;
+it is not burned into exported frames.
+
 ### `parse_graph_script`
 
 ```rust

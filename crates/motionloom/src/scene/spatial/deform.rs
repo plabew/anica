@@ -3,7 +3,7 @@ use crate::scene::model::{GroupNode, MeshTopologyNode, PinNode, PuppetNode, Scen
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 use std::collections::HashMap;
 
-use super::Affine2;
+use super::{Affine2, find_scene_node_anchor};
 
 #[derive(Debug, Clone)]
 pub(crate) struct EvaluatedDeformGrid {
@@ -327,7 +327,24 @@ fn puppet_pin_controls(
         let SceneNode::Pin(pin) = child else {
             continue;
         };
-        let source = eval_pin_source(pin, vertices, time_norm, time_sec)?;
+        let source = if let Some(bind_to) = pin.bind_to.as_deref() {
+            find_scene_node_anchor(
+                &puppet.children,
+                bind_to,
+                Affine2::identity(),
+                time_norm,
+                time_sec,
+            )
+            .map(|(x, y)| Point2::new(x, y))
+            .ok_or_else(|| {
+                invalid_deform_grid(
+                    pin.id.as_deref().unwrap_or("pin"),
+                    format!("PuppetPin bindTo target '{bind_to}' was not found."),
+                )
+            })?
+        } else {
+            eval_pin_source(pin, vertices, time_norm, time_sec)?
+        };
         let fixed = eval_pin_fixed(pin, time_norm, time_sec)?;
         let target_x = if fixed {
             source.x

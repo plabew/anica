@@ -81,7 +81,43 @@ pub struct ModelProfileBoneAxisNode {
 #[serde(rename_all = "camelCase")]
 pub struct SkeletonNode {
     pub id: String,
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub height: Option<String>,
+    #[serde(default = "default_skeleton_facing")]
+    pub facing: String,
+    #[serde(default)]
+    pub symmetry_axis: Option<String>,
+    #[serde(default = "default_skeleton_validation")]
+    pub validation: String,
+    #[serde(default)]
+    pub auto_correct: Option<String>,
+    #[serde(default)]
+    pub overlay: bool,
     pub bones: Vec<SkeletonBoneNode>,
+    #[serde(default)]
+    pub landmarks: Vec<SkeletonLandmarkNode>,
+    #[serde(default)]
+    pub measures: Vec<SkeletonMeasureNode>,
+    #[serde(default)]
+    pub ratios: Vec<SkeletonRatioNode>,
+    #[serde(default)]
+    pub regions: Vec<SkeletonRegionNode>,
+    #[serde(default)]
+    pub constraints: Vec<SkeletonConstraintNode>,
+    #[serde(default)]
+    pub guides: Vec<SkeletonGuideNode>,
+    #[serde(default)]
+    pub controls: Vec<SkeletonControlNode>,
+}
+
+fn default_skeleton_facing() -> String {
+    "front".to_string()
+}
+
+fn default_skeleton_validation() -> String {
+    "warn".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -89,11 +125,109 @@ pub struct SkeletonNode {
 pub struct SkeletonBoneNode {
     pub id: String,
     pub parent: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub side: Option<String>,
     pub x: String,
     pub y: String,
     pub rotation: String,
     pub scale: String,
     pub length: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkeletonLandmarkNode {
+    pub id: String,
+    pub bone: String,
+    pub offset: (String, String),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkeletonMeasureNode {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkeletonRatioNode {
+    pub measure: String,
+    pub relative_to: String,
+    pub value: String,
+    #[serde(default)]
+    pub tolerance: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkeletonRegionNode {
+    pub id: String,
+    pub role: String,
+    pub kind: String,
+    #[serde(default)]
+    pub center: Option<String>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub radius_x: Option<String>,
+    #[serde(default)]
+    pub radius_y: Option<String>,
+    #[serde(default)]
+    pub width: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkeletonConstraintNode {
+    pub kind: String,
+    #[serde(default)]
+    pub left: Option<String>,
+    #[serde(default)]
+    pub right: Option<String>,
+    #[serde(default)]
+    pub axis: Option<String>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub bone: Option<String>,
+    #[serde(default)]
+    pub relative_to: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub min: Option<String>,
+    #[serde(default)]
+    pub max: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkeletonGuideNode {
+    pub id: String,
+    pub kind: String,
+    pub through: String,
+    pub angle: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkeletonControlNode {
+    pub id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub chain_length: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -516,8 +650,106 @@ pub(crate) fn parse_scene_root_block(
         .map(|v| parse_size(v, start + 1, "size"))
         .transpose()?;
     let mut child_ctx = brush_ctx.clone();
-    let children = parse_scene_root_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    let mut children = parse_scene_root_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
+    resolve_puppet_targets(&mut children);
     Ok((SceneRootNode { id, size, children }, close_ix))
+}
+
+// PuppetWarp is authored beside its target so the DSL remains easy to edit.
+// The renderer's stable Puppet AST owns visual children, so resolve the target
+// into that internal shape after parsing without changing the source DSL.
+fn resolve_puppet_targets(nodes: &mut Vec<SceneNode>) {
+    for node in nodes.iter_mut() {
+        let children = match node {
+            SceneNode::Timeline(node) => Some(&mut node.children),
+            SceneNode::Track(node) => Some(&mut node.children),
+            SceneNode::Sequence(node) => Some(&mut node.children),
+            SceneNode::Chain(node) => Some(&mut node.children),
+            SceneNode::Group(node) => Some(&mut node.children),
+            SceneNode::Part(node) => Some(&mut node.children),
+            SceneNode::Repeat(node) => Some(&mut node.children),
+            SceneNode::Mask(node) => Some(&mut node.children),
+            SceneNode::Precompose(node) => Some(&mut node.children),
+            SceneNode::Layer(node) => Some(&mut node.children),
+            SceneNode::Camera(node) => Some(&mut node.children),
+            SceneNode::Character(node) => Some(&mut node.children),
+            SceneNode::Puppet(node) => Some(&mut node.children),
+            _ => None,
+        };
+        if let Some(children) = children {
+            resolve_puppet_targets(children);
+        }
+    }
+
+    let mut target_bindings = std::collections::HashMap::<usize, (usize, PuppetNode)>::new();
+    let mut consumed_puppets = std::collections::HashSet::<usize>::new();
+    for (puppet_index, node) in nodes.iter().enumerate() {
+        let SceneNode::Puppet(puppet) = node else {
+            continue;
+        };
+        let Some(target) = puppet
+            .target
+            .as_deref()
+            .filter(|target| !target.trim().is_empty())
+        else {
+            continue;
+        };
+        if puppet
+            .children
+            .iter()
+            .any(|child| scene_node_id(child) == Some(target))
+        {
+            continue;
+        }
+        if let Some((target_index, _)) = nodes
+            .iter()
+            .enumerate()
+            .find(|(index, child)| *index != puppet_index && scene_node_id(child) == Some(target))
+        {
+            target_bindings.insert(target_index, (puppet_index, puppet.clone()));
+            consumed_puppets.insert(puppet_index);
+        }
+    }
+    if target_bindings.is_empty() {
+        return;
+    }
+
+    let original = std::mem::take(nodes);
+    for (index, node) in original.into_iter().enumerate() {
+        if consumed_puppets.contains(&index) {
+            continue;
+        }
+        if let Some((_, mut puppet)) = target_bindings.remove(&index) {
+            puppet.children.insert(0, node);
+            nodes.push(SceneNode::Puppet(puppet));
+        } else {
+            nodes.push(node);
+        }
+    }
+}
+
+fn scene_node_id(node: &SceneNode) -> Option<&str> {
+    match node {
+        SceneNode::Text(node) => node.id.as_deref(),
+        SceneNode::Image(node) => node.id.as_deref(),
+        SceneNode::Svg(node) => node.id.as_deref(),
+        SceneNode::Rect(node) => node.id.as_deref(),
+        SceneNode::Circle(node) => node.id.as_deref(),
+        SceneNode::Ellipse(node) => node.id.as_deref(),
+        SceneNode::Line(node) => node.id.as_deref(),
+        SceneNode::Polyline(node) => node.id.as_deref(),
+        SceneNode::Path(node) => node.id.as_deref(),
+        SceneNode::Group(node) => node.id.as_deref(),
+        SceneNode::Part(node) => node.id.as_deref(),
+        SceneNode::Repeat(node) => node.id.as_deref(),
+        SceneNode::Mask(node) => node.id.as_deref(),
+        SceneNode::Precompose(node) => Some(node.id.as_str()),
+        SceneNode::Layer(node) => node.id.as_deref(),
+        SceneNode::Camera(node) => node.id.as_deref(),
+        SceneNode::Character(node) => node.id.as_deref(),
+        SceneNode::Puppet(node) => node.id.as_deref(),
+        _ => None,
+    }
 }
 
 fn parse_scene_root_nodes(
@@ -765,12 +997,34 @@ pub(crate) fn parse_skeleton_block(
     let (open_tag, open_end_ix) = collect_tag_block(lines, start, '>', false)?;
     let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Skeleton")?;
     let id = strip_wrappers(&required_attr_value(&open_tag, "id", start + 1)?).to_string();
+    let profile = skeleton_optional_attr(&open_tag, &["profile"]);
+    let height = skeleton_optional_attr(&open_tag, &["height"]);
+    let facing =
+        skeleton_optional_attr(&open_tag, &["facing"]).unwrap_or_else(default_skeleton_facing);
+    let symmetry_axis = skeleton_optional_attr(&open_tag, &["symmetryAxis", "symmetry_axis"]);
+    let validation = skeleton_optional_attr(&open_tag, &["validation"])
+        .unwrap_or_else(default_skeleton_validation);
+    let auto_correct = skeleton_optional_attr(&open_tag, &["autoCorrect", "auto_correct"]);
+    let overlay = skeleton_optional_attr(&open_tag, &["overlay"])
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes"))
+        .unwrap_or(false);
     let mut bones = Vec::<SkeletonBoneNode>::new();
+    let mut landmarks = Vec::<SkeletonLandmarkNode>::new();
+    let mut measures = Vec::<SkeletonMeasureNode>::new();
+    let mut ratios = Vec::<SkeletonRatioNode>::new();
+    let mut regions = Vec::<SkeletonRegionNode>::new();
+    let mut constraints = Vec::<SkeletonConstraintNode>::new();
+    let mut guides = Vec::<SkeletonGuideNode>::new();
+    let mut controls = Vec::<SkeletonControlNode>::new();
     let mut i = open_end_ix + 1;
 
     while i < close_ix {
         let line = lines[i].trim();
-        if line.is_empty() || line.starts_with("//") || line.starts_with('{') {
+        if line.is_empty()
+            || line.starts_with("//")
+            || line.starts_with('{')
+            || line.starts_with("<!--")
+        {
             i += 1;
             continue;
         }
@@ -780,13 +1034,51 @@ pub(crate) fn parse_skeleton_block(
             i = end_ix + 1;
             continue;
         }
+        macro_rules! parse_skeleton_child {
+            ($tag_name:literal, $target:ident, $parser:ident) => {
+                if starts_open_tag(line, $tag_name) {
+                    let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+                    $target.push($parser(&tag, i + 1)?);
+                    i = end_ix + 1;
+                    continue;
+                }
+            };
+        }
+        parse_skeleton_child!("Landmark", landmarks, parse_skeleton_landmark_node);
+        parse_skeleton_child!("Measure", measures, parse_skeleton_measure_node);
+        parse_skeleton_child!("Ratio", ratios, parse_skeleton_ratio_node);
+        parse_skeleton_child!("Region", regions, parse_skeleton_region_node);
+        parse_skeleton_child!("Constraint", constraints, parse_skeleton_constraint_node);
+        parse_skeleton_child!("Guide", guides, parse_skeleton_guide_node);
+        parse_skeleton_child!("Control", controls, parse_skeleton_control_node);
         return Err(GraphParseError {
             line: i + 1,
-            message: format!("<Skeleton> only accepts <Bone /> children, got: {line}"),
+            message: format!(
+                "<Skeleton> only accepts Bone, Landmark, Measure, Ratio, Region, Constraint, Guide, or Control children, got: {line}"
+            ),
         });
     }
 
-    Ok((SkeletonNode { id, bones }, close_ix))
+    let mut skeleton = SkeletonNode {
+        id,
+        profile,
+        height,
+        facing,
+        symmetry_axis,
+        validation,
+        auto_correct,
+        overlay,
+        bones,
+        landmarks,
+        measures,
+        ratios,
+        regions,
+        constraints,
+        guides,
+        controls,
+    };
+    crate::scene::domain::prepare_skeleton(&mut skeleton);
+    Ok((skeleton, close_ix))
 }
 
 fn parse_skeleton_bone_node(block: &str, line: usize) -> Result<SkeletonBoneNode, GraphParseError> {
@@ -816,11 +1108,149 @@ fn parse_skeleton_bone_node(block: &str, line: usize) -> Result<SkeletonBoneNode
     Ok(SkeletonBoneNode {
         id,
         parent,
+        role: skeleton_optional_attr(block, &["role"]),
+        side: skeleton_optional_attr(block, &["side"]),
         x,
         y,
         rotation,
         scale,
         length,
+    })
+}
+
+fn skeleton_optional_attr(block: &str, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| attr_value(block, key))
+        .map(|value| strip_wrappers(&value).trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn skeleton_required_attr(block: &str, key: &str, line: usize) -> Result<String, GraphParseError> {
+    Ok(strip_wrappers(&required_attr_value(block, key, line)?)
+        .trim()
+        .to_string())
+}
+
+fn parse_skeleton_pair(
+    raw: &str,
+    line: usize,
+    name: &str,
+) -> Result<(String, String), GraphParseError> {
+    let clean = strip_wrappers(raw)
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    let values = clean
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if values.len() != 2 {
+        return Err(GraphParseError {
+            line,
+            message: format!("{name} must contain exactly two values, got: {raw}"),
+        });
+    }
+    Ok((values[0].to_string(), values[1].to_string()))
+}
+
+fn parse_skeleton_landmark_node(
+    block: &str,
+    line: usize,
+) -> Result<SkeletonLandmarkNode, GraphParseError> {
+    let offset_raw = required_attr_value(block, "offset", line)?;
+    Ok(SkeletonLandmarkNode {
+        id: skeleton_required_attr(block, "id", line)?,
+        bone: skeleton_required_attr(block, "bone", line)?,
+        offset: parse_skeleton_pair(&offset_raw, line, "Landmark.offset")?,
+    })
+}
+
+fn parse_skeleton_measure_node(
+    block: &str,
+    line: usize,
+) -> Result<SkeletonMeasureNode, GraphParseError> {
+    Ok(SkeletonMeasureNode {
+        id: skeleton_required_attr(block, "id", line)?,
+        from: skeleton_required_attr(block, "from", line)?,
+        to: skeleton_required_attr(block, "to", line)?,
+    })
+}
+
+fn parse_skeleton_ratio_node(
+    block: &str,
+    line: usize,
+) -> Result<SkeletonRatioNode, GraphParseError> {
+    Ok(SkeletonRatioNode {
+        measure: skeleton_required_attr(block, "measure", line)?,
+        relative_to: skeleton_required_attr(block, "relativeTo", line)?,
+        value: skeleton_required_attr(block, "value", line)?,
+        tolerance: skeleton_optional_attr(block, &["tolerance"]),
+    })
+}
+
+fn parse_skeleton_region_node(
+    block: &str,
+    line: usize,
+) -> Result<SkeletonRegionNode, GraphParseError> {
+    Ok(SkeletonRegionNode {
+        id: skeleton_required_attr(block, "id", line)?,
+        role: skeleton_required_attr(block, "role", line)?,
+        kind: skeleton_required_attr(block, "type", line)?.to_ascii_lowercase(),
+        center: skeleton_optional_attr(block, &["center"]),
+        from: skeleton_optional_attr(block, &["from"]),
+        to: skeleton_optional_attr(block, &["to"]),
+        radius_x: skeleton_optional_attr(block, &["radiusX", "radius_x"]),
+        radius_y: skeleton_optional_attr(block, &["radiusY", "radius_y"]),
+        width: skeleton_optional_attr(block, &["width"]),
+    })
+}
+
+fn parse_skeleton_constraint_node(
+    block: &str,
+    line: usize,
+) -> Result<SkeletonConstraintNode, GraphParseError> {
+    Ok(SkeletonConstraintNode {
+        kind: skeleton_required_attr(block, "type", line)?.to_ascii_lowercase(),
+        left: skeleton_optional_attr(block, &["left"]),
+        right: skeleton_optional_attr(block, &["right"]),
+        axis: skeleton_optional_attr(block, &["axis"]),
+        from: skeleton_optional_attr(block, &["from"]),
+        to: skeleton_optional_attr(block, &["to"]),
+        bone: skeleton_optional_attr(block, &["bone"]),
+        relative_to: skeleton_optional_attr(block, &["relativeTo", "relative_to"]),
+        value: skeleton_optional_attr(block, &["value"]),
+        min: skeleton_optional_attr(block, &["min"]),
+        max: skeleton_optional_attr(block, &["max"]),
+    })
+}
+
+fn parse_skeleton_guide_node(
+    block: &str,
+    line: usize,
+) -> Result<SkeletonGuideNode, GraphParseError> {
+    Ok(SkeletonGuideNode {
+        id: skeleton_required_attr(block, "id", line)?,
+        kind: skeleton_required_attr(block, "type", line)?.to_ascii_lowercase(),
+        through: skeleton_required_attr(block, "through", line)?,
+        angle: skeleton_optional_attr(block, &["angle"]).unwrap_or_else(|| "0".to_string()),
+    })
+}
+
+fn parse_skeleton_control_node(
+    block: &str,
+    line: usize,
+) -> Result<SkeletonControlNode, GraphParseError> {
+    let targets = skeleton_optional_attr(block, &["targets"])
+        .map(|value| parse_scene_string_list(&value))
+        .unwrap_or_default();
+    Ok(SkeletonControlNode {
+        id: skeleton_required_attr(block, "id", line)?,
+        kind: skeleton_required_attr(block, "type", line)?.to_ascii_lowercase(),
+        target: skeleton_optional_attr(block, &["target"]),
+        targets,
+        chain_length: skeleton_optional_attr(block, &["chainLength", "chain_length"]),
     })
 }
 
@@ -1281,7 +1711,12 @@ pub(crate) fn parse_puppet_block(
             open_end_ix,
         ));
     }
-    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, "Puppet")?;
+    let tag_name = if starts_open_tag(open_tag.trim(), "PuppetWarp") {
+        "PuppetWarp"
+    } else {
+        "Puppet"
+    };
+    let close_ix = find_matching_close_tag(lines, open_end_ix + 1, tag_name)?;
     let mut child_ctx = brush_ctx.clone();
     let children = parse_scene_nodes(lines, open_end_ix + 1, close_ix, &mut child_ctx)?;
     Ok((parse_puppet_node(&open_tag, start + 1, children)?, close_ix))
@@ -1606,6 +2041,33 @@ fn parse_scene_nodes(
             i = end_ix + 1;
             continue;
         }
+        if starts_open_tag(line, "Curve") {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Polyline(parse_polyline_node(&tag, i + 1)?));
+            i = end_ix + 1;
+            continue;
+        }
+        if [
+            "SpringChain",
+            "DynamicCurve",
+            "DistanceConstraint",
+            "Hinge",
+            "RigidBody2D",
+            "ParticleEmitter",
+            "Cloth",
+            "HairStrandField",
+            "CacheBake",
+        ]
+        .iter()
+        .any(|name| starts_open_tag(line, name))
+        {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            nodes.push(SceneNode::Simulation(
+                crate::simulation::dsl::parse_binding(&tag, i + 1)?,
+            ));
+            i = end_ix + 1;
+            continue;
+        }
         if starts_open_tag(line, "Path") {
             let (tag, end_ix) = collect_self_closing_block(lines, i)?;
             nodes.push(SceneNode::Path(parse_path_node(&tag, i + 1, brush_ctx)?));
@@ -1630,13 +2092,13 @@ fn parse_scene_nodes(
             i = end_ix + 1;
             continue;
         }
-        if starts_open_tag(line, "Puppet") {
+        if starts_open_tag(line, "Puppet") || starts_open_tag(line, "PuppetWarp") {
             let (puppet, end_ix) = parse_puppet_block(lines, i, brush_ctx)?;
             nodes.push(SceneNode::Puppet(puppet));
             i = end_ix + 1;
             continue;
         }
-        if starts_open_tag(line, "Pin") {
+        if starts_open_tag(line, "Pin") || starts_open_tag(line, "PuppetPin") {
             let (tag, end_ix) = collect_self_closing_block(lines, i)?;
             nodes.push(SceneNode::Pin(parse_pin_node(&tag, i + 1)?));
             i = end_ix + 1;
@@ -2394,6 +2856,7 @@ pub(crate) fn parse_defs_block(
     let mut filters = Vec::<FilterDef>::new();
     let mut fonts = Vec::<FontDef>::new();
     let mut palettes = Vec::<PaletteNode>::new();
+    let mut simulation = Vec::new();
     let mut i = open_end_ix + 1;
 
     while i < close_ix {
@@ -2480,10 +2943,19 @@ pub(crate) fn parse_defs_block(
             i = end_ix + 1;
             continue;
         }
+        if ["Gravity", "Wind", "Attraction", "Collider"]
+            .iter()
+            .any(|name| starts_open_tag(line, name))
+        {
+            let (tag, end_ix) = collect_self_closing_block(lines, i)?;
+            simulation.push(crate::simulation::dsl::parse_resource(&tag, i + 1)?);
+            i = end_ix + 1;
+            continue;
+        }
         return Err(GraphParseError {
             line: i + 1,
             message: format!(
-                "<Defs> only accepts resource tags: <LinearGradient />, <RadialGradient />, <Texture />, <Brush />, <Mask>, <Precompose>, <Component>, <Filter>, <Font />, or <Palette>, got: {line}"
+                "<Defs> only accepts resource tags: <LinearGradient />, <RadialGradient />, <Texture />, <Noise />, <Material />, <Brush />, <Mask>, <Precompose>, <Component>, <Filter>, <Font />, <Palette>, <Gravity />, <Wind />, <Attraction />, or <Collider />, got: {line}"
             ),
         });
     }
@@ -2502,6 +2974,7 @@ pub(crate) fn parse_defs_block(
             filters,
             fonts,
             palettes,
+            simulation,
         },
         close_ix,
     ))
@@ -3978,6 +4451,10 @@ fn parse_puppet_node(
 pub(crate) fn parse_pin_node(block: &str, _line: usize) -> Result<PinNode, GraphParseError> {
     Ok(PinNode {
         id: attr_value(block, "id").map(|v| strip_wrappers(&v).to_string()),
+        bind_to: attr_value(block, "bindTo")
+            .or_else(|| attr_value(block, "bind_to"))
+            .map(|v| strip_wrappers(&v).to_string())
+            .filter(|v| !v.trim().is_empty()),
         vertex: attr_value(block, "vertex")
             .or_else(|| attr_value(block, "vertexId"))
             .or_else(|| attr_value(block, "vertex_id"))

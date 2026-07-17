@@ -249,6 +249,7 @@ fn describe_scene_node_for_gpu(node: &SceneNode) -> String {
         SceneNode::Character(character) => {
             format!("Character{}", id_suffix(character.id.as_deref()))
         }
+        SceneNode::Simulation(_) => "SimulationBinding".to_string(),
     }
 }
 

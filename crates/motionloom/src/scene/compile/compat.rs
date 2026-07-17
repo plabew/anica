@@ -126,6 +126,7 @@ fn scene_node_is_rich(node: &SceneNode) -> bool {
         | SceneNode::Triangle(_)
         | SceneNode::Edge(_)
         | SceneNode::Region(_) => false,
+        SceneNode::Simulation(_) => false,
         SceneNode::Camera(_) | SceneNode::Character(_) => true,
     }
 }

@@ -107,6 +107,7 @@ pub mod preview_protocol;
 mod process;
 mod root;
 mod scene;
+pub mod simulation;
 mod world;
 
 pub mod api;
@@ -128,8 +129,9 @@ pub use dsl::{
     ActionBoneNode, ActionNode, ActionPoseNode, AnimationKeyNode, AnimationTargetNode,
     ApplyActionNode, BackgroundNode, GraphScript, ImageNode, ModelProfileBoneAxisMapNode,
     ModelProfileBoneAxisNode, ModelProfileNode, ModelProfileRetargetMapNode,
-    ModelProfileRetargetNode, SkeletonBoneNode, SkeletonNode, SvgNode, is_graph_script,
-    parse_graph_script,
+    ModelProfileRetargetNode, SkeletonBoneNode, SkeletonConstraintNode, SkeletonControlNode,
+    SkeletonGuideNode, SkeletonLandmarkNode, SkeletonMeasureNode, SkeletonNode, SkeletonRatioNode,
+    SkeletonRegionNode, SvgNode, is_graph_script, parse_graph_script,
 };
 pub use error::{GraphParseError, MotionLoomError, RootGraphError, RuntimeCompileError};
 pub use preview::{
@@ -179,6 +181,12 @@ pub use root::{
     render_motionloom_document_to_png_sequence_with_progress_and_cancel,
     render_motionloom_document_to_video_with_progress,
     render_motionloom_document_to_video_with_progress_and_cancel,
+};
+pub use scene::domain::{
+    ProportionProfile, SkeletonDiagnostic, SkeletonDiagnosticSeverity, SkeletonOverlayPrimitive,
+    SkeletonPosePreset, SkeletonValidationReport, auto_correct_skeleton, build_skeleton_overlay,
+    builtin_proportion_profile, builtin_proportion_profiles, builtin_skeleton_pose_presets,
+    validate_skeleton,
 };
 pub use scene::editor_keyframes::{
     AnimationKeyframeEditError, EditableAnimationKey, EditableAnimationTarget,

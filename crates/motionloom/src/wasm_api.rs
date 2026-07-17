@@ -459,12 +459,11 @@ impl WasmSceneRenderer {
                 "group attr value must be finite: {value}"
             )));
         }
-        Ok(set_graph_group_attr(
-            &mut self.graph,
-            group_id,
-            attr,
-            value.trim(),
-        ))
+        let updated = set_graph_group_attr(&mut self.graph, group_id, attr, value.trim());
+        if updated && let Some(renderer) = self.renderer.as_mut() {
+            renderer.invalidate_runtime_scene_transforms();
+        }
+        Ok(updated)
     }
 
     /// Render `frame` to an RGBA byte buffer.

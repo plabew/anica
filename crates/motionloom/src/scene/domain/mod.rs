@@ -5,4 +5,12 @@
 //! and future scene-specific actors.
 
 mod action;
+mod skeleton;
 pub(crate) use action::apply_action_graph_at_time;
+pub(crate) use skeleton::prepare_skeleton;
+pub use skeleton::{
+    ProportionProfile, SkeletonDiagnostic, SkeletonDiagnosticSeverity, SkeletonOverlayPrimitive,
+    SkeletonPosePreset, SkeletonValidationReport, auto_correct_skeleton, build_skeleton_overlay,
+    builtin_proportion_profile, builtin_proportion_profiles, builtin_skeleton_pose_presets,
+    validate_skeleton,
+};

@@ -13,7 +13,9 @@ pub use crate::process::model::{
 pub use crate::scene::dsl::{
     ActionBoneNode, ActionNode, ActionPoseNode, ApplyActionNode, BackgroundNode, ImageNode,
     ModelProfileBoneAxisMapNode, ModelProfileBoneAxisNode, ModelProfileNode,
-    ModelProfileRetargetMapNode, ModelProfileRetargetNode, SkeletonBoneNode, SkeletonNode, SvgNode,
+    ModelProfileRetargetMapNode, ModelProfileRetargetNode, SkeletonBoneNode,
+    SkeletonConstraintNode, SkeletonControlNode, SkeletonGuideNode, SkeletonLandmarkNode,
+    SkeletonMeasureNode, SkeletonNode, SkeletonRatioNode, SkeletonRegionNode, SvgNode,
 };
 use crate::scene::dsl::{
     BrushParseContext, parse_action_block, parse_apply_action_node, parse_background_node,
@@ -112,6 +114,15 @@ pub struct WorldSourceNode {
 }
 
 impl GraphScript {
+    pub fn skeleton_validation_reports(
+        &self,
+    ) -> Vec<crate::scene::domain::SkeletonValidationReport> {
+        self.skeletons
+            .iter()
+            .map(crate::scene::domain::validate_skeleton)
+            .collect()
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "Graph parsed: fps={:.2}, apply={:?}, duration={}ms, size={}x{}, input={}, tex={}, buffer={}, scene={}, scene_node={}, model_profile={}, skeleton={}, action={}, apply_action={}, animation_target={}, layer={}, world={}, pass={}, output={}, present={}",
@@ -702,14 +713,14 @@ pub fn parse_graph_script(input: &str) -> Result<GraphScript, GraphParseError> {
             continue;
         }
 
-        if starts_open_tag(line, "Puppet") {
+        if starts_open_tag(line, "Puppet") || starts_open_tag(line, "PuppetWarp") {
             let (puppet, end_ix) = parse_puppet_block(&lines, i, &brush_ctx)?;
             scene_nodes.push(SceneNode::Puppet(puppet));
             i = end_ix + 1;
             continue;
         }
 
-        if starts_open_tag(line, "Pin") {
+        if starts_open_tag(line, "Pin") || starts_open_tag(line, "PuppetPin") {
             let (tag, end_ix) = collect_self_closing_block(&lines, i)?;
             scene_nodes.push(SceneNode::Pin(parse_pin_node(&tag, i + 1)?));
             i = end_ix + 1;
@@ -1138,6 +1149,22 @@ fn validate_graph(
                     ),
                 });
             }
+        }
+        let report = crate::scene::domain::validate_skeleton(skeleton);
+        if skeleton.validation.eq_ignore_ascii_case("strict") && report.has_errors() {
+            let message = report
+                .diagnostics
+                .iter()
+                .filter(|item| {
+                    item.severity == crate::scene::domain::SkeletonDiagnosticSeverity::Error
+                })
+                .map(|item| item.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Err(GraphParseError {
+                line,
+                message: format!("Skeleton {} validation failed: {message}", skeleton.id),
+            });
         }
     }
 
@@ -4091,6 +4118,63 @@ Font note: this is not a structured XML comment.
         let graph = parse_graph_script(script)?;
         assert_eq!(graph.passes[0].kernel, None);
         assert_eq!(graph.passes[0].effect, "exposure_contrast");
+        Ok(())
+    }
+
+    #[test]
+    fn graph_parser_resolves_targeted_puppet_warp_and_bound_pins() -> Result<(), GraphParseError> {
+        let script = r##"
+<Graph fps={30} duration="2s" size={[640,360]}>
+  <Scene id="puppet_scene">
+    <Timeline>
+      <Track>
+        <Sequence from="0s" duration="2s">
+          <Layer>
+            <Group id="character">
+              <Group id="left_hand" x="180" y="220">
+                <Circle x="0" y="0" radius="24" color="#f2c9b8" />
+              </Group>
+            </Group>
+            <PuppetWarp id="character_warp" target="character" width="640" height="360">
+              <PuppetPin id="left_hand_pin" bindTo="left_hand" targetX="210" targetY="200" />
+            </PuppetWarp>
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="puppet_scene" />
+</Graph>
+"##;
+        let graph = parse_graph_script(script)?;
+        let SceneNode::Timeline(timeline) = &graph.scenes[0].children[0] else {
+            panic!("expected Timeline");
+        };
+        let SceneNode::Track(track) = &timeline.children[0] else {
+            panic!("expected Track");
+        };
+        let SceneNode::Sequence(sequence) = &track.children[0] else {
+            panic!("expected Sequence");
+        };
+        let SceneNode::Layer(layer) = &sequence.children[0] else {
+            panic!("expected Layer");
+        };
+        assert_eq!(layer.children.len(), 1);
+        let SceneNode::Puppet(puppet) = &layer.children[0] else {
+            panic!("target Group should be normalized into Puppet");
+        };
+        assert!(
+            matches!(&puppet.children[0], SceneNode::Group(group) if group.id.as_deref() == Some("character"))
+        );
+        let pin = puppet
+            .children
+            .iter()
+            .find_map(|node| match node {
+                SceneNode::Pin(pin) => Some(pin),
+                _ => None,
+            })
+            .expect("bound pin");
+        assert_eq!(pin.bind_to.as_deref(), Some("left_hand"));
         Ok(())
     }
 

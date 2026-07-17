@@ -269,6 +269,12 @@ fn apply_action_to_nodes(
                             time_norm,
                             time_sec,
                         )?;
+                        apply_skeleton_rotation_limits(
+                            skeleton,
+                            &mut character_samples,
+                            time_norm,
+                            time_sec,
+                        )?;
                         let bone_world = sample_skeleton_bones(
                             skeleton,
                             &character_samples,
@@ -358,6 +364,43 @@ fn apply_action_to_nodes(
             )?,
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn apply_skeleton_rotation_limits(
+    skeleton: &SkeletonNode,
+    samples: &mut HashMap<String, ActionBoneSample>,
+    time_norm: f32,
+    time_sec: f32,
+) -> Result<(), MotionLoomSceneRenderError> {
+    // Angle limits are solved after FK/IK so every animation path obeys the same rig contract.
+    for constraint in skeleton
+        .constraints
+        .iter()
+        .filter(|constraint| constraint.kind == "anglelimit")
+    {
+        let (Some(bone_id), Some(min), Some(max)) = (
+            constraint.bone.as_deref(),
+            constraint.min.as_deref(),
+            constraint.max.as_deref(),
+        ) else {
+            continue;
+        };
+        let bone = skeleton
+            .bones
+            .iter()
+            .find(|bone| bone.id == bone_id)
+            .ok_or_else(|| MotionLoomSceneRenderError::InvalidExpression {
+                expr: bone_id.to_string(),
+                message: format!("Skeleton {} constraint bone not found.", skeleton.id),
+            })?;
+        let base = eval_scene_number(&bone.rotation, time_norm, time_sec)?;
+        let min = eval_scene_number(min, time_norm, time_sec)?;
+        let max = eval_scene_number(max, time_norm, time_sec)?;
+        let entry = samples.entry(bone_id.to_string()).or_default();
+        let total = base + entry.rotation.unwrap_or(0.0);
+        entry.rotation = Some(total.clamp(min.min(max), min.max(max)) - base);
     }
     Ok(())
 }

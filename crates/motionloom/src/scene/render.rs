@@ -1066,6 +1066,18 @@ impl SceneRenderer {
         self.inner.font_system.db_mut().load_font_data(bytes);
     }
 
+    /// Invalidate retained scene data after an editor mutates parsed Scene nodes.
+    ///
+    /// Runtime editor APIs intentionally keep the parsed graph and Path geometry
+    /// cache alive. Retained scene entries, however, contain compiled ancestor
+    /// transforms and must be rebuilt before the next frame.
+    pub fn invalidate_runtime_scene_transforms(&mut self) {
+        self.inner.retained_gpu_shape_scenes.clear();
+        self.inner.retained_gpu_transform_scenes.clear();
+        self.inner.gpu_text_raster_cache.clear();
+        self.inner.gpu_layer3d_texture_cache.clear();
+    }
+
     /// Render a scene frame to a GPU texture without CPU readback.
     ///
     /// The returned `SceneGpuTexture` wraps an `Arc<wgpu::Texture>` that is safe
@@ -1343,7 +1355,8 @@ fn collect_scene_gradient_refs(nodes: &[SceneNode], out: &mut Vec<(String, Strin
             | SceneNode::Vertex(_)
             | SceneNode::Triangle(_)
             | SceneNode::Edge(_)
-            | SceneNode::Region(_) => {}
+            | SceneNode::Region(_)
+            | SceneNode::Simulation(_) => {}
         }
     }
 }
@@ -2164,6 +2177,7 @@ fn scene_node_id(node: &SceneNode) -> Option<&str> {
         SceneNode::Layer(node) => node.id.as_deref(),
         SceneNode::Camera(node) => node.id.as_deref(),
         SceneNode::Character(node) => node.id.as_deref(),
+        SceneNode::Simulation(_) => None,
     }
 }
 
@@ -2322,6 +2336,9 @@ impl SceneFrameRenderer {
         let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
         let animated_graph = apply_animation_targets_at_frame(graph, frame)?;
         let graph = animated_graph.as_ref().unwrap_or(graph);
+        let simulated_graph =
+            crate::simulation::bridge::scene::apply_scene_simulation_at_frame(graph, frame)?;
+        let graph = simulated_graph.as_ref().unwrap_or(graph);
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
         self.prepare_frame_caches(graph);
@@ -2380,6 +2397,9 @@ impl SceneFrameRenderer {
         let expression_started = Instant::now();
         let animated_graph = apply_animation_targets_at_frame(graph, frame)?;
         let graph = animated_graph.as_ref().unwrap_or(graph);
+        let simulated_graph =
+            crate::simulation::bridge::scene::apply_scene_simulation_at_frame(graph, frame)?;
+        let graph = simulated_graph.as_ref().unwrap_or(graph);
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
         self.prepare_frame_caches(graph);
@@ -2489,6 +2509,9 @@ impl SceneFrameRenderer {
         let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
         let animated_graph = apply_animation_targets_at_frame(graph, frame)?;
         let graph = animated_graph.as_ref().unwrap_or(graph);
+        let simulated_graph =
+            crate::simulation::bridge::scene::apply_scene_simulation_at_frame(graph, frame)?;
+        let graph = simulated_graph.as_ref().unwrap_or(graph);
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
         self.prepare_frame_caches(graph);
@@ -2625,6 +2648,9 @@ impl SceneFrameRenderer {
         let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
         let animated_graph = apply_animation_targets_at_frame(graph, frame)?;
         let graph = animated_graph.as_ref().unwrap_or(graph);
+        let simulated_graph =
+            crate::simulation::bridge::scene::apply_scene_simulation_at_frame(graph, frame)?;
+        let graph = simulated_graph.as_ref().unwrap_or(graph);
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
         self.prepare_frame_caches(graph);
@@ -2946,6 +2972,9 @@ impl SceneFrameRenderer {
         let time_norm = (time_sec / duration_sec).clamp(0.0, 1.0);
         let animated_graph = apply_animation_targets_at_frame(graph, frame)?;
         let graph = animated_graph.as_ref().unwrap_or(graph);
+        let simulated_graph =
+            crate::simulation::bridge::scene::apply_scene_simulation_at_frame(graph, frame)?;
+        let graph = simulated_graph.as_ref().unwrap_or(graph);
         let applied_graph = apply_action_graph_at_time(graph, time_norm, time_sec)?;
         let graph = applied_graph.as_ref().unwrap_or(graph);
 
@@ -7993,6 +8022,7 @@ impl SceneFrameRenderer {
                     )?;
                     pending_shadow = None;
                 }
+                SceneNode::Simulation(_) => {}
             }
         }
         Ok(())
@@ -9719,6 +9749,7 @@ impl SceneFrameRenderer {
                     )?;
                 }
                 SceneNode::Camera(_) => {}
+                SceneNode::Simulation(_) => {}
             }
         }
         Ok(())
@@ -12063,6 +12094,7 @@ fn collect_gpu_scene_commands_with_depth(
             SceneNode::Image(_) | SceneNode::Svg(_) => {
                 pending_shadow = None;
             }
+            SceneNode::Simulation(_) => {}
         }
     }
     Ok(())

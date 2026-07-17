@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scene::dsl::{ImageNode, SvgNode};
 use crate::scene::text::TextNode;
+use crate::simulation::model::{SimulationBindingNode, SimulationResourceNode};
 
 fn default_scene_blend() -> String {
     "normal".to_string()
@@ -103,6 +104,7 @@ pub enum SceneNode {
     Triangle(TriangleNode),
     Edge(EdgeNode),
     Region(RegionNode),
+    Simulation(SimulationBindingNode),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -174,6 +176,8 @@ pub struct DefsNode {
     pub fonts: Vec<FontDef>,
     #[serde(default)]
     pub palettes: Vec<PaletteNode>,
+    #[serde(default)]
+    pub simulation: Vec<SimulationResourceNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -859,6 +863,8 @@ pub struct PuppetNode {
 #[serde(rename_all = "camelCase")]
 pub struct PinNode {
     pub id: Option<String>,
+    #[serde(default)]
+    pub bind_to: Option<String>,
     #[serde(default)]
     pub vertex: Option<String>,
     pub x: Option<String>,
