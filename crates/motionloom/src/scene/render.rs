@@ -1,4 +1,5 @@
 // =========================================
+// =========================================
 // crates/motionloom/src/scene/render.rs
 
 use lyon_tessellation::{
@@ -1817,6 +1818,7 @@ impl CachedVectorOverlay {
             blend: SceneBlendMode::Normal,
             pick_id: 0,
             matte: None,
+            primitive_index: usize::MAX,
         }
     }
 }
@@ -5697,6 +5699,7 @@ impl SceneFrameRenderer {
                                     feather: 0.0,
                                     expansion: 0.0,
                                 }),
+                                primitive_index: primitives.len(),
                             });
                         }
                     }
@@ -5812,6 +5815,7 @@ impl SceneFrameRenderer {
                                 blend,
                                 pick_id: layer_pick_id,
                                 matte: None,
+                                primitive_index: primitives.len(),
                             });
                             continue;
                         }
@@ -6134,6 +6138,7 @@ impl SceneFrameRenderer {
                             blend,
                             pick_id: layer_pick_id,
                             matte,
+                            primitive_index: primitives.len(),
                         });
                     }
                     SceneNode::Image(image) => {
@@ -6369,6 +6374,7 @@ impl SceneFrameRenderer {
                                 blend: SceneBlendMode::Normal,
                                 pick_id: group_pick_id,
                                 matte,
+                                primitive_index: primitives.len(),
                             });
                         } else {
                             let group_deform = group_deform
@@ -6471,6 +6477,7 @@ impl SceneFrameRenderer {
                             blend: SceneBlendMode::Normal,
                             pick_id: puppet_pick_id,
                             matte: None,
+                            primitive_index: primitives.len(),
                         });
                     }
                     SceneNode::Pin(_)
@@ -10901,6 +10908,7 @@ impl SceneFrameRenderer {
             blend: SceneBlendMode::Normal,
             pick_id: 0,
             matte: None,
+            primitive_index: usize::MAX,
         }))
     }
 
@@ -10938,6 +10946,7 @@ impl SceneFrameRenderer {
                     blend: SceneBlendMode::Normal,
                     pick_id: context.pick_id,
                     matte: None,
+                    primitive_index: usize::MAX,
                 }]);
             }
 
@@ -10984,6 +10993,7 @@ impl SceneFrameRenderer {
                 blend: SceneBlendMode::Normal,
                 pick_id: context.pick_id,
                 matte: None,
+                primitive_index: usize::MAX,
             }]);
         }
 
@@ -11008,6 +11018,7 @@ impl SceneFrameRenderer {
                 blend: SceneBlendMode::Normal,
                 pick_id: context.pick_id,
                 matte: None,
+                primitive_index: usize::MAX,
             }]);
         }
 
@@ -11043,6 +11054,7 @@ impl SceneFrameRenderer {
                     blend: SceneBlendMode::Normal,
                     pick_id: 0,
                     matte: None,
+                    primitive_index: usize::MAX,
                 });
             }
             for glow in &base.effects.glows {
@@ -11060,6 +11072,7 @@ impl SceneFrameRenderer {
                     blend: SceneBlendMode::Screen,
                     pick_id: 0,
                     matte: None,
+                    primitive_index: usize::MAX,
                 });
             }
         }
@@ -11074,6 +11087,7 @@ impl SceneFrameRenderer {
                 blend: SceneBlendMode::Normal,
                 pick_id: context.pick_id,
                 matte: None,
+                primitive_index: usize::MAX,
             });
         }
 
@@ -11101,6 +11115,7 @@ impl SceneFrameRenderer {
             blend: SceneBlendMode::Normal,
             pick_id: context.pick_id,
             matte: None,
+            primitive_index: usize::MAX,
         });
 
         Ok(layers)
@@ -12545,19 +12560,22 @@ fn push_gpu_rect_commands(
         let subpaths = transform_and_deform_subpaths(&subpaths, shape_transform, deform);
         let warped_bounds =
             subpaths_bounds(&subpaths).unwrap_or_else(|| PaintBounds::new(0.0, 0.0, 1.0, 1.0));
-        let (color, gradient) = resolve_gpu_scene_paint(&rect.color, gradient_defs, warped_bounds)?;
-        push_gpu_filled_path_triangles_with_blend(
-            primitives,
-            Affine2::identity(),
-            &subpaths,
-            GpuFilledPathStyle {
-                color,
-                opacity,
-                gradient,
-                blend: fill_blend,
-                pick_id: 0,
-            },
-        );
+        if !is_none_paint(&rect.color) {
+            let (color, gradient) =
+                resolve_gpu_scene_paint(&rect.color, gradient_defs, warped_bounds)?;
+            push_gpu_filled_path_triangles_with_blend(
+                primitives,
+                Affine2::identity(),
+                &subpaths,
+                GpuFilledPathStyle {
+                    color,
+                    opacity,
+                    gradient,
+                    blend: fill_blend,
+                    pick_id: 0,
+                },
+            );
+        }
 
         if let Some(stroke_value) = rect
             .stroke
@@ -12607,24 +12625,26 @@ fn push_gpu_rect_commands(
         });
     }
 
-    let (color, gradient) = resolve_gpu_scene_paint(&rect.color, gradient_defs, paint_bounds)?;
-    primitives.push(GpuScenePrimitive {
-        kind: GPU_SHAPE_RECT_FILL,
-        transform: shape_transform,
-        shape: [x, y, width, height],
-        radius,
-        stroke_width: 0.0,
-        blur: 0.0,
-        color,
-        opacity,
-        blend: fill_blend,
-        pick_id: 0,
-        gradient,
-        line_t0: 0.0,
-        line_t1: 1.0,
-        taper_start: 0.0,
-        taper_end: 0.0,
-    });
+    if !is_none_paint(&rect.color) {
+        let (color, gradient) = resolve_gpu_scene_paint(&rect.color, gradient_defs, paint_bounds)?;
+        primitives.push(GpuScenePrimitive {
+            kind: GPU_SHAPE_RECT_FILL,
+            transform: shape_transform,
+            shape: [x, y, width, height],
+            radius,
+            stroke_width: 0.0,
+            blur: 0.0,
+            color,
+            opacity,
+            blend: fill_blend,
+            pick_id: 0,
+            gradient,
+            line_t0: 0.0,
+            line_t1: 1.0,
+            taper_start: 0.0,
+            taper_end: 0.0,
+        });
+    }
 
     if let Some(stroke_value) = rect
         .stroke
@@ -15333,6 +15353,40 @@ mod tests {
         assert!(
             center[0] < 30 && center[1] < 30 && center[2] < 30,
             "expected fill=none circle center to remain background, got {center:?}"
+        );
+    }
+
+    #[test]
+    fn scene_renderer_renders_rect_stroke_fill_none() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,64]}>
+  <Background color="#000000" />
+  <Scene id="rect_stroke_scene">
+    <Timeline>
+      <Track id="scene_content" space="world" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Rect id="rect_stroke" x="12" y="16" width="40" height="32" radius="4" fill="none" stroke="#ffffff" strokeWidth="6" opacity="0.5" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="rect_stroke_scene" />
+</Graph>
+"##,
+        )
+        .expect("scene graph parse");
+        let mut renderer = pollster::block_on(SceneFrameRenderer::new());
+        let rendered = pollster::block_on(renderer.render_frame(&graph, 0)).expect("frame 0");
+
+        let edge = rendered.get_pixel(12, 32);
+        let center = rendered.get_pixel(32, 32);
+        assert!(edge[0] > 70, "expected rectangle stroke, got {edge:?}");
+        assert!(
+            center[0] < 30 && center[1] < 30 && center[2] < 30,
+            "expected fill=none rectangle center to remain background, got {center:?}"
         );
     }
 
@@ -18566,6 +18620,52 @@ mod tests {
 
         let _ = std::fs::remove_file(image1_path);
         let _ = std::fs::remove_file(image2_path);
+    }
+
+    #[test]
+    fn scene_gpu_puppet_preserves_vector_source_order_when_available() {
+        let graph = parse_graph_script(
+            r##"
+<Graph fps={30} duration="1s" size={[64,48]}>
+  <Background color="#FFFFFF" />
+  <Scene id="puppet_order">
+    <Timeline>
+      <Track id="content" space="screen" z="0">
+        <Sequence from="0s" duration="1s" out="hold">
+          <Layer>
+            <Group id="hair">
+              <Rect x="0" y="0" width="64" height="48" color="#FF0000" />
+            </Group>
+            <PuppetWarp id="hair_warp" target="hair" width="64" height="48" density="high">
+              <PuppetPin id="tip" x="16" y="16" targetX="17" targetY="16" radius="48" />
+            </PuppetWarp>
+            <Rect x="20" y="10" width="24" height="28" color="#0000FF" />
+          </Layer>
+        </Sequence>
+      </Track>
+    </Timeline>
+  </Scene>
+  <Present from="puppet_order" />
+</Graph>
+"##,
+        )
+        .expect("puppet source-order graph parse");
+
+        let mut renderer =
+            pollster::block_on(SceneFrameRenderer::new_for_profile(SceneRenderProfile::Gpu));
+        let rendered = match pollster::block_on(renderer.render_frame(&graph, 0)) {
+            Ok(rendered) => rendered,
+            Err(MotionLoomSceneRenderError::GpuRender { message }) => {
+                eprintln!("Skipping GPU render test: {message}");
+                return;
+            }
+            Err(err) => panic!("unexpected GPU render error: {err}"),
+        };
+        let face = rendered.get_pixel(32, 24);
+        assert!(
+            face[2] > 200 && face[0] < 30,
+            "expected the later blue vector to remain above the Puppet texture, got {face:?}"
+        );
     }
 
     #[test]

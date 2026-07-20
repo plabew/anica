@@ -1,3 +1,7 @@
+// =========================================
+// =========================================
+// crates/motionloom/src/scene/drawable/gpu.rs
+
 use std::collections::HashMap;
 
 use image::{Rgba, RgbaImage};
@@ -131,6 +135,8 @@ pub(crate) struct GpuSceneTextureLayer {
     pub(crate) blend: SceneBlendMode,
     pub(crate) pick_id: u32,
     pub(crate) matte: Option<GpuSceneTextureMatte>,
+    /// Number of native primitives that must be composited before this layer.
+    pub(crate) primitive_index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -706,6 +712,7 @@ pub(crate) fn raster_texture_layer(
         blend: SceneBlendMode::Normal,
         pick_id: 0,
         matte: None,
+        primitive_index: usize::MAX,
     }))
 }
 

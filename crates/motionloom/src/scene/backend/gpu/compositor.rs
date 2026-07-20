@@ -1,3 +1,7 @@
+// =========================================
+// =========================================
+// crates/motionloom/src/scene/backend/gpu/compositor.rs
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -22,15 +26,16 @@ use crate::scene::composition::{SceneMagnifyLensParams, SceneTextureOverlayParam
 use crate::scene::drawable::{
     GpuSceneMatteMode, GpuSceneNativeTexture, GpuScenePrimitive, GpuSceneTextureLayer,
     GpuSceneTextureSource, PostLightSweepUniformParams, PostMagnifyLensUniformParams,
-    PostTextureOverlayUniformParams, batch_shape_storage_bytes, batch_shape_uniform,
-    matte_texture_uniform, post_blur_uniform, post_color_uniform, post_edge_treatment_uniform,
-    post_hsla_overlay_uniform, post_light_sweep_uniform, post_magnify_lens_uniform,
-    post_material_displacement_uniform, post_opacity_uniform, post_texture_overlay_uniform,
-    post_tint_uniform, post_tone_map_uniform, texture_layer_bounds, texture_layer_projected_bounds,
+    PostTextureOverlayUniformParams, SceneBlendMode, batch_shape_storage_bytes,
+    batch_shape_uniform, matte_texture_uniform, post_blur_uniform, post_color_uniform,
+    post_edge_treatment_uniform, post_hsla_overlay_uniform, post_light_sweep_uniform,
+    post_magnify_lens_uniform, post_material_displacement_uniform, post_opacity_uniform,
+    post_texture_overlay_uniform, post_tint_uniform, post_tone_map_uniform, texture_layer_bounds,
+    texture_layer_projected_bounds,
 };
 use crate::scene::render::{MotionLoomSceneRenderError, eval_scene_number};
 use crate::scene::resource::{load_rgba_image_source, load_svg_source};
-use crate::scene::spatial::{EvaluatedDeformGrid, TextureRect, resolve_axis};
+use crate::scene::spatial::{Affine2, EvaluatedDeformGrid, TextureRect, resolve_axis};
 
 struct WgpuImageTexture {
     pub(crate) width: u32,
@@ -2027,6 +2032,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         clear: [u8; 4],
         pick_mode: bool,
     ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        // Native shapes are normally batched before textures. Split the shape
+        // batch when a rasterized Puppet layer belongs between vector nodes.
+        if !pick_mode
+            && texture_layers
+                .iter()
+                .any(|layer| layer.primitive_index < primitives.len())
+        {
+            return self.render_ordered_scene_content_to_texture(primitives, texture_layers, clear);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let encode_started = Instant::now();
         #[cfg(not(target_arch = "wasm32"))]
@@ -2435,6 +2449,66 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             self.current_cpu_encode += encode_started.elapsed().saturating_sub(local_upload);
         }
         Ok(result)
+    }
+
+    fn render_ordered_scene_content_to_texture(
+        &mut self,
+        primitives: &[GpuScenePrimitive],
+        texture_layers: &[GpuSceneTextureLayer],
+        clear: [u8; 4],
+    ) -> Result<GpuSceneNativeTexture, MotionLoomSceneRenderError> {
+        let mut ordered_layers = Vec::with_capacity(texture_layers.len() * 2 + 1);
+        let mut primitive_cursor = 0usize;
+
+        for layer in texture_layers {
+            let boundary = layer
+                .primitive_index
+                .min(primitives.len())
+                .max(primitive_cursor);
+            if boundary > primitive_cursor {
+                let source = self.render_scene_content_to_texture_with_mode(
+                    &primitives[primitive_cursor..boundary],
+                    &[],
+                    [0, 0, 0, 0],
+                    false,
+                )?;
+                ordered_layers.push(GpuSceneTextureLayer {
+                    source: GpuSceneTextureSource::Gpu(source),
+                    transform: Affine2::identity(),
+                    projected_quad: None,
+                    opacity: 1.0,
+                    blend: SceneBlendMode::Normal,
+                    pick_id: 0,
+                    matte: None,
+                    primitive_index: usize::MAX,
+                });
+            }
+            let mut ordered_layer = layer.clone();
+            ordered_layer.primitive_index = usize::MAX;
+            ordered_layers.push(ordered_layer);
+            primitive_cursor = boundary;
+        }
+
+        if primitive_cursor < primitives.len() {
+            let source = self.render_scene_content_to_texture_with_mode(
+                &primitives[primitive_cursor..],
+                &[],
+                [0, 0, 0, 0],
+                false,
+            )?;
+            ordered_layers.push(GpuSceneTextureLayer {
+                source: GpuSceneTextureSource::Gpu(source),
+                transform: Affine2::identity(),
+                projected_quad: None,
+                opacity: 1.0,
+                blend: SceneBlendMode::Normal,
+                pick_id: 0,
+                matte: None,
+                primitive_index: usize::MAX,
+            });
+        }
+
+        self.render_scene_content_to_texture_with_mode(&[], &ordered_layers, clear, false)
     }
 
     pub(crate) fn copy_gpu_native_texture_owned(
